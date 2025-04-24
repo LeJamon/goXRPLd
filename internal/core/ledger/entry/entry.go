@@ -66,12 +66,7 @@ func (t Type) String() string {
 
 // Entry defines the interface for all ledger entries
 type Entry interface {
-	// Type returns the ledger entry type
 	Type() Type
-
-	// Validate checks if the entry is valid according to the rules
 	Validate() error
-
-	// Hash returns the unique identifier of the entry
 	Hash() ([32]byte, error)
 }
