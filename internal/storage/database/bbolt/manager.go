@@ -7,19 +7,19 @@ import (
 	"path/filepath"
 )
 
-type BBoltManager struct {
+type Manager struct {
 	dbs  map[string]*bbolt.DB
 	path string
 }
 
-func NewBBoltManager(path string) *BBoltManager {
-	return &BBoltManager{
+func NewManager(path string) *Manager {
+	return &Manager{
 		dbs:  make(map[string]*bbolt.DB),
 		path: path,
 	}
 }
 
-func (m *BBoltManager) OpenDB(name string) (database.DB, error) {
+func (m *Manager) OpenDB(name string) (database.DB, error) {
 	dbPath := filepath.Join(m.path, name+".db")
 	db, err := bbolt.Open(dbPath, 0600, nil)
 	if err != nil {
@@ -37,10 +37,10 @@ func (m *BBoltManager) OpenDB(name string) (database.DB, error) {
 	}
 
 	m.dbs[name] = db
-	return NewBBoltDB(db, []byte(name)), nil
+	return NewDB(db, []byte(name)), nil
 }
 
-func (m *BBoltManager) CloseDB(name string) error {
+func (m *Manager) CloseDB(name string) error {
 	db, exists := m.dbs[name]
 	if !exists {
 		return fmt.Errorf("database %s not found", name)
@@ -55,7 +55,7 @@ func (m *BBoltManager) CloseDB(name string) error {
 	return nil
 }
 
-func (m *BBoltManager) Close() error {
+func (m *Manager) Close() error {
 	var lastErr error
 	for name, db := range m.dbs {
 		if err := db.Close(); err != nil {

@@ -4,8 +4,8 @@ import (
 	"context"
 )
 
-// DatabaseManager handles the lifecycle of databases
-type DatabaseManager interface {
+// Manager handles the lifecycle of databases
+type Manager interface {
 	// OpenDB opens or creates a database with the given name
 	OpenDB(name string) (DB, error)
 

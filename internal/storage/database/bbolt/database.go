@@ -13,19 +13,19 @@ var (
 	ErrKeyNotFound = errors.New("key not found")
 )
 
-type BBoltDB struct {
+type DB struct {
 	db     *bbolt.DB
 	bucket []byte
 }
 
-func NewBBoltDB(db *bbolt.DB, bucket []byte) *BBoltDB {
-	return &BBoltDB{
+func NewDB(db *bbolt.DB, bucket []byte) *DB {
+	return &DB{
 		db:     db,
 		bucket: bucket,
 	}
 }
 
-func (b *BBoltDB) Read(ctx context.Context, key []byte) ([]byte, error) {
+func (b *DB) Read(ctx context.Context, key []byte) ([]byte, error) {
 	if b.db == nil {
 		return nil, ErrDBClosed
 	}
@@ -42,7 +42,8 @@ func (b *BBoltDB) Read(ctx context.Context, key []byte) ([]byte, error) {
 			return ErrKeyNotFound
 		}
 
-		// Make a copy of the value since bbolt's value is only valid during the transaction
+		// Make a copy of the value since bbolt's val
+		//ue is only valid during the transaction
 		valueCopy := make([]byte, len(value))
 		copy(valueCopy, value)
 		value = valueCopy
@@ -57,7 +58,7 @@ func (b *BBoltDB) Read(ctx context.Context, key []byte) ([]byte, error) {
 	return value, nil
 }
 
-func (b *BBoltDB) Write(ctx context.Context, key []byte, value []byte) error {
+func (b *DB) Write(ctx context.Context, key []byte, value []byte) error {
 	if b.db == nil {
 		return ErrDBClosed
 	}
@@ -71,7 +72,7 @@ func (b *BBoltDB) Write(ctx context.Context, key []byte, value []byte) error {
 	})
 }
 
-func (b *BBoltDB) Delete(ctx context.Context, key []byte) error {
+func (b *DB) Delete(ctx context.Context, key []byte) error {
 	if b.db == nil {
 		return ErrDBClosed
 	}
@@ -85,7 +86,7 @@ func (b *BBoltDB) Delete(ctx context.Context, key []byte) error {
 	})
 }
 
-func (b *BBoltDB) Batch(ctx context.Context, ops []database.BatchOperation) error {
+func (b *DB) Batch(ctx context.Context, ops []database.BatchOperation) error {
 	if b.db == nil {
 		return ErrDBClosed
 	}
@@ -114,7 +115,7 @@ func (b *BBoltDB) Batch(ctx context.Context, ops []database.BatchOperation) erro
 	})
 }
 
-type BBoltIterator struct {
+type Iterator struct {
 	tx      *bbolt.Tx
 	cursor  *bbolt.Cursor
 	current struct {
@@ -124,7 +125,7 @@ type BBoltIterator struct {
 	err        error
 }
 
-func (b *BBoltDB) Iterator(ctx context.Context, start, end []byte) (database.Iterator, error) {
+func (b *DB) Iterator(ctx context.Context, start, end []byte) (database.Iterator, error) {
 	if b.db == nil {
 		return nil, ErrDBClosed
 	}
@@ -140,7 +141,7 @@ func (b *BBoltDB) Iterator(ctx context.Context, start, end []byte) (database.Ite
 		return nil, fmt.Errorf("bucket %s not found", string(b.bucket))
 	}
 
-	return &BBoltIterator{
+	return &Iterator{
 		tx:     tx,
 		cursor: bucket.Cursor(),
 		start:  start,
@@ -148,7 +149,7 @@ func (b *BBoltDB) Iterator(ctx context.Context, start, end []byte) (database.Ite
 	}, nil
 }
 
-func (it *BBoltIterator) Next() bool {
+func (it *Iterator) Next() bool {
 	var k, v []byte
 	if it.current.key == nil {
 		// First iteration
@@ -172,18 +173,18 @@ func (it *BBoltIterator) Next() bool {
 	return true
 }
 
-func (it *BBoltIterator) Key() []byte {
+func (it *Iterator) Key() []byte {
 	return it.current.key
 }
 
-func (it *BBoltIterator) Value() []byte {
+func (it *Iterator) Value() []byte {
 	return it.current.value
 }
 
-func (it *BBoltIterator) Error() error {
+func (it *Iterator) Error() error {
 	return it.err
 }
 
-func (it *BBoltIterator) Close() error {
+func (it *Iterator) Close() error {
 	return it.tx.Rollback()
 }
