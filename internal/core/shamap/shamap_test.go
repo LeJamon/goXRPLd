@@ -34,12 +34,6 @@ func IntToVUC(v int) []byte {
 	return vuc
 }
 
-// SHAMapItem definition for testing - assuming it's defined in your implementation
-type SHAMapItem struct {
-	Key  [32]byte
-	Data []byte
-}
-
 // Constants for testing - adapt these to match your implementation's constants
 const (
 	FREE Type = iota

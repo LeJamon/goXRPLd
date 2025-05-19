@@ -1,0 +1,187 @@
+package shamap
+
+import (
+	"encoding/hex"
+	"fmt"
+	"github.com/LeJamon/goXRPLd/internal/crypto/common"
+)
+
+// -----------------------------------------------------------------------------
+// AccountStateLeafNode
+
+type AccountStateLeafNode struct {
+	BaseNode
+	item *SHAMapItem
+}
+
+func (n *AccountStateLeafNode) SerializeForWire() []byte {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (n *AccountStateLeafNode) SerializeWithPrefix() []byte {
+	//TODO implement me
+	panic("implement me")
+}
+
+func NewAccountStateLeafNode(item *SHAMapItem) *AccountStateLeafNode {
+	n := &AccountStateLeafNode{item: item}
+	n.UpdateHash()
+	return n
+}
+
+func (n *AccountStateLeafNode) IsLeaf() bool  { return true }
+func (n *AccountStateLeafNode) IsInner() bool { return false }
+
+func (n *AccountStateLeafNode) GetItem() *SHAMapItem { return n.item }
+
+func (n *AccountStateLeafNode) SetItem(item *SHAMapItem) bool {
+	oldHash := n.hash
+	n.item = item
+	n.UpdateHash()
+	return n.hash != oldHash
+}
+
+func (n *AccountStateLeafNode) UpdateHash() {
+	n.setHash(crypto.Sha512Half(byte(HashPrefixLeafNode, n.item.Data(), n.item.Key())))
+}
+
+func (n *AccountStateLeafNode) Type() SHAMapNodeType {
+	return tnACCOUNT_STATE
+}
+
+func (n *AccountStateLeafNode) Invariants(isRoot bool) error {
+	if n.item == nil {
+		return fmt.Errorf("account state leaf has nil item")
+	}
+	return nil
+}
+
+func (n *AccountStateLeafNode) String(id SHAMapNodeID) string {
+	return fmt.Sprintf("AccountStateLeafNode ID: %s\nHash: %s\nKey: %s\n",
+		id.String(), hex.EncodeToString(n.hash[:]), hex.EncodeToString(n.item.Key()))
+}
+
+func (n *AccountStateLeafNode) Clone() SHAMapNode {
+	return NewAccountStateLeafNode(n.item.Clone())
+}
+
+// -----------------------------------------------------------------------------
+// TxLeafNode (transaction without metadata)
+
+type TxLeafNode struct {
+	BaseNode
+	item *SHAMapItem
+}
+
+func (n *TxLeafNode) SerializeForWire() []byte {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (n *TxLeafNode) SerializeWithPrefix() []byte {
+	//TODO implement me
+	panic("implement me")
+}
+
+func NewTxLeafNode(item *SHAMapItem) *TxLeafNode {
+	n := &TxLeafNode{item: item}
+	n.UpdateHash()
+	return n
+}
+
+func (n *TxLeafNode) IsLeaf() bool  { return true }
+func (n *TxLeafNode) IsInner() bool { return false }
+
+func (n *TxLeafNode) GetItem() *SHAMapItem { return n.item }
+
+func (n *TxLeafNode) SetItem(item *SHAMapItem) bool {
+	oldHash := n.hash
+	n.item = item
+	n.UpdateHash()
+	return n.hash != oldHash
+}
+
+func (n *TxLeafNode) UpdateHash() {
+	n.setHash(Sha512Half(HashPrefixTransactionID, n.item.Data()))
+}
+
+func (n *TxLeafNode) Type() SHAMapNodeType {
+	return tnTRANSACTION_NM
+}
+
+func (n *TxLeafNode) Invariants(isRoot bool) error {
+	if n.item == nil {
+		return fmt.Errorf("tx leaf has nil item")
+	}
+	return nil
+}
+
+func (n *TxLeafNode) String(id SHAMapNodeID) string {
+	return fmt.Sprintf("TxLeafNode ID: %s\nHash: %s\nKey: %s\n",
+		id.String(), hex.EncodeToString(n.hash[:]), hex.EncodeToString(n.item.Key()))
+}
+
+func (n *TxLeafNode) Clone() SHAMapNode {
+	return NewTxLeafNode(n.item.Clone())
+}
+
+// -----------------------------------------------------------------------------
+// TxPlusMetaLeafNode (transaction with metadata)
+
+type TxPlusMetaLeafNode struct {
+	BaseNode
+	item *SHAMapItem
+}
+
+func (n *TxPlusMetaLeafNode) SerializeForWire() []byte {
+	//TODO implement me
+	panic("implement me")
+}
+
+func (n *TxPlusMetaLeafNode) SerializeWithPrefix() []byte {
+	//TODO implement me
+	panic("implement me")
+}
+
+func NewTxPlusMetaLeafNode(item *SHAMapItem) *TxPlusMetaLeafNode {
+	n := &TxPlusMetaLeafNode{item: item}
+	n.UpdateHash()
+	return n
+}
+
+func (n *TxPlusMetaLeafNode) IsLeaf() bool  { return true }
+func (n *TxPlusMetaLeafNode) IsInner() bool { return false }
+
+func (n *TxPlusMetaLeafNode) GetItem() *SHAMapItem { return n.item }
+
+func (n *TxPlusMetaLeafNode) SetItem(item *SHAMapItem) bool {
+	oldHash := n.hash
+	n.item = item
+	n.UpdateHash()
+	return n.hash != oldHash
+}
+
+func (n *TxPlusMetaLeafNode) UpdateHash() {
+	n.setHash(Sha512Half(HashPrefixTxNode, n.item.Data(), n.item.Key()))
+}
+
+func (n *TxPlusMetaLeafNode) Type() SHAMapNodeType {
+	return tnTRANSACTION_MD
+}
+
+func (n *TxPlusMetaLeafNode) Invariants(isRoot bool) error {
+	if n.item == nil {
+		return fmt.Errorf("tx+meta leaf has nil item")
+	}
+	return nil
+}
+
+func (n *TxPlusMetaLeafNode) String(id SHAMapNodeID) string {
+	return fmt.Sprintf("TxPlusMetaLeafNode ID: %s\nHash: %s\nKey: %s\n",
+		id.String(), hex.EncodeToString(n.hash[:]), hex.EncodeToString(n.item.Key()))
+}
+
+func (n *TxPlusMetaLeafNode) Clone() SHAMapNode {
+	return NewTxPlusMetaLeafNode(n.item.Clone())
+}

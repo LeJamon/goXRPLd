@@ -5,7 +5,6 @@ go 1.23.2
 require (
 	github.com/Peersyst/xrpl-go v0.1.0
 	github.com/decred/dcrd/crypto/ripemd160 v1.0.2
-	github.com/ethereum/go-ethereum v1.14.12
 	github.com/golang/mock v1.6.0
 	github.com/stretchr/testify v1.9.0
 	github.com/syndtr/goleveldb v1.0.1-0.20210819022825-2ae1ddf74ef7

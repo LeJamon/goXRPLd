@@ -30,13 +30,13 @@ type SHAMap struct {
 }
 
 // NewSHAMap constructs a new SHAMap with a given type and hasher.
-func NewSHAMap(mapType Type, hasher Hasher) *SHAMap {
+func NewSHAMap(mapType Type) *SHAMap {
 	m := &SHAMap{
 		state:   Modifying,
 		mapType: mapType,
 		cowID:   1,
 		full:    false,
-		hasher:  hasher,
+		hasher:  Sha512HalfHasher{},
 	}
 	m.root = &InnerNode{
 		children: [BranchFactor]TreeNode{},
@@ -101,3 +101,7 @@ func (m *SHAMap) calculateHash(node TreeNode) [32]byte {
 
 	return leaf.hash
 }
+
+func (m *SHAMap) AddItem(item TreeNode) {}
+
+func (m *SHAMap) DelItem(item TreeNode) {}
