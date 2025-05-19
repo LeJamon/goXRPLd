@@ -136,7 +136,10 @@ func (it *Iterator) Next() bool {
 	valCopy := make([]byte, len(val))
 	copy(valCopy, val)
 
-	it.current.key = key
+	keyCopy := make([]byte, len(key))
+	copy(keyCopy, key)
+
+	it.current.key = keyCopy
 	it.current.value = valCopy
 	return true
 }

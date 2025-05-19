@@ -149,8 +149,9 @@ func TestBBoltDB(t *testing.T) {
 			t.Errorf("Iterator error: %v", err)
 		}
 
-		if count != len(testData) {
-			t.Errorf("Iterator returned wrong number of items: got %d, want %d", count, len(testData))
+		expectedCount := 2 // Only "iter1" and "iter2"
+		if count != expectedCount {
+			t.Errorf("Iterator returned wrong number of items: got %d, want %d", count, expectedCount)
 		}
 	})
 

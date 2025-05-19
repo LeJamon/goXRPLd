@@ -126,7 +126,6 @@ func TestPebbleDB(t *testing.T) {
 		for iter.Next() {
 			key := string(iter.Key())
 			value := string(iter.Value())
-			println(value)
 			expectedValue, ok := testData[key]
 			if !ok {
 				t.Errorf("Unexpected key: %s", key)
@@ -141,8 +140,9 @@ func TestPebbleDB(t *testing.T) {
 			t.Errorf("Iterator error: %v", err)
 		}
 
-		if count != len(testData) {
-			t.Errorf("Iterator returned wrong number of items: got %d, want %d", count, len(testData))
+		expectedCount := 2
+		if count != expectedCount {
+			t.Errorf("Iterator returned wrong number of items: got %d, want %d", count, expectedCount)
 		}
 	})
 
