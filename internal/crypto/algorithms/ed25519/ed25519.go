@@ -33,7 +33,7 @@ func (p *ED25519SignatureProvider) GenerateKeypair(seed []byte, isValidator bool
 	}
 
 	keyMaterial := crypto.Sha512Half(seed)
-	pubKey, privKey, err := ed25519.GenerateKey(bytes.NewBuffer(keyMaterial))
+	pubKey, privKey, err := ed25519.GenerateKey(bytes.NewBuffer(keyMaterial[:]))
 	if err != nil {
 		return "", "", err
 	}
