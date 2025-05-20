@@ -38,8 +38,8 @@ func (b *BaseNode) Hash() [32]byte {
 	return b.hash
 }
 
-func (b *BaseNode) setHash(data []byte) {
-	b.hash = crypto.Sha512Half(data)
+func (b *BaseNode) setHash(data ...[]byte) {
+	b.hash = crypto.Sha512Half(data...)
 }
 
 // Optional helper for display

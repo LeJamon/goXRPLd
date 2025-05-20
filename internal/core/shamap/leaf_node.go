@@ -3,7 +3,7 @@ package shamap
 import (
 	"encoding/hex"
 	"fmt"
-	"github.com/LeJamon/goXRPLd/internal/crypto/common"
+	"github.com/LeJamon/goXRPLd/internal/protocol"
 )
 
 // -----------------------------------------------------------------------------
@@ -43,7 +43,8 @@ func (n *AccountStateLeafNode) SetItem(item *SHAMapItem) bool {
 }
 
 func (n *AccountStateLeafNode) UpdateHash() {
-	n.setHash(crypto.Sha512Half(byte(HashPrefixLeafNode, n.item.Data(), n.item.Key())))
+	key := n.item.Key()
+	n.setHash(protocol.HashPrefixLeafNode[:], n.item.Data(), key[:])
 }
 
 func (n *AccountStateLeafNode) Type() SHAMapNodeType {
@@ -58,8 +59,9 @@ func (n *AccountStateLeafNode) Invariants(isRoot bool) error {
 }
 
 func (n *AccountStateLeafNode) String(id SHAMapNodeID) string {
+	key := n.item.Key()
 	return fmt.Sprintf("AccountStateLeafNode ID: %s\nHash: %s\nKey: %s\n",
-		id.String(), hex.EncodeToString(n.hash[:]), hex.EncodeToString(n.item.Key()))
+		id.String(), hex.EncodeToString(n.hash[:]), hex.EncodeToString(key[:]))
 }
 
 func (n *AccountStateLeafNode) Clone() SHAMapNode {
@@ -103,7 +105,7 @@ func (n *TxLeafNode) SetItem(item *SHAMapItem) bool {
 }
 
 func (n *TxLeafNode) UpdateHash() {
-	n.setHash(Sha512Half(HashPrefixTransactionID, n.item.Data()))
+	n.setHash(protocol.HashPrefixLeafNode[:], n.item.Data())
 }
 
 func (n *TxLeafNode) Type() SHAMapNodeType {
@@ -118,8 +120,9 @@ func (n *TxLeafNode) Invariants(isRoot bool) error {
 }
 
 func (n *TxLeafNode) String(id SHAMapNodeID) string {
+	key := n.item.Key()
 	return fmt.Sprintf("TxLeafNode ID: %s\nHash: %s\nKey: %s\n",
-		id.String(), hex.EncodeToString(n.hash[:]), hex.EncodeToString(n.item.Key()))
+		id.String(), hex.EncodeToString(n.hash[:]), hex.EncodeToString(key[:]))
 }
 
 func (n *TxLeafNode) Clone() SHAMapNode {
@@ -163,7 +166,8 @@ func (n *TxPlusMetaLeafNode) SetItem(item *SHAMapItem) bool {
 }
 
 func (n *TxPlusMetaLeafNode) UpdateHash() {
-	n.setHash(Sha512Half(HashPrefixTxNode, n.item.Data(), n.item.Key()))
+	key := n.item.Key()
+	n.setHash(protocol.HashPrefixLeafNode[:], n.item.Data(), key[:])
 }
 
 func (n *TxPlusMetaLeafNode) Type() SHAMapNodeType {
@@ -178,8 +182,9 @@ func (n *TxPlusMetaLeafNode) Invariants(isRoot bool) error {
 }
 
 func (n *TxPlusMetaLeafNode) String(id SHAMapNodeID) string {
+	key := n.item.Key()
 	return fmt.Sprintf("TxPlusMetaLeafNode ID: %s\nHash: %s\nKey: %s\n",
-		id.String(), hex.EncodeToString(n.hash[:]), hex.EncodeToString(n.item.Key()))
+		id.String(), hex.EncodeToString(n.hash[:]), hex.EncodeToString(key[:]))
 }
 
 func (n *TxPlusMetaLeafNode) Clone() SHAMapNode {

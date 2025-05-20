@@ -86,14 +86,14 @@ func (n *InnerNode) UpdateHash() {
 
 // SerializeForWire (placeholder): serialize the node for wire transmission.
 func (n *InnerNode) SerializeForWire() []byte {
-	// Placeholder – wire format not defined yet.
-	return nil
+	//TODO implement me
+	panic("implement me")
 }
 
 // SerializeWithPrefix (placeholder): serialize with type prefix.
 func (n *InnerNode) SerializeWithPrefix() []byte {
-	// Placeholder – same as above.
-	return nil
+	//TODO implement me
+	panic("implement me")
 }
 
 // String returns a human-readable representation of the node.
