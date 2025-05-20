@@ -15,8 +15,8 @@ const (
 	tnACCOUNT_STATE
 )
 
-// SHAMapNode defines the interface all tree nodes must implement.
-type SHAMapNode interface {
+// TreeNode defines the interface all tree nodes must implement.
+type TreeNode interface {
 	IsLeaf() bool
 	IsInner() bool
 	Hash() [32]byte
@@ -24,9 +24,9 @@ type SHAMapNode interface {
 	UpdateHash()
 	SerializeForWire() []byte
 	SerializeWithPrefix() []byte
-	String(nodeID SHAMapNodeID) string
+	String(nodeID NodeID) string
 	Invariants(isRoot bool) error
-	Clone() SHAMapNode
+	Clone() TreeNode
 }
 
 // BaseNode provides common functionality.
@@ -43,6 +43,6 @@ func (b *BaseNode) setHash(data ...[]byte) {
 }
 
 // Optional helper for display
-func (b *BaseNode) String(id SHAMapNodeID) string {
+func (b *BaseNode) String(id NodeID) string {
 	return fmt.Sprintf("Node ID: %v, Hash: %s", id.String(), hex.EncodeToString(b.hash[:]))
 }

@@ -213,7 +213,12 @@ func TestDB(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Iterator creation failed: %v", err)
 		}
-		defer iter.Close()
+		defer func(iter Iterator) {
+			err := iter.Close()
+			if err != nil {
+				t.Fatalf("Iterator close failed: %v", err)
+			}
+		}(iter)
 
 		count := 0
 		for iter.Next() {

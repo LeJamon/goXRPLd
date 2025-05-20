@@ -19,8 +19,14 @@ func setupTestDB(t *testing.T) (*Manager, func()) {
 	manager := NewManager(tempDir)
 
 	cleanup := func() {
-		manager.Close()
-		os.RemoveAll(tempDir)
+		err := manager.Close()
+		if err != nil {
+			return
+		}
+		err = os.RemoveAll(tempDir)
+		if err != nil {
+			return
+		}
 	}
 
 	return manager, cleanup
@@ -120,7 +126,12 @@ func TestPebbleDB(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create iterator: %v", err)
 		}
-		defer iter.Close()
+		defer func(iter database.Iterator) {
+			err := iter.Close()
+			if err != nil {
+				t.Fatalf("Iterator close failed: %v", err)
+			}
+		}(iter)
 
 		count := 0
 		for iter.Next() {

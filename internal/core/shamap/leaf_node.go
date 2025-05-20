@@ -58,13 +58,13 @@ func (n *AccountStateLeafNode) Invariants(isRoot bool) error {
 	return nil
 }
 
-func (n *AccountStateLeafNode) String(id SHAMapNodeID) string {
+func (n *AccountStateLeafNode) String(id NodeID) string {
 	key := n.item.Key()
 	return fmt.Sprintf("AccountStateLeafNode ID: %s\nHash: %s\nKey: %s\n",
 		id.String(), hex.EncodeToString(n.hash[:]), hex.EncodeToString(key[:]))
 }
 
-func (n *AccountStateLeafNode) Clone() SHAMapNode {
+func (n *AccountStateLeafNode) Clone() TreeNode {
 	return NewAccountStateLeafNode(n.item.Clone())
 }
 
@@ -119,13 +119,13 @@ func (n *TxLeafNode) Invariants(isRoot bool) error {
 	return nil
 }
 
-func (n *TxLeafNode) String(id SHAMapNodeID) string {
+func (n *TxLeafNode) String(id NodeID) string {
 	key := n.item.Key()
 	return fmt.Sprintf("TxLeafNode ID: %s\nHash: %s\nKey: %s\n",
 		id.String(), hex.EncodeToString(n.hash[:]), hex.EncodeToString(key[:]))
 }
 
-func (n *TxLeafNode) Clone() SHAMapNode {
+func (n *TxLeafNode) Clone() TreeNode {
 	return NewTxLeafNode(n.item.Clone())
 }
 
@@ -181,12 +181,12 @@ func (n *TxPlusMetaLeafNode) Invariants(isRoot bool) error {
 	return nil
 }
 
-func (n *TxPlusMetaLeafNode) String(id SHAMapNodeID) string {
+func (n *TxPlusMetaLeafNode) String(id NodeID) string {
 	key := n.item.Key()
 	return fmt.Sprintf("TxPlusMetaLeafNode ID: %s\nHash: %s\nKey: %s\n",
 		id.String(), hex.EncodeToString(n.hash[:]), hex.EncodeToString(key[:]))
 }
 
-func (n *TxPlusMetaLeafNode) Clone() SHAMapNode {
+func (n *TxPlusMetaLeafNode) Clone() TreeNode {
 	return NewTxPlusMetaLeafNode(n.item.Clone())
 }

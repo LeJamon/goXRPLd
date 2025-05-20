@@ -10,18 +10,24 @@ import (
 	"time"
 )
 
-func setupTestDB(t *testing.T) (*Manager, func()) {
+func setupTestDB(t *testing.T) (*BBoltManager, func()) {
 	// Create temporary directory for test database
 	tempDir, err := os.MkdirTemp("", "bbolt-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 
-	manager := NewManager(tempDir)
+	manager := NewBBoltManager(tempDir)
 
 	cleanup := func() {
-		manager.Close()
-		os.RemoveAll(tempDir)
+		err := manager.Close()
+		if err != nil {
+			return
+		}
+		err = os.RemoveAll(tempDir)
+		if err != nil {
+			return
+		}
 	}
 
 	return manager, cleanup

@@ -11,7 +11,7 @@ const branchFactor = 16
 
 type InnerNode struct {
 	BaseNode
-	children [branchFactor]SHAMapNode
+	children [branchFactor]TreeNode
 	hashes   [branchFactor][32]byte
 	isBranch uint16
 }
@@ -51,12 +51,12 @@ func (n *InnerNode) GetBranchCount() int {
 }
 
 // GetChild returns the child node at the given branch index.
-func (n *InnerNode) GetChild(index int) SHAMapNode {
+func (n *InnerNode) GetChild(index int) TreeNode {
 	return n.children[index]
 }
 
 // SetChild sets the child node at the given branch index and updates tracking info.
-func (n *InnerNode) SetChild(index int, child SHAMapNode) {
+func (n *InnerNode) SetChild(index int, child TreeNode) {
 	n.children[index] = child
 	if child != nil {
 		n.hashes[index] = child.Hash()
@@ -97,7 +97,7 @@ func (n *InnerNode) SerializeWithPrefix() []byte {
 }
 
 // String returns a human-readable representation of the node.
-func (n *InnerNode) String(id SHAMapNodeID) string {
+func (n *InnerNode) String(id NodeID) string {
 	s := fmt.Sprintf("InnerNode ID: %s\nHash: %s\nBranches:\n", id.String(), hex.EncodeToString(n.hash[:]))
 	for i := 0; i < branchFactor; i++ {
 		if n.isBranch&(1<<i) != 0 {
@@ -127,7 +127,7 @@ func (n *InnerNode) Invariants(isRoot bool) error {
 }
 
 // Clone returns a deep copy of the node.
-func (n *InnerNode) Clone() SHAMapNode {
+func (n *InnerNode) Clone() TreeNode {
 	copyNode := &InnerNode{
 		isBranch: n.isBranch,
 	}
