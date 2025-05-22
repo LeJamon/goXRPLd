@@ -190,3 +190,19 @@ func (n *TxPlusMetaLeafNode) String(id NodeID) string {
 func (n *TxPlusMetaLeafNode) Clone() TreeNode {
 	return NewTxPlusMetaLeafNode(n.item.Clone())
 }
+
+func GetItemFromLeafNode(node TreeNode) *SHAMapItem {
+	if node == nil || !node.IsLeaf() {
+		return nil
+	}
+	switch n := node.(type) {
+	case *AccountStateLeafNode:
+		return n.GetItem()
+	case *TxLeafNode:
+		return n.GetItem()
+	case *TxPlusMetaLeafNode:
+		return n.GetItem()
+	default:
+		return nil
+	}
+}

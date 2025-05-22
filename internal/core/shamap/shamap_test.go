@@ -1,6 +1,7 @@
 package shamap
 
 import (
+	"bytes"
 	"fmt"
 	"testing"
 )
@@ -20,7 +21,7 @@ func makeItem(key [32]byte, value []byte) *SHAMapItem {
 }
 
 // TestAddAndTraverse tests adding items to a SHAMap and traversing it
-/*func TestAddAndTraverse(t *testing.T) {
+func TestAddAndTraverse(t *testing.T) {
 	// Define test keys - borrowed from the C++ test
 	var h1, h2, h3, h4, h5 [32]byte
 
@@ -85,7 +86,7 @@ func makeItem(key [32]byte, value []byte) *SHAMapItem {
 	}
 
 	// Delete item 2
-	err = sMap.DelItem(i2.Key())
+	_, err = sMap.DelItem(i2.Key())
 	if err != nil {
 		t.Errorf("Failed to delete item 2: %v", err)
 	}
@@ -176,8 +177,7 @@ func TestSnapshot(t *testing.T) {
 		t.Errorf("Maps should be identical, but found %d differences", len(diffItems))
 	}
 
-	// Modify the original
-	err = sMap.DelItem(h1)
+	_, err = sMap.DelItem(h1)
 	if err != nil {
 		t.Errorf("Failed to delete item: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestSnapshot(t *testing.T) {
 	if len(diffItems) != 1 {
 		t.Errorf("Expected 1 difference, got %d", len(diffItems))
 	}
-}*/
+}
 
 // TestBuildAndTear tests building a tree and tearing it down
 func TestBuildAndTear(t *testing.T) {
@@ -230,7 +230,7 @@ func TestBuildAndTear(t *testing.T) {
 		}
 	}
 	println("Added all key")
-	dumpTree(sMap.root, "")
+	dumpTree(sMap.root, "", false)
 
 	// Count items
 	count := 0
@@ -246,12 +246,13 @@ func TestBuildAndTear(t *testing.T) {
 		fmt.Printf("\n=== Iteration %d ===\n", i)
 		fmt.Printf("Deleting key: %x\n", keys[i])
 
-		if !sMap.DelItem(keys[i]) {
+		_, err := sMap.DelItem(keys[i])
+		if err != nil {
 			t.Errorf("Failed to delete item %x", keys[i])
 		}
 
 		fmt.Println("Tree after deletion:")
-		dumpTree(sMap.root, "")
+		dumpTree(sMap.root, "", false)
 
 		// Verify count decreases
 		count = 0
@@ -264,6 +265,7 @@ func TestBuildAndTear(t *testing.T) {
 	}
 
 	// Final check - map should be empty
+	//TODO add a check about the root that should be 0
 	count = 0
 	sMap.VisitLeaves(func(item *SHAMapItem) {
 		count++
@@ -274,7 +276,7 @@ func TestBuildAndTear(t *testing.T) {
 }
 
 // TestIteration tests ordering of map iteration
-/*func TestIteration(t *testing.T) {
+func TestIteration(t *testing.T) {
 	// Define keys in a specific order
 	keys := [][32]byte{
 		hashFromString("f22891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"),
@@ -350,11 +352,11 @@ func TestImmutability(t *testing.T) {
 	}
 
 	// Try to delete an item - should fail
-	err = sMap.DelItem(key)
+	_, err = sMap.DelItem(key)
 	if err != ErrImmutable {
 		t.Errorf("Deleting from immutable map should fail with ErrImmutable, got: %v", err)
 	}
-}*/
+}
 
 // Helper to create a hash from a string
 func hashFromString(s string) [32]byte {
@@ -363,25 +365,61 @@ func hashFromString(s string) [32]byte {
 	return hash
 }
 
-func dumpTree(node TreeNode, prefix string) {
+func dumpTree(node TreeNode, prefix string, isTail bool) {
 	switch n := node.(type) {
 	case *InnerNode:
-		fmt.Printf("%sInnerNode: %p, hash: %x\n", prefix, n, n.Hash())
+		fmt.Printf("%s%sInnerNode %p, hash: %x\n", prefix, branchSymbol(isTail), n, n.Hash())
+		children := []struct {
+			index int
+			child TreeNode
+		}{}
+		// Collect non-empty branches first
 		for i := 0; i < 16; i++ {
 			if !n.IsEmptyBranch(i) {
 				child := n.GetChild(i)
 				if child != nil {
-					dumpTree(child, prefix+"  ")
+					children = append(children, struct {
+						index int
+						child TreeNode
+					}{index: i, child: child})
 				}
 			}
 		}
+		for i, c := range children {
+			// Add branch index label to help identify the path
+			fmt.Printf("%s%s[Branch %x]\n", prefix, pipeSymbol(isTail), c.index)
+			dumpTree(c.child, nextPrefix(prefix, isTail), i == len(children)-1)
+		}
+
 	case *AccountStateLeafNode:
-		fmt.Printf("%sLeafNode(Account): %p, key: %x\n", prefix, n, n.GetItem().Key())
+		fmt.Printf("%s%sLeaf(Account) %p, key: %x\n", prefix, branchSymbol(isTail), n, n.GetItem().Key())
 	case *TxLeafNode:
-		fmt.Printf("%sLeafNode(Tx): %p, key: %x\n", prefix, n, n.GetItem().Key())
+		fmt.Printf("%s%sLeaf(Tx) %p, key: %x\n", prefix, branchSymbol(isTail), n, n.GetItem().Key())
 	case *TxPlusMetaLeafNode:
-		fmt.Printf("%sLeafNode(Tx+Meta): %p, key: %x\n", prefix, n, n.GetItem().Key())
+		fmt.Printf("%s%sLeaf(Tx+Meta) %p, key: %x\n", prefix, branchSymbol(isTail), n, n.GetItem().Key())
 	default:
-		fmt.Printf("%sUnknown node type: %T\n", prefix, n)
+		fmt.Printf("%s%sUnknown node type: %T\n", prefix, branchSymbol(isTail), n)
 	}
+}
+
+// Helpers to build the tree shape
+func branchSymbol(isTail bool) string {
+	if isTail {
+		return "└── "
+	}
+	return "├── "
+}
+
+func pipeSymbol(isTail bool) string {
+	if isTail {
+		return "    "
+	}
+	return "│   "
+}
+
+func nextPrefix(current string, isTail bool) string {
+	if isTail {
+		return current + "    "
+	}
+	return current + "│   "
 }
