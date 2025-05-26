@@ -70,17 +70,19 @@ func CreateNodeID(depth uint8, key [32]byte) NodeID {
 }
 
 // SelectBranch returns which branch of a node would contain the given key.
-func SelectBranch(node NodeID, key [32]byte) uint8 {
-	if node.Depth >= 64 {
-		panic("node depth too deep")
+func SelectBranch(nodeID NodeID, key [32]byte) int {
+	depth := nodeID.Depth // You need to implement this method on NodeID
+	byteIndex := depth / 2
+	if byteIndex >= 32 {
+		return 0
 	}
-	byteIndex := node.Depth / 2
-	isHighNibble := node.Depth%2 == 0
 
-	if isHighNibble {
-		return key[byteIndex] >> 4
+	b := key[byteIndex]
+	if depth%2 == 0 {
+		return int(b >> 4) // Use upper 4 bits for even depths
+	} else {
+		return int(b & 0xF) // Use lower 4 bits for odd depths
 	}
-	return key[byteIndex] & 0x0F
 }
 
 func NewNodeID() NodeID {

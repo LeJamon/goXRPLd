@@ -36,22 +36,23 @@ func TestAddAndTraverse(t *testing.T) {
 	i2 := makeItem(h2, intToVUC(2))
 	i3 := makeItem(h3, intToVUC(3))
 	i4 := makeItem(h4, intToVUC(4))
+
 	// Create a SHAMap
 	sMap := NewSHAMap(TxMap)
 
 	// Add items to the map
-	err := sMap.AddItem(tnTRANSACTION_NM, i2)
+	err := sMap.AddItem(i2)
 	if err != nil {
 		t.Errorf("Failed to add item 2: %v", err)
 	}
 
-	err = sMap.AddItem(tnTRANSACTION_NM, i1)
+	err = sMap.AddItem(i1)
 	if err != nil {
 		t.Errorf("Failed to add item 1: %v", err)
 	}
 
 	// Traverse the map and check the order
-	items := []*SHAMapItem{}
+	var items []*SHAMapItem
 	sMap.VisitLeaves(func(item *SHAMapItem) {
 		items = append(items, item)
 	})
@@ -80,19 +81,19 @@ func TestAddAndTraverse(t *testing.T) {
 	}
 
 	// Add item 4
-	err = sMap.AddItem(tnTRANSACTION_NM, i4)
+	err = sMap.AddItem(i4)
 	if err != nil {
 		t.Errorf("Failed to add item 4: %v", err)
 	}
 
 	// Delete item 2
-	_, err = sMap.DelItem(i2.Key())
+	err = sMap.DeleteItem(i2.Key())
 	if err != nil {
 		t.Errorf("Failed to delete item 2: %v", err)
 	}
 
 	// Add item 3
-	err = sMap.AddItem(tnTRANSACTION_NM, i3)
+	err = sMap.AddItem(i3)
 	if err != nil {
 		t.Errorf("Failed to add item 3: %v", err)
 	}
@@ -145,7 +146,7 @@ func TestSnapshot(t *testing.T) {
 	sMap := NewSHAMap(TxMap)
 
 	// Add an item
-	err := sMap.AddItem(tnTRANSACTION_NM, makeItem(h1, intToVUC(1)))
+	err := sMap.AddItem(makeItem(h1, intToVUC(1)))
 	if err != nil {
 		t.Errorf("Failed to add item: %v", err)
 	}
@@ -177,7 +178,7 @@ func TestSnapshot(t *testing.T) {
 		t.Errorf("Maps should be identical, but found %d differences", len(diffItems))
 	}
 
-	_, err = sMap.DelItem(h1)
+	err = sMap.DeleteItem(h1)
 	if err != nil {
 		t.Errorf("Failed to delete item: %v", err)
 	}
@@ -224,12 +225,12 @@ func TestBuildAndTear(t *testing.T) {
 
 	// Add all keys
 	for i, key := range keys {
-		err := sMap.AddItem(tnTRANSACTION_NM, makeItem(key, intToVUC(i)))
+		err := sMap.AddItem(makeItem(key, intToVUC(i)))
 		if err != nil {
 			t.Errorf("Failed to add item %d: %v", i, err)
 		}
 	}
-	println("Added all key")
+	println("Added all keys")
 	dumpTree(sMap.root, "", false)
 
 	// Count items
@@ -246,9 +247,9 @@ func TestBuildAndTear(t *testing.T) {
 		fmt.Printf("\n=== Iteration %d ===\n", i)
 		fmt.Printf("Deleting key: %x\n", keys[i])
 
-		_, err := sMap.DelItem(keys[i])
+		err := sMap.DeleteItem(keys[i])
 		if err != nil {
-			t.Errorf("Failed to delete item %x", keys[i])
+			t.Errorf("Failed to delete item %x: %v", keys[i], err)
 		}
 
 		fmt.Println("Tree after deletion:")
@@ -265,13 +266,21 @@ func TestBuildAndTear(t *testing.T) {
 	}
 
 	// Final check - map should be empty
-	//TODO add a check about the root that should be 0
+	// Check that the root is an empty inner node with no children
 	count = 0
 	sMap.VisitLeaves(func(item *SHAMapItem) {
 		count++
 	})
 	if count != 0 {
 		t.Errorf("Map should be empty, but found %d items", count)
+	}
+
+	// Verify root is empty
+	rootHash := sMap.GetHash()
+	emptyRoot := NewInnerNode()
+	emptyHash := emptyRoot.Hash()
+	if !bytes.Equal(rootHash[:], emptyHash[:]) {
+		t.Errorf("Root hash should match empty inner node hash")
 	}
 }
 
@@ -294,7 +303,7 @@ func TestIteration(t *testing.T) {
 
 	// Add all keys
 	for i, key := range keys {
-		err := sMap.AddItem(tnTRANSACTION_NM, makeItem(key, intToVUC(i)))
+		err := sMap.AddItem(makeItem(key, intToVUC(i)))
 		if err != nil {
 			t.Errorf("Failed to add item %d: %v", i, err)
 		}
@@ -322,7 +331,7 @@ func TestIteration(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("Key %v not found in visited keys", key)
+			t.Errorf("Key %x not found in visited keys", key)
 		}
 	}
 }
@@ -337,7 +346,7 @@ func TestImmutability(t *testing.T) {
 	sMap := NewSHAMap(TxMap)
 
 	// Add an item
-	err := sMap.AddItem(tnTRANSACTION_NM, makeItem(key, intToVUC(1)))
+	err := sMap.AddItem(makeItem(key, intToVUC(1)))
 	if err != nil {
 		t.Errorf("Failed to add item: %v", err)
 	}
@@ -346,15 +355,119 @@ func TestImmutability(t *testing.T) {
 	sMap.SetImmutable()
 
 	// Try to add an item - should fail
-	err = sMap.AddItem(tnTRANSACTION_NM, makeItem(key, intToVUC(2)))
+	err = sMap.AddItem(makeItem(key, intToVUC(2)))
 	if err != ErrImmutable {
 		t.Errorf("Adding to immutable map should fail with ErrImmutable, got: %v", err)
 	}
 
 	// Try to delete an item - should fail
-	_, err = sMap.DelItem(key)
+	err = sMap.DeleteItem(key)
 	if err != ErrImmutable {
 		t.Errorf("Deleting from immutable map should fail with ErrImmutable, got: %v", err)
+	}
+}
+
+// TestUpdateExistingItem tests updating an item with the same key
+func TestUpdateExistingItem(t *testing.T) {
+	// Create a key
+	var key [32]byte
+	copy(key[:], []byte("092891fe4ef6cee585fdc6fda0e09eb4d386363158ec3321b8123e5a772c6ca7"))
+
+	// Create a SHAMap
+	sMap := NewSHAMap(TxMap)
+
+	// Add an item
+	item1 := makeItem(key, intToVUC(1))
+	err := sMap.AddItem(item1)
+	if err != nil {
+		t.Errorf("Failed to add item: %v", err)
+	}
+
+	// Get the hash before update
+	hashBefore := sMap.GetHash()
+
+	// Update the same key with different data
+	item2 := makeItem(key, intToVUC(2))
+	err = sMap.AddItem(item2)
+	if err != nil {
+		t.Errorf("Failed to update item: %v", err)
+	}
+
+	// Hash should be different
+	hashAfter := sMap.GetHash()
+	if bytes.Equal(hashBefore[:], hashAfter[:]) {
+		t.Errorf("Hash should change after updating item")
+	}
+
+	// Should still have only one item
+	count := 0
+	sMap.VisitLeaves(func(item *SHAMapItem) {
+		count++
+	})
+	if count != 1 {
+		t.Errorf("Expected 1 item after update, got %d", count)
+	}
+
+	// The item should have the new data
+	fetchedItem, found := sMap.FetchItem(key)
+	if !found {
+		t.Errorf("Updated item not found")
+	}
+	if !bytes.Equal(fetchedItem.Data(), intToVUC(2)) {
+		t.Errorf("Item data not updated correctly")
+	}
+}
+
+// TestCollisionHandling tests handling of hash collisions at different depths
+func TestCollisionHandling(t *testing.T) {
+	// Create keys that will collide at the first nibble level
+	// These keys are crafted to have the same first character when converted to hex
+	var key1, key2 [32]byte
+	copy(key1[:], []byte("a92891fe4ef6cee585fdc6fda0e09eb4d386363158ec3321b8123e5a772c6ca7"))
+	copy(key2[:], []byte("a82891fe4ef6cee585fdc6fda0e09eb4d386363158ec3321b8123e5a772c6ca7"))
+
+	// Create a SHAMap
+	sMap := NewSHAMap(TxMap)
+
+	// Add first item
+	item1 := makeItem(key1, intToVUC(1))
+	err := sMap.AddItem(item1)
+	if err != nil {
+		t.Errorf("Failed to add first item: %v", err)
+	}
+
+	// Add second item (should cause splitting)
+	item2 := makeItem(key2, intToVUC(2))
+	err = sMap.AddItem(item2)
+	if err != nil {
+		t.Errorf("Failed to add second item: %v", err)
+	}
+
+	// Should have 2 items
+	count := 0
+	sMap.VisitLeaves(func(item *SHAMapItem) {
+		count++
+	})
+	if count != 2 {
+		t.Errorf("Expected 2 items after collision handling, got %d", count)
+	}
+
+	// Both items should be retrievable
+	fetchedItem1, found1 := sMap.FetchItem(key1)
+	fetchedItem2, found2 := sMap.FetchItem(key2)
+
+	if !found1 {
+		t.Errorf("First item not found after collision handling")
+	}
+	if !found2 {
+		t.Errorf("Second item not found after collision handling")
+	}
+
+	if found1 && !bytes.Equal(fetchedItem1.Data(), intToVUC(1)) {
+		t.Errorf("First item data corrupted")
+	}
+	if found2 && !bytes.Equal(fetchedItem2.Data(), intToVUC(2)) {
+		t.Errorf("Second item data corrupted")
 	}
 }
 

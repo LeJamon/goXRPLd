@@ -3,7 +3,6 @@ package shamap
 import (
 	"bytes"
 	"errors"
-	"fmt"
 )
 
 // Common errors
@@ -127,17 +126,12 @@ func (sm *SHAMap) walkTowardsKey(key [32]byte, stack *NodeStack) TreeNode {
 
 		inner := node.(*InnerNode)
 		branch := SelectBranch(nodeID, key)
-
-		fmt.Printf("walkTowardsKey: nodeID: %v, branch: %v,key %d\n", nodeID, branch, key)
-
 		if inner.IsEmptyBranch(int(branch)) {
-			fmt.Println("walkTowardsKey: empty branch", branch)
 			return nil
 		}
 
 		childNode := inner.GetChild(int(branch))
 		if childNode == nil {
-			fmt.Println("walkTowardsKey: nil child at branch", branch)
 			return nil
 		}
 
@@ -223,8 +217,7 @@ func makeTypedLeaf(nodeType SHAMapNodeType, item *SHAMapItem) TreeNode {
 	}
 }
 
-// dirtyUp updates the hashes of nodes after a modification
-func (sm *SHAMap) dirtyUp(stack *NodeStack, target [32]byte, child TreeNode) {
+func (sm *SHAMap) dirtyUp(stack *NodeStack, target [32]byte, child TreeNode) TreeNode {
 	if sm.state == Synching || sm.state == Immutable {
 		panic("SHAMap: dirtyUp called in invalid state")
 	}
@@ -232,6 +225,10 @@ func (sm *SHAMap) dirtyUp(stack *NodeStack, target [32]byte, child TreeNode) {
 		panic("SHAMap: dirtyUp called with nil child")
 	}
 
+	// Walk the tree up through the inner nodes to the root
+	// Update hashes and links
+	// Stack is a path of inner nodes up to, but not including, child
+	// child can be an inner node or a leaf
 	for !stack.Empty() {
 		node, nodeID, ok := stack.Pop()
 		if !ok {
@@ -248,168 +245,63 @@ func (sm *SHAMap) dirtyUp(stack *NodeStack, target [32]byte, child TreeNode) {
 			panic("SHAMap: dirtyUp - invalid branch")
 		}
 
+		// Directly modify the node and update its hash
 		inner.SetChild(int(branch), child)
 		inner.UpdateHash()
 
 		child = inner
 	}
-	// Update root pointer after propagation
-	if newRoot, ok := child.(*InnerNode); ok {
-		sm.root = newRoot
-	} else {
-		panic("SHAMap: dirtyUp - final propagated node is not an InnerNode")
-	}
+
+	return child
 }
 
-// AddItem inserts or updates an item in the SHAMap
-func (sm *SHAMap) AddItem(nodeType SHAMapNodeType, item *SHAMapItem) error {
-	if sm.state == Immutable {
-		return ErrImmutable
+// walkTowardsKeyForDirty is similar to walkTowardsKey but only pushes inner nodes to the stack
+// This is specifically for use with dirtyUp which expects only inner nodes on the stack
+func (sm *SHAMap) walkTowardsKeyForDirty(key [32]byte, stack *NodeStack) TreeNode {
+	// Ensure stack is empty if provided
+	if stack != nil && !stack.Empty() {
+		stack.Clear()
 	}
 
-	if item == nil {
-		return ErrNilItem
-	}
+	var node TreeNode = sm.root
+	nodeID := NewNodeID() // Start at root
 
-	// Validate node type
-	switch nodeType {
-	case tnACCOUNT_STATE, tnTRANSACTION_NM, tnTRANSACTION_MD:
-		// Valid types
-	default:
-		return ErrInvalidType
-	}
-
-	// Add the item to the tree
-	tag := item.Key()
-
-	stack := NewNodeStack()
-	node := sm.walkTowardsKey(tag, stack)
-
-	if stack.Empty() {
-		// Tree is empty, create root
-		leaf := makeTypedLeaf(nodeType, item)
-		sm.root = NewInnerNode()
-		sm.root.SetChild(0, leaf)
-		return nil
-	}
-
-	if node == nil {
-		// We didn't find a leaf node, so we're at an inner node where
-		// the branch for this key is empty
-		innerNode, nodeID, _ := stack.Top()
-		inner := innerNode.(*InnerNode)
-		branch := SelectBranch(nodeID, tag)
-
-		// Just add the leaf to this inner node
-		inner.SetChild(int(branch), makeTypedLeaf(nodeType, item))
-		inner.UpdateHash()
-
-		// Update the hashes up the tree
-		stack.Pop() // Remove the inner node we just modified
-		sm.dirtyUp(stack, tag, inner)
-
-		return nil
-	}
-
-	// We found a node at the target position
-	if node.IsLeaf() {
-		// Get the leaf's item
-		var existingItem *SHAMapItem
-		var existingType SHAMapNodeType
-
-		switch leafNode := node.(type) {
-		case *AccountStateLeafNode:
-			existingItem = leafNode.GetItem()
-			existingType = leafNode.Type()
-		case *TxLeafNode:
-			existingItem = leafNode.GetItem()
-			existingType = leafNode.Type()
-		case *TxPlusMetaLeafNode:
-			existingItem = leafNode.GetItem()
-			existingType = leafNode.Type()
+	for node.IsInner() {
+		if stack != nil {
+			stack.Push(node, nodeID)
 		}
 
-		// Check if we're updating an existing item with the same key
-		key := existingItem.Key()
-		if bytes.Equal(key[:], tag[:]) {
-			// Item already exists with this key, update it
-			if existingType != nodeType {
-				return errors.New("cannot change node type during update")
-			}
-
-			// Update the item
-			updated := false
-			switch leafNode := node.(type) {
-			case *AccountStateLeafNode:
-				updated = leafNode.SetItem(item)
-			case *TxLeafNode:
-				updated = leafNode.SetItem(item)
-			case *TxPlusMetaLeafNode:
-				updated = leafNode.SetItem(item)
-			}
-
-			if updated {
-				// Pop the leaf from the stack
-				stack.Pop()
-
-				// Update hashes up the tree
-				sm.dirtyUp(stack, tag, node)
-			}
-
+		inner := node.(*InnerNode)
+		branch := SelectBranch(nodeID, key)
+		if inner.IsEmptyBranch(int(branch)) {
 			return nil
 		}
 
-		// Keys are different, need to create a new inner node
-		// Remove the leaf from the stack
-		stack.Pop()
-
-		// Get the parent inner node
-		parentNode, nodeID, ok := stack.Pop()
-		if !ok {
-			return errors.New("missing parent node")
+		childNode := inner.GetChild(int(branch))
+		if childNode == nil {
+			return nil
 		}
 
-		parent := parentNode.(*InnerNode)
-		parentBranch := SelectBranch(nodeID, tag)
-
-		// Create a new inner node
-		newInner := NewInnerNode()
-
-		// Find the branching point
-		childID := nodeID.GetChildNodeID(uint8(parentBranch))
-
-		for {
-			b1 := SelectBranch(childID, tag)
-			b2 := SelectBranch(childID, existingItem.Key())
-
-			if b1 != b2 {
-				// Found the branching point
-				newInner.SetChild(int(b1), makeTypedLeaf(nodeType, item))
-				newInner.SetChild(int(b2), node)
-				break
-			}
-
-			// Both items go down the same branch, need another level
-			nextInner := NewInnerNode()
-
-			newInner.SetChild(int(b1), nextInner)
-
-			childID = childID.GetChildNodeID(uint8(b1))
-			newInner = nextInner
-		}
-
-		// Update the parent to point to our new inner node
-		parent.SetChild(int(parentBranch), newInner)
-		parent.UpdateHash()
-
-		// Update hashes up the tree
-		sm.dirtyUp(stack, tag, parent)
-	} else {
-		// This shouldn't happen - walkTowardsKey should either return nil or a leaf node
-		return errors.New("unexpected non-leaf node found")
+		node = childNode
+		nodeID = nodeID.GetChildNodeID(uint8(branch))
 	}
 
-	return nil
+	// Don't push the final leaf node - dirtyUp expects only inner nodes
+	return node
+}
+
+// assignRoot safely assigns a new root, ensuring it's always an InnerNode
+func (sm *SHAMap) assignRoot(newRoot TreeNode, key [32]byte) {
+	if innerRoot, ok := newRoot.(*InnerNode); ok {
+		sm.root = innerRoot
+	} else {
+		// If newRoot is a leaf, wrap it in an inner node
+		// This can happen when the tree has only one item
+		sm.root = NewInnerNode()
+		branch := SelectBranch(NewNodeID(), key)
+		sm.root.SetChild(int(branch), newRoot)
+		sm.root.UpdateHash()
+	}
 }
 
 // collectItemsBelow recursively collects all items below the given node
@@ -599,158 +491,283 @@ func GetItem(node TreeNode) *SHAMapItem {
 	}
 }
 
-// selectBranch determines which branch a key follows at a given node ID
-/*func selectBranch(nodeID NodeID, key [32]byte) int {
-	depth := nodeID.Depth
+func (sm *SHAMap) AddItem(item *SHAMapItem) error {
+	if sm.state != Modifying {
+		return ErrImmutable
+	}
+	if item == nil {
+		return ErrNilItem
+	}
 
-	// Calculate byte index and a bit of position
-	byteIdx := depth / 2
-	bitPos := (depth % 2) * 4
+	key := item.Key()
+	stack := NewNodeStack()
 
-	// If we're beyond the key length, return 0
-	if byteIdx >= 32 {
+	// Walk towards the key, building stack of inner nodes
+	node := sm.walkTowardsKeyForDirty(key, stack)
+
+	if node == nil {
+		// Empty slot - create new leaf
+		nodeType := sm.getLeafNodeType()
+		newLeaf := makeTypedLeaf(nodeType, item)
+		newRoot := sm.dirtyUp(stack, key, newLeaf)
+		sm.assignRoot(newRoot, key)
+		return nil
+	}
+
+	if !node.IsLeaf() {
+		return ErrInvalidType
+	}
+
+	// Get the existing item from the leaf
+	existingItem := GetItem(node)
+	if existingItem == nil {
+		return ErrInvalidType
+	}
+
+	existingKey := existingItem.Key()
+
+	// Case 1: Same key - update existing item
+	if bytes.Equal(key[:], existingKey[:]) {
+		nodeType := sm.getLeafNodeType()
+		updatedLeaf := makeTypedLeaf(nodeType, item)
+		newRoot := sm.dirtyUp(stack, key, updatedLeaf)
+		sm.assignRoot(newRoot, key)
+		return nil
+	}
+
+	// Case 2: Different key - need to split
+	// Find the depth at which these keys differ
+	splitDepth := sm.findSplitDepth(key, existingKey)
+
+	// Create the split structure
+	newRoot, err := sm.createSplitStructure(key, existingKey, item, node, splitDepth, stack)
+	if err != nil {
+		return err
+	}
+
+	sm.assignRoot(newRoot, key)
+	return nil
+}
+
+// findSplitDepth finds the depth at which two keys first differ
+func (sm *SHAMap) findSplitDepth(key1, key2 [32]byte) int {
+	for depth := 0; depth < 64; depth++ {
+		branch1 := sm.getBranchAtDepth(key1, depth)
+		branch2 := sm.getBranchAtDepth(key2, depth)
+		if branch1 != branch2 {
+			return depth
+		}
+	}
+	// If we get here, the keys are identical (shouldn't happen)
+	return 63
+}
+
+// getBranchAtDepth gets the branch (0-15) for a key at a specific depth
+func (sm *SHAMap) getBranchAtDepth(key [32]byte, depth int) int {
+	byteIndex := depth / 2
+	if byteIndex >= 32 {
 		return 0
 	}
 
-	// Get the byte from the key
-	keyByte := key[byteIdx]
-
-	// Extract the correct nibble
-	if bitPos == 0 {
-		// Use high nibble (bits 4-7)
-		return int(keyByte>>4) & 0x0F
+	b := key[byteIndex]
+	if depth%2 == 0 {
+		return int(b >> 4) // Use upper 4 bits
 	} else {
-		// Use low nibble (bits 0-3)
-		return int(keyByte & 0x0F)
+		return int(b & 0xF) // Use lower 4 bits
 	}
-}*/
+}
 
-func (sm *SHAMap) DelItem(id [32]byte) (bool, error) {
-	if sm.state == Immutable {
-		return false, ErrImmutable
+// createSplitStructure creates the inner node structure needed to separate two keys
+func (sm *SHAMap) createSplitStructure(newKey, existingKey [32]byte, newItem *SHAMapItem, existingNode TreeNode, splitDepth int, stack *NodeStack) (TreeNode, error) {
+	if splitDepth >= 64 {
+		return nil, errors.New("maximum tree depth reached")
+	}
+
+	// Create new leaf for the new item
+	nodeType := sm.getLeafNodeType()
+	newLeaf := makeTypedLeaf(nodeType, newItem)
+
+	// Create inner node at split depth
+	splitInner := NewInnerNode()
+
+	// Get branches at split depth
+	newBranch := sm.getBranchAtDepth(newKey, splitDepth)
+	existingBranch := sm.getBranchAtDepth(existingKey, splitDepth)
+
+	// Add both nodes to the split inner node
+	splitInner.SetChild(newBranch, newLeaf)
+	splitInner.SetChild(existingBranch, existingNode)
+	splitInner.UpdateHash()
+
+	// If we need to create intermediate inner nodes, do so
+	currentNode := TreeNode(splitInner)
+
+	// Work backwards from split depth to current stack depth
+	currentDepth := splitDepth - 1
+	for currentDepth >= len(stack.entries) && currentDepth >= 0 {
+		// Create intermediate inner node
+		intermediateInner := NewInnerNode()
+		branch := sm.getBranchAtDepth(newKey, currentDepth)
+		intermediateInner.SetChild(branch, currentNode)
+		intermediateInner.UpdateHash()
+		currentNode = intermediateInner
+		currentDepth--
+	}
+
+	// Now use dirtyUp to propagate changes up the existing stack
+	finalRoot := sm.dirtyUp(stack, newKey, currentNode)
+	return finalRoot, nil
+}
+
+// DeleteItem removes an item from the SHAMap
+func (sm *SHAMap) DeleteItem(key [32]byte) error {
+	if sm.state != Modifying {
+		return ErrImmutable
 	}
 
 	stack := NewNodeStack()
-	leaf := sm.walkTowardsKey(id, stack)
+	node := sm.walkTowardsKeyForDirty(key, stack)
 
+	if node == nil || !node.IsLeaf() {
+		return ErrItemNotFound
+	}
+
+	// Verify this is the correct item
+	existingItem := GetItem(node)
+	if existingItem == nil {
+		return ErrItemNotFound
+	}
+
+	existingKey := existingItem.Key()
+	if !bytes.Equal(key[:], existingKey[:]) {
+		return ErrItemNotFound
+	}
+
+	// If stack is empty, we're deleting the only item in the tree
 	if stack.Empty() {
-		// No path to the item found
-		return false, nil
-	}
-
-	var existingItem *SHAMapItem
-	var leafType SHAMapNodeType
-
-	switch ln := leaf.(type) {
-	case *AccountStateLeafNode:
-		existingItem = ln.GetItem()
-		leafType = ln.Type()
-	case *TxLeafNode:
-		existingItem = ln.GetItem()
-		leafType = ln.Type()
-	case *TxPlusMetaLeafNode:
-		existingItem = ln.GetItem()
-		leafType = ln.Type()
-	default:
-		return false, nil
-	}
-
-	key := existingItem.Key()
-	if !bytes.Equal(key[:], id[:]) {
-		// Leaf found, but key doesn't match
-		return false, nil
-	}
-
-	stack.Pop() // Remove leaf from stack
-
-	var prev TreeNode = nil
-
-	for !stack.Empty() {
-		node, nodeID, _ := stack.Pop()
-		inner, ok := node.(*InnerNode)
-		if !ok {
-			panic("expected inner node")
-		}
-
-		branch := SelectBranch(nodeID, id)
-		inner.SetChild(int(branch), prev)
-
-		if nodeID.IsRoot() {
-			sm.root = inner
-			inner.UpdateHash()
-			return true, nil
-		}
-
-		branchCount := inner.GetBranchCount()
-
-		if branchCount == 0 {
-			prev = nil
-		} else if branchCount == 1 {
-			println("branch count:", branchCount)
-			item := sm.findSingleItemBelow(inner)
-
-			if item != nil {
-				prev = makeTypedLeaf(leafType, item)
-				println("leaf type:", leafType)
-			} else {
-				prev = inner
-				inner.UpdateHash()
-				println("leaf type:", leafType)
-			}
-		} else {
-			prev = inner
-			inner.UpdateHash()
-		}
-	}
-
-	if prev != nil {
-		if prevInner, ok := prev.(*InnerNode); ok {
-			sm.root = prevInner
-		} else {
-			sm.root = NewInnerNode()
-		}
-	} else {
 		sm.root = NewInnerNode()
+		return nil
 	}
 
-	return true, nil
+	// Remove the leaf by setting its parent's branch to nil
+	parent, parentID, ok := stack.Pop()
+	if !ok {
+		return errors.New("unexpected empty stack")
+	}
+
+	parentInner, ok := parent.(*InnerNode)
+	if !ok {
+		return ErrInvalidType
+	}
+
+	branch := SelectBranch(parentID, key)
+	parentInner.SetChild(int(branch), nil)
+	parentInner.UpdateHash()
+
+	// Check if we need to consolidate the tree
+	consolidatedNode := sm.consolidateUp(parentInner, stack, key)
+	if consolidatedNode != nil {
+		sm.assignRoot(consolidatedNode, key)
+	}
+
+	return nil
 }
 
-func (sm *SHAMap) findSingleItemBelow(n *InnerNode) *SHAMapItem {
-	count := 0
-	var result *SHAMapItem
+// consolidateUp consolidates inner nodes that have only one child
+func (sm *SHAMap) consolidateUp(startNode *InnerNode, stack *NodeStack, key [32]byte) TreeNode {
+	currentNode := TreeNode(startNode)
 
-	for i := 0; i < 16; i++ {
-		child := n.GetChild(i)
-		if child == nil {
-			continue
+	// Check if current node needs consolidation
+	for {
+		if !currentNode.IsInner() {
+			break
 		}
 
-		switch c := child.(type) {
-		case *AccountStateLeafNode:
-			count++
-			result = c.GetItem()
-		case *TxLeafNode:
-			count++
-			result = c.GetItem()
-		case *TxPlusMetaLeafNode:
-			count++
-			result = c.GetItem()
-		case *InnerNode:
-			item := sm.findSingleItemBelow(c)
-			if item != nil {
-				count++
-				result = item
+		inner := currentNode.(*InnerNode)
+		childCount := 0
+		var onlyChild TreeNode
+
+		// Count non-empty children
+		for i := 0; i < 16; i++ {
+			if !inner.IsEmptyBranch(i) {
+				childCount++
+				onlyChild = inner.GetChild(i)
+				if childCount > 1 {
+					break // No need to count further
+				}
 			}
 		}
 
-		if count > 1 {
-			return nil // more than one leaf found
+		if childCount == 0 {
+			// No children - this inner node should be removed
+			if stack.Empty() {
+				// This was the root, create new empty root
+				return NewInnerNode()
+			}
+
+			// Get parent and remove this branch
+			parent, parentID, ok := stack.Pop()
+			if !ok {
+				break
+			}
+
+			parentInner, ok := parent.(*InnerNode)
+			if !ok {
+				break
+			}
+
+			branch := SelectBranch(parentID, key)
+			parentInner.SetChild(int(branch), nil)
+			parentInner.UpdateHash()
+			currentNode = parentInner
+			continue
+
+		} else if childCount == 1 {
+			// Only one child - replace this inner node with its child
+			if stack.Empty() {
+				// This is the root - the child becomes the new root
+				return onlyChild
+			}
+
+			// Get parent and replace this branch with the only child
+			parent, parentID, ok := stack.Pop()
+			if !ok {
+				break
+			}
+
+			parentInner, ok := parent.(*InnerNode)
+			if !ok {
+				break
+			}
+
+			branch := SelectBranch(parentID, key)
+			parentInner.SetChild(int(branch), onlyChild)
+			parentInner.UpdateHash()
+			currentNode = parentInner
+			continue
+
+		} else {
+			// Multiple children - no consolidation needed
+			break
 		}
 	}
 
-	if count == 1 {
-		return result
+	// Propagate remaining changes up if there's more stack
+	if !stack.Empty() {
+		return sm.dirtyUp(stack, key, currentNode)
 	}
-	return nil
+
+	return currentNode
+}
+
+// getLeafNodeType determines the appropriate leaf node type based on map type
+func (sm *SHAMap) getLeafNodeType() SHAMapNodeType {
+	switch sm.mapType {
+	case TxMap:
+		return tnTRANSACTION_NM // You might want tnTRANSACTION_MD for transactions with metadata
+	case StateMap:
+		return tnACCOUNT_STATE
+	default:
+		return tnACCOUNT_STATE
+	}
 }
