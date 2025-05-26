@@ -664,11 +664,10 @@ func (sm *SHAMap) DeleteItem(key [32]byte) error {
 	parentInner.SetChild(int(branch), nil)
 	parentInner.UpdateHash()
 
-	// Check if we need to consolidate the tree
-	consolidatedNode := sm.consolidateUp(parentInner, stack, key)
-	if consolidatedNode != nil {
-		sm.assignRoot(consolidatedNode, key)
-	}
+	// Simply propagate changes up without aggressive consolidation
+	// This preserves tree structure and prevents path-finding issues
+	newRoot := sm.dirtyUp(stack, key, parentInner)
+	sm.assignRoot(newRoot, key)
 
 	return nil
 }
@@ -724,9 +723,11 @@ func (sm *SHAMap) consolidateUp(startNode *InnerNode, stack *NodeStack, key [32]
 
 		} else if childCount == 1 {
 			// Only one child - replace this inner node with its child
+			// BUT: Never consolidate the root! Root should remain even with one child
 			if stack.Empty() {
-				// This is the root - the child becomes the new root
-				return onlyChild
+				// This is the root - DO NOT consolidate it!
+				// Root should remain as inner node even with one child
+				break
 			}
 
 			// Get parent and replace this branch with the only child
