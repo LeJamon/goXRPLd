@@ -664,19 +664,21 @@ func (sm *SHAMap) DeleteItem(key [32]byte) error {
 	parentInner.SetChild(int(branch), nil)
 	parentInner.UpdateHash()
 
-	// Simply propagate changes up without aggressive consolidation
-	// This preserves tree structure and prevents path-finding issues
-	newRoot := sm.dirtyUp(stack, key, parentInner)
-	sm.assignRoot(newRoot, key)
+	// Conservative consolidation: only remove completely empty nodes
+	consolidatedNode := sm.conservativeConsolidateUp(parentInner, stack, key)
+	if consolidatedNode != nil {
+		sm.assignRoot(consolidatedNode, key)
+	}
 
 	return nil
 }
 
-// consolidateUp consolidates inner nodes that have only one child
-func (sm *SHAMap) consolidateUp(startNode *InnerNode, stack *NodeStack, key [32]byte) TreeNode {
+// conservativeConsolidateUp only removes nodes that are completely empty
+// It does NOT consolidate nodes that have only one child
+func (sm *SHAMap) conservativeConsolidateUp(startNode *InnerNode, stack *NodeStack, key [32]byte) TreeNode {
 	currentNode := TreeNode(startNode)
 
-	// Check if current node needs consolidation
+	// Only consolidate completely empty nodes, never single-child nodes
 	for {
 		if !currentNode.IsInner() {
 			break
@@ -684,14 +686,12 @@ func (sm *SHAMap) consolidateUp(startNode *InnerNode, stack *NodeStack, key [32]
 
 		inner := currentNode.(*InnerNode)
 		childCount := 0
-		var onlyChild TreeNode
 
 		// Count non-empty children
 		for i := 0; i < 16; i++ {
 			if !inner.IsEmptyBranch(i) {
 				childCount++
-				onlyChild = inner.GetChild(i)
-				if childCount > 1 {
+				if childCount > 0 {
 					break // No need to count further
 				}
 			}
@@ -721,34 +721,9 @@ func (sm *SHAMap) consolidateUp(startNode *InnerNode, stack *NodeStack, key [32]
 			currentNode = parentInner
 			continue
 
-		} else if childCount == 1 {
-			// Only one child - replace this inner node with its child
-			// BUT: Never consolidate the root! Root should remain even with one child
-			if stack.Empty() {
-				// This is the root - DO NOT consolidate it!
-				// Root should remain as inner node even with one child
-				break
-			}
-
-			// Get parent and replace this branch with the only child
-			parent, parentID, ok := stack.Pop()
-			if !ok {
-				break
-			}
-
-			parentInner, ok := parent.(*InnerNode)
-			if !ok {
-				break
-			}
-
-			branch := SelectBranch(parentID, key)
-			parentInner.SetChild(int(branch), onlyChild)
-			parentInner.UpdateHash()
-			currentNode = parentInner
-			continue
-
 		} else {
-			// Multiple children - no consolidation needed
+			// Has children - stop consolidation here
+			// DO NOT consolidate nodes with only one child
 			break
 		}
 	}

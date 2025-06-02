@@ -29,6 +29,10 @@ func hexToHash(s string) [32]byte {
 	if err != nil {
 		panic("Invalid hex string: " + s)
 	}
+	if len(decoded) != 32 {
+		panic("Hex string is not 32 bytes: " + s)
+	}
+	// Store in big-endian format like rippled uint256 (no reversal needed)
 	copy(hash[:], decoded)
 	return hash
 }
@@ -161,16 +165,16 @@ func TestBuildAndTear(t *testing.T) {
 	}
 
 	// Expected hashes after each addition - EXACT same as rippled C++ test
-	/*expectedHashes := [][32]byte{
+	expectedHashes := [][32]byte{
 		hexToHash("B7387CFEA0465759ADC718E8C42B52D2309D179B326E239EB5075C64B6281F7F"),
-		hexToHash("FBC195A9592A54AB44010274163CB6BA95F497EC5BA0A8831844467FB2ECE266"),
+		hexToHash("FBC195A9592A54AB44010274163CB6BA95F497EC5BA0A8831845467FB2ECE266"),
 		hexToHash("4E7D2684B65DFD48937FFB775E20175C43AF0C94066F7D5679F51AE756795B75"),
 		hexToHash("7A2F312EB203695FFD164E038E281839EEF06A1B99BFC263F3CECC6C74F93E07"),
 		hexToHash("395A6691A372387A703FB0F2C6D2C405DAF307D0817F8F0E207596462B0E3A3E"),
 		hexToHash("D044C0A696DE3169CC70AE216A1564D69DE96582865796142CE7D98A84D9DDE4"),
 		hexToHash("76DCC77C4027309B5A91AD164083264D70B77B5E43E08AEDA5EBF94361143615"),
 		hexToHash("DF4220E93ADC6F5569063A01B4DC79F8DB9553B6A3222ADE23DEA02BBE7230E5"),
-	}*/
+	}
 
 	// Create a SHAMap
 	sMap := NewSHAMap(TxMap)
@@ -195,11 +199,11 @@ func TestBuildAndTear(t *testing.T) {
 		fmt.Printf("Hash: %x\n", sMap.GetHash())
 
 		// Verify hash matches expected
-		/*actualHash := sMap.GetHash()
-		  if !bytes.Equal(actualHash[:], expectedHashes[k][:]) {
-		     t.Errorf("Hash mismatch after adding item %d: expected %x, got %x",
-		        k, expectedHashes[k], actualHash)
-		  }*/
+		actualHash := sMap.GetHash()
+		if !bytes.Equal(actualHash[:], expectedHashes[k][:]) {
+			t.Errorf("Hash mismatch after adding item %d: expected %x, got %x",
+				k, expectedHashes[k], actualHash)
+		}
 	}
 
 	fmt.Println("\n" + strings.Repeat("=", 60))
@@ -232,14 +236,71 @@ func TestBuildAndTear(t *testing.T) {
 	}
 
 	// Final check - map should be empty (zero hash)
-	/*finalHash := sMap.GetHash()
+	finalHash := sMap.GetHash()
 	if !bytes.Equal(finalHash[:], zeroHash[:]) {
 		t.Errorf("Final map should have zero hash, got %x", finalHash)
-	}*/
+	}
+}
+
+func TestIteration(t *testing.T) {
+	keys := [][32]byte{
+		hexToHash("f22891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"), // keys[0]
+		hexToHash("b99891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"), // keys[1]
+		hexToHash("b92891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"), // keys[2]
+		hexToHash("b92881fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"), // keys[3]
+		hexToHash("b92791fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"), // keys[4]
+		hexToHash("b92691fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"), // keys[5]
+		hexToHash("b91891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"), // keys[6]
+		hexToHash("292891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"), // keys[7]
+	}
+
+	sMap := NewSHAMap(TxMap)
+
+	// Add all keys in order (keys[0] through keys[7])
+	for i, key := range keys {
+		err := sMap.AddItem(makeItem(key, intToVUC(0)))
+		if err != nil {
+			t.Errorf("Failed to add item %d: %v", i, err)
+		}
+	}
+
+	// Collect iteration order
+	var visitedKeys [][32]byte
+	sMap.VisitLeaves(func(item *SHAMapItem) {
+		visitedKeys = append(visitedKeys, item.Key())
+	})
+
+	// STRICT ORDER CHECK - C++ test expects EXACT reverse order
+	// C++ code: int h = 7; for (auto const& k : map) { BEAST_EXPECT(k.key() == keys[h]); --h; }
+	// This means: keys[7], keys[6], keys[5], keys[4], keys[3], keys[2], keys[1], keys[0]
+
+	if len(visitedKeys) != len(keys) {
+		t.Errorf("Expected exactly %d keys, got %d", len(keys), len(visitedKeys))
+		return
+	}
+
+	// Check each position matches the expected reverse order
+	for pos := 0; pos < len(keys); pos++ {
+		expectedIndex := len(keys) - 1 - pos // 7, 6, 5, 4, 3, 2, 1, 0
+		expectedKey := keys[expectedIndex]
+
+		if !bytes.Equal(visitedKeys[pos][:], expectedKey[:]) {
+			t.Errorf("Iteration position %d: expected keys[%d] (%x), got (%x)",
+				pos, expectedIndex, expectedKey[:4], visitedKeys[pos][:4])
+		}
+	}
+
+	// Additional verification: print the actual iteration order for debugging
+	t.Logf("Iteration order verification:")
+	for pos, key := range visitedKeys {
+		expectedIndex := len(keys) - 1 - pos
+		t.Logf("  Position %d: got %x, expected keys[%d] = %x",
+			pos, key[:4], expectedIndex, keys[expectedIndex][:4])
+	}
 }
 
 // TestIteration matches the exact C++ "iterate" test
-func TestIteration(t *testing.T) {
+/*func TestIteration(t *testing.T) {
 	// EXACT same keys as rippled C++ test
 	keys := [][32]byte{
 		hexToHash("f22891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"),
@@ -291,7 +352,7 @@ func TestIteration(t *testing.T) {
 				i, expectedKey, visitedKeys[i])
 		}
 	}
-}
+}*/
 
 // TestSnapshot tests creating a snapshot of a SHAMap
 func TestSnapshot(t *testing.T) {
@@ -386,10 +447,10 @@ func dumpTree(node TreeNode, prefix string, isTail bool) {
 	switch n := node.(type) {
 	case *InnerNode:
 		fmt.Printf("%s%sInnerNode %p, hash: %x\n", prefix, branchSymbol(isTail), n, n.Hash())
-		children := []struct {
+		var children []struct {
 			index int
 			child TreeNode
-		}{}
+		}
 		for i := 0; i < 16; i++ {
 			if !n.IsEmptyBranch(i) {
 				child := n.GetChild(i)

@@ -89,6 +89,7 @@ func (n *TxLeafNode) SerializeWithPrefix() []byte {
 func NewTxLeafNode(item *SHAMapItem) *TxLeafNode {
 	n := &TxLeafNode{item: item}
 	n.UpdateHash()
+	println("hash", hex.EncodeToString(n.hash[:]))
 	return n
 }
 
@@ -105,7 +106,7 @@ func (n *TxLeafNode) SetItem(item *SHAMapItem) bool {
 }
 
 func (n *TxLeafNode) UpdateHash() {
-	n.setHash(protocol.HashPrefixLeafNode[:], n.item.Data())
+	n.setHash(protocol.HashPrefixTransactionID[:], n.item.Data())
 }
 
 func (n *TxLeafNode) Type() SHAMapNodeType {
@@ -167,7 +168,7 @@ func (n *TxPlusMetaLeafNode) SetItem(item *SHAMapItem) bool {
 
 func (n *TxPlusMetaLeafNode) UpdateHash() {
 	key := n.item.Key()
-	n.setHash(protocol.HashPrefixLeafNode[:], n.item.Data(), key[:])
+	n.setHash(protocol.HashPrefixTxNode[:], n.item.Data(), key[:])
 }
 
 func (n *TxPlusMetaLeafNode) Type() SHAMapNodeType {

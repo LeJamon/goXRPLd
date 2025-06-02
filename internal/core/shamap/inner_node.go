@@ -1,10 +1,11 @@
 package shamap
 
 import (
-	"bytes"
 	"encoding/hex"
 	"fmt"
 	"math/bits"
+
+	"github.com/LeJamon/goXRPLd/internal/protocol"
 )
 
 const branchFactor = 16
@@ -74,14 +75,38 @@ func (n *InnerNode) GetChildHash(index int) [32]byte {
 }
 
 // UpdateHash recalculates the node's hash from its children.
+// CRITICAL: Must include ALL 16 child hashes in order, using zero hash for empty branches
 func (n *InnerNode) UpdateHash() {
-	var buffer bytes.Buffer
+	if n.isBranch == 0 {
+		// Empty node - hash is zero
+		n.hash = [32]byte{}
+		return
+	}
+
+	var data [][]byte
+
+	// Add inner node prefix
+	data = append(data, protocol.HashPrefixInnerNode[:])
+
+	// CRITICAL: Include ALL 16 child hashes in order
+	// Empty branches contribute zero hash (32 zero bytes)
 	for i := 0; i < branchFactor; i++ {
 		if n.isBranch&(1<<i) != 0 {
-			buffer.Write(n.hashes[i][:])
+			child := n.GetChild(i)
+			if child != nil {
+				childHash := child.Hash()
+				data = append(data, childHash[:])
+			} else {
+				// This shouldn't happen if isBranch is correct, but handle it
+				data = append(data, make([]byte, 32))
+			}
+		} else {
+			// Empty branch: contribute 32 zero bytes
+			data = append(data, make([]byte, 32))
 		}
 	}
-	n.setHash(buffer.Bytes())
+
+	n.setHash(data...)
 }
 
 // SerializeForWire (placeholder): serialize the node for wire transmission.
