@@ -2,208 +2,464 @@ package shamap
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"strings"
+	"sync"
+
 	"github.com/LeJamon/goXRPLd/internal/protocol"
 )
+
+// LeafNode interface for all leaf node types
+type LeafNode interface {
+	Node
+	Item() *Item
+	SetItem(item *Item) (bool, error)
+}
 
 // -----------------------------------------------------------------------------
 // AccountStateLeafNode
 
+// AccountStateLeafNode represents a leaf node containing account state data
 type AccountStateLeafNode struct {
 	BaseNode
-	item *SHAMapItem
+	mu   sync.RWMutex
+	item *Item
 }
 
-func (n *AccountStateLeafNode) SerializeForWire() []byte {
-	//TODO implement me
-	panic("implement me")
-}
+// NewAccountStateLeafNode creates a new account state leaf node
+func NewAccountStateLeafNode(item *Item) (*AccountStateLeafNode, error) {
+	if item == nil {
+		return nil, ErrNilItem
+	}
 
-func (n *AccountStateLeafNode) SerializeWithPrefix() []byte {
-	//TODO implement me
-	panic("implement me")
-}
-
-func NewAccountStateLeafNode(item *SHAMapItem) *AccountStateLeafNode {
 	n := &AccountStateLeafNode{item: item}
-	n.UpdateHash()
-	return n
+	if err := n.UpdateHash(); err != nil {
+		return nil, fmt.Errorf("failed to update hash: %w", err)
+	}
+	return n, nil
 }
 
 func (n *AccountStateLeafNode) IsLeaf() bool  { return true }
 func (n *AccountStateLeafNode) IsInner() bool { return false }
 
-func (n *AccountStateLeafNode) GetItem() *SHAMapItem { return n.item }
+// Item returns the item stored in this leaf node
+func (n *AccountStateLeafNode) Item() *Item {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.item
+}
 
-func (n *AccountStateLeafNode) SetItem(item *SHAMapItem) bool {
+// SetItem updates the item and returns true if the hash changed
+func (n *AccountStateLeafNode) SetItem(item *Item) (bool, error) {
+	if item == nil {
+		return false, ErrNilItem
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
 	oldHash := n.hash
 	n.item = item
-	n.UpdateHash()
-	return n.hash != oldHash
+
+	if err := n.updateHashUnsafe(); err != nil {
+		return false, fmt.Errorf("failed to update hash: %w", err)
+	}
+
+	return n.hash != oldHash, nil
 }
 
-func (n *AccountStateLeafNode) UpdateHash() {
+// UpdateHash recalculates the node's hash
+func (n *AccountStateLeafNode) UpdateHash() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.updateHashUnsafe()
+}
+
+func (n *AccountStateLeafNode) updateHashUnsafe() error {
+	if n.item == nil {
+		return ErrNilItem
+	}
+
 	key := n.item.Key()
-	n.setHash(protocol.HashPrefixLeafNode[:], n.item.Data(), key[:])
+	err := n.setHash(protocol.HashPrefixLeafNode[:], n.item.Data(), key[:])
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
-func (n *AccountStateLeafNode) Type() SHAMapNodeType {
-	return tnACCOUNT_STATE
+func (n *AccountStateLeafNode) Type() NodeType {
+	return NodeTypeAccountState
+}
+
+func (n *AccountStateLeafNode) SerializeForWire() ([]byte, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	// TODO: Implement serialization logic
+	return nil, errors.New("SerializeForWire not implemented")
+}
+
+func (n *AccountStateLeafNode) SerializeWithPrefix() ([]byte, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	// TODO: Implement serialization logic
+	return nil, errors.New("SerializeWithPrefix not implemented")
 }
 
 func (n *AccountStateLeafNode) Invariants(isRoot bool) error {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
 	if n.item == nil {
 		return fmt.Errorf("account state leaf has nil item")
 	}
+
+	if n.IsZeroHash() {
+		return fmt.Errorf("account state leaf has zero hash")
+	}
+
 	return nil
 }
 
 func (n *AccountStateLeafNode) String(id NodeID) string {
-	key := n.item.Key()
-	return fmt.Sprintf("AccountStateLeafNode ID: %s\nHash: %s\nKey: %s\n",
-		id.String(), hex.EncodeToString(n.hash[:]), hex.EncodeToString(key[:]))
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("AccountStateLeafNode ID: %s\n", id.String()))
+	sb.WriteString(fmt.Sprintf("Hash: %s\n", hex.EncodeToString(n.hash[:])))
+
+	if n.item != nil {
+		key := n.item.Key()
+		sb.WriteString(fmt.Sprintf("Key: %s\n", hex.EncodeToString(key[:])))
+		sb.WriteString(fmt.Sprintf("Data Size: %d bytes\n", len(n.item.Data())))
+	}
+
+	return sb.String()
 }
 
-func (n *AccountStateLeafNode) Clone() TreeNode {
-	return NewAccountStateLeafNode(n.item.Clone())
+func (n *AccountStateLeafNode) Clone() (Node, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	if n.item == nil {
+		return nil, ErrNilItem
+	}
+
+	clonedItem, err := n.item.Clone()
+	if err != nil {
+		return nil, fmt.Errorf("failed to clone item: %w", err)
+	}
+
+	return NewAccountStateLeafNode(clonedItem)
 }
 
 // -----------------------------------------------------------------------------
-// TxLeafNode (transaction without metadata)
+// TransactionLeafNode (transaction without metadata)
 
-type TxLeafNode struct {
+// TransactionLeafNode represents a leaf node containing transaction data without metadata
+type TransactionLeafNode struct {
 	BaseNode
-	item *SHAMapItem
+	mu   sync.RWMutex
+	item *Item
 }
 
-func (n *TxLeafNode) SerializeForWire() []byte {
-	//TODO implement me
-	panic("implement me")
+// NewTransactionLeafNode creates a new transaction leaf node
+func NewTransactionLeafNode(item *Item) (*TransactionLeafNode, error) {
+	if item == nil {
+		return nil, ErrNilItem
+	}
+
+	n := &TransactionLeafNode{item: item}
+	if err := n.UpdateHash(); err != nil {
+		return nil, fmt.Errorf("failed to update hash: %w", err)
+	}
+	return n, nil
 }
 
-func (n *TxLeafNode) SerializeWithPrefix() []byte {
-	//TODO implement me
-	panic("implement me")
+func (n *TransactionLeafNode) IsLeaf() bool  { return true }
+func (n *TransactionLeafNode) IsInner() bool { return false }
+
+func (n *TransactionLeafNode) Item() *Item {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.item
 }
 
-func NewTxLeafNode(item *SHAMapItem) *TxLeafNode {
-	n := &TxLeafNode{item: item}
-	n.UpdateHash()
-	println("hash", hex.EncodeToString(n.hash[:]))
-	return n
-}
+func (n *TransactionLeafNode) SetItem(item *Item) (bool, error) {
+	if item == nil {
+		return false, ErrNilItem
+	}
 
-func (n *TxLeafNode) IsLeaf() bool  { return true }
-func (n *TxLeafNode) IsInner() bool { return false }
+	n.mu.Lock()
+	defer n.mu.Unlock()
 
-func (n *TxLeafNode) GetItem() *SHAMapItem { return n.item }
-
-func (n *TxLeafNode) SetItem(item *SHAMapItem) bool {
 	oldHash := n.hash
 	n.item = item
-	n.UpdateHash()
-	return n.hash != oldHash
+
+	if err := n.updateHashUnsafe(); err != nil {
+		return false, fmt.Errorf("failed to update hash: %w", err)
+	}
+
+	return n.hash != oldHash, nil
 }
 
-func (n *TxLeafNode) UpdateHash() {
-	n.setHash(protocol.HashPrefixTransactionID[:], n.item.Data())
+func (n *TransactionLeafNode) UpdateHash() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.updateHashUnsafe()
 }
 
-func (n *TxLeafNode) Type() SHAMapNodeType {
-	return tnTRANSACTION_NM
-}
-
-func (n *TxLeafNode) Invariants(isRoot bool) error {
+func (n *TransactionLeafNode) updateHashUnsafe() error {
 	if n.item == nil {
-		return fmt.Errorf("tx leaf has nil item")
+		return ErrNilItem
+	}
+
+	err := n.setHash(protocol.HashPrefixTransactionID[:], n.item.Data())
+	if err != nil {
+		return err
 	}
 	return nil
 }
 
-func (n *TxLeafNode) String(id NodeID) string {
-	key := n.item.Key()
-	return fmt.Sprintf("TxLeafNode ID: %s\nHash: %s\nKey: %s\n",
-		id.String(), hex.EncodeToString(n.hash[:]), hex.EncodeToString(key[:]))
+func (n *TransactionLeafNode) Type() NodeType {
+	return NodeTypeTransactionNoMeta
 }
 
-func (n *TxLeafNode) Clone() TreeNode {
-	return NewTxLeafNode(n.item.Clone())
+func (n *TransactionLeafNode) SerializeForWire() ([]byte, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	// TODO: Implement serialization logic
+	return nil, errors.New("SerializeForWire not implemented")
+}
+
+func (n *TransactionLeafNode) SerializeWithPrefix() ([]byte, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	// TODO: Implement serialization logic
+	return nil, errors.New("SerializeWithPrefix not implemented")
+}
+
+func (n *TransactionLeafNode) Invariants(isRoot bool) error {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	if n.item == nil {
+		return fmt.Errorf("transaction leaf has nil item")
+	}
+
+	if n.IsZeroHash() {
+		return fmt.Errorf("transaction leaf has zero hash")
+	}
+
+	return nil
+}
+
+func (n *TransactionLeafNode) String(id NodeID) string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("TransactionLeafNode ID: %s\n", id.String()))
+	sb.WriteString(fmt.Sprintf("Hash: %s\n", hex.EncodeToString(n.hash[:])))
+
+	if n.item != nil {
+		key := n.item.Key()
+		sb.WriteString(fmt.Sprintf("Key: %s\n", hex.EncodeToString(key[:])))
+		sb.WriteString(fmt.Sprintf("Data Size: %d bytes\n", len(n.item.Data())))
+	}
+
+	return sb.String()
+}
+
+func (n *TransactionLeafNode) Clone() (Node, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	if n.item == nil {
+		return nil, ErrNilItem
+	}
+
+	clonedItem, err := n.item.Clone()
+	if err != nil {
+		return nil, fmt.Errorf("failed to clone item: %w", err)
+	}
+
+	return NewTransactionLeafNode(clonedItem)
 }
 
 // -----------------------------------------------------------------------------
-// TxPlusMetaLeafNode (transaction with metadata)
+// TransactionWithMetaLeafNode (transaction with metadata)
 
-type TxPlusMetaLeafNode struct {
+// TransactionWithMetaLeafNode represents a leaf node containing transaction data with metadata
+type TransactionWithMetaLeafNode struct {
 	BaseNode
-	item *SHAMapItem
+	mu   sync.RWMutex
+	item *Item
 }
 
-func (n *TxPlusMetaLeafNode) SerializeForWire() []byte {
-	//TODO implement me
-	panic("implement me")
+// NewTransactionWithMetaLeafNode creates a new transaction+metadata leaf node
+func NewTransactionWithMetaLeafNode(item *Item) (*TransactionWithMetaLeafNode, error) {
+	if item == nil {
+		return nil, ErrNilItem
+	}
+
+	n := &TransactionWithMetaLeafNode{item: item}
+	if err := n.UpdateHash(); err != nil {
+		return nil, fmt.Errorf("failed to update hash: %w", err)
+	}
+	return n, nil
 }
 
-func (n *TxPlusMetaLeafNode) SerializeWithPrefix() []byte {
-	//TODO implement me
-	panic("implement me")
+func (n *TransactionWithMetaLeafNode) IsLeaf() bool  { return true }
+func (n *TransactionWithMetaLeafNode) IsInner() bool { return false }
+
+func (n *TransactionWithMetaLeafNode) Item() *Item {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.item
 }
 
-func NewTxPlusMetaLeafNode(item *SHAMapItem) *TxPlusMetaLeafNode {
-	n := &TxPlusMetaLeafNode{item: item}
-	n.UpdateHash()
-	return n
-}
+func (n *TransactionWithMetaLeafNode) SetItem(item *Item) (bool, error) {
+	if item == nil {
+		return false, ErrNilItem
+	}
 
-func (n *TxPlusMetaLeafNode) IsLeaf() bool  { return true }
-func (n *TxPlusMetaLeafNode) IsInner() bool { return false }
+	n.mu.Lock()
+	defer n.mu.Unlock()
 
-func (n *TxPlusMetaLeafNode) GetItem() *SHAMapItem { return n.item }
-
-func (n *TxPlusMetaLeafNode) SetItem(item *SHAMapItem) bool {
 	oldHash := n.hash
 	n.item = item
-	n.UpdateHash()
-	return n.hash != oldHash
+
+	if err := n.updateHashUnsafe(); err != nil {
+		return false, fmt.Errorf("failed to update hash: %w", err)
+	}
+
+	return n.hash != oldHash, nil
 }
 
-func (n *TxPlusMetaLeafNode) UpdateHash() {
-	key := n.item.Key()
-	n.setHash(protocol.HashPrefixTxNode[:], n.item.Data(), key[:])
+func (n *TransactionWithMetaLeafNode) UpdateHash() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.updateHashUnsafe()
 }
 
-func (n *TxPlusMetaLeafNode) Type() SHAMapNodeType {
-	return tnTRANSACTION_MD
-}
-
-func (n *TxPlusMetaLeafNode) Invariants(isRoot bool) error {
+func (n *TransactionWithMetaLeafNode) updateHashUnsafe() error {
 	if n.item == nil {
-		return fmt.Errorf("tx+meta leaf has nil item")
+		return ErrNilItem
+	}
+
+	key := n.item.Key()
+	err := n.setHash(protocol.HashPrefixTxNode[:], n.item.Data(), key[:])
+	if err != nil {
+		return err
 	}
 	return nil
 }
 
-func (n *TxPlusMetaLeafNode) String(id NodeID) string {
-	key := n.item.Key()
-	return fmt.Sprintf("TxPlusMetaLeafNode ID: %s\nHash: %s\nKey: %s\n",
-		id.String(), hex.EncodeToString(n.hash[:]), hex.EncodeToString(key[:]))
+func (n *TransactionWithMetaLeafNode) Type() NodeType {
+	return NodeTypeTransactionWithMeta
 }
 
-func (n *TxPlusMetaLeafNode) Clone() TreeNode {
-	return NewTxPlusMetaLeafNode(n.item.Clone())
+func (n *TransactionWithMetaLeafNode) SerializeForWire() ([]byte, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	// TODO: Implement serialization logic
+	return nil, errors.New("SerializeForWire not implemented")
 }
 
-func GetItemFromLeafNode(node TreeNode) *SHAMapItem {
+func (n *TransactionWithMetaLeafNode) SerializeWithPrefix() ([]byte, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	// TODO: Implement serialization logic
+	return nil, errors.New("SerializeWithPrefix not implemented")
+}
+
+func (n *TransactionWithMetaLeafNode) Invariants(isRoot bool) error {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	if n.item == nil {
+		return fmt.Errorf("transaction+meta leaf has nil item")
+	}
+
+	if n.IsZeroHash() {
+		return fmt.Errorf("transaction+meta leaf has zero hash")
+	}
+
+	return nil
+}
+
+func (n *TransactionWithMetaLeafNode) String(id NodeID) string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("TransactionWithMetaLeafNode ID: %s\n", id.String()))
+	sb.WriteString(fmt.Sprintf("Hash: %s\n", hex.EncodeToString(n.hash[:])))
+
+	if n.item != nil {
+		key := n.item.Key()
+		sb.WriteString(fmt.Sprintf("Key: %s\n", hex.EncodeToString(key[:])))
+		sb.WriteString(fmt.Sprintf("Data Size: %d bytes\n", len(n.item.Data())))
+	}
+
+	return sb.String()
+}
+
+func (n *TransactionWithMetaLeafNode) Clone() (Node, error) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+
+	if n.item == nil {
+		return nil, ErrNilItem
+	}
+
+	clonedItem, err := n.item.Clone()
+	if err != nil {
+		return nil, fmt.Errorf("failed to clone item: %w", err)
+	}
+
+	return NewTransactionWithMetaLeafNode(clonedItem)
+}
+
+// -----------------------------------------------------------------------------
+// Helper Functions
+
+// ItemFromLeafNode extracts the item from any leaf node type
+func ItemFromLeafNode(node Node) *Item {
 	if node == nil || !node.IsLeaf() {
 		return nil
 	}
-	switch n := node.(type) {
-	case *AccountStateLeafNode:
-		return n.GetItem()
-	case *TxLeafNode:
-		return n.GetItem()
-	case *TxPlusMetaLeafNode:
-		return n.GetItem()
+
+	if leafNode, ok := node.(LeafNode); ok {
+		return leafNode.Item()
+	}
+
+	return nil
+}
+
+// CreateLeafNode creates the appropriate leaf node type for the given node type
+func CreateLeafNode(nodeType NodeType, item *Item) (LeafNode, error) {
+	if item == nil {
+		return nil, ErrNilItem
+	}
+
+	switch nodeType {
+	case NodeTypeAccountState:
+		return NewAccountStateLeafNode(item)
+	case NodeTypeTransactionNoMeta:
+		return NewTransactionLeafNode(item)
+	case NodeTypeTransactionWithMeta:
+		return NewTransactionWithMetaLeafNode(item)
 	default:
-		return nil
+		return nil, fmt.Errorf("invalid node type for leaf: %v", nodeType)
 	}
 }

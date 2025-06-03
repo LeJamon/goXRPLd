@@ -4,90 +4,112 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
-	"strings"
 	"testing"
 )
 
-// Helper function to create an item with a key and a value filled with a repeating byte
-func intToVUC(v int) []byte {
-	vuc := make([]byte, 32)
+// Helper function to create a byte slice filled with a repeating byte
+func intToBytes(v int) []byte {
+	data := make([]byte, 32)
 	for i := 0; i < 32; i++ {
-		vuc[i] = byte(v)
+		data[i] = byte(v)
 	}
-	return vuc
+	return data
 }
 
 // Helper function to create a SHAMapItem with the given key and value
-func makeItem(key [32]byte, value []byte) *SHAMapItem {
-	return NewSHAMapItem(key, value)
+func makeItem(key [32]byte, value []byte) *Item {
+	return NewItem(key, value)
 }
 
-// FIXED: Parse hex string to actual bytes (like rippled does)
+// Parse hex string to actual bytes (like rippled does)
 func hexToHash(s string) [32]byte {
 	var hash [32]byte
 	decoded, err := hex.DecodeString(s)
 	if err != nil {
-		panic("Invalid hex string: " + s)
+		panic(fmt.Sprintf("Invalid hex string: %s - %v", s, err))
 	}
 	if len(decoded) != 32 {
-		panic("Hex string is not 32 bytes: " + s)
+		panic(fmt.Sprintf("Hex string is not 32 bytes: %s (got %d bytes)", s, len(decoded)))
 	}
-	// Store in big-endian format like rippled uint256 (no reversal needed)
 	copy(hash[:], decoded)
 	return hash
 }
 
 // TestAddAndTraverse tests adding items to a SHAMap and traversing it
-// This matches the exact C++ test from rippled
 func TestAddAndTraverse(t *testing.T) {
-	// Define test keys - EXACT same as rippled C++ test
+	// Define test keys - same as rippled C++ test
 	h1 := hexToHash("092891fe4ef6cee585fdc6fda0e09eb4d386363158ec3321b8123e5a772c6ca7")
 	h2 := hexToHash("436ccbac3347baa1f1e53baeef1f43334da88f1f6d70d963b833afd6dfa289fe")
 	h3 := hexToHash("b92891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8")
 	h4 := hexToHash("b92891fe4ef6cee585fdc6fda2e09eb4d386363158ec3321b8123e5a772c6ca8")
 
-	// Create items with values 1-5
-	i1 := makeItem(h1, intToVUC(1))
-	i2 := makeItem(h2, intToVUC(2))
-	i3 := makeItem(h3, intToVUC(3))
-	i4 := makeItem(h4, intToVUC(4))
+	// Create items with values 1-4
+	i1 := makeItem(h1, intToBytes(1))
+	i2 := makeItem(h2, intToBytes(2))
+	i3 := makeItem(h3, intToBytes(3))
+	i4 := makeItem(h4, intToBytes(4))
 
 	// Create a SHAMap
-	sMap := NewSHAMap(TxMap)
+	sMap, err := New(TypeTransaction)
+	if err != nil {
+		t.Fatalf("Failed to create SHAMap: %v", err)
+	}
 
 	// Add items to the map - same order as C++ test
-	err := sMap.AddItem(i2)
-	if err != nil {
-		t.Errorf("Failed to add item 2: %v", err)
+	if err := sMap.PutItem(i2); err != nil {
+		t.Fatalf("Failed to add item 2: %v", err)
 	}
 
-	err = sMap.AddItem(i1)
-	if err != nil {
-		t.Errorf("Failed to add item 1: %v", err)
+	if err := sMap.PutItem(i1); err != nil {
+		t.Fatalf("Failed to add item 1: %v", err)
 	}
 
-	// Traverse and verify order - should match C++ iteration order
-	var items []*SHAMapItem
-	sMap.VisitLeaves(func(item *SHAMapItem) {
+	// Verify we can retrieve the items
+	retrievedI1, found, err := sMap.Get(h1)
+	if err != nil {
+		t.Fatalf("Error getting item 1: %v", err)
+	}
+	if !found {
+		t.Error("Item 1 not found")
+	}
+	if !bytes.Equal(retrievedI1.Data(), i1.Data()) {
+		t.Error("Item 1 data mismatch")
+	}
+
+	retrievedI2, found, err := sMap.Get(h2)
+	if err != nil {
+		t.Fatalf("Error getting item 2: %v", err)
+	}
+	if !found {
+		t.Error("Item 2 not found")
+	}
+	if !bytes.Equal(retrievedI2.Data(), i2.Data()) {
+		t.Error("Item 2 data mismatch")
+	}
+
+	// Traverse and verify order
+	var items []*Item
+	err = sMap.ForEach(func(item *Item) bool {
 		items = append(items, item)
+		return true // Continue iteration
 	})
+	if err != nil {
+		t.Fatalf("Error during traversal: %v", err)
+	}
 
 	// Should have 2 items
 	if len(items) != 2 {
 		t.Errorf("Expected 2 items, got %d", len(items))
 	}
 
-	// Verify we have i1 and i2 (order doesn't matter for this check)
+	// Verify we have i1 and i2
 	found1, found2 := false, false
 	for _, item := range items {
 		itemKey := item.Key()
-		key1 := i1.Key()
-		key2 := i2.Key()
-
-		if bytes.Equal(itemKey[:], key1[:]) {
+		if itemKey == h1 {
 			found1 = true
 		}
-		if bytes.Equal(itemKey[:], key2[:]) {
+		if itemKey == h2 {
 			found2 = true
 		}
 	}
@@ -96,28 +118,38 @@ func TestAddAndTraverse(t *testing.T) {
 	}
 
 	// Add item 4
-	err = sMap.AddItem(i4)
-	if err != nil {
-		t.Errorf("Failed to add item 4: %v", err)
+	if err := sMap.PutItem(i4); err != nil {
+		t.Fatalf("Failed to add item 4: %v", err)
 	}
 
 	// Delete item 2
-	err = sMap.DeleteItem(i2.Key())
+	if err := sMap.Delete(h2); err != nil {
+		t.Fatalf("Failed to delete item 2: %v", err)
+	}
+
+	// Verify item 2 is gone
+	_, found, err = sMap.Get(h2)
 	if err != nil {
-		t.Errorf("Failed to delete item 2: %v", err)
+		t.Fatalf("Error checking for deleted item: %v", err)
+	}
+	if found {
+		t.Error("Item 2 should have been deleted")
 	}
 
 	// Add item 3
-	err = sMap.AddItem(i3)
-	if err != nil {
-		t.Errorf("Failed to add item 3: %v", err)
+	if err := sMap.PutItem(i3); err != nil {
+		t.Fatalf("Failed to add item 3: %v", err)
 	}
 
 	// Final traverse - should have i1, i3, i4
-	items = []*SHAMapItem{}
-	sMap.VisitLeaves(func(item *SHAMapItem) {
+	items = nil
+	err = sMap.ForEach(func(item *Item) bool {
 		items = append(items, item)
+		return true
 	})
+	if err != nil {
+		t.Fatalf("Error during final traversal: %v", err)
+	}
 
 	if len(items) != 3 {
 		t.Errorf("Expected 3 items, got %d", len(items))
@@ -127,32 +159,25 @@ func TestAddAndTraverse(t *testing.T) {
 	found1, found3, found4 := false, false, false
 	for _, item := range items {
 		itemKey := item.Key()
-		key1 := i1.Key()
-		key2 := i2.Key()
-		key3 := i3.Key()
-		key4 := i4.Key()
-
-		if bytes.Equal(itemKey[:], key1[:]) {
+		switch itemKey {
+		case h1:
 			found1 = true
-		}
-		if bytes.Equal(itemKey[:], key3[:]) {
+		case h2:
+			t.Error("Found deleted item 2 in the map")
+		case h3:
 			found3 = true
-		}
-		if bytes.Equal(itemKey[:], key4[:]) {
+		case h4:
 			found4 = true
-		}
-		if bytes.Equal(itemKey[:], key2[:]) {
-			t.Errorf("Found deleted item 2 in the map")
 		}
 	}
 	if !found1 || !found3 || !found4 {
-		t.Errorf("Failed to find expected items after traverse: found1=%v, found3=%v, found4=%v", found1, found3, found4)
+		t.Errorf("Failed to find expected items: found1=%v, found3=%v, found4=%v", found1, found3, found4)
 	}
 }
 
 // TestBuildAndTear matches the exact C++ "build/tear" test
 func TestBuildAndTear(t *testing.T) {
-	// EXACT same keys as rippled C++ test
+	// Same keys as rippled C++ test
 	keys := [][32]byte{
 		hexToHash("b92891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"),
 		hexToHash("b92881fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"),
@@ -164,7 +189,7 @@ func TestBuildAndTear(t *testing.T) {
 		hexToHash("292891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"),
 	}
 
-	// Expected hashes after each addition - EXACT same as rippled C++ test
+	// Expected hashes after each addition - same as rippled C++ test
 	expectedHashes := [][32]byte{
 		hexToHash("B7387CFEA0465759ADC718E8C42B52D2309D179B326E239EB5075C64B6281F7F"),
 		hexToHash("FBC195A9592A54AB44010274163CB6BA95F497EC5BA0A8831845467FB2ECE266"),
@@ -177,67 +202,88 @@ func TestBuildAndTear(t *testing.T) {
 	}
 
 	// Create a SHAMap
-	sMap := NewSHAMap(TxMap)
+	sMap, err := New(TypeTransaction)
+	if err != nil {
+		t.Fatalf("Failed to create SHAMap: %v", err)
+	}
 
 	// Verify empty map has zero hash
-	emptyHash := sMap.GetHash()
+	emptyHash, err := sMap.Hash()
+	if err != nil {
+		t.Fatalf("Failed to get empty map hash: %v", err)
+	}
 	zeroHash := [32]byte{} // All zeros
-	if !bytes.Equal(emptyHash[:], zeroHash[:]) {
+	if emptyHash != zeroHash {
 		t.Errorf("Empty map should have zero hash, got %x", emptyHash)
 	}
 
 	// Add all keys and verify hash after each addition
 	for k, key := range keys {
-		fmt.Printf("\n=== Adding item %d (key: %x) ===\n", k, key[:4])
-		err := sMap.AddItem(makeItem(key, intToVUC(k)))
-		if err != nil {
-			t.Errorf("Failed to add item %d: %v", k, err)
+
+		t.Logf("Adding item %d (key: %x)", k, key[:4])
+
+		if err := sMap.Put(key, intToBytes(k)); err != nil {
+			t.Fatalf("Failed to add item %d: %v", k, err)
 		}
 
-		fmt.Printf("Tree after adding item %d:\n", k)
-		dumpTree(sMap.root, "", false)
-		fmt.Printf("Hash: %x\n", sMap.GetHash())
-
 		// Verify hash matches expected
-		actualHash := sMap.GetHash()
-		if !bytes.Equal(actualHash[:], expectedHashes[k][:]) {
+		actualHash, err := sMap.Hash()
+		if err != nil {
+			t.Fatalf("Failed to get hash after adding item %d: %v", k, err)
+		}
+
+		if actualHash != expectedHashes[k] {
+			t.Errorf("Tree dump after adding item %d (hash mismatch):", k)
+			dumpTree(sMap.root, "", false)
 			t.Errorf("Hash mismatch after adding item %d: expected %x, got %x",
 				k, expectedHashes[k], actualHash)
 		}
 	}
 
-	fmt.Println("\n" + strings.Repeat("=", 60))
-	fmt.Println("STARTING DELETION PHASE")
-	fmt.Println(strings.Repeat("=", 60))
+	t.Log("Starting deletion phase")
 
 	// Delete all keys in reverse order and verify hashes
+	// Delete all keys in reverse order and verify hashes
 	for k := len(keys) - 1; k >= 0; k-- {
-		fmt.Printf("\n=== Deleting item %d (key: %x) ===\n", k, keys[k][:4])
+		t.Logf("Deleting item %d (key: %x)", k, keys[k][:4])
 
-		// Verify hash before deletion
-		/*actualHash := sMap.GetHash()
-		  if !bytes.Equal(actualHash[:], expectedHashes[k][:]) {
-		     t.Errorf("Hash mismatch before deleting item %d: expected %x, got %x",
-		        k, expectedHashes[k], actualHash)
-		  }*/
-
-		err := sMap.DeleteItem(keys[k])
+		// Verify hash BEFORE deletion matches expected
+		actualHash, err := sMap.Hash()
 		if err != nil {
-			t.Errorf("Failed to delete item %d: %v", k, err)
+			t.Fatalf("Failed to get hash before deleting item %d: %v", k, err)
+		}
+		if actualHash != expectedHashes[k] {
+			t.Errorf("Tree dump after adding item %d (hash mismatch):", k)
+			dumpTree(sMap.root, "", false)
+			t.Errorf("Hash mismatch after adding item %d: expected %x, got %x",
+				k, expectedHashes[k], actualHash)
 		}
 
-		fmt.Printf("Tree after deleting item %d:\n", k)
-		if k == 0 {
-			fmt.Println("├── Empty tree (no children)")
-		} else {
-			dumpTree(sMap.root, "", false)
+		if err := sMap.Delete(keys[k]); err != nil {
+			t.Fatalf("Failed to delete item %d: %v", k, err)
 		}
-		fmt.Printf("Hash: %x\n", sMap.GetHash())
+
+		// Verify item is actually deleted
+		_, found, err := sMap.Get(keys[k])
+		if err != nil {
+			t.Fatalf("Error checking deleted item %d: %v", k, err)
+		}
+		if found {
+			t.Errorf("Item %d should have been deleted", k)
+		}
+
+		// Optional: Check invariants if you have that method
+		// if err := sMap.Invariants(); err != nil {
+		//     t.Fatalf("Invariants check failed after deleting item %d: %v", k, err)
+		// }
 	}
 
 	// Final check - map should be empty (zero hash)
-	finalHash := sMap.GetHash()
-	if !bytes.Equal(finalHash[:], zeroHash[:]) {
+	finalHash, err := sMap.Hash()
+	if err != nil {
+		t.Fatalf("Failed to get final hash: %v", err)
+	}
+	if finalHash != zeroHash {
 		t.Errorf("Final map should have zero hash, got %x", finalHash)
 	}
 }
@@ -254,44 +300,48 @@ func TestIteration(t *testing.T) {
 		hexToHash("292891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"), // keys[7]
 	}
 
-	sMap := NewSHAMap(TxMap)
+	sMap, err := New(TypeTransaction)
+	if err != nil {
+		t.Fatalf("Failed to create SHAMap: %v", err)
+	}
 
 	// Add all keys in order (keys[0] through keys[7])
 	for i, key := range keys {
-		err := sMap.AddItem(makeItem(key, intToVUC(0)))
-		if err != nil {
-			t.Errorf("Failed to add item %d: %v", i, err)
+		if err := sMap.Put(key, intToBytes(0)); err != nil {
+			t.Fatalf("Failed to add item %d: %v", i, err)
 		}
 	}
 
 	// Collect iteration order
 	var visitedKeys [][32]byte
-	sMap.VisitLeaves(func(item *SHAMapItem) {
+	err = sMap.ForEach(func(item *Item) bool {
 		visitedKeys = append(visitedKeys, item.Key())
+		return true
 	})
+	if err != nil {
+		t.Fatalf("Error during iteration: %v", err)
+	}
 
-	// STRICT ORDER CHECK - C++ test expects EXACT reverse order
-	// C++ code: int h = 7; for (auto const& k : map) { BEAST_EXPECT(k.key() == keys[h]); --h; }
-	// This means: keys[7], keys[6], keys[5], keys[4], keys[3], keys[2], keys[1], keys[0]
-
+	// Verify we got all keys
 	if len(visitedKeys) != len(keys) {
 		t.Errorf("Expected exactly %d keys, got %d", len(keys), len(visitedKeys))
 		return
 	}
 
 	// Check each position matches the expected reverse order
+	// C++ test expects: keys[7], keys[6], keys[5], keys[4], keys[3], keys[2], keys[1], keys[0]
 	for pos := 0; pos < len(keys); pos++ {
 		expectedIndex := len(keys) - 1 - pos // 7, 6, 5, 4, 3, 2, 1, 0
 		expectedKey := keys[expectedIndex]
 
-		if !bytes.Equal(visitedKeys[pos][:], expectedKey[:]) {
+		if visitedKeys[pos] != expectedKey {
 			t.Errorf("Iteration position %d: expected keys[%d] (%x), got (%x)",
 				pos, expectedIndex, expectedKey[:4], visitedKeys[pos][:4])
 		}
 	}
 
-	// Additional verification: print the actual iteration order for debugging
-	t.Logf("Iteration order verification:")
+	// Log the iteration order for debugging
+	t.Log("Iteration order verification:")
 	for pos, key := range visitedKeys {
 		expectedIndex := len(keys) - 1 - pos
 		t.Logf("  Position %d: got %x, expected keys[%d] = %x",
@@ -299,121 +349,97 @@ func TestIteration(t *testing.T) {
 	}
 }
 
-// TestIteration matches the exact C++ "iterate" test
-/*func TestIteration(t *testing.T) {
-	// EXACT same keys as rippled C++ test
-	keys := [][32]byte{
-		hexToHash("f22891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"),
-		hexToHash("b99891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"),
-		hexToHash("b92891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"),
-		hexToHash("b92881fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"),
-		hexToHash("b92791fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"),
-		hexToHash("b92691fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"),
-		hexToHash("b91891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"),
-		hexToHash("292891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"),
-	}
-
-	// Create a SHAMap
-	sMap := NewSHAMap(TxMap)
-
-	// Add all keys
-	for _, key := range keys {
-		err := sMap.AddItem(makeItem(key, intToVUC(0)))
-		if err != nil {
-			t.Errorf("Failed to add item: %v", err)
-		}
-	}
-
-	// Collect iteration order
-	var visitedKeys [][32]byte
-	sMap.VisitLeaves(func(item *SHAMapItem) {
-		visitedKeys = append(visitedKeys, item.Key())
-	})
-
-	// C++ test expects iteration in reverse order (h=7 down to 0)
-	// This means keys[7], keys[6], ..., keys[0]
-	expectedOrder := make([][32]byte, len(keys))
-	for i := 0; i < len(keys); i++ {
-		expectedOrder[i] = keys[len(keys)-1-i] // Reverse order
-	}
-
-	// Verify iteration order matches expected
-	if len(visitedKeys) != len(expectedOrder) {
-		t.Errorf("Expected %d keys, got %d", len(expectedOrder), len(visitedKeys))
-	}
-
-	for i, expectedKey := range expectedOrder {
-		if i >= len(visitedKeys) {
-			t.Errorf("Missing key at position %d", i)
-			continue
-		}
-		if !bytes.Equal(visitedKeys[i][:], expectedKey[:]) {
-			t.Errorf("Iteration order mismatch at position %d: expected %x, got %x",
-				i, expectedKey, visitedKeys[i])
-		}
-	}
-}*/
-
 // TestSnapshot tests creating a snapshot of a SHAMap
 func TestSnapshot(t *testing.T) {
 	h1 := hexToHash("092891fe4ef6cee585fdc6fda0e09eb4d386363158ec3321b8123e5a772c6ca7")
 
-	sMap := NewSHAMap(TxMap)
-
-	err := sMap.AddItem(makeItem(h1, intToVUC(1)))
+	sMap, err := New(TypeTransaction)
 	if err != nil {
-		t.Errorf("Failed to add item: %v", err)
+		t.Fatalf("Failed to create SHAMap: %v", err)
 	}
 
-	mapHash := sMap.GetHash()
-	snapShotMap := sMap.SnapShot(false) // immutable snapshot
+	if err := sMap.Put(h1, intToBytes(1)); err != nil {
+		t.Fatalf("Failed to add item: %v", err)
+	}
+
+	mapHash, err := sMap.Hash()
+	if err != nil {
+		t.Fatalf("Failed to get map hash: %v", err)
+	}
+
+	snapShotMap, err := sMap.Snapshot(false) // immutable snapshot
+	if err != nil {
+		t.Fatalf("Failed to create snapshot: %v", err)
+	}
 
 	// Hashes should match
-	smHash := sMap.GetHash()
-	if !bytes.Equal(smHash[:], mapHash[:]) {
-		t.Errorf("Original map hash changed after snapshot")
-	}
-
-	snapShotHash := snapShotMap.GetHash()
-	if !bytes.Equal(snapShotHash[:], mapHash[:]) {
-		t.Errorf("Snapshot hash doesn't match original")
-	}
-
-	// Compare the maps - they should be identical
-	var diffItems []*SHAMapItem
-	sMap.VisitDifferences(snapShotMap, func(item *SHAMapItem) {
-		diffItems = append(diffItems, item)
-	})
-
-	if len(diffItems) != 0 {
-		t.Errorf("Maps should be identical, but found %d differences", len(diffItems))
-	}
-
-	err = sMap.DeleteItem(h1)
+	smHash, err := sMap.Hash()
 	if err != nil {
-		t.Errorf("Failed to delete item: %v", err)
+		t.Fatalf("Failed to get original map hash: %v", err)
+	}
+	if smHash != mapHash {
+		t.Error("Original map hash changed after snapshot")
+	}
+
+	snapShotHash, err := snapShotMap.Hash()
+	if err != nil {
+		t.Fatalf("Failed to get snapshot hash: %v", err)
+	}
+	if snapShotHash != mapHash {
+		t.Error("Snapshot hash doesn't match original")
+	}
+
+	// Verify both maps have the same item
+	originalItem, found, err := sMap.Get(h1)
+	if err != nil {
+		t.Fatalf("Error getting item from original: %v", err)
+	}
+	if !found {
+		t.Error("Item not found in original map")
+	}
+
+	snapshotItem, found, err := snapShotMap.Get(h1)
+	if err != nil {
+		t.Fatalf("Error getting item from snapshot: %v", err)
+	}
+	if !found {
+		t.Error("Item not found in snapshot map")
+	}
+
+	if !originalItem.Equal(snapshotItem) {
+		t.Error("Items should be equal between original and snapshot")
+	}
+
+	// Modify original map
+	if err := sMap.Delete(h1); err != nil {
+		t.Fatalf("Failed to delete item: %v", err)
 	}
 
 	// Hashes should now be different
-	smHash = sMap.GetHash()
-	if bytes.Equal(smHash[:], mapHash[:]) {
-		t.Errorf("Original map hash unchanged after modification")
+	smHash, err = sMap.Hash()
+	if err != nil {
+		t.Fatalf("Failed to get modified map hash: %v", err)
+	}
+	if smHash == mapHash {
+		t.Error("Original map hash unchanged after modification")
 	}
 
 	// Snapshot hash should remain the same
-	snapShotHash = snapShotMap.GetHash()
-	if !bytes.Equal(snapShotHash[:], mapHash[:]) {
-		t.Errorf("Snapshot hash changed")
+	snapShotHash, err = snapShotMap.Hash()
+	if err != nil {
+		t.Fatalf("Failed to get snapshot hash after modification: %v", err)
+	}
+	if snapShotHash != mapHash {
+		t.Error("Snapshot hash changed")
 	}
 
-	// Compare again - should be different
-	diffItems = []*SHAMapItem{}
-	sMap.VisitDifferences(snapShotMap, func(item *SHAMapItem) {
-		diffItems = append(diffItems, item)
-	})
-
-	if len(diffItems) != 1 {
-		t.Errorf("Expected 1 difference, got %d", len(diffItems))
+	// Verify snapshot still has the item
+	_, found, err = snapShotMap.Get(h1)
+	if err != nil {
+		t.Fatalf("Error getting item from snapshot after original deletion: %v", err)
+	}
+	if !found {
+		t.Error("Item should still exist in snapshot after deletion from original")
 	}
 }
 
@@ -421,58 +447,218 @@ func TestSnapshot(t *testing.T) {
 func TestImmutability(t *testing.T) {
 	key := hexToHash("092891fe4ef6cee585fdc6fda0e09eb4d386363158ec3321b8123e5a772c6ca7")
 
-	sMap := NewSHAMap(TxMap)
-
-	err := sMap.AddItem(makeItem(key, intToVUC(1)))
+	sMap, err := New(TypeTransaction)
 	if err != nil {
-		t.Errorf("Failed to add item: %v", err)
+		t.Fatalf("Failed to create SHAMap: %v", err)
 	}
 
-	sMap.SetImmutable()
+	if err := sMap.Put(key, intToBytes(1)); err != nil {
+		t.Fatalf("Failed to add item: %v", err)
+	}
+
+	if err := sMap.SetImmutable(); err != nil {
+		t.Fatalf("Failed to set immutable: %v", err)
+	}
 
 	// Try to add an item - should fail
-	err = sMap.AddItem(makeItem(key, intToVUC(2)))
+	err = sMap.Put(key, intToBytes(2))
 	if err != ErrImmutable {
 		t.Errorf("Adding to immutable map should fail with ErrImmutable, got: %v", err)
 	}
 
 	// Try to delete an item - should fail
-	err = sMap.DeleteItem(key)
+	err = sMap.Delete(key)
 	if err != ErrImmutable {
 		t.Errorf("Deleting from immutable map should fail with ErrImmutable, got: %v", err)
 	}
 }
 
-func dumpTree(node TreeNode, prefix string, isTail bool) {
+// TestErrorHandling tests various error conditions
+func TestErrorHandling(t *testing.T) {
+	sMap, err := New(TypeTransaction)
+	if err != nil {
+		t.Fatalf("Failed to create SHAMap: %v", err)
+	}
+
+	// Test adding nil item
+	err = sMap.PutItem(nil)
+	if err != ErrNilItem {
+		t.Errorf("Expected ErrNilItem, got: %v", err)
+	}
+
+	// Test getting non-existent item
+	key := hexToHash("092891fe4ef6cee585fdc6fda0e09eb4d386363158ec3321b8123e5a772c6ca7")
+	_, found, err := sMap.Get(key)
+	if err != nil {
+		t.Errorf("Getting non-existent item should not error: %v", err)
+	}
+	if found {
+		t.Error("Should not find non-existent item")
+	}
+
+	// Test deleting non-existent item
+	err = sMap.Delete(key)
+	if err != ErrItemNotFound {
+		t.Errorf("Expected ErrItemNotFound, got: %v", err)
+	}
+}
+
+// TestConcurrency tests concurrent access to the SHAMap
+func TestConcurrency(t *testing.T) {
+	sMap, err := New(TypeState)
+	if err != nil {
+		t.Fatalf("Failed to create SHAMap: %v", err)
+	}
+
+	// Add some initial data
+	for i := 0; i < 10; i++ {
+		key := [32]byte{}
+		key[0] = byte(i)
+		if err := sMap.Put(key, intToBytes(i)); err != nil {
+			t.Fatalf("Failed to add initial item %d: %v", i, err)
+		}
+	}
+
+	// Create immutable snapshot for concurrent reading
+	snapshot, err := sMap.Snapshot(false)
+	if err != nil {
+		t.Fatalf("Failed to create snapshot: %v", err)
+	}
+
+	// Test concurrent reads on snapshot (should be safe)
+	done := make(chan bool, 10)
+	for i := 0; i < 10; i++ {
+		go func(id int) {
+			defer func() { done <- true }()
+
+			key := [32]byte{}
+			key[0] = byte(id)
+
+			item, found, err := snapshot.Get(key)
+			if err != nil {
+				t.Errorf("Concurrent read %d failed: %v", id, err)
+				return
+			}
+			if !found {
+				t.Errorf("Concurrent read %d: item not found", id)
+				return
+			}
+			if !bytes.Equal(item.Data(), intToBytes(id)) {
+				t.Errorf("Concurrent read %d: data mismatch", id)
+			}
+		}(i)
+	}
+
+	// Wait for all goroutines to complete
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+}
+
+// Benchmarks
+
+func BenchmarkPut(b *testing.B) {
+	sMap, err := New(TypeTransaction)
+	if err != nil {
+		b.Fatalf("Failed to create SHAMap: %v", err)
+	}
+
+	keys := make([][32]byte, b.N)
+	for i := 0; i < b.N; i++ {
+		// Create pseudo-random keys
+		copy(keys[i][:], fmt.Sprintf("%032d", i))
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := sMap.Put(keys[i], intToBytes(i)); err != nil {
+			b.Fatalf("Failed to put item %d: %v", i, err)
+		}
+	}
+}
+
+func BenchmarkGet(b *testing.B) {
+	sMap, err := New(TypeTransaction)
+	if err != nil {
+		b.Fatalf("Failed to create SHAMap: %v", err)
+	}
+
+	// Pre-populate the map
+	keys := make([][32]byte, 1000)
+	for i := 0; i < 1000; i++ {
+		copy(keys[i][:], fmt.Sprintf("%032d", i))
+		if err := sMap.Put(keys[i], intToBytes(i)); err != nil {
+			b.Fatalf("Failed to put item %d: %v", i, err)
+		}
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := keys[i%1000]
+		_, _, err := sMap.Get(key)
+		if err != nil {
+			b.Fatalf("Failed to get item: %v", err)
+		}
+	}
+}
+
+func BenchmarkSnapshot(b *testing.B) {
+	sMap, err := New(TypeTransaction)
+	if err != nil {
+		b.Fatalf("Failed to create SHAMap: %v", err)
+	}
+
+	// Pre-populate the map
+	for i := 0; i < 1000; i++ {
+		key := [32]byte{}
+		copy(key[:], fmt.Sprintf("%032d", i))
+		if err := sMap.Put(key, intToBytes(i)); err != nil {
+			b.Fatalf("Failed to put item %d: %v", i, err)
+		}
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := sMap.Snapshot(false)
+		if err != nil {
+			b.Fatalf("Failed to create snapshot: %v", err)
+		}
+	}
+}
+
+// Helper function for debugging - simplified tree dump
+func dumpTree(node Node, prefix string, isTail bool) {
 	switch n := node.(type) {
 	case *InnerNode:
 		fmt.Printf("%s%sInnerNode %p, hash: %x\n", prefix, branchSymbol(isTail), n, n.Hash())
+
+		// Get all non-empty children
 		var children []struct {
 			index int
-			child TreeNode
+			child Node
 		}
-		for i := 0; i < 16; i++ {
+		for i := 0; i < BranchFactor; i++ {
 			if !n.IsEmptyBranch(i) {
-				child := n.GetChild(i)
-				if child != nil {
+				if child, err := n.Child(i); err == nil && child != nil {
 					children = append(children, struct {
 						index int
-						child TreeNode
+						child Node
 					}{index: i, child: child})
 				}
 			}
 		}
+
 		for i, c := range children {
 			fmt.Printf("%s%s[Branch %x]\n", prefix, pipeSymbol(isTail), c.index)
 			dumpTree(c.child, nextPrefix(prefix, isTail), i == len(children)-1)
 		}
 
 	case *AccountStateLeafNode:
-		fmt.Printf("%s%sLeaf(Account) %p, key: %x\n", prefix, branchSymbol(isTail), n, n.GetItem().Key())
-	case *TxLeafNode:
-		fmt.Printf("%s%sLeaf(Tx) %p, key: %x\n", prefix, branchSymbol(isTail), n, n.GetItem().Key())
-	case *TxPlusMetaLeafNode:
-		fmt.Printf("%s%sLeaf(Tx+Meta) %p, key: %x\n", prefix, branchSymbol(isTail), n, n.GetItem().Key())
+		fmt.Printf("%s%sLeaf(Account) %p, key: %x\n", prefix, branchSymbol(isTail), n, n.Item().Key())
+	case *TransactionLeafNode:
+		fmt.Printf("%s%sLeaf(Tx) %p, key: %x\n", prefix, branchSymbol(isTail), n, n.Item().Key())
+	case *TransactionWithMetaLeafNode:
+		fmt.Printf("%s%sLeaf(Tx+Meta) %p, key: %x\n", prefix, branchSymbol(isTail), n, n.Item().Key())
 	default:
 		fmt.Printf("%s%sUnknown node type: %T\n", prefix, branchSymbol(isTail), n)
 	}
