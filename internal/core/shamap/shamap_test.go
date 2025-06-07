@@ -220,8 +220,6 @@ func TestBuildAndTear(t *testing.T) {
 	// Add all keys and verify hash after each addition
 	for k, key := range keys {
 
-		t.Logf("Adding item %d (key: %x)", k, key[:4])
-
 		if err := sMap.Put(key, intToBytes(k)); err != nil {
 			t.Fatalf("Failed to add item %d: %v", k, err)
 		}
@@ -240,13 +238,9 @@ func TestBuildAndTear(t *testing.T) {
 		}
 	}
 
-	t.Log("Starting deletion phase")
-
 	// Delete all keys in reverse order and verify hashes
 	// Delete all keys in reverse order and verify hashes
 	for k := len(keys) - 1; k >= 0; k-- {
-		t.Logf("Deleting item %d (key: %x)", k, keys[k][:4])
-
 		// Verify hash BEFORE deletion matches expected
 		actualHash, err := sMap.Hash()
 		if err != nil {
@@ -338,14 +332,6 @@ func TestIteration(t *testing.T) {
 			t.Errorf("Iteration position %d: expected keys[%d] (%x), got (%x)",
 				pos, expectedIndex, expectedKey[:4], visitedKeys[pos][:4])
 		}
-	}
-
-	// Log the iteration order for debugging
-	t.Log("Iteration order verification:")
-	for pos, key := range visitedKeys {
-		expectedIndex := len(keys) - 1 - pos
-		t.Logf("  Position %d: got %x, expected keys[%d] = %x",
-			pos, key[:4], expectedIndex, keys[expectedIndex][:4])
 	}
 }
 
@@ -683,4 +669,315 @@ func nextPrefix(current string, isTail bool) string {
 		return current + "    "
 	}
 	return current + "│   "
+}
+
+func TestSHAMapPathProofDebug(t *testing.T) {
+	sMap, err := New(TypeState)
+	if err != nil {
+		t.Fatalf("Failed to create SHAMap: %v", err)
+	}
+
+	// Test with just the first item to debug the issue
+	c := byte(1)
+	var k [32]byte
+	k[0] = c
+
+	data := make([]byte, 32)
+	copy(data, k[:])
+
+	// Add item to map
+	if err := sMap.Put(k, data); err != nil {
+		t.Fatalf("Failed to add item %d: %v", c, err)
+	}
+
+	// Get root hash
+	root, err := sMap.Hash()
+	if err != nil {
+		t.Fatalf("Failed to get root hash: %v", err)
+	}
+
+	fmt.Printf("Root hash: %x\n", root)
+
+	// Get proof path
+	path, err := sMap.GetProofPath(k)
+	if err != nil {
+		t.Fatalf("Failed to get proof path: %v", err)
+	}
+
+	fmt.Printf("Proof path has %d nodes\n", len(path.Nodes))
+	for i, node := range path.Nodes {
+		fmt.Printf("Node %d: Type=%v, Hash=%x, DataLen=%d\n",
+			i, node.NodeType, node.Hash, len(node.Data))
+	}
+
+	// Debug verification step by step
+	if len(path.Nodes) == 0 {
+		t.Fatal("Empty proof path")
+	}
+
+	expectedHash := root
+	fmt.Printf("Starting verification with root hash: %x\n", expectedHash)
+
+	// Verify each node manually
+	for i := len(path.Nodes) - 1; i >= 0; i-- {
+		proofNode := path.Nodes[i]
+		fmt.Printf("\nVerifying node %d (depth %d):\n", i, len(path.Nodes)-1-i)
+		fmt.Printf("  Expected hash: %x\n", expectedHash)
+		fmt.Printf("  Stored hash: %x\n", proofNode.Hash)
+
+		// Parse the node
+		node, err := parseNodeFromProofData(proofNode.Data, proofNode.NodeType)
+		if err != nil {
+			t.Fatalf("Failed to parse proof node at depth %d: %v", i, err)
+		}
+
+		// Check hash
+		nodeHash := node.Hash()
+		fmt.Printf("  Computed hash: %x\n", nodeHash)
+
+		if !bytes.Equal(nodeHash[:], expectedHash[:]) {
+			t.Fatalf("Hash mismatch at depth %d: expected %x, got %x",
+				len(path.Nodes)-1-i, expectedHash, nodeHash)
+		}
+
+		// For inner nodes, get child hash
+		if node.IsInner() && i > 0 {
+			inner, ok := node.(*InnerNode)
+			if !ok {
+				t.Fatal("Expected InnerNode")
+			}
+
+			depth := len(path.Nodes) - 1 - i
+			nodeID := createNodeIDAtDepth(depth, k)
+			branch := SelectBranch(nodeID, k)
+
+			fmt.Printf("  Inner node at depth %d, branch %d\n", depth, branch)
+
+			childHash, err := inner.ChildHash(int(branch))
+			if err != nil {
+				t.Fatalf("Failed to get child hash: %v", err)
+			}
+
+			fmt.Printf("  Child hash: %x\n", childHash)
+			expectedHash = childHash
+		}
+	}
+
+	fmt.Println("Manual verification passed!")
+}
+
+// TestProofPath tests Merkle proof generation and verification
+func TestSHAMapPathProof(t *testing.T) {
+	sMap, err := New(TypeState) // Using TypeState to match C++ tnACCOUNT_STATE
+	if err != nil {
+		t.Fatalf("Failed to create SHAMap: %v", err)
+	}
+
+	var key [32]byte
+	var rootHash [32]byte
+	var goodPath *ProofPath
+
+	// Add items 1-99 (matching C++ test exactly)
+	for c := byte(1); c < 100; c++ {
+		// Create key like C++ uint256(c) - this likely puts the value in the first bytes
+		var k [32]byte
+		k[0] = c // Put in first byte to match C++ uint256(c) constructor
+
+		// Create data from key itself like C++ Slice{k.data(), k.size()}
+		data := make([]byte, 32)
+		copy(data, k[:])
+
+		// Add item to map using Put method
+		if err := sMap.Put(k, data); err != nil {
+			t.Fatalf("Failed to add item %d: %v", c, err)
+		}
+
+		// Get current root hash
+		root, err := sMap.Hash()
+		if err != nil {
+			t.Fatalf("Failed to get root hash for item %d: %v", c, err)
+		}
+
+		// Get proof path for this key
+		path, err := sMap.GetProofPath(k)
+		if err != nil {
+			t.Fatalf("Failed to get proof path for item %d: %v", c, err)
+		}
+
+		// BEAST_EXPECT(path) - path should not be nil
+		if path == nil {
+			t.Fatalf("Got nil proof path for item %d", c)
+		}
+
+		// BEAST_EXPECT(map.verifyProofPath(root, k, *path))
+		valid, err := VerifyProofPath(root, k, path)
+		if err != nil {
+			t.Fatalf("Error verifying proof for item %d: %v", c, err)
+		}
+		if !valid {
+			t.Errorf("Proof verification failed for item %d", c)
+		}
+
+		// Special handling for c == 1
+		if c == 1 {
+			// Test: extra node (insert duplicate at beginning)
+			extraNodePath := &ProofPath{
+				Key:   path.Key,
+				Nodes: make([]ProofNode, len(path.Nodes)+1),
+			}
+			// Duplicate first node
+			extraNodePath.Nodes[0] = ProofNode{
+				Data:     make([]byte, len(path.Nodes[0].Data)),
+				NodeType: path.Nodes[0].NodeType,
+				Hash:     path.Nodes[0].Hash,
+			}
+			copy(extraNodePath.Nodes[0].Data, path.Nodes[0].Data)
+			// Copy rest of nodes
+			copy(extraNodePath.Nodes[1:], path.Nodes)
+
+			// BEAST_EXPECT(!map.verifyProofPath(root, k, *path))
+			valid, err := VerifyProofPath(root, k, extraNodePath)
+			if err == nil && valid {
+				t.Error("Proof with extra node should have failed")
+			}
+
+			// Test: wrong key
+			var wrongKey [32]byte
+			wrongKey[0] = c + 1 // Next key value
+
+			// BEAST_EXPECT(!map.getProofPath(wrongKey))
+			wrongPath, err := sMap.GetProofPath(wrongKey)
+			if err == nil {
+				t.Error("Should get error for non-existent key")
+			}
+			if wrongPath != nil {
+				t.Error("Should get nil proof for non-existent key")
+			}
+		}
+
+		// Save data for c == 99
+		if c == 99 {
+			key = k
+			rootHash = root
+			// Deep copy the proof path
+			goodPath = &ProofPath{
+				Key:   path.Key,
+				Nodes: make([]ProofNode, len(path.Nodes)),
+			}
+			for i, node := range path.Nodes {
+				goodPath.Nodes[i] = ProofNode{
+					Data:     make([]byte, len(node.Data)),
+					NodeType: node.NodeType,
+					Hash:     node.Hash,
+				}
+				copy(goodPath.Nodes[i].Data, node.Data)
+			}
+		}
+	}
+
+	// Test: still good
+	// BEAST_EXPECT(map.verifyProofPath(rootHash, key, goodPath))
+	valid, err := VerifyProofPath(rootHash, key, goodPath)
+	if err != nil {
+		t.Fatalf("Error verifying saved good path: %v", err)
+	}
+	if !valid {
+		t.Error("Saved good path should still be valid")
+	}
+
+	// Test: empty path
+	// BEAST_EXPECT(!map.verifyProofPath(rootHash, key, badPath))
+	emptyPath := &ProofPath{
+		Key:   key,
+		Nodes: []ProofNode{},
+	}
+	valid, err = VerifyProofPath(rootHash, key, emptyPath)
+	if err == nil && valid {
+		t.Error("Empty path should fail verification")
+	}
+
+	// Test: too long path (duplicate last node to make it longer than MaxDepth+1)
+	if len(goodPath.Nodes) > 0 {
+		tooLongPath := &ProofPath{
+			Key:   goodPath.Key,
+			Nodes: make([]ProofNode, len(goodPath.Nodes)+1),
+		}
+		copy(tooLongPath.Nodes[:len(goodPath.Nodes)], goodPath.Nodes)
+		// Duplicate last node
+		lastNode := goodPath.Nodes[len(goodPath.Nodes)-1]
+		tooLongPath.Nodes[len(goodPath.Nodes)] = ProofNode{
+			Data:     make([]byte, len(lastNode.Data)),
+			NodeType: lastNode.NodeType,
+			Hash:     lastNode.Hash,
+		}
+		copy(tooLongPath.Nodes[len(goodPath.Nodes)].Data, lastNode.Data)
+
+		// BEAST_EXPECT(!map.verifyProofPath(rootHash, key, badPath))
+		valid, err = VerifyProofPath(rootHash, key, tooLongPath)
+		if err == nil && valid {
+			t.Error("Too long path should fail verification")
+		}
+	}
+
+	// Test: bad node data
+	if len(goodPath.Nodes) > 0 {
+		badNodePath := &ProofPath{
+			Key: key,
+			Nodes: []ProofNode{
+				{
+					Data:     make([]byte, 100),
+					NodeType: goodPath.Nodes[0].NodeType,
+					Hash:     goodPath.Nodes[0].Hash,
+				},
+			},
+		}
+		// Fill with invalid data
+		for i := range badNodePath.Nodes[0].Data {
+			badNodePath.Nodes[0].Data[i] = 100
+		}
+
+		// BEAST_EXPECT(!map.verifyProofPath(rootHash, key, badPath))
+		valid, err = VerifyProofPath(rootHash, key, badNodePath)
+		if err == nil && valid {
+			t.Error("Bad node data should fail verification")
+		}
+	}
+
+	// Test: bad node type
+	if len(goodPath.Nodes) > 0 && len(goodPath.Nodes[0].Data) > 0 {
+		badTypeNodePath := &ProofPath{
+			Key: goodPath.Key,
+			Nodes: []ProofNode{
+				{
+					Data:     make([]byte, len(goodPath.Nodes[0].Data)),
+					NodeType: goodPath.Nodes[0].NodeType,
+					Hash:     goodPath.Nodes[0].Hash,
+				},
+			},
+		}
+		copy(badTypeNodePath.Nodes[0].Data, goodPath.Nodes[0].Data)
+		// Change the wire type (last byte) to make it invalid
+		badTypeNodePath.Nodes[0].Data[len(badTypeNodePath.Nodes[0].Data)-1]--
+
+		// BEAST_EXPECT(!map.verifyProofPath(rootHash, key, badPath))
+		valid, err = VerifyProofPath(rootHash, key, badTypeNodePath)
+		if err == nil && valid {
+			t.Error("Bad node type should fail verification")
+		}
+	}
+
+	// Test: all inner (remove first node which should be leaf)
+	if len(goodPath.Nodes) > 1 {
+		allInnerPath := &ProofPath{
+			Key:   goodPath.Key,
+			Nodes: make([]ProofNode, len(goodPath.Nodes)-1),
+		}
+		copy(allInnerPath.Nodes, goodPath.Nodes[1:]) // Remove first node (leaf)
+
+		// BEAST_EXPECT(!map.verifyProofPath(rootHash, key, badPath))
+		valid, err = VerifyProofPath(rootHash, key, allInnerPath)
+		if err == nil && valid {
+			t.Error("Path with all inner nodes (no leaf) should fail verification")
+		}
+	}
 }

@@ -73,6 +73,7 @@ type SHAMap struct {
 	state     State
 	ledgerSeq uint32
 	full      bool
+	backed    bool
 }
 
 // New creates a new empty SHAMap with the specified type
@@ -85,6 +86,7 @@ func New(mapType Type) (*SHAMap, error) {
 		state:     StateModifying,
 		ledgerSeq: 0,
 		full:      true,
+		backed:    false,
 	}, nil
 }
 
@@ -487,7 +489,9 @@ func (sm *SHAMap) assignRoot(newRoot Node, key [32]byte) error {
 	return nil
 }
 
-// Delete removes an item from the SHAMap
+// Delete removes the item associated with the given key from the SHAMap.
+// It first locates and removes the corresponding leaf node, then reconstructs
+// the tree from the leaf's parent up to the root, consolidating as needed.
 func (sm *SHAMap) Delete(key [32]byte) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -496,43 +500,64 @@ func (sm *SHAMap) Delete(key [32]byte) error {
 		return ErrImmutable
 	}
 
-	// Build stack from root to leaf (INCLUDING the leaf)
-	stack := NewNodeStack()
-	_, err := sm.walkToKey(key, stack) // Use walkToKey, not walkToKeyForDirty
+	stack, _, err := sm.findAndRemoveLeaf(key)
 	if err != nil {
-		return fmt.Errorf("failed to walk to key: %w", err)
+		return err
+	}
+
+	newRoot, err := sm.consolidateAfterDelete(stack, key)
+	if err != nil {
+		return err
+	}
+
+	if rootInner, ok := newRoot.(*InnerNode); ok {
+		sm.root = rootInner
+	} else {
+		return fmt.Errorf("expected root to be InnerNode, got %T", newRoot)
+	}
+
+	return nil
+}
+
+// findAndRemoveLeaf walks the SHAMap to locate the leaf node matching the key.
+// It verifies the key, removes the leaf from the traversal stack, and returns
+// the remaining stack for further processing.
+func (sm *SHAMap) findAndRemoveLeaf(key [32]byte) (*NodeStack, LeafNode, error) {
+	stack := NewNodeStack()
+	_, err := sm.walkToKey(key, stack)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to walk to key: %w", err)
 	}
 
 	if stack.IsEmpty() {
-		return ErrItemNotFound
+		return nil, nil, ErrItemNotFound
 	}
 
-	// Pop the leaf from the stack
 	leafNode, _, ok := stack.Pop()
-	if !ok {
-		return ErrItemNotFound
-	}
-
-	if !leafNode.IsLeaf() {
-		return ErrItemNotFound
+	if !ok || !leafNode.IsLeaf() {
+		return nil, nil, ErrItemNotFound
 	}
 
 	leaf, ok := leafNode.(LeafNode)
 	if !ok {
-		return ErrInvalidType
+		return nil, nil, ErrInvalidType
 	}
 
-	// Verify we have the correct key
 	existingItem := leaf.Item()
 	existingKey := existingItem.Key()
 	if !bytes.Equal(key[:], existingKey[:]) {
-		return ErrItemNotFound
+		return nil, nil, ErrItemNotFound
 	}
 
-	// Start bottom-up reconstruction with prevNode = nil (deleted leaf)
+	return stack, leaf, nil
+}
+
+// consolidateAfterDelete reconstructs the SHAMap from a given node stack after
+// a deletion. It applies bottom-up logic to restructure the tree and optimize
+// it where possible (e.g., collapsing single-child inner nodes).
+func (sm *SHAMap) consolidateAfterDelete(stack *NodeStack, key [32]byte) (Node, error) {
 	var prevNode Node = nil
 
-	// Process each inner node from leaf's parent up to root
 	for !stack.IsEmpty() {
 		node, nodeID, ok := stack.Pop()
 		if !ok {
@@ -541,81 +566,61 @@ func (sm *SHAMap) Delete(key [32]byte) error {
 
 		inner, ok := node.(*InnerNode)
 		if !ok {
-			return ErrInvalidType
+			return nil, ErrInvalidType
 		}
 
-		// Create a copy of the inner node (copy-on-write)
 		clonedNode, err := inner.Clone()
 		if err != nil {
-			return fmt.Errorf("failed to clone inner node: %w", err)
+			return nil, fmt.Errorf("failed to clone inner node: %w", err)
 		}
 
 		clonedInner, ok := clonedNode.(*InnerNode)
 		if !ok {
-			return ErrInvalidType
+			return nil, ErrInvalidType
 		}
 
-		// Set the child branch to prevNode (initially nil for deleted leaf)
 		branch := SelectBranch(nodeID, key)
 		if err := clonedInner.SetChild(int(branch), prevNode); err != nil {
-			return fmt.Errorf("failed to set child: %w", err)
+			return nil, fmt.Errorf("failed to set child: %w", err)
 		}
 
-		// Apply restructuring logic - but ONLY if this is NOT the root
 		if !nodeID.IsRoot() {
-			branchCount := clonedInner.BranchCount()
-
-			if branchCount == 0 {
-				// No children - remove this branch entirely
+			switch clonedInner.BranchCount() {
+			case 0:
 				prevNode = nil
-			} else if branchCount == 1 {
-				// Single child - check if we can pull up the only item
+			case 1:
 				onlyItem, err := sm.onlyBelow(clonedInner)
 				if err != nil {
-					return fmt.Errorf("failed to check onlyBelow: %w", err)
+					return nil, fmt.Errorf("failed to check onlyBelow: %w", err)
 				}
 
 				if onlyItem != nil {
-					// There's exactly one leaf below - replace entire subtree with that leaf
 					nodeType, err := sm.getLeafNodeType()
 					if err != nil {
-						return err
+						return nil, err
 					}
-
 					newLeaf, err := sm.createTypedLeaf(nodeType, onlyItem)
 					if err != nil {
-						return fmt.Errorf("failed to create replacement leaf: %w", err)
+						return nil, fmt.Errorf("failed to create replacement leaf: %w", err)
 					}
-
 					prevNode = newLeaf
 				} else {
-					// Multiple items below despite single child - keep the inner node
 					prevNode = clonedInner
 				}
-			} else {
-				// Multiple children - keep the inner node
+			default:
 				prevNode = clonedInner
 			}
 		} else {
-			// This IS the root - never optimize it away
-			// Root always remains an InnerNode even if empty
+			// Always retain root
 			prevNode = clonedInner
 		}
 	}
 
-	// Assign the final result as the new root
-	if prevNode != nil {
-		if rootInner, ok := prevNode.(*InnerNode); ok {
-			sm.root = rootInner
-		} else {
-			return fmt.Errorf("expected root to be InnerNode, got %T", prevNode)
-		}
-	} else {
-		// This shouldn't happen if root handling is correct
-		return errors.New("unexpected nil root after deletion")
+	if prevNode == nil {
+		return nil, errors.New("unexpected nil root after deletion")
 	}
 
-	return nil
+	return prevNode, nil
 }
 
 // onlyBelow checks if there's exactly one item below the given node
@@ -945,4 +950,8 @@ func (sm *SHAMap) cloneNodeTree(node Node) (*InnerNode, error) {
 	}
 
 	return clonedInner, nil
+}
+
+func (sm *SHAMap) FindDifference() {
+	//TODO implement me
 }

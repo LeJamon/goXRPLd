@@ -169,22 +169,167 @@ func (n *InnerNode) updateHashUnsafe() error {
 	return nil
 }
 
-// SerializeForWire serializes the node for wire transmission
 func (n *InnerNode) SerializeForWire() ([]byte, error) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
-	// TODO: Implement serialization logic
-	return nil, errors.New("SerializeForWire not implemented")
+	if n.isBranch == 0 {
+		return nil, ErrEmptyNonRoot
+	}
+
+	var result []byte
+	branchCount := n.BranchCount()
+
+	if branchCount < 12 {
+		// Compressed format: only serialize non-empty branches
+		// Format: [Hash32][Position1][Hash32][Position1]...[WireType]
+		for i := 0; i < BranchFactor; i++ {
+			if n.isBranch&(1<<i) != 0 {
+				// Add the 32-byte hash
+				result = append(result, n.hashes[i][:]...)
+				// Add the 1-byte position
+				result = append(result, byte(i))
+			}
+		}
+		// Add compressed inner wire type
+		result = append(result, protocol.WireTypeCompressedInner)
+	} else {
+		// Full format: serialize all 16 hashes (including zero hashes)
+		// Format: [Hash0][Hash1]...[Hash15][WireType]
+		zeroHash := make([]byte, 32)
+		for i := 0; i < BranchFactor; i++ {
+			if n.isBranch&(1<<i) != 0 {
+				// Non-empty branch: use the stored hash
+				result = append(result, n.hashes[i][:]...)
+			} else {
+				// Empty branch: use zero hash
+				result = append(result, zeroHash...)
+			}
+		}
+		// Add full inner wire type
+		result = append(result, protocol.WireTypeInner)
+	}
+
+	return result, nil
 }
 
-// SerializeWithPrefix serializes with type prefix
+// SerializeWithPrefix serializes with type prefix for hashing and storage
 func (n *InnerNode) SerializeWithPrefix() ([]byte, error) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
-	// TODO: Implement serialization logic
-	return nil, errors.New("SerializeWithPrefix not implemented")
+	if n.isBranch == 0 {
+		return nil, ErrEmptyNonRoot
+	}
+
+	var result []byte
+
+	// Add the inner node prefix (4 bytes)
+	result = append(result, protocol.HashPrefixInnerNode[:]...)
+
+	// Add ALL 16 child hashes in order (even empty ones as zero hashes)
+	zeroHash := make([]byte, 32)
+	for i := 0; i < BranchFactor; i++ {
+		if n.isBranch&(1<<i) != 0 {
+			// Non-empty branch: use the stored hash
+			result = append(result, n.hashes[i][:]...)
+		} else {
+			// Empty branch: use zero hash
+			result = append(result, zeroHash...)
+		}
+	}
+
+	return result, nil
+}
+
+// NewInnerNodeFromWire creates an InnerNode from wire format data
+func NewInnerNodeFromWire(data []byte) (*InnerNode, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("empty wire data")
+	}
+
+	wireType := data[len(data)-1]
+	nodeData := data[:len(data)-1]
+
+	switch wireType {
+	case protocol.WireTypeInner:
+		return parseFullInnerNode(nodeData)
+	case protocol.WireTypeCompressedInner:
+		return parseCompressedInnerNode(nodeData)
+	default:
+		return nil, fmt.Errorf("invalid wire type for inner node: %d", wireType)
+	}
+}
+
+// parseFullInnerNode parses a full inner node (16 hashes of 32 bytes each = 512 bytes)
+func parseFullInnerNode(data []byte) (*InnerNode, error) {
+	expectedSize := BranchFactor * 32 // 16 * 32 = 512 bytes
+	if len(data) != expectedSize {
+		return nil, fmt.Errorf("invalid full inner node size: expected %d, got %d", expectedSize, len(data))
+	}
+
+	node := NewInnerNode()
+
+	// Read 16 child hashes in order
+	for i := 0; i < BranchFactor; i++ {
+		start := i * 32
+		end := start + 32
+
+		var hash [32]byte
+		copy(hash[:], data[start:end])
+
+		// Set the hash and update isBranch if non-zero
+		if !isZeroHash(hash) {
+			node.hashes[i] = hash
+			node.isBranch |= 1 << i
+		}
+	}
+
+	// Update the node's own hash
+	if err := node.UpdateHash(); err != nil {
+		return nil, fmt.Errorf("failed to update inner node hash: %w", err)
+	}
+
+	return node, nil
+}
+
+// parseCompressedInnerNode parses compressed format: series of (32-byte hash + 1-byte position)
+func parseCompressedInnerNode(data []byte) (*InnerNode, error) {
+	const chunkSize = 33 // 32 bytes hash + 1 byte position
+
+	if len(data)%chunkSize != 0 {
+		return nil, fmt.Errorf("invalid compressed inner node size: %d not divisible by %d", len(data), chunkSize)
+	}
+
+	if len(data) > chunkSize*BranchFactor {
+		return nil, fmt.Errorf("compressed inner node too large: %d > %d", len(data), chunkSize*BranchFactor)
+	}
+
+	node := NewInnerNode()
+
+	// Parse each hash+position pair
+	for i := 0; i < len(data); i += chunkSize {
+		// Read 32-byte hash
+		var hash [32]byte
+		copy(hash[:], data[i:i+32])
+
+		// Read 1-byte position
+		position := data[i+32]
+		if position >= BranchFactor {
+			return nil, fmt.Errorf("invalid branch position: %d >= %d", position, BranchFactor)
+		}
+
+		// Set the hash at the specified position
+		node.hashes[position] = hash
+		node.isBranch |= 1 << position
+	}
+
+	// Update the node's own hash
+	if err := node.UpdateHash(); err != nil {
+		return nil, fmt.Errorf("failed to update inner node hash: %w", err)
+	}
+
+	return node, nil
 }
 
 // String returns a human-readable representation of the node
@@ -296,4 +441,24 @@ func (n *InnerNode) ForEachChild(fn func(index int, child Node) bool) {
 // HasChildren returns true if the node has any children
 func (n *InnerNode) HasChildren() bool {
 	return !n.IsEmpty()
+}
+
+// setChildHashForProof is used when deserializing an InnerNode for proof verification
+func (n *InnerNode) setChildHashForProof(index int, hash [32]byte) error {
+	if index < 0 || index >= BranchFactor {
+		return ErrInvalidBranch
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	n.hashes[index] = hash
+	n.children[index] = nil // No actual child, just hash
+	if !isZeroHash(hash) {
+		n.isBranch |= 1 << index
+	} else {
+		n.isBranch &= ^(1 << index)
+	}
+
+	return nil
 }

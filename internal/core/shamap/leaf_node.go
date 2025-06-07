@@ -2,11 +2,11 @@ package shamap
 
 import (
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
 
+	"github.com/LeJamon/goXRPLd/internal/crypto/common"
 	"github.com/LeJamon/goXRPLd/internal/protocol"
 )
 
@@ -97,16 +97,68 @@ func (n *AccountStateLeafNode) SerializeForWire() ([]byte, error) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
-	// TODO: Implement serialization logic
-	return nil, errors.New("SerializeForWire not implemented")
+	if n.item == nil {
+		return nil, ErrNilItem
+	}
+	var result []byte
+	// Add transaction + metadata data (no prefix for wire format)
+	result = append(result, n.item.Data()...)
+	key := n.item.Key()
+	result = append(result, key[:]...)
+	result = append(result, protocol.WireTypeAccountState)
+
+	return result, nil
 }
 
 func (n *AccountStateLeafNode) SerializeWithPrefix() ([]byte, error) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
-	// TODO: Implement serialization logic
-	return nil, errors.New("SerializeWithPrefix not implemented")
+	if n.item == nil {
+		return nil, ErrNilItem
+	}
+
+	var result []byte
+	result = append(result, protocol.HashPrefixLeafNode[:]...)
+	result = append(result, n.item.Data()...)
+	key := n.item.Key()
+	result = append(result, key[:]...)
+
+	return result, nil
+}
+
+// NewAccountStateLeafFromWire creates an AccountStateLeafNode from wire format data
+func NewAccountStateLeafFromWire(data []byte) (*AccountStateLeafNode, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("empty wire data")
+	}
+
+	wireType := data[len(data)-1]
+	if wireType != protocol.WireTypeAccountState {
+		return nil, fmt.Errorf("invalid wire type for account state: %d", wireType)
+	}
+
+	nodeData := data[:len(data)-1]
+
+	// Format: [state_data][32_byte_key]
+	if len(nodeData) < 32 {
+		return nil, fmt.Errorf("account state data too short")
+	}
+
+	// Extract key from last 32 bytes
+	keyStart := len(nodeData) - 32
+	var key [32]byte
+	copy(key[:], nodeData[keyStart:])
+
+	// Verify key is not zero (as per rippled logic)
+	if isZeroHash(key) {
+		return nil, fmt.Errorf("invalid account state: zero key")
+	}
+
+	stateData := nodeData[:keyStart]
+	item := NewItem(key, stateData)
+
+	return NewAccountStateLeafNode(item)
 }
 
 func (n *AccountStateLeafNode) Invariants(isRoot bool) error {
@@ -233,16 +285,52 @@ func (n *TransactionLeafNode) SerializeForWire() ([]byte, error) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
-	// TODO: Implement serialization logic
-	return nil, errors.New("SerializeForWire not implemented")
+	if n.item == nil {
+		return nil, ErrNilItem
+	}
+	var result []byte
+	// Add transaction + metadata data (no prefix for wire format)
+	result = append(result, n.item.Data()...)
+	key := n.item.Key()
+	result = append(result, key[:]...)
+	result = append(result, protocol.WireTypeTransaction)
+
+	return result, nil
 }
 
 func (n *TransactionLeafNode) SerializeWithPrefix() ([]byte, error) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
-	// TODO: Implement serialization logic
-	return nil, errors.New("SerializeWithPrefix not implemented")
+	if n.item == nil {
+		return nil, ErrNilItem
+	}
+
+	var result []byte
+	result = append(result, protocol.HashPrefixTransactionID[:]...)
+	result = append(result, n.item.Data()...)
+	return result, nil
+}
+
+// NewTransactionLeafFromWire creates a TransactionLeafNode from wire format data
+func NewTransactionLeafFromWire(data []byte) (*TransactionLeafNode, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("empty wire data")
+	}
+
+	wireType := data[len(data)-1]
+	if wireType != protocol.WireTypeTransaction {
+		return nil, fmt.Errorf("invalid wire type for transaction: %d", wireType)
+	}
+
+	nodeData := data[:len(data)-1]
+
+	// For transaction without metadata, the key is derived from hashing the data
+	// As per rippled: sha512Half(HashPrefix::transactionID, data)
+	key := crypto.Sha512Half(protocol.HashPrefixTransactionID[:], nodeData)
+
+	item := NewItem(key, nodeData)
+	return NewTransactionLeafNode(item)
 }
 
 func (n *TransactionLeafNode) Invariants(isRoot bool) error {
@@ -366,20 +454,67 @@ func (n *TransactionWithMetaLeafNode) Type() NodeType {
 	return NodeTypeTransactionWithMeta
 }
 
+// SerializeForWire - Used for network transmission and proof paths
 func (n *TransactionWithMetaLeafNode) SerializeForWire() ([]byte, error) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
-	// TODO: Implement serialization logic
-	return nil, errors.New("SerializeForWire not implemented")
-}
+	if n.item == nil {
+		return nil, ErrNilItem
+	}
+	var result []byte
+	// Add transaction + metadata data (no prefix for wire format)
+	result = append(result, n.item.Data()...)
+	key := n.item.Key()
+	result = append(result, key[:]...)
+	result = append(result, protocol.WireTypeTransactionWithMeta)
 
+	return result, nil
+}
 func (n *TransactionWithMetaLeafNode) SerializeWithPrefix() ([]byte, error) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 
-	// TODO: Implement serialization logic
-	return nil, errors.New("SerializeWithPrefix not implemented")
+	if n.item == nil {
+		return nil, ErrNilItem
+	}
+
+	var result []byte
+
+	result = append(result, protocol.HashPrefixTxNode[:]...)
+	result = append(result, n.item.Data()...)
+	key := n.item.Key()
+	result = append(result, key[:]...)
+
+	return result, nil
+}
+
+func NewTransactionWithMetaLeafFromWire(data []byte) (*TransactionWithMetaLeafNode, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("empty wire data")
+	}
+
+	wireType := data[len(data)-1]
+	if wireType != protocol.WireTypeTransactionWithMeta {
+		return nil, fmt.Errorf("invalid wire type for transaction with meta: %d", wireType)
+	}
+
+	nodeData := data[:len(data)-1]
+
+	// Format: [tx_data][32_byte_key]
+	if len(nodeData) < 32 {
+		return nil, fmt.Errorf("transaction with meta data too short")
+	}
+
+	// Extract key from last 32 bytes
+	keyStart := len(nodeData) - 32
+	var key [32]byte
+	copy(key[:], nodeData[keyStart:])
+
+	txData := nodeData[:keyStart]
+	item := NewItem(key, txData)
+
+	return NewTransactionWithMetaLeafNode(item)
 }
 
 func (n *TransactionWithMetaLeafNode) Invariants(isRoot bool) error {
