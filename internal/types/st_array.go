@@ -24,7 +24,15 @@ var ErrNotSTObjectInSTArray = errors.New("not STObject in STArray. Array fields 
 // of an STObject, appending the resulting byte slice to a "sink" slice.
 // The method returns an error if the JSON value is not a slice.
 func (t *STArray) FromJSON(json any) ([]byte, error) {
-	if _, ok := json.([]any); !ok {
+	switch v := json.(type) {
+	case []any:
+		json = v
+	case []map[string]any:
+		json = make([]any, len(v))
+		for i, m := range v {
+			json.([]any)[i] = m
+		}
+	default:
 		return nil, ErrNotSTObjectInSTArray
 	}
 

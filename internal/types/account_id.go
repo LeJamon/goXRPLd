@@ -1,6 +1,9 @@
 package types
 
 import (
+	"fmt"
+	"strings"
+
 	addresscodec "github.com/Peersyst/xrpl-go/address-codec"
 	"github.com/Peersyst/xrpl-go/binary-codec/types/interfaces"
 )
@@ -17,13 +20,29 @@ type AccountID struct{}
 // AccountIDs that appear as children of special fields (Amount issuer and PathSet account) are not length-prefixed.
 // So in Amount and PathSet fields, don't use the length indicator 0x14.
 func (a *AccountID) FromJSON(value any) ([]byte, error) {
-	_, accountID, err := addresscodec.DecodeClassicAddressToAccountID(value.(string))
-
-	if err != nil {
-		return nil, err
+	strValue, ok := value.(string)
+	if !ok {
+		return nil, fmt.Errorf("expected a string but got %T", value)
 	}
 
-	return accountID, nil
+	switch {
+	case strings.HasPrefix(strValue, "r"):
+		_, accountID, err := addresscodec.DecodeClassicAddressToAccountID(strValue)
+		if err != nil {
+			return nil, err
+		}
+		return accountID, nil
+
+	case strings.HasPrefix(strValue, "X"):
+		accountID, _, _, err := addresscodec.DecodeXAddress(strValue)
+		if err != nil {
+			return nil, err
+		}
+		return accountID, nil
+
+	default:
+		return nil, addresscodec.ErrInvalidAddressFormat
+	}
 }
 
 // ToJSON is a method for the AccountID type that deserializes a byte slice

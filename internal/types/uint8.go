@@ -30,6 +30,8 @@ func (u *UInt8) FromJSON(value any) ([]byte, error) {
 		intValue = v
 	case int32:
 		intValue = int(v)
+	case uint8:
+		intValue = int(v)
 	}
 
 	buf := new(bytes.Buffer)

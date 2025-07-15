@@ -2,7 +2,9 @@ package shamap
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"github.com/LeJamon/goXRPLd/internal/protocol"
 	"strings"
 
 	"github.com/LeJamon/goXRPLd/internal/crypto/common"
@@ -80,4 +82,27 @@ func (b *BaseNode) String(id NodeID) string {
 // IsZeroHash returns true if the hash is zero (uninitialized)
 func (b *BaseNode) IsZeroHash() bool {
 	return b.hash == [32]byte{}
+}
+
+func DeserializeNodeFromWire(data []byte) (Node, error) {
+	if len(data) == 0 {
+		return nil, errors.New("empty wire data")
+	}
+
+	wireType := data[len(data)-1]
+
+	switch wireType {
+	case protocol.WireTypeInner:
+		return NewInnerNodeFromWire(data)
+	case protocol.WireTypeCompressedInner:
+		return NewInnerNodeFromWire(data)
+	case protocol.WireTypeAccountState:
+		return NewAccountStateLeafFromWire(data)
+	case protocol.WireTypeTransaction:
+		return NewTransactionLeafFromWire(data)
+	case protocol.WireTypeTransactionWithMeta:
+		return NewTransactionWithMetaLeafFromWire(data)
+	default:
+		return nil, fmt.Errorf("unknown wire type: %d", wireType)
+	}
 }

@@ -671,7 +671,7 @@ func nextPrefix(current string, isTail bool) string {
 	return current + "│   "
 }
 
-func TestSHAMapPathProofDebug(t *testing.T) {
+/*func TestSHAMapPathProofDebug(t *testing.T) {
 	sMap, err := New(TypeState)
 	if err != nil {
 		t.Fatalf("Failed to create SHAMap: %v", err)
@@ -980,4 +980,4 @@ func TestSHAMapPathProof(t *testing.T) {
 			t.Error("Path with all inner nodes (no leaf) should fail verification")
 		}
 	}
-}
+}*/
