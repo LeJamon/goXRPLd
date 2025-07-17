@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/Peersyst/xrpl-go/binary-codec/definitions"
-	"github.com/Peersyst/xrpl-go/binary-codec/serdes"
-	"github.com/Peersyst/xrpl-go/binary-codec/types/interfaces"
-	"github.com/Peersyst/xrpl-go/binary-codec/types/testutil"
+	"github.com/LeJamon/goXRPLd/internal/codec/binary-codec/definitions"
+	"github.com/LeJamon/goXRPLd/internal/codec/binary-codec/serdes"
+	"github.com/LeJamon/goXRPLd/internal/types/interfaces"
+	"github.com/LeJamon/goXRPLd/internal/types/testutil"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 )

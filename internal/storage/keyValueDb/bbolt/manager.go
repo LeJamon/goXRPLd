@@ -2,7 +2,7 @@ package bbolt
 
 import (
 	"fmt"
-	"github.com/LeJamon/goXRPLd/internal/storage/database"
+	"github.com/LeJamon/goXRPLd/internal/storage/keyValueDb"
 	"go.etcd.io/bbolt"
 	"path/filepath"
 )
@@ -19,11 +19,11 @@ func NewBBoltManager(path string) *BBoltManager {
 	}
 }
 
-func (m *BBoltManager) OpenDB(name string) (database.DB, error) {
+func (m *BBoltManager) OpenDB(name string) (keyValueDb.DB, error) {
 	dbPath := filepath.Join(m.path, name+".db")
 	db, err := bbolt.Open(dbPath, 0600, nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open database %s: %w", name, err)
+		return nil, fmt.Errorf("failed to open keyValueDb %s: %w", name, err)
 	}
 
 	// Create default bucket
@@ -43,7 +43,7 @@ func (m *BBoltManager) OpenDB(name string) (database.DB, error) {
 func (m *BBoltManager) CloseDB(name string) error {
 	db, exists := m.dbs[name]
 	if !exists {
-		return fmt.Errorf("database %s not found", name)
+		return fmt.Errorf("keyValueDb %s not found", name)
 	}
 
 	err := db.Close()
@@ -59,7 +59,7 @@ func (m *BBoltManager) Close() error {
 	var lastErr error
 	for name, db := range m.dbs {
 		if err := db.Close(); err != nil {
-			lastErr = fmt.Errorf("failed to close database %s: %w", name, err)
+			lastErr = fmt.Errorf("failed to close keyValueDb %s: %w", name, err)
 		}
 		delete(m.dbs, name)
 	}

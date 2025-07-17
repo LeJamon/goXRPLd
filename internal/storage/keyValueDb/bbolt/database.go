@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/LeJamon/goXRPLd/internal/storage/database"
+	"github.com/LeJamon/goXRPLd/internal/storage/keyValueDb"
 	"go.etcd.io/bbolt"
 )
 
 var (
-	ErrDBClosed    = errors.New("database is closed")
+	ErrDBClosed    = errors.New("keyValueDb is closed")
 	ErrKeyNotFound = errors.New("key not found")
 )
 
@@ -85,7 +85,7 @@ func (b *BBoltDB) Delete(ctx context.Context, key []byte) error {
 	})
 }
 
-func (b *BBoltDB) Batch(ctx context.Context, ops []database.BatchOperation) error {
+func (b *BBoltDB) Batch(ctx context.Context, ops []keyValueDb.BatchOperation) error {
 	if b.db == nil {
 		return ErrDBClosed
 	}
@@ -99,9 +99,9 @@ func (b *BBoltDB) Batch(ctx context.Context, ops []database.BatchOperation) erro
 		for _, op := range ops {
 			var err error
 			switch op.Type {
-			case database.BatchPut:
+			case keyValueDb.BatchPut:
 				err = bucket.Put(op.Key, op.Value)
-			case database.BatchDelete:
+			case keyValueDb.BatchDelete:
 				err = bucket.Delete(op.Key)
 			default:
 				return fmt.Errorf("unknown batch operation type: %d", op.Type)
@@ -124,7 +124,7 @@ type BBoltIterator struct {
 	err        error
 }
 
-func (b *BBoltDB) Iterator(ctx context.Context, start, end []byte) (database.Iterator, error) {
+func (b *BBoltDB) Iterator(ctx context.Context, start, end []byte) (keyValueDb.Iterator, error) {
 	if b.db == nil {
 		return nil, ErrDBClosed
 	}

@@ -6,12 +6,12 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/LeJamon/goXRPLd/internal/storage/database"
+	"github.com/LeJamon/goXRPLd/internal/storage/keyValueDb"
 	"github.com/cockroachdb/pebble"
 )
 
 var (
-	ErrDBClosed    = errors.New("database is closed")
+	ErrDBClosed    = errors.New("keyValueDb is closed")
 	ErrKeyNotFound = errors.New("key not found")
 )
 
@@ -57,7 +57,7 @@ func (p *DB) Delete(ctx context.Context, key []byte) error {
 	return p.db.Delete(key, pebble.Sync)
 }
 
-func (p *DB) Batch(ctx context.Context, ops []database.BatchOperation) error {
+func (p *DB) Batch(ctx context.Context, ops []keyValueDb.BatchOperation) error {
 	if p.db == nil {
 		return ErrDBClosed
 	}
@@ -67,11 +67,11 @@ func (p *DB) Batch(ctx context.Context, ops []database.BatchOperation) error {
 
 	for _, op := range ops {
 		switch op.Type {
-		case database.BatchPut:
+		case keyValueDb.BatchPut:
 			if err := batch.Set(op.Key, op.Value, nil); err != nil {
 				return err
 			}
-		case database.BatchDelete:
+		case keyValueDb.BatchDelete:
 			if err := batch.Delete(op.Key, nil); err != nil {
 				return err
 			}
@@ -94,7 +94,7 @@ type Iterator struct {
 	}
 }
 
-func (p *DB) Iterator(ctx context.Context, start, end []byte) (database.Iterator, error) {
+func (p *DB) Iterator(ctx context.Context, start, end []byte) (keyValueDb.Iterator, error) {
 	if p.db == nil {
 		return nil, ErrDBClosed
 	}

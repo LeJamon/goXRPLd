@@ -3,7 +3,7 @@ package pebble
 import (
 	"context"
 	"fmt"
-	"github.com/LeJamon/goXRPLd/internal/storage/database"
+	"github.com/LeJamon/goXRPLd/internal/storage/keyValueDb"
 	"os"
 	"path/filepath"
 	"testing"
@@ -41,7 +41,7 @@ func TestPebbleDB(t *testing.T) {
 	t.Run("Database Lifecycle", func(t *testing.T) {
 		db, err := manager.OpenDB("test")
 		if err != nil {
-			t.Fatalf("Failed to open database: %v", err)
+			t.Fatalf("Failed to open keyValueDb: %v", err)
 		}
 
 		key := []byte("lifecycle-test")
@@ -63,7 +63,7 @@ func TestPebbleDB(t *testing.T) {
 
 		err = manager.CloseDB("test")
 		if err != nil {
-			t.Fatalf("Failed to close database: %v", err)
+			t.Fatalf("Failed to close keyValueDb: %v", err)
 		}
 
 		dbPath := filepath.Join(manager.path, "test.db")
@@ -75,13 +75,13 @@ func TestPebbleDB(t *testing.T) {
 	t.Run("Batch Operations", func(t *testing.T) {
 		db, err := manager.OpenDB("batch-test")
 		if err != nil {
-			t.Fatalf("Failed to open database: %v", err)
+			t.Fatalf("Failed to open keyValueDb: %v", err)
 		}
 
-		ops := []database.BatchOperation{
-			{Type: database.BatchPut, Key: []byte("batch1"), Value: []byte("value1")},
-			{Type: database.BatchPut, Key: []byte("batch2"), Value: []byte("value2")},
-			{Type: database.BatchDelete, Key: []byte("batch1")},
+		ops := []keyValueDb.BatchOperation{
+			{Type: keyValueDb.BatchPut, Key: []byte("batch1"), Value: []byte("value1")},
+			{Type: keyValueDb.BatchPut, Key: []byte("batch2"), Value: []byte("value2")},
+			{Type: keyValueDb.BatchDelete, Key: []byte("batch1")},
 		}
 
 		err = db.Batch(ctx, ops)
@@ -106,7 +106,7 @@ func TestPebbleDB(t *testing.T) {
 	t.Run("Iterator", func(t *testing.T) {
 		db, err := manager.OpenDB("iterator-test")
 		if err != nil {
-			t.Fatalf("Failed to open database: %v", err)
+			t.Fatalf("Failed to open keyValueDb: %v", err)
 		}
 
 		testData := map[string]string{
@@ -126,7 +126,7 @@ func TestPebbleDB(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create iterator: %v", err)
 		}
-		defer func(iter database.Iterator) {
+		defer func(iter keyValueDb.Iterator) {
 			err := iter.Close()
 			if err != nil {
 				t.Fatalf("Iterator close failed: %v", err)
@@ -160,7 +160,7 @@ func TestPebbleDB(t *testing.T) {
 	t.Run("Concurrent Access", func(t *testing.T) {
 		db, err := manager.OpenDB("concurrent-test")
 		if err != nil {
-			t.Fatalf("Failed to open database: %v", err)
+			t.Fatalf("Failed to open keyValueDb: %v", err)
 		}
 
 		const numGoroutines = 10

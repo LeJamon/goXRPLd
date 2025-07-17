@@ -236,6 +236,7 @@ func TestBuildAndTear(t *testing.T) {
 			t.Errorf("Hash mismatch after adding item %d: expected %x, got %x",
 				k, expectedHashes[k], actualHash)
 		}
+		dumpTree(sMap.root, "", false)
 	}
 
 	// Delete all keys in reverse order and verify hashes
@@ -265,6 +266,8 @@ func TestBuildAndTear(t *testing.T) {
 		if found {
 			t.Errorf("Item %d should have been deleted", k)
 		}
+		fmt.Println("______________________________")
+		dumpTree(sMap.root, "", false)
 
 		// Optional: Check invariants if you have that method
 		// if err := sMap.Invariants(); err != nil {

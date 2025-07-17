@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Peersyst/xrpl-go/binary-codec/types/interfaces"
+	"github.com/LeJamon/goXRPLd/internal/types/interfaces"
 )
 
 // ErrInvalidHashLength struct is used when the hash length does not meet the expected value.

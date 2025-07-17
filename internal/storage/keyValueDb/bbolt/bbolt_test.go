@@ -3,7 +3,7 @@ package bbolt
 import (
 	"context"
 	"fmt"
-	"github.com/LeJamon/goXRPLd/internal/storage/database"
+	"github.com/LeJamon/goXRPLd/internal/storage/keyValueDb"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,7 +11,7 @@ import (
 )
 
 func setupTestDB(t *testing.T) (*BBoltManager, func()) {
-	// Create temporary directory for test database
+	// Create temporary directory for test keyValueDb
 	tempDir, err := os.MkdirTemp("", "bbolt-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -43,7 +43,7 @@ func TestBBoltDB(t *testing.T) {
 		// Open DB
 		db, err := manager.OpenDB("test")
 		if err != nil {
-			t.Fatalf("Failed to open database: %v", err)
+			t.Fatalf("Failed to open keyValueDb: %v", err)
 		}
 
 		// Write and read
@@ -67,7 +67,7 @@ func TestBBoltDB(t *testing.T) {
 		// Close DB
 		err = manager.CloseDB("test")
 		if err != nil {
-			t.Fatalf("Failed to close database: %v", err)
+			t.Fatalf("Failed to close keyValueDb: %v", err)
 		}
 
 		// Verify DB file exists
@@ -80,13 +80,13 @@ func TestBBoltDB(t *testing.T) {
 	t.Run("Batch Operations", func(t *testing.T) {
 		db, err := manager.OpenDB("batch-test")
 		if err != nil {
-			t.Fatalf("Failed to open database: %v", err)
+			t.Fatalf("Failed to open keyValueDb: %v", err)
 		}
 
-		ops := []database.BatchOperation{
-			{Type: database.BatchPut, Key: []byte("batch1"), Value: []byte("value1")},
-			{Type: database.BatchPut, Key: []byte("batch2"), Value: []byte("value2")},
-			{Type: database.BatchDelete, Key: []byte("batch1")},
+		ops := []keyValueDb.BatchOperation{
+			{Type: keyValueDb.BatchPut, Key: []byte("batch1"), Value: []byte("value1")},
+			{Type: keyValueDb.BatchPut, Key: []byte("batch2"), Value: []byte("value2")},
+			{Type: keyValueDb.BatchDelete, Key: []byte("batch1")},
 		}
 
 		err = db.Batch(ctx, ops)
@@ -113,7 +113,7 @@ func TestBBoltDB(t *testing.T) {
 	t.Run("Iterator", func(t *testing.T) {
 		db, err := manager.OpenDB("iterator-test")
 		if err != nil {
-			t.Fatalf("Failed to open database: %v", err)
+			t.Fatalf("Failed to open keyValueDb: %v", err)
 		}
 
 		// Write test data
@@ -164,7 +164,7 @@ func TestBBoltDB(t *testing.T) {
 	t.Run("Concurrent Access", func(t *testing.T) {
 		db, err := manager.OpenDB("concurrent-test")
 		if err != nil {
-			t.Fatalf("Failed to open database: %v", err)
+			t.Fatalf("Failed to open keyValueDb: %v", err)
 		}
 
 		const numGoroutines = 10

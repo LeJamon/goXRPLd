@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"encoding/binary"
 
-	"github.com/Peersyst/xrpl-go/binary-codec/definitions"
-	"github.com/Peersyst/xrpl-go/binary-codec/types/interfaces"
+	"github.com/LeJamon/goXRPLd/internal/codec/binary-codec/definitions"
+	"github.com/LeJamon/goXRPLd/internal/types/interfaces"
 )
 
 // UInt8 represents an 8-bit unsigned integer.

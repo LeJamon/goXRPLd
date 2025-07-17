@@ -27,6 +27,7 @@ const (
 // Encode converts a JSON transaction object to a hex string in the canonical binary format.
 // The binary format is defined in XRPL's core codebase.
 func Encode(json map[string]any) (string, error) {
+	//TODO debug
 	st := types.NewSTObject(serdes.NewBinarySerializer(serdes.NewFieldIDCodec(definitions.Get())))
 
 	// Iterate over the keys in the provided JSON
@@ -135,6 +136,7 @@ func Decode(hexEncoded string) (map[string]any, error) {
 		return nil, err
 	}
 	p := serdes.NewBinaryParser(b, definitions.Get())
+	//TODO debug
 	st := types.NewSTObject(serdes.NewBinarySerializer(serdes.NewFieldIDCodec(definitions.Get())))
 	m, err := st.ToJSON(p)
 	if err != nil {

@@ -10,14 +10,14 @@ import (
 )
 
 func setupTestDB(t *testing.T) (*NodeStore, string) {
-	// Create temporary directory for test database
+	// Create temporary directory for test keyValueDb
 	tempDir, err := os.MkdirTemp("", "nodestore_test_*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
 
 	dbPath := filepath.Join(tempDir, "test.db")
-	log.Printf("Setting up test database at: %s", dbPath)
+	log.Printf("Setting up test keyValueDb at: %s", dbPath)
 
 	store, err := NewNodeStore(dbPath)
 	if err != nil {

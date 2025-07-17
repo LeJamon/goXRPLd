@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
+	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	"github.com/LeJamon/goXRPLd/internal/types/testutil"
-	addresscodec "github.com/Peersyst/xrpl-go/address-codec"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 )

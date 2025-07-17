@@ -2,9 +2,9 @@ package types
 
 import (
 	"sort"
-
-	"github.com/Peersyst/xrpl-go/binary-codec/definitions"
-	"github.com/Peersyst/xrpl-go/binary-codec/types/interfaces"
+	
+	"github.com/LeJamon/goXRPLd/internal/codec/binary-codec/definitions"
+	"github.com/LeJamon/goXRPLd/internal/types/interfaces"
 )
 
 // STObject represents a map of serialized field instances, where each key is a field name

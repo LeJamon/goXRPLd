@@ -1,10 +1,10 @@
-package database
+package keyValueDb
 
 import (
 	"context"
 )
 
-// DB defines the basic operations any database implementation must support
+// DB defines the basic operations any keyValueDb implementation must support
 type DB interface {
 	// Read Basic operations
 	Read(ctx context.Context, key []byte) ([]byte, error)
@@ -16,7 +16,7 @@ type DB interface {
 	Iterator(ctx context.Context, start, end []byte) (Iterator, error)
 }
 
-// Iterator allows traversing over database entries
+// Iterator allows traversing over keyValueDb entries
 type Iterator interface {
 	Next() bool
 	Key() []byte

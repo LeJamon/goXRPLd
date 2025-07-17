@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"testing"
 
-	addresscodec "github.com/Peersyst/xrpl-go/address-codec"
-	"github.com/Peersyst/xrpl-go/binary-codec/definitions"
-	"github.com/Peersyst/xrpl-go/binary-codec/serdes"
-	"github.com/Peersyst/xrpl-go/binary-codec/types/interfaces"
-	"github.com/Peersyst/xrpl-go/binary-codec/types/testutil"
+	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
+	"github.com/LeJamon/goXRPLd/internal/codec/binary-codec/definitions"
+	"github.com/LeJamon/goXRPLd/internal/codec/binary-codec/serdes"
+	"github.com/LeJamon/goXRPLd/internal/types/interfaces"
+	"github.com/LeJamon/goXRPLd/internal/types/testutil"
+	
 	bigdecimal "github.com/Peersyst/xrpl-go/pkg/big-decimal"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"

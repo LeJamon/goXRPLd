@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/LeJamon/goXRPLd/internal/storage/database"
+	"github.com/LeJamon/goXRPLd/internal/storage/keyValueDb"
 	"github.com/cockroachdb/pebble"
 )
 
@@ -22,7 +22,7 @@ func NewManager(path string) *Manager {
 	}
 }
 
-func (m *Manager) OpenDB(name string) (database.DB, error) {
+func (m *Manager) OpenDB(name string) (keyValueDb.DB, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -37,7 +37,7 @@ func (m *Manager) OpenDB(name string) (database.DB, error) {
 
 	db, err := pebble.Open(dbPath, opts)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open database %s: %w", name, err)
+		return nil, fmt.Errorf("failed to open keyValueDb %s: %w", name, err)
 	}
 
 	m.dbs[name] = db
@@ -51,7 +51,7 @@ func (m *Manager) CloseDB(name string) error {
 
 	db, exists := m.dbs[name]
 	if !exists {
-		return fmt.Errorf("database %s not found", name)
+		return fmt.Errorf("keyValueDb %s not found", name)
 	}
 
 	err := db.Close()
@@ -70,7 +70,7 @@ func (m *Manager) Close() error {
 	var lastErr error
 	for name, db := range m.dbs {
 		if err := db.Close(); err != nil {
-			lastErr = fmt.Errorf("failed to close database %s: %w", name, err)
+			lastErr = fmt.Errorf("failed to close keyValueDb %s: %w", name, err)
 		}
 		delete(m.dbs, name)
 	}
