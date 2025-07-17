@@ -9,7 +9,5 @@ func Sha512Half(args ...[]byte) [32]byte {
 		hasher.Write(arg)
 	}
 	fullHash := hasher.Sum(nil)
-	var result [32]byte
-	copy(result[:], fullHash[:32])
-	return result
+	return [32]byte(fullHash[:32])
 }

@@ -213,7 +213,6 @@ Path through tree determined by key nibbles:
 - Trees can be marked immutable to prevent modifications.
 - Support for creating versioned snapshots.
 - Shared node structures between versions for memory efficiency.
-- Copy-on-write semantics for modified nodes.
 
 ### Concurrency Model
 

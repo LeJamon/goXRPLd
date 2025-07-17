@@ -1,74 +1,90 @@
-package ed25519
+package crypto
 
 import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
-	"github.com/LeJamon/goXRPLd/internal/crypto/common"
+	"github.com/LeJamon/goXRPLd/internal/crypto"
+	crypto2 "github.com/LeJamon/goXRPLd/internal/crypto/common"
 	"strings"
 )
 
-// ED25519SignatureProvider implements digital signature operations using the ED25519 algorithm
-type ED25519SignatureProvider struct {
-	keyPrefix byte // Prefix used to identify ED25519 keys in XRPL
-}
-
-// Common error definitions
-var (
-	ErrValidatorNotSupported = errors.New("validator keypairs cannot use Ed25519")
-	ErrInvalidPrivateKey     = errors.New("invalid private key format")
-	ErrInvalidSignature      = errors.New("invalid signature format")
+const (
+	// ed25519 prefix - value is 237
+	ed25519Prefix byte = 0xED
 )
 
-func NewED25519Provider() *ED25519SignatureProvider {
-	return &ED25519SignatureProvider{
-		keyPrefix: 0xED,
+var (
+	_ crypto.Algorithm = &ED25519CryptoAlgorithm{}
+
+	// ErrValidatorNotSupported is returned when a validator keypair is used with the ED25519 algorithm.
+	ErrValidatorNotSupported = errors.New("validator keypairs can not use Ed25519")
+	// ErrInvalidPrivateKey is returned when a private key is invalid
+	ErrInvalidPrivateKey = errors.New("invalid private key")
+)
+
+// ED25519CryptoAlgorithm is the implementation of the ED25519 cryptographic algorithm.
+type ED25519CryptoAlgorithm struct {
+	prefix           byte
+	familySeedPrefix byte
+}
+
+// ED25519 returns the ED25519 cryptographic algorithm.
+func ED25519() ED25519CryptoAlgorithm {
+	return ED25519CryptoAlgorithm{
+		prefix: ed25519Prefix,
 	}
 }
 
-func (p *ED25519SignatureProvider) GenerateKeypair(seed []byte, isValidator bool) (string, string, error) {
-	if isValidator {
+// Prefix returns the prefix for the ED25519 cryptographic algorithm.
+func (c ED25519CryptoAlgorithm) Prefix() byte {
+	return c.prefix
+}
+
+// FamilySeedPrefix returns the family seed prefix for the ED25519 cryptographic algorithm.
+func (c ED25519CryptoAlgorithm) FamilySeedPrefix() byte {
+	return c.familySeedPrefix
+}
+
+// DeriveKeypair derives a keypair from a seed.
+func (c ED25519CryptoAlgorithm) DeriveKeypair(decodedSeed []byte, validator bool) (string, string, error) {
+	if validator {
 		return "", "", ErrValidatorNotSupported
 	}
-
-	keyMaterial := crypto.Sha512Half(seed)
-	pubKey, privKey, err := ed25519.GenerateKey(bytes.NewBuffer(keyMaterial[:]))
+	rawPriv := crypto2.Sha512Half(decodedSeed)
+	pubKey, privKey, err := ed25519.GenerateKey(bytes.NewBuffer(rawPriv[:]))
 	if err != nil {
 		return "", "", err
 	}
-
-	prefixedPubKey := append([]byte{p.keyPrefix}, pubKey...)
-	prefixedPrivKey := append([]byte{p.keyPrefix}, privKey...)
-
-	public := strings.ToUpper(hex.EncodeToString(prefixedPubKey))
-	private := strings.ToUpper(hex.EncodeToString(prefixedPrivKey[:32+1]))
-
+	pubKey = append([]byte{c.prefix}, pubKey...)
+	public := strings.ToUpper(hex.EncodeToString(pubKey))
+	privKey = append([]byte{c.prefix}, privKey...)
+	private := strings.ToUpper(hex.EncodeToString(privKey[:32+len([]byte{c.prefix})]))
 	return private, public, nil
 }
 
-func (p *ED25519SignatureProvider) SignMessage(message, privateKeyHex string) (string, error) {
-	privKeyBytes, err := hex.DecodeString(privateKeyHex)
+func (c ED25519CryptoAlgorithm) Sign(msg, privKey string) (string, error) {
+	b, err := hex.DecodeString(privKey)
 	if err != nil {
-		return "", ErrInvalidPrivateKey
+		return "", err
 	}
-
-	signingKey := ed25519.NewKeyFromSeed(privKeyBytes[1:])
-	signature := ed25519.Sign(signingKey, []byte(message))
-
-	return strings.ToUpper(hex.EncodeToString(signature)), nil
+	rawPriv := ed25519.NewKeyFromSeed(b[1:])
+	signedMsg := ed25519.Sign(rawPriv, []byte(msg))
+	return strings.ToUpper(hex.EncodeToString(signedMsg)), nil
 }
 
-func (p *ED25519SignatureProvider) VerifySignature(message, publicKeyHex, signatureHex string) bool {
-	pubKeyBytes, err := hex.DecodeString(publicKeyHex)
+// Validate validates a signature for a message with a public key.
+func (c ED25519CryptoAlgorithm) Validate(msg, pubkey, sig string) bool {
+	bp, err := hex.DecodeString(pubkey)
 	if err != nil {
 		return false
 	}
 
-	sigBytes, err := hex.DecodeString(signatureHex)
+	bs, err := hex.DecodeString(sig)
 	if err != nil {
 		return false
 	}
 
-	return ed25519.Verify(ed25519.PublicKey(pubKeyBytes[1:]), []byte(message), sigBytes)
+	return ed25519.Verify(ed25519.PublicKey(bp[1:]), []byte(msg), bs)
 }

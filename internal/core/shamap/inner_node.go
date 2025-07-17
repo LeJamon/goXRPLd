@@ -165,7 +165,10 @@ func (n *InnerNode) updateHashUnsafe() error {
 		}
 	}
 
-	n.setHash(data...)
+	err := n.setHash(data...)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -461,4 +464,13 @@ func (n *InnerNode) setChildHashForProof(index int, hash [32]byte) error {
 	}
 
 	return nil
+}
+
+func isZeroHash(hash [32]byte) bool {
+	for _, b := range hash {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
 }
