@@ -1,6 +1,6 @@
 package crypto
 
-type KeyType interface {
+type Algorithm interface {
 	Prefix() byte
 	FamilySeedPrefix() byte
 }
