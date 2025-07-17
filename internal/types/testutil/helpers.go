@@ -3,7 +3,7 @@ package testutil
 import (
 	"testing"
 
-	definitions "github.com/Peersyst/xrpl-go/binary-codec/definitions"
+	definitions "github.com/LeJamon/goXRPLd/internal/codec/binary-codec/definitions"
 )
 
 func GetFieldInstance(t *testing.T, fieldName string) definitions.FieldInstance {
