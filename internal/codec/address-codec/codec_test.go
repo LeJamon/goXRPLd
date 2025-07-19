@@ -2,11 +2,12 @@ package addresscodec
 
 import (
 	"errors"
-	"testing"
-
-	"github.com/Peersyst/xrpl-go/address-codec/interfaces"
-	"github.com/Peersyst/xrpl-go/pkg/crypto"
+	"github.com/LeJamon/goXRPLd/internal/codec/address-codec/interfaces"
+	ED25519 "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/ed25519"
+	SECP256K1 "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/secp256k1"
 	"github.com/stretchr/testify/require"
+	
+	"testing"
 )
 
 func TestEncode(t *testing.T) {
@@ -140,35 +141,35 @@ func TestEncodeSeed(t *testing.T) {
 		{
 			name:              "pass - successful encode - ED25519",
 			input:             []byte("yurtyurtyurtyurt"),
-			inputEncodingType: crypto.ED25519(),
+			inputEncodingType: ED25519.ED25519(),
 			expectedOutput:    "sEdTzRkEgPoxDG1mJ6WkSucHWnMkm1H",
 			expectedErr:       nil,
 		},
 		{
 			name:              "pass - successful encode - SECP256K1",
 			input:             []byte("yurtyurtyurtyurt"),
-			inputEncodingType: crypto.SECP256K1(),
+			inputEncodingType: SECP256K1.SECP256K1(),
 			expectedOutput:    "shPSkLzQNWfyXjZ7bbwgCky6twagA",
 			expectedErr:       nil,
 		},
 		{
 			name:              "pass - successful encode - ED25519 additional",
 			input:             []byte("testingsomething"),
-			inputEncodingType: crypto.ED25519(),
+			inputEncodingType: ED25519.ED25519(),
 			expectedOutput:    "sEdTvLVDRVJsrUyBiCPTHDs46GUKQAr",
 			expectedErr:       nil,
 		},
 		{
 			name:              "pass - successful encode - SECP256K1 additional",
 			input:             []byte("testingsomething"),
-			inputEncodingType: crypto.SECP256K1(),
+			inputEncodingType: SECP256K1.SECP256K1(),
 			expectedOutput:    "shKMVJjV52uudwfS7HzzaiwmZqVeP",
 			expectedErr:       nil,
 		},
 		{
 			name:              "fail - unsuccessful encode - invalid entropy length",
 			input:             []byte{0x00},
-			inputEncodingType: crypto.ED25519(),
+			inputEncodingType: ED25519.ED25519(),
 			expectedOutput:    "",
 			expectedErr:       &EncodeLengthError{Instance: "Entropy", Input: len([]byte{0x00}), Expected: FamilySeedLength},
 		},
@@ -213,35 +214,35 @@ func TestDecodeSeed(t *testing.T) {
 			name:              "pass - successful decode - ED25519",
 			input:             "sEdTzRkEgPoxDG1mJ6WkSucHWnMkm1H",
 			expectedOutput:    []byte("yurtyurtyurtyurt"),
-			expectedAlgorithm: crypto.ED25519(),
+			expectedAlgorithm: ED25519.ED25519(),
 			expectedErr:       nil,
 		},
 		{
 			name:              "pass - successful decode - SECP256K1",
 			input:             "shPSkLzQNWfyXjZ7bbwgCky6twagA",
 			expectedOutput:    []byte("yurtyurtyurtyurt"),
-			expectedAlgorithm: crypto.SECP256K1(),
+			expectedAlgorithm: SECP256K1.SECP256K1(),
 			expectedErr:       nil,
 		},
 		{
 			name:              "pass - successful decode - ED25519 additional",
 			input:             "sEdTvLVDRVJsrUyBiCPTHDs46GUKQAr",
 			expectedOutput:    []byte("testingsomething"),
-			expectedAlgorithm: crypto.ED25519(),
+			expectedAlgorithm: ED25519.ED25519(),
 			expectedErr:       nil,
 		},
 		{
 			name:              "pass - successful decode - SECP256K1 additional",
 			input:             "shKMVJjV52uudwfS7HzzaiwmZqVeP",
 			expectedOutput:    []byte("testingsomething"),
-			expectedAlgorithm: crypto.SECP256K1(),
+			expectedAlgorithm: SECP256K1.SECP256K1(),
 			expectedErr:       nil,
 		},
 		{
 			name:              "fail - unsuccessful decode - invalid seed",
 			input:             "yurt",
 			expectedOutput:    nil,
-			expectedAlgorithm: crypto.ED25519(),
+			expectedAlgorithm: ED25519.ED25519(),
 			expectedErr:       errors.New("invalid seed; could not determine encoding algorithm"),
 		},
 		{
