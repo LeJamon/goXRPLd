@@ -5,16 +5,14 @@ import (
 	"fmt"
 	"sync"
 	"time"
-
-	"github.com/LeJamon/goXRPLd/internal/types"
 )
 
 // cacheEntry represents an entry in the LRU cache.
 type cacheEntry struct {
-	key       types.Hash256 // The hash key
-	node      *Node         // The cached node
-	expiresAt time.Time     // When this entry expires
-	size      int           // Size of the node data in bytes
+	key       Hash256   // The hash key
+	node      *Node     // The cached node
+	expiresAt time.Time // When this entry expires
+	size      int       // Size of the node data in bytes
 }
 
 // isExpired checks if the cache entry has expired.
@@ -31,8 +29,8 @@ type Cache struct {
 	ttl     time.Duration // Time to live for entries
 
 	// LRU implementation
-	items map[types.Hash256]*list.Element // Hash to list element mapping
-	lru   *list.List                      // LRU list (most recent at front)
+	items map[Hash256]*list.Element // Hash to list element mapping
+	lru   *list.List                // LRU list (most recent at front)
 
 	// Statistics
 	hits         uint64 // Number of cache hits
@@ -48,14 +46,14 @@ func NewCache(maxSize int, ttl time.Duration) *Cache {
 	return &Cache{
 		maxSize: maxSize,
 		ttl:     ttl,
-		items:   make(map[types.Hash256]*list.Element),
+		items:   make(map[Hash256]*list.Element),
 		lru:     list.New(),
 	}
 }
 
 // Get retrieves a node from the cache.
 // Returns the node and true if found, nil and false otherwise.
-func (c *Cache) Get(hash types.Hash256) (*Node, bool) {
+func (c *Cache) Get(hash Hash256) (*Node, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -123,7 +121,7 @@ func (c *Cache) Put(node *Node) {
 }
 
 // Remove removes a node from the cache.
-func (c *Cache) Remove(hash types.Hash256) {
+func (c *Cache) Remove(hash Hash256) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -137,7 +135,7 @@ func (c *Cache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.items = make(map[types.Hash256]*list.Element)
+	c.items = make(map[Hash256]*list.Element)
 	c.lru.Init()
 	c.currentSize = 0
 	c.currentBytes = 0

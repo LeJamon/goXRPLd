@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LeJamon/goXRPLd/internal/types"
 	"github.com/cockroachdb/pebble"
 )
 
@@ -69,7 +68,7 @@ func (p *PebbleBackend) Open(createIfMissing bool) error {
 		Cache:                    pebble.NewCache(64 << 20), // 64MB cache
 		MaxOpenFiles:             1000,
 		MemTableSize:             32 << 20, // 32MB
-		MaxConcurrentCompactions: 4,
+		MaxConcurrentCompactions: func() int { return 4 },
 		L0CompactionThreshold:    2,
 		L0StopWritesThreshold:    1000,
 		LBaseMaxBytes:            64 << 20, // 64MB
@@ -127,7 +126,7 @@ func (p *PebbleBackend) IsOpen() bool {
 }
 
 // Fetch retrieves a single object by key.
-func (p *PebbleBackend) Fetch(key types.Hash256) (*Node, Status) {
+func (p *PebbleBackend) Fetch(key Hash256) (*Node, Status) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -135,8 +134,12 @@ func (p *PebbleBackend) Fetch(key types.Hash256) (*Node, Status) {
 		return nil, BackendError
 	}
 
+	// Convert Hash256 to byte slice
+	keyBytes := make([]byte, 32)
+	copy(keyBytes, key[:])
+
 	// Read from PebbleDB
-	value, closer, err := p.db.Get(key[:])
+	value, closer, err := p.db.Get(keyBytes)
 	if err != nil {
 		if err == pebble.ErrNotFound {
 			return nil, NotFound
@@ -155,7 +158,7 @@ func (p *PebbleBackend) Fetch(key types.Hash256) (*Node, Status) {
 }
 
 // FetchBatch retrieves multiple objects efficiently.
-func (p *PebbleBackend) FetchBatch(keys []types.Hash256) ([]*Node, Status) {
+func (p *PebbleBackend) FetchBatch(keys []Hash256) ([]*Node, Status) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -167,7 +170,11 @@ func (p *PebbleBackend) FetchBatch(keys []types.Hash256) ([]*Node, Status) {
 
 	// Use iterator for batch reads (more efficient than individual Gets)
 	for i, key := range keys {
-		value, closer, err := p.db.Get(key[:])
+		// Convert Hash256 to byte slice
+		keyBytes := make([]byte, 32)
+		copy(keyBytes, key[:])
+
+		value, closer, err := p.db.Get(keyBytes)
 		if err != nil {
 			if err == pebble.ErrNotFound {
 				results[i] = nil // Not found
@@ -209,8 +216,12 @@ func (p *PebbleBackend) Store(node *Node) Status {
 		return BackendError
 	}
 
+	// Convert Hash256 to byte slice
+	keyBytes := make([]byte, 32)
+	copy(keyBytes, node.Hash[:])
+
 	// Write to PebbleDB
-	if err := p.db.Set(node.Hash[:], value, pebble.Sync); err != nil {
+	if err := p.db.Set(keyBytes, value, pebble.Sync); err != nil {
 		return BackendError
 	}
 
@@ -240,7 +251,11 @@ func (p *PebbleBackend) StoreBatch(nodes []*Node) Status {
 			return BackendError
 		}
 
-		if err := batch.Set(node.Hash[:], value, nil); err != nil {
+		// Convert Hash256 to byte slice
+		keyBytes := make([]byte, 32)
+		copy(keyBytes, node.Hash[:])
+
+		if err := batch.Set(keyBytes, value, nil); err != nil {
 			return BackendError
 		}
 	}
@@ -278,7 +293,7 @@ func (p *PebbleBackend) ForEach(fn func(*Node) error) error {
 		return ErrBackendClosed
 	}
 
-	iter := p.db.NewIter(nil)
+	iter, _ := p.db.NewIter(nil)
 	defer iter.Close()
 
 	for iter.First(); iter.Valid(); iter.Next() {
@@ -286,7 +301,7 @@ func (p *PebbleBackend) ForEach(fn func(*Node) error) error {
 		value := iter.Value()
 
 		// Convert key bytes to Hash256
-		var hash types.Hash256
+		var hash Hash256
 		if len(key) != 32 {
 			continue // Skip invalid keys
 		}
@@ -404,7 +419,7 @@ func (p *PebbleBackend) encodeNode(node *Node) ([]byte, error) {
 }
 
 // decodeNode deserializes a node from storage.
-func (p *PebbleBackend) decodeNode(hash types.Hash256, data []byte) (*Node, error) {
+func (p *PebbleBackend) decodeNode(hash Hash256, data []byte) (*Node, error) {
 	if len(data) < 21 { // Minimum size: 4+4+8+4+1
 		return nil, fmt.Errorf("invalid data size: %d", len(data))
 	}
@@ -452,7 +467,7 @@ func (p *PebbleBackend) decodeNode(hash types.Hash256, data []byte) (*Node, erro
 	node := &Node{
 		Type:      nodeType,
 		Hash:      hash,
-		Data:      make(types.Blob, len(nodeData)),
+		Data:      make(Blob, len(nodeData)),
 		LedgerSeq: ledgerSeq,
 		CreatedAt: createdAt,
 	}
@@ -483,11 +498,11 @@ func (p *PebbleBackend) Stats() (pebble.Metrics, error) {
 		return pebble.Metrics{}, ErrBackendClosed
 	}
 
-	return p.db.Metrics(), nil
+	return *p.db.Metrics(), nil
 }
 
 // EstimateSize returns an estimate of the total size of data in the given range.
-func (p *PebbleBackend) EstimateSize(start, end types.Hash256) (uint64, error) {
+func (p *PebbleBackend) EstimateSize(start, end Hash256) (uint64, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -495,6 +510,12 @@ func (p *PebbleBackend) EstimateSize(start, end types.Hash256) (uint64, error) {
 		return 0, ErrBackendClosed
 	}
 
-	size, err := p.db.EstimateDiskUsage(start[:], end[:])
+	// Convert Hash256 to byte slices
+	startBytes := make([]byte, 32)
+	endBytes := make([]byte, 32)
+	copy(startBytes, start[:])
+	copy(endBytes, end[:])
+
+	size, err := p.db.EstimateDiskUsage(startBytes, endBytes)
 	return size, err
 }

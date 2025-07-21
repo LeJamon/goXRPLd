@@ -87,6 +87,5 @@ type BackendWithInfo interface {
 
 // init registers the built-in backends.
 func init() {
-	RegisterBackend("memory", NewMemoryBackend)
 	RegisterBackend("pebble", NewPebbleBackend)
 }

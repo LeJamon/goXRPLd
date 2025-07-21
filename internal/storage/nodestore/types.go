@@ -5,11 +5,31 @@ package nodestore
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"time"
-
-	"github.com/LeJamon/goXRPLd/internal/types"
 )
+
+type Hash256 [32]byte
+type Blob []byte
+
+func Hash256FromData(b Blob) (Hash256, error) {
+	if len(b) != 32 {
+		return Hash256{}, fmt.Errorf("invalid hash length: expected 32 bytes, got %d", len(b))
+	}
+	var h Hash256
+	copy(h[:], b)
+	return h, nil
+}
+
+func IsZero(h Hash256) bool {
+	return h == [32]byte{}
+}
+
+// ComputeHash256 computes SHA-256 hash from data
+func ComputeHash256(data Blob) Hash256 {
+	return Hash256(sha256.Sum256(data))
+}
 
 // NodeType represents the type of ledger object stored in the nodestore.
 type NodeType uint32
@@ -47,27 +67,30 @@ func (nt NodeType) String() string {
 
 // Node represents a stored ledger object with its metadata.
 type Node struct {
-	Type      NodeType      // Type of the ledger object
-	Hash      types.Hash256 // SHA-256 content hash (serves as the key)
-	Data      types.Blob    // Serialized ledger object data
-	LedgerSeq uint32        // Optional ledger sequence number
-	CreatedAt time.Time     // Timestamp when the node was created
+	Type      NodeType  // Type of the ledger object
+	Hash      Hash256   // SHA-256 content hash (serves as the key)
+	Data      Blob      // Serialized ledger object data
+	LedgerSeq uint32    // Optional ledger sequence number
+	CreatedAt time.Time // Timestamp when the node was created
 }
 
 // NewNode creates a new Node with the specified type and data.
 // The hash is computed automatically from the data.
-func NewNode(nodeType NodeType, data types.Blob) *Node {
-	hash := types.Hash256FromData(data)
+func NewNode(nodeType NodeType, data Blob) *Node {
+	hash := ComputeHash256(data)
 	return &Node{
 		Type:      nodeType,
 		Hash:      hash,
-		Data:      data,
+		Data:      append(Blob(nil), data...), // defensive copy
 		CreatedAt: time.Now(),
 	}
 }
 
 // Size returns the size of the node's data in bytes.
 func (n *Node) Size() int {
+	if n == nil {
+		return 0
+	}
 	return len(n.Data)
 }
 
@@ -83,7 +106,7 @@ func (n *Node) IsValid() bool {
 		return false
 	}
 	// Verify hash matches data
-	expectedHash := types.Hash256FromData(n.Data)
+	expectedHash := ComputeHash256(n.Data)
 	return n.Hash == expectedHash
 }
 
@@ -99,13 +122,13 @@ type Database interface {
 	Store(ctx context.Context, node *Node) error
 
 	// Fetch retrieves a node by its hash synchronously.
-	Fetch(ctx context.Context, hash types.Hash256) (*Node, error)
+	Fetch(ctx context.Context, hash Hash256) (*Node, error)
 
 	// FetchBatch retrieves multiple nodes efficiently in a single operation.
-	FetchBatch(ctx context.Context, hashes []types.Hash256) ([]*Node, error)
+	FetchBatch(ctx context.Context, hashes []Hash256) ([]*Node, error)
 
 	// FetchAsync retrieves a node asynchronously, returning a channel for the result.
-	FetchAsync(ctx context.Context, hash types.Hash256) <-chan Result
+	FetchAsync(ctx context.Context, hash Hash256) <-chan Result
 
 	// StoreBatch stores multiple nodes efficiently in a single operation.
 	StoreBatch(ctx context.Context, nodes []*Node) error
@@ -241,10 +264,10 @@ type Backend interface {
 	IsOpen() bool
 
 	// Fetch retrieves a single object by key.
-	Fetch(key types.Hash256) (*Node, Status)
+	Fetch(key Hash256) (*Node, Status)
 
 	// FetchBatch retrieves multiple objects efficiently.
-	FetchBatch(keys []types.Hash256) ([]*Node, Status)
+	FetchBatch(keys []Hash256) ([]*Node, Status)
 
 	// Store saves a single object.
 	Store(node *Node) Status

@@ -5,12 +5,6 @@ import (
 	"fmt"
 )
 
-type Hash256 [32]byte
-
-func IsZero(h Hash256) bool {
-	return h == [32]byte{}
-}
-
 var (
 	// ErrNotFound indicates that a requested node was not found
 	ErrNotFound = errors.New("node not found")
@@ -125,7 +119,7 @@ func NewValidationError(field string, value interface{}, message string) *Valida
 	}
 }
 
-// BackendError represents an error from a storage backend.
+// NodeStoreBackendError represents an error from a storage backend.
 type NodeStoreBackendError struct {
 	Backend   string  // The backend name
 	Operation string  // The operation that failed
