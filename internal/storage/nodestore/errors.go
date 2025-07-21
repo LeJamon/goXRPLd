@@ -3,9 +3,13 @@ package nodestore
 import (
 	"errors"
 	"fmt"
-
-	"github.com/LeJamon/goXRPLd/internal/types"
 )
+
+type Hash256 [32]byte
+
+func IsZero(h Hash256) bool {
+	return h == [32]byte{}
+}
 
 var (
 	// ErrNotFound indicates that a requested node was not found
@@ -50,20 +54,19 @@ var (
 
 // NodeStoreError wraps an error with additional context specific to the NodeStore.
 type NodeStoreError struct {
-	Operation string        // The operation that failed
-	Hash      types.Hash256 // The hash involved in the operation (if applicable)
-	Backend   string        // The backend name
-	Cause     error         // The underlying error
+	Operation string  // The operation that failed
+	Hash      Hash256 // The hash involved in the operation (if applicable)
+	Backend   string  // The backend name
+	Cause     error   // The underlying error
 }
 
 // Error implements the error interface.
 func (e *NodeStoreError) Error() string {
 
-	//TODO correct code here
-	/*if e.Hash.IsZero() {
+	if IsZero(e.Hash) {
 		return fmt.Sprintf("nodestore %s error on backend %s: %v",
 			e.Operation, e.Backend, e.Cause)
-	}*/
+	}
 	return fmt.Sprintf("nodestore %s error on backend %s for hash %s: %v",
 		e.Operation, e.Backend, "e.Hash.String()", e.Cause)
 }
@@ -79,7 +82,7 @@ func (e *NodeStoreError) Is(target error) bool {
 }
 
 // NewError creates a new NodeStoreError.
-func NewError(operation, backend string, hash types.Hash256, cause error) *NodeStoreError {
+func NewError(operation, backend string, hash Hash256, cause error) *NodeStoreError {
 	return &NodeStoreError{
 		Operation: operation,
 		Hash:      hash,
@@ -124,22 +127,22 @@ func NewValidationError(field string, value interface{}, message string) *Valida
 
 // BackendError represents an error from a storage backend.
 type NodeStoreBackendError struct {
-	Backend   string        // The backend name
-	Operation string        // The operation that failed
-	Hash      types.Hash256 // The hash involved (if applicable)
-	Status    Status        // The backend status code
-	Message   string        // Error message
-	Cause     error         // The underlying error
+	Backend   string  // The backend name
+	Operation string  // The operation that failed
+	Hash      Hash256 // The hash involved (if applicable)
+	Status    Status  // The backend status code
+	Message   string  // Error message
+	Cause     error   // The underlying error
 }
 
 // Error implements the error interface.
 func (e *NodeStoreBackendError) Error() string {
-	if e.Hash.IsZero() {
+	if IsZero(e.Hash) {
 		return fmt.Sprintf("backend %s %s error: %s (status: %s)",
 			e.Backend, e.Operation, e.Message, e.Status.String())
 	}
 	return fmt.Sprintf("backend %s %s error for hash %s: %s (status: %s)",
-		e.Backend, e.Operation, e.Hash.String(), e.Message, e.Status.String())
+		e.Backend, e.Operation, e.Hash, e.Message, e.Status.String())
 }
 
 // Unwrap returns the underlying error.
@@ -167,7 +170,7 @@ func (e *NodeStoreBackendError) Is(target error) bool {
 }
 
 // NewBackendError creates a new BackendError.
-func NewBackendError(backend, operation string, hash types.Hash256, status Status, message string, cause error) *NodeStoreBackendError {
+func NewBackendError(backend, operation string, hash Hash256, status Status, message string, cause error) *NodeStoreBackendError {
 	return &NodeStoreBackendError{
 		Backend:   backend,
 		Operation: operation,
@@ -233,7 +236,7 @@ func IsShutdown(err error) bool {
 }
 
 // WrapError wraps an error with additional context.
-func WrapError(err error, operation, backend string, hash types.Hash256) error {
+func WrapError(err error, operation, backend string, hash Hash256) error {
 	if err == nil {
 		return nil
 	}
