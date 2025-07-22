@@ -106,17 +106,8 @@ const (
 	TxSearchAll
 )
 
-// Database defines the primary interface for database operations
-type Database interface {
-	// Connection management
-	Open(ctx context.Context) error
-	Close(ctx context.Context) error
-	Ping(ctx context.Context) error
-
-	// Transaction management
-	Begin(ctx context.Context) (Transaction, error)
-
-	// Ledger operations
+// LedgerRepository handles ledger-related database operations
+type LedgerRepository interface {
 	GetMinLedgerSeq(ctx context.Context) (*LedgerIndex, error)
 	GetMaxLedgerSeq(ctx context.Context) (*LedgerIndex, error)
 	GetLedgerInfoBySeq(ctx context.Context, seq LedgerIndex) (*LedgerInfo, error)
@@ -127,76 +118,68 @@ type Database interface {
 	GetHashesByRange(ctx context.Context, minSeq, maxSeq LedgerIndex) (map[LedgerIndex]LedgerHashPair, error)
 	SaveValidatedLedger(ctx context.Context, ledger *LedgerInfo, current bool) error
 	DeleteLedgersBySeq(ctx context.Context, maxSeq LedgerIndex) error
+	GetLedgerCountMinMax(ctx context.Context) (*CountMinMax, error)
+	GetKBUsedLedger(ctx context.Context) (uint32, error)
+	HasLedgerSpace(ctx context.Context) (bool, error)
+}
 
-	// Transaction operations
+// TransactionRepository handles transaction-related database operations
+type TransactionRepository interface {
 	GetTransactionsMinLedgerSeq(ctx context.Context) (*LedgerIndex, error)
 	GetTransactionCount(ctx context.Context) (int64, error)
 	GetTransaction(ctx context.Context, hash Hash, ledgerRange *LedgerRange) (*TransactionInfo, TxSearchResult, error)
 	GetTxHistory(ctx context.Context, startIndex LedgerIndex, limit int) ([]TransactionInfo, error)
+	SaveTransaction(ctx context.Context, txInfo *TransactionInfo) error
 	DeleteTransactionsByLedgerSeq(ctx context.Context, ledgerSeq LedgerIndex) error
 	DeleteTransactionsBeforeLedgerSeq(ctx context.Context, ledgerSeq LedgerIndex) error
-
-	// Account transaction operations
-	GetAccountTransactionsMinLedgerSeq(ctx context.Context) (*LedgerIndex, error)
-	GetAccountTransactionCount(ctx context.Context) (int64, error)
-	GetOldestAccountTxs(ctx context.Context, options AccountTxOptions) ([]TransactionInfo, error)
-	GetNewestAccountTxs(ctx context.Context, options AccountTxOptions) ([]TransactionInfo, error)
-	GetOldestAccountTxsPage(ctx context.Context, options AccountTxPageOptions) (*AccountTxResult, error)
-	GetNewestAccountTxsPage(ctx context.Context, options AccountTxPageOptions) (*AccountTxResult, error)
-	DeleteAccountTransactionsBeforeLedgerSeq(ctx context.Context, ledgerSeq LedgerIndex) error
-
-	// Statistics and maintenance
-	GetLedgerCountMinMax(ctx context.Context) (*CountMinMax, error)
-	GetKBUsedAll(ctx context.Context) (uint32, error)
-	GetKBUsedLedger(ctx context.Context) (uint32, error)
 	GetKBUsedTransaction(ctx context.Context) (uint32, error)
-	HasLedgerSpace(ctx context.Context) (bool, error)
 	HasTransactionSpace(ctx context.Context) (bool, error)
 }
 
-// Transaction defines the interface for database transactions
-// It mirrors the Database interface for operations within a transaction
-type Transaction interface {
-	// Transaction control
-	Commit(ctx context.Context) error
-	Rollback(ctx context.Context) error
-
-	// Ledger operations (same as Database interface)
-	GetMinLedgerSeq(ctx context.Context) (*LedgerIndex, error)
-	GetMaxLedgerSeq(ctx context.Context) (*LedgerIndex, error)
-	GetLedgerInfoBySeq(ctx context.Context, seq LedgerIndex) (*LedgerInfo, error)
-	GetLedgerInfoByHash(ctx context.Context, hash Hash) (*LedgerInfo, error)
-	GetNewestLedgerInfo(ctx context.Context) (*LedgerInfo, error)
-	GetHashByIndex(ctx context.Context, seq LedgerIndex) (*Hash, error)
-	GetHashesByIndex(ctx context.Context, seq LedgerIndex) (*LedgerHashPair, error)
-	GetHashesByRange(ctx context.Context, minSeq, maxSeq LedgerIndex) (map[LedgerIndex]LedgerHashPair, error)
-	SaveValidatedLedger(ctx context.Context, ledger *LedgerInfo, current bool) error
-	DeleteLedgersBySeq(ctx context.Context, maxSeq LedgerIndex) error
-
-	// Transaction operations (same as Database interface)
-	GetTransactionsMinLedgerSeq(ctx context.Context) (*LedgerIndex, error)
-	GetTransactionCount(ctx context.Context) (int64, error)
-	GetTransaction(ctx context.Context, hash Hash, ledgerRange *LedgerRange) (*TransactionInfo, TxSearchResult, error)
-	GetTxHistory(ctx context.Context, startIndex LedgerIndex, limit int) ([]TransactionInfo, error)
-	DeleteTransactionsByLedgerSeq(ctx context.Context, ledgerSeq LedgerIndex) error
-	DeleteTransactionsBeforeLedgerSeq(ctx context.Context, ledgerSeq LedgerIndex) error
-
-	// Account transaction operations (same as Database interface)
+// AccountTransactionRepository handles account transaction-related database operations
+type AccountTransactionRepository interface {
 	GetAccountTransactionsMinLedgerSeq(ctx context.Context) (*LedgerIndex, error)
 	GetAccountTransactionCount(ctx context.Context) (int64, error)
 	GetOldestAccountTxs(ctx context.Context, options AccountTxOptions) ([]TransactionInfo, error)
 	GetNewestAccountTxs(ctx context.Context, options AccountTxOptions) ([]TransactionInfo, error)
 	GetOldestAccountTxsPage(ctx context.Context, options AccountTxPageOptions) (*AccountTxResult, error)
 	GetNewestAccountTxsPage(ctx context.Context, options AccountTxPageOptions) (*AccountTxResult, error)
+	SaveAccountTransaction(ctx context.Context, accountID AccountID, txInfo *TransactionInfo) error
 	DeleteAccountTransactionsBeforeLedgerSeq(ctx context.Context, ledgerSeq LedgerIndex) error
+}
 
-	// Statistics and maintenance (same as Database interface)
-	GetLedgerCountMinMax(ctx context.Context) (*CountMinMax, error)
+// SystemRepository handles system-level database operations
+type SystemRepository interface {
 	GetKBUsedAll(ctx context.Context) (uint32, error)
-	GetKBUsedLedger(ctx context.Context) (uint32, error)
-	GetKBUsedTransaction(ctx context.Context) (uint32, error)
-	HasLedgerSpace(ctx context.Context) (bool, error)
-	HasTransactionSpace(ctx context.Context) (bool, error)
+	Ping(ctx context.Context) error
+	Begin(ctx context.Context) (TransactionContext, error)
+}
+
+// TransactionContext represents a database transaction context with repository access
+type TransactionContext interface {
+	Commit(ctx context.Context) error
+	Rollback(ctx context.Context) error
+	
+	// Repository access within transaction
+	Ledger() LedgerRepository
+	Transaction() TransactionRepository
+	AccountTransaction() AccountTransactionRepository
+}
+
+// RepositoryManager provides access to all repositories and transaction management
+type RepositoryManager interface {
+	// Repository access
+	Ledger() LedgerRepository
+	Transaction() TransactionRepository
+	AccountTransaction() AccountTransactionRepository
+	System() SystemRepository
+	
+	// Connection management
+	Open(ctx context.Context) error
+	Close(ctx context.Context) error
+	
+	// Transaction management
+	WithTransaction(ctx context.Context, fn func(TransactionContext) error) error
 }
 
 // Helper methods for Hash type
