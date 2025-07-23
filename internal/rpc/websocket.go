@@ -1,0 +1,432 @@
+package rpc
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/gorilla/websocket"
+)
+
+// WebSocketServer handles WebSocket connections for real-time subscriptions
+type WebSocketServer struct {
+	upgrader            websocket.Upgrader
+	subscriptionManager *SubscriptionManager
+	methodRegistry      *MethodRegistry
+	connections         map[string]*WebSocketConnection
+	connectionsMutex    sync.RWMutex
+	timeout             time.Duration
+}
+
+// WebSocketConnection represents a single WebSocket connection
+type WebSocketConnection struct {
+	ID           string
+	conn         *websocket.Conn
+	subscriptions map[SubscriptionType]SubscriptionConfig
+	sendChannel  chan []byte
+	closeChannel chan struct{}
+	mutex        sync.RWMutex
+	ctx          context.Context
+	cancel       context.CancelFunc
+}
+
+// NewWebSocketServer creates a new WebSocket server
+func NewWebSocketServer(timeout time.Duration) *WebSocketServer {
+	return &WebSocketServer{
+		upgrader: websocket.Upgrader{
+			CheckOrigin: func(r *http.Request) bool {
+				// TODO: Implement proper origin checking for security
+				// For now, allow all origins (matching rippled behavior)
+				return true
+			},
+			Subprotocols: []string{"xrpl"},
+		},
+		subscriptionManager: &SubscriptionManager{
+			connections: make(map[string]*Connection),
+		},
+		methodRegistry: NewMethodRegistry(),
+		connections:    make(map[string]*WebSocketConnection),
+		timeout:        timeout,
+	}
+}
+
+// ServeHTTP handles WebSocket upgrade requests
+func (ws *WebSocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Upgrade HTTP connection to WebSocket
+	conn, err := ws.upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("WebSocket upgrade failed: %v", err)
+		return
+	}
+
+	// Create connection context
+	ctx, cancel := context.WithCancel(r.Context())
+	
+	// Create WebSocket connection object
+	wsConn := &WebSocketConnection{
+		ID:            generateConnectionID(),
+		conn:          conn,
+		subscriptions: make(map[SubscriptionType]SubscriptionConfig),
+		sendChannel:   make(chan []byte, 256),
+		closeChannel:  make(chan struct{}),
+		ctx:           ctx,
+		cancel:        cancel,
+	}
+
+	// Register connection
+	ws.connectionsMutex.Lock()
+	ws.connections[wsConn.ID] = wsConn
+	ws.connectionsMutex.Unlock()
+
+	// Add to subscription manager
+	legacyConn := &Connection{
+		ID:            wsConn.ID,
+		Subscriptions: wsConn.subscriptions,
+		SendChannel:   wsConn.sendChannel,
+		CloseChannel:  wsConn.closeChannel,
+	}
+	ws.subscriptionManager.AddConnection(legacyConn)
+
+	// Start connection handlers
+	go ws.handleConnection(wsConn)
+	go ws.handleSend(wsConn)
+}
+
+// handleConnection processes messages from a WebSocket connection
+func (ws *WebSocketServer) handleConnection(wsConn *WebSocketConnection) {
+	defer ws.closeConnection(wsConn)
+
+	// Set read deadline and size limits
+	wsConn.conn.SetReadLimit(512 * 1024) // 512KB max message size
+	wsConn.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	wsConn.conn.SetPongHandler(func(string) error {
+		wsConn.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+
+	// Set up ping ticker
+	ticker := time.NewTicker(54 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-wsConn.ctx.Done():
+			return
+		case <-ticker.C:
+			// Send ping to keep connection alive
+			wsConn.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := wsConn.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				log.Printf("WebSocket ping failed: %v", err)
+				return
+			}
+		default:
+			// Read message from WebSocket
+			_, message, err := wsConn.conn.ReadMessage()
+			if err != nil {
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					log.Printf("WebSocket error: %v", err)
+				}
+				return
+			}
+
+			// Process message
+			ws.handleMessage(wsConn, message)
+		}
+	}
+}
+
+// handleSend processes outgoing messages for a WebSocket connection
+func (ws *WebSocketServer) handleSend(wsConn *WebSocketConnection) {
+	for {
+		select {
+		case <-wsConn.ctx.Done():
+			return
+		case <-wsConn.closeChannel:
+			return
+		case message := <-wsConn.sendChannel:
+			wsConn.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := wsConn.conn.WriteMessage(websocket.TextMessage, message); err != nil {
+				log.Printf("WebSocket send failed: %v", err)
+				return
+			}
+		}
+	}
+}
+
+// handleMessage processes a single message from WebSocket
+func (ws *WebSocketServer) handleMessage(wsConn *WebSocketConnection, message []byte) {
+	// Parse WebSocket command
+	var cmd WebSocketCommand
+	if err := json.Unmarshal(message, &cmd); err != nil {
+		ws.sendError(wsConn, RpcErrorInvalidParams("Invalid JSON: "+err.Error()), nil)
+		return
+	}
+
+	// Create RPC context
+	rpcCtx := &RpcContext{
+		Context:    wsConn.ctx,
+		Role:       RoleGuest, // TODO: Implement proper role detection
+		ApiVersion: DefaultApiVersion,
+		IsAdmin:    false, // TODO: Implement admin detection
+		ClientIP:   getWebSocketClientIP(wsConn.conn),
+	}
+
+	// Handle API version
+	if cmd.ApiVersion != nil {
+		rpcCtx.ApiVersion = *cmd.ApiVersion
+	}
+
+	// Handle subscription commands specially
+	switch cmd.Command {
+	case "subscribe":
+		ws.handleSubscribe(wsConn, rpcCtx, cmd)
+		return
+	case "unsubscribe":
+		ws.handleUnsubscribe(wsConn, rpcCtx, cmd)
+		return
+	case "path_find":
+		ws.handlePathFind(wsConn, rpcCtx, cmd)
+		return
+	}
+
+	// Handle regular RPC methods
+	ws.handleRPCMethod(wsConn, rpcCtx, cmd)
+}
+
+// handleSubscribe processes subscribe commands
+func (ws *WebSocketServer) handleSubscribe(wsConn *WebSocketConnection, ctx *RpcContext, cmd WebSocketCommand) {
+	// Parse subscription request
+	var request SubscriptionRequest
+	if len(cmd.Params) > 0 {
+		// The params are embedded in the command, extract them
+		var cmdWithParams map[string]interface{}
+		if err := json.Unmarshal(cmd.Params, &cmdWithParams); err != nil {
+			// Try to parse the entire command as subscription request
+			if err := json.Unmarshal(cmd.Params, &request); err != nil {
+				ws.sendError(wsConn, RpcErrorInvalidParams("Invalid subscription parameters"), cmd.ID)
+				return
+			}
+		} else {
+			// Convert map to SubscriptionRequest
+			if streamsRaw, ok := cmdWithParams["streams"]; ok {
+				if streams, ok := streamsRaw.([]interface{}); ok {
+					for _, stream := range streams {
+						if streamStr, ok := stream.(string); ok {
+							request.Streams = append(request.Streams, SubscriptionType(streamStr))
+						}
+					}
+				}
+			}
+			// TODO: Parse other subscription parameters (accounts, books, etc.)
+		}
+	}
+
+	// Handle subscription through subscription manager
+	if err := ws.subscriptionManager.HandleSubscribe(&Connection{
+		ID:            wsConn.ID,
+		Subscriptions: wsConn.subscriptions,
+		SendChannel:   wsConn.sendChannel,
+		CloseChannel:  wsConn.closeChannel,
+	}, request); err != nil {
+		ws.sendError(wsConn, err, cmd.ID)
+		return
+	}
+
+	// Send success response
+	response := WebSocketResponse{
+		Type:       "response",
+		ID:         cmd.ID,
+		Status:     "success",
+		Result:     map[string]interface{}{"subscribed": true},
+		ApiVersion: ctx.ApiVersion,
+	}
+
+	ws.sendResponse(wsConn, response)
+}
+
+// handleUnsubscribe processes unsubscribe commands
+func (ws *WebSocketServer) handleUnsubscribe(wsConn *WebSocketConnection, ctx *RpcContext, cmd WebSocketCommand) {
+	// Parse unsubscription request (similar to subscribe)
+	var request SubscriptionRequest
+	// TODO: Parse unsubscription parameters
+
+	// Handle unsubscription through subscription manager
+	if err := ws.subscriptionManager.HandleUnsubscribe(&Connection{
+		ID:            wsConn.ID,
+		Subscriptions: wsConn.subscriptions,
+		SendChannel:   wsConn.sendChannel,
+		CloseChannel:  wsConn.closeChannel,
+	}, request); err != nil {
+		ws.sendError(wsConn, err, cmd.ID)
+		return
+	}
+
+	// Send success response
+	response := WebSocketResponse{
+		Type:       "response",
+		ID:         cmd.ID,
+		Status:     "success",
+		Result:     map[string]interface{}{"unsubscribed": true},
+		ApiVersion: ctx.ApiVersion,
+	}
+
+	ws.sendResponse(wsConn, response)
+}
+
+// handlePathFind processes path_find commands (special WebSocket-only method)
+func (ws *WebSocketServer) handlePathFind(wsConn *WebSocketConnection, ctx *RpcContext, cmd WebSocketCommand) {
+	// TODO: Implement WebSocket path finding
+	// This creates a persistent path-finding session that sends updates
+	// as market conditions change
+
+	response := WebSocketResponse{
+		Type:   "response",
+		ID:     cmd.ID,
+		Status: "error",
+		Error:  NewRpcError(RpcNOT_SUPPORTED, "notSupported", "notSupported", "path_find not yet implemented"),
+		ApiVersion: ctx.ApiVersion,
+	}
+
+	ws.sendResponse(wsConn, response)
+}
+
+// handleRPCMethod processes regular RPC method calls over WebSocket
+func (ws *WebSocketServer) handleRPCMethod(wsConn *WebSocketConnection, ctx *RpcContext, cmd WebSocketCommand) {
+	// Get method handler
+	handler, exists := ws.methodRegistry.Get(cmd.Command)
+	if !exists {
+		ws.sendError(wsConn, RpcErrorMethodNotFound(cmd.Command), cmd.ID)
+		return
+	}
+
+	// Check role permissions
+	if ctx.Role < handler.RequiredRole() {
+		ws.sendError(wsConn, NewRpcError(RpcCOMMAND_UNTRUSTED, "commandUntrusted", "commandUntrusted",
+			fmt.Sprintf("Command '%s' requires higher privileges", cmd.Command)), cmd.ID)
+		return
+	}
+
+	// Execute method
+	result, rpcErr := handler.Handle(ctx, cmd.Params)
+
+	// Send response
+	if rpcErr != nil {
+		ws.sendError(wsConn, rpcErr, cmd.ID)
+	} else {
+		response := WebSocketResponse{
+			Type:       "response",
+			ID:         cmd.ID,
+			Status:     "success",
+			Result:     result,
+			ApiVersion: ctx.ApiVersion,
+		}
+		ws.sendResponse(wsConn, response)
+	}
+}
+
+// sendResponse sends a WebSocket response
+func (ws *WebSocketServer) sendResponse(wsConn *WebSocketConnection, response WebSocketResponse) {
+	data, err := json.Marshal(response)
+	if err != nil {
+		log.Printf("Failed to marshal WebSocket response: %v", err)
+		return
+	}
+
+	select {
+	case wsConn.sendChannel <- data:
+		// Response sent
+	case <-wsConn.ctx.Done():
+		// Connection closed
+	default:
+		// Channel full, close connection
+		log.Printf("WebSocket send channel full, closing connection %s", wsConn.ID)
+		ws.closeConnection(wsConn)
+	}
+}
+
+// sendError sends a WebSocket error response
+func (ws *WebSocketServer) sendError(wsConn *WebSocketConnection, rpcErr *RpcError, id interface{}) {
+	response := WebSocketResponse{
+		Type:   "response",
+		ID:     id,
+		Status: "error",
+		Error:  rpcErr,
+	}
+	ws.sendResponse(wsConn, response)
+}
+
+// closeConnection closes a WebSocket connection
+func (ws *WebSocketServer) closeConnection(wsConn *WebSocketConnection) {
+	// Cancel context
+	wsConn.cancel()
+
+	// Remove from connections map
+	ws.connectionsMutex.Lock()
+	delete(ws.connections, wsConn.ID)
+	ws.connectionsMutex.Unlock()
+
+	// Remove from subscription manager
+	ws.subscriptionManager.RemoveConnection(wsConn.ID)
+
+	// Close WebSocket connection
+	wsConn.conn.Close()
+
+	log.Printf("WebSocket connection %s closed", wsConn.ID)
+}
+
+// BroadcastToSubscribers sends a message to all connections subscribed to a specific stream
+func (ws *WebSocketServer) BroadcastToSubscribers(msgType SubscriptionType, message interface{}) {
+	data, err := json.Marshal(message)
+	if err != nil {
+		log.Printf("Failed to marshal broadcast message: %v", err)
+		return
+	}
+
+	ws.connectionsMutex.RLock()
+	defer ws.connectionsMutex.RUnlock()
+
+	for _, conn := range ws.connections {
+		conn.mutex.RLock()
+		if _, subscribed := conn.subscriptions[msgType]; subscribed {
+			select {
+			case conn.sendChannel <- data:
+				// Message sent
+			default:
+				// Channel full, skip this connection
+				log.Printf("Skipping slow WebSocket connection %s", conn.ID)
+			}
+		}
+		conn.mutex.RUnlock()
+	}
+}
+
+// Helper functions
+
+func generateConnectionID() string {
+	// TODO: Generate a proper unique connection ID
+	return fmt.Sprintf("conn_%d", time.Now().UnixNano())
+}
+
+func getWebSocketClientIP(conn *websocket.Conn) string {
+	// Extract client IP from WebSocket connection
+	remoteAddr := conn.RemoteAddr().String()
+	if idx := len(remoteAddr) - 1; idx >= 0 {
+		for i := idx; i >= 0; i-- {
+			if remoteAddr[i] == ':' {
+				return remoteAddr[:i]
+			}
+		}
+	}
+	return remoteAddr
+}
+
+// RegisterAllMethods registers all RPC methods for WebSocket use
+func (ws *WebSocketServer) RegisterAllMethods() {
+	// Use the same method registration as HTTP server
+	server := &Server{registry: ws.methodRegistry}
+	server.registerAllMethods()
+}
