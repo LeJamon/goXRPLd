@@ -21,60 +21,60 @@ func (m *ServerInfoMethod) Handle(ctx *RpcContext, params json.RawMessage) (inte
 	// - Fee voting state
 	// - Amendment voting state
 	// - Validation key information (if validator)
-	
+
 	response := map[string]interface{}{
 		"info": map[string]interface{}{
-			"build_version":       "2.0.0-goXRPLd",
-			"complete_ledgers":    "1-1000", // TODO: Get actual complete ledger range from nodestore
-			"hostid":             "PLACEHOLDER", // TODO: Generate consistent host ID
-			"io_latency_ms":      1, // TODO: Measure actual I/O latency
-			"jq_trans_overflow":  "0", // TODO: Track job queue overflow
+			"build_version":     "2.0.0-goXRPLd",
+			"complete_ledgers":  "1-1000",      // TODO: Get actual complete ledger range from nodestore
+			"hostid":            "PLACEHOLDER", // TODO: Generate consistent host ID
+			"io_latency_ms":     1,             // TODO: Measure actual I/O latency
+			"jq_trans_overflow": "0",           // TODO: Track job queue overflow
 			"last_close": map[string]interface{}{
 				"converge_time_s": 2.0, // TODO: Get from consensus engine
 				"proposers":       4,   // TODO: Get actual proposer count
 			},
-			"load_factor":        1.0, // TODO: Calculate server load factor
-			"peer_disconnects":   "0", // TODO: Track peer disconnections
-			"peer_disconnects_resources": "0", // TODO: Track resource-based disconnections
-			"peers":             4, // TODO: Get actual peer count from peer manager
-			"pubkey_node":       "n9PLACEHOLDER", // TODO: Get actual node public key
-			"server_state":      "full", // TODO: Determine actual server state (syncing, full, etc.)
+			"load_factor":                1.0,             // TODO: Calculate server load factor
+			"peer_disconnects":           "0",             // TODO: Track peer disconnections
+			"peer_disconnects_resources": "0",             // TODO: Track resource-based disconnections
+			"peers":                      4,               // TODO: Get actual peer count from peer manager
+			"pubkey_node":                "n9PLACEHOLDER", // TODO: Get actual node public key
+			"server_state":               "full",          // TODO: Determine actual server state (syncing, full, etc.)
 			"state_accounting": map[string]interface{}{
 				"connected": map[string]interface{}{
-					"duration_us":  "12345678",
-					"transitions":  "1",
+					"duration_us": "12345678",
+					"transitions": "1",
 				},
 				"disconnected": map[string]interface{}{
-					"duration_us":  "0",
-					"transitions":  "0",
+					"duration_us": "0",
+					"transitions": "0",
 				},
 				"full": map[string]interface{}{
-					"duration_us":  "87654321",
-					"transitions":  "1",
+					"duration_us": "87654321",
+					"transitions": "1",
 				},
 				"syncing": map[string]interface{}{
-					"duration_us":  "123456",
-					"transitions":  "1",
+					"duration_us": "123456",
+					"transitions": "1",
 				},
 				"tracking": map[string]interface{}{
-					"duration_us":  "234567",
-					"transitions":  "1",
+					"duration_us": "234567",
+					"transitions": "1",
 				},
 			},
-			"time":              time.Now().Format(time.RFC3339), // Server time in UTC
-			"uptime":           86400, // TODO: Track actual uptime in seconds
+			"time":   time.Now().Format(time.RFC3339), // Server time in UTC
+			"uptime": 86400,                           // TODO: Track actual uptime in seconds
 			"validated_ledger": map[string]interface{}{
-				"age":            10, // TODO: Age of validated ledger in seconds
-				"base_fee_xrp":   0.00001, // TODO: Get actual base fee from fee voting
-				"hash":           "PLACEHOLDER_HASH", // TODO: Get actual validated ledger hash
-				"reserve_base_xrp": 10.0, // TODO: Get actual reserve from fee voting
-				"reserve_inc_xrp":  2.0,  // TODO: Get actual reserve increment
-				"seq":            1000, // TODO: Get actual validated ledger sequence
+				"age":              10,                 // TODO: Age of validated ledger in seconds
+				"base_fee_xrp":     0.00001,            // TODO: Get actual base fee from fee voting
+				"hash":             "PLACEHOLDER_HASH", // TODO: Get actual validated ledger hash
+				"reserve_base_xrp": 10.0,               // TODO: Get actual reserve from fee voting
+				"reserve_inc_xrp":  2.0,                // TODO: Get actual reserve increment
+				"seq":              1000,               // TODO: Get actual validated ledger sequence
 			},
 			"validation_quorum": 3, // TODO: Get actual validation quorum
 		},
 	}
-	
+
 	return response, nil
 }
 
@@ -96,7 +96,7 @@ func (m *ServerStateMethod) Handle(ctx *RpcContext, params json.RawMessage) (int
 	// - Numeric values as numbers instead of strings where appropriate
 	// - More compact format
 	// - Different field names in some cases
-	
+
 	response := map[string]interface{}{
 		"state": map[string]interface{}{
 			"build_version":     "2.0.0-goXRPLd",
@@ -105,23 +105,23 @@ func (m *ServerStateMethod) Handle(ctx *RpcContext, params json.RawMessage) (int
 			"jq_trans_overflow": 0,
 			"load_base":         256, // TODO: Calculate base load
 			"load_factor":       1.0,
-			"peers":            4, // TODO: Get actual peer count
-			"pubkey_node":      "n9PLACEHOLDER", // TODO: Get actual node key
-			"server_state":     "full",
-			"time":             time.Now().Format(time.RFC3339),
-			"uptime":          86400, // TODO: Track actual uptime
+			"peers":             4,               // TODO: Get actual peer count
+			"pubkey_node":       "n9PLACEHOLDER", // TODO: Get actual node key
+			"server_state":      "full",
+			"time":              time.Now().Format(time.RFC3339),
+			"uptime":            86400, // TODO: Track actual uptime
 			"validated_ledger": map[string]interface{}{
-				"age":          10,
-				"base_fee_xrp": 0.00001,
-				"hash":         "PLACEHOLDER_HASH",
+				"age":              10,
+				"base_fee_xrp":     0.00001,
+				"hash":             "PLACEHOLDER_HASH",
 				"reserve_base_xrp": 10.0,
 				"reserve_inc_xrp":  2.0,
-				"seq":          1000,
+				"seq":              1000,
 			},
 			"validation_quorum": 3,
 		},
 	}
-	
+
 	return response, nil
 }
 
@@ -139,11 +139,11 @@ type PingMethod struct{}
 func (m *PingMethod) Handle(ctx *RpcContext, params json.RawMessage) (interface{}, *RpcError) {
 	// Ping method is used to test connectivity and measure round-trip time
 	// It simply returns an empty success response
-	
+
 	response := map[string]interface{}{
 		// Empty response indicates successful ping
 	}
-	
+
 	return response, nil
 }
 
@@ -165,11 +165,11 @@ func (m *RandomMethod) Handle(ctx *RpcContext, params json.RawMessage) (interfac
 	if err != nil {
 		return nil, RpcErrorInternal("Failed to generate random data: " + err.Error())
 	}
-	
+
 	response := map[string]interface{}{
 		"random": strings.ToUpper(hex.EncodeToString(randomBytes)),
 	}
-	
+
 	return response, nil
 }
 
@@ -189,11 +189,11 @@ func (m *ServerDefinitionsMethod) Handle(ctx *RpcContext, params json.RawMessage
 	// This method returns the transaction and ledger format definitions
 	// that the server uses, including:
 	// - Transaction types and their fields
-	// - Ledger object types and their fields  
+	// - Ledger object types and their fields
 	// - Field types and their encoding rules
 	// - Amendment status
 	// This data should come from the definitions system used by the binary codec
-	
+
 	response := map[string]interface{}{
 		"FIELDS": map[string]interface{}{
 			// TODO: Load actual field definitions from binary codec
@@ -231,7 +231,7 @@ func (m *ServerDefinitionsMethod) Handle(ctx *RpcContext, params json.RawMessage
 			// etc.
 		},
 	}
-	
+
 	return response, nil
 }
 
@@ -253,7 +253,7 @@ func (m *FeatureMethod) Handle(ctx *RpcContext, params json.RawMessage) (interfa
 	// - Server's voting preferences
 	// - Amendment blocking status
 	// This data should come from the amendment table tracking system
-	
+
 	response := map[string]interface{}{
 		// TODO: Return actual amendment status
 		// Example structure should match rippled format:
@@ -264,7 +264,6 @@ func (m *FeatureMethod) Handle(ctx *RpcContext, params json.RawMessage) (interfa
 		//     "vetoed": false
 		// }
 	}
-	
 	return response, nil
 }
 
@@ -286,27 +285,27 @@ func (m *FeeMethod) Handle(ctx *RpcContext, params json.RawMessage) (interface{}
 	// - Fee voting state from validators
 	// - Recommended fees for different transaction types
 	// This data should come from the fee voting tracking system
-	
+
 	response := map[string]interface{}{
-		"current_ledger_size":    "1000", // TODO: Get actual ledger size
-		"current_queue_size":     "0",    // TODO: Get actual queue size
+		"current_ledger_size": "1000", // TODO: Get actual ledger size
+		"current_queue_size":  "0",    // TODO: Get actual queue size
 		"drops": map[string]interface{}{
-			"base_fee":    "10",    // TODO: Get actual base fee in drops
-			"median_fee":  "12",    // TODO: Calculate median fee
-			"minimum_fee": "10",    // TODO: Get minimum fee
+			"base_fee":        "10", // TODO: Get actual base fee in drops
+			"median_fee":      "12", // TODO: Calculate median fee
+			"minimum_fee":     "10", // TODO: Get minimum fee
 			"open_ledger_fee": "10", // TODO: Get open ledger fee
 		},
 		"expected_ledger_size": "1000", // TODO: Calculate expected size
 		"ledger_current_index": 1000,   // TODO: Get current ledger index
 		"levels": map[string]interface{}{
-			"median_level":     "256", // TODO: Calculate median fee level
-			"minimum_level":    "256", // TODO: Get minimum fee level  
+			"median_level":      "256", // TODO: Calculate median fee level
+			"minimum_level":     "256", // TODO: Get minimum fee level
 			"open_ledger_level": "256", // TODO: Get open ledger fee level
 			"reference_level":   "256", // TODO: Get reference fee level
 		},
 		"max_queue_size": "1000", // TODO: Get max queue size
 	}
-	
+
 	return response, nil
 }
 
