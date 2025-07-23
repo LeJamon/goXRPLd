@@ -126,6 +126,20 @@ func (n *InnerNode) ChildHashUnsafe(index int) [32]byte {
 	return n.hashes[index]
 }
 
+// GetChildHash returns the hash at a given branch index with existence check
+// Returns the hash and a boolean indicating if the branch exists
+func (n *InnerNode) GetChildHash(index int) ([32]byte, bool) {
+	if index < 0 || index >= BranchFactor {
+		return [32]byte{}, false
+	}
+
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	
+	exists := (n.isBranch & (1 << index)) != 0
+	return n.hashes[index], exists
+}
+
 // UpdateHash recalculates the node's hash from its children
 func (n *InnerNode) UpdateHash() error {
 	n.mu.Lock()
@@ -153,11 +167,12 @@ func (n *InnerNode) updateHashUnsafe() error {
 		if n.isBranch&(1<<i) != 0 {
 			child := n.children[i]
 			if child != nil {
+				// Use the hash from the actual child node
 				childHash := child.Hash()
 				data = append(data, childHash[:])
 			} else {
-				// This shouldn't happen if isBranch is correct, but handle it
-				data = append(data, zeroHash)
+				// Child node not loaded, use stored hash (for deserialized nodes)
+				data = append(data, n.hashes[i][:])
 			}
 		} else {
 			// Empty branch: contribute 32 zero bytes

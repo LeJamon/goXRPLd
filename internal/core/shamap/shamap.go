@@ -251,6 +251,63 @@ func (sm *SHAMap) walkToKey(key [32]byte, stack *NodeStack) (Node, error) {
 	return node, nil
 }
 
+// walkTowardsKey walks towards a key and builds a stack for proof generation
+// This matches rippled's walkTowardsKey function used specifically for proof paths
+// The stack will contain all nodes from root to target in the order they were visited
+func (sm *SHAMap) walkTowardsKey(key [32]byte, stack *NodeStack) (Node, error) {
+	if stack != nil && !stack.IsEmpty() {
+		stack.Clear()
+	}
+
+	var node Node = sm.root
+	nodeID := NewRootNodeID()
+
+	// Always push the root node first (this is the key difference from walkToKey)
+	if stack != nil {
+		stack.Push(node, nodeID)
+	}
+
+	// Walk towards the key, pushing all nodes we traverse
+	for !node.IsLeaf() {
+		inner, ok := node.(*InnerNode)
+		if !ok {
+			return nil, ErrInvalidType
+		}
+
+		branch := SelectBranch(nodeID, key)
+		if inner.IsEmptyBranch(int(branch)) {
+			// We've gone as far as we can - the key doesn't exist
+			// But we still return the path we've taken so far
+			return nil, nil
+		}
+
+		child, err := inner.Child(int(branch))
+		if err != nil {
+			return nil, fmt.Errorf("failed to get child: %w", err)
+		}
+		if child == nil {
+			// Empty slot - key doesn't exist
+			return nil, nil
+		}
+
+		// Move to the child
+		node = child
+		childNodeID, err := nodeID.ChildNodeID(branch)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get child node ID: %w", err)
+		}
+		nodeID = childNodeID
+
+		// Push the child node to the stack
+		if stack != nil {
+			stack.Push(node, nodeID)
+		}
+	}
+
+	// We've reached a leaf node - it's already been pushed to the stack above
+	return node, nil
+}
+
 // findItem returns the item with the specified key, or nil if not found
 func (sm *SHAMap) findItem(key [32]byte) (*Item, error) {
 	node, err := sm.walkToKey(key, nil)
@@ -952,6 +1009,375 @@ func (sm *SHAMap) cloneNodeTree(node Node) (*InnerNode, error) {
 	return clonedInner, nil
 }
 
-func (sm *SHAMap) FindDifference() {
-	//TODO implement me
+// Go 1.23+ range-over function iterators
+
+// All returns an iterator that yields all items in the SHAMap
+// Compatible with Go 1.23+ range-over function iterators
+func (sm *SHAMap) All() func(func(*Item) bool) {
+	return func(yield func(*Item) bool) {
+		sm.mu.RLock()
+		defer sm.mu.RUnlock()
+		sm.forEachUnsafe(sm.root, yield)
+	}
 }
+
+// Keys returns an iterator that yields all keys in the SHAMap
+// Compatible with Go 1.23+ range-over function iterators
+func (sm *SHAMap) Keys() func(func([32]byte) bool) {
+	return func(yield func([32]byte) bool) {
+		sm.mu.RLock()
+		defer sm.mu.RUnlock()
+		sm.forEachUnsafe(sm.root, func(item *Item) bool {
+			return yield(item.Key())
+		})
+	}
+}
+
+// Items returns an iterator that yields key-value pairs in the SHAMap
+// Compatible with Go 1.23+ range-over function iterators
+func (sm *SHAMap) Items() func(func([32]byte, []byte) bool) {
+	return func(yield func([32]byte, []byte) bool) {
+		sm.mu.RLock()
+		defer sm.mu.RUnlock()
+		sm.forEachUnsafe(sm.root, func(item *Item) bool {
+			return yield(item.Key(), item.Data())
+		})
+	}
+}
+
+// Nodes returns an iterator that yields all nodes in the SHAMap
+// Compatible with Go 1.23+ range-over function iterators
+func (sm *SHAMap) Nodes() func(func(Node) bool) {
+	return func(yield func(Node) bool) {
+		sm.mu.RLock()
+		defer sm.mu.RUnlock()
+		sm.visitNodesUnsafe(sm.root, yield)
+	}
+}
+
+// visitNodesUnsafe recursively visits all nodes (caller must hold lock)
+func (sm *SHAMap) visitNodesUnsafe(node Node, yield func(Node) bool) bool {
+	if node == nil {
+		return true
+	}
+
+	// Visit this node
+	if !yield(node) {
+		return false
+	}
+
+	// If it's an inner node, visit children
+	if node.IsInner() {
+		inner, ok := node.(*InnerNode)
+		if !ok {
+			return false
+		}
+
+		for i := 0; i < BranchFactor; i++ {
+			child, err := inner.Child(i)
+			if err != nil {
+				return false
+			}
+			if child != nil {
+				if !sm.visitNodesUnsafe(child, yield) {
+					return false
+				}
+			}
+		}
+	}
+
+	return true
+}
+
+// visitNodes visits every node in this SHAMap
+func (sm *SHAMap) VisitNodes(fn func(Node) bool) error {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	if !sm.visitNodesUnsafe(sm.root, fn) {
+		return nil // Early termination requested
+	}
+	return nil
+}
+
+// visitLeaves visits every leaf node in this SHAMap
+func (sm *SHAMap) VisitLeaves(fn func(*Item)) error {
+	return sm.ForEach(func(item *Item) bool {
+		fn(item)
+		return true // Continue iteration
+	})
+}
+
+// visitDifferences visits every node in this SHAMap that is not present in the other SHAMap
+func (sm *SHAMap) VisitDifferences(other *SHAMap, fn func(Node) bool) error {
+	if other == nil {
+		return sm.VisitNodes(fn)
+	}
+
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	other.mu.RLock()
+	defer other.mu.RUnlock()
+
+	return sm.visitDifferencesUnsafe(sm.root, other.root, fn)
+}
+
+// visitDifferencesUnsafe recursively compares nodes and visits differences
+func (sm *SHAMap) visitDifferencesUnsafe(ourNode, theirNode Node, fn func(Node) bool) error {
+	// If their node is nil, our entire subtree is different
+	if theirNode == nil {
+		return sm.visitSubtreeUnsafe(ourNode, fn)
+	}
+
+	// If our node is nil, nothing to visit
+	if ourNode == nil {
+		return nil
+	}
+
+	// If hashes match, subtrees are identical
+	if ourNode.Hash() == theirNode.Hash() {
+		return nil
+	}
+
+	// Hashes differ - visit this node
+	if !fn(ourNode) {
+		return nil // Early termination requested
+	}
+
+	// If both are leaves, we're done (already visited the differing node)
+	if ourNode.IsLeaf() || theirNode.IsLeaf() {
+		return nil
+	}
+
+	// Both are inner nodes - compare children
+	ourInner, ok1 := ourNode.(*InnerNode)
+	theirInner, ok2 := theirNode.(*InnerNode)
+	if !ok1 || !ok2 {
+		return ErrInvalidType
+	}
+
+	for i := 0; i < BranchFactor; i++ {
+		ourChild, err1 := ourInner.Child(i)
+		theirChild, err2 := theirInner.Child(i)
+
+		if err1 != nil || err2 != nil {
+			continue
+		}
+
+		if err := sm.visitDifferencesUnsafe(ourChild, theirChild, fn); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// visitSubtreeUnsafe visits all nodes in a subtree
+func (sm *SHAMap) visitSubtreeUnsafe(node Node, fn func(Node) bool) error {
+	if node == nil {
+		return nil
+	}
+
+	if !fn(node) {
+		return nil // Early termination requested
+	}
+
+	if node.IsInner() {
+		inner, ok := node.(*InnerNode)
+		if !ok {
+			return ErrInvalidType
+		}
+
+		for i := 0; i < BranchFactor; i++ {
+			child, err := inner.Child(i)
+			if err != nil {
+				continue
+			}
+			if child != nil {
+				if err := sm.visitSubtreeUnsafe(child, fn); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// MissingNode represents a missing node needed for synchronization
+type MissingNode struct {
+	NodeID NodeID
+	Hash   [32]byte
+}
+
+// GetMissingNodes traverses the SHAMap to find nodes that are referenced but not available
+// This is used for synchronization to determine what nodes need to be fetched
+func (sm *SHAMap) GetMissingNodes(maxNodes int) ([]MissingNode, error) {
+	if maxNodes <= 0 {
+		maxNodes = 100 // Default reasonable limit
+	}
+
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	var missingNodes []MissingNode
+	visited := make(map[[32]byte]bool)
+
+	err := sm.findMissingNodesUnsafe(sm.root, NewRootNodeID(), visited, &missingNodes, &maxNodes)
+	if err != nil {
+		return nil, err
+	}
+
+	return missingNodes, nil
+}
+
+// findMissingNodesUnsafe recursively finds missing nodes
+func (sm *SHAMap) findMissingNodesUnsafe(node Node, nodeID NodeID, visited map[[32]byte]bool, missingNodes *[]MissingNode, maxNodes *int) error {
+	if *maxNodes <= 0 {
+		return nil // Reached limit
+	}
+
+	if node == nil {
+		return nil
+	}
+
+	nodeHash := node.Hash()
+	
+	// Skip if already visited this hash
+	if visited[nodeHash] {
+		return nil
+	}
+	visited[nodeHash] = true
+
+	// For inner nodes, check children
+	if node.IsInner() {
+		inner, ok := node.(*InnerNode)
+		if !ok {
+			return ErrInvalidType
+		}
+
+		for i := 0; i < BranchFactor; i++ {
+			if inner.IsEmptyBranch(i) {
+				continue
+			}
+
+			// Get child hash
+			childHash, exists := inner.GetChildHash(i)
+			if !exists {
+				continue
+			}
+
+			// Get actual child node
+			child, err := inner.Child(i)
+			if err != nil {
+				return err
+			}
+
+			if child == nil {
+				// Child is missing - add to missing list
+				childNodeID, err := nodeID.ChildNodeID(uint8(i))
+				if err != nil {
+					return err
+				}
+
+				*missingNodes = append(*missingNodes, MissingNode{
+					NodeID: childNodeID,
+					Hash:   childHash,
+				})
+				(*maxNodes)--
+
+				if *maxNodes <= 0 {
+					return nil
+				}
+			} else {
+				// Child exists - recurse
+				childNodeID, err := nodeID.ChildNodeID(uint8(i))
+				if err != nil {
+					return err
+				}
+
+				err = sm.findMissingNodesUnsafe(child, childNodeID, visited, missingNodes, maxNodes)
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// WalkMap traverses the entire SHAMap and reports any missing nodes
+// This is a comprehensive check for map integrity
+func (sm *SHAMap) WalkMap() ([]MissingNode, error) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	var missingNodes []MissingNode
+	visited := make(map[[32]byte]bool)
+
+	err := sm.walkMapUnsafe(sm.root, NewRootNodeID(), visited, &missingNodes)
+	if err != nil {
+		return nil, err
+	}
+
+	return missingNodes, nil
+}
+
+// walkMapUnsafe performs the actual traversal work
+func (sm *SHAMap) walkMapUnsafe(node Node, nodeID NodeID, visited map[[32]byte]bool, missingNodes *[]MissingNode) error {
+	if node == nil {
+		return nil
+	}
+
+	nodeHash := node.Hash()
+	
+	// Skip if already visited this hash
+	if visited[nodeHash] {
+		return nil
+	}
+	visited[nodeHash] = true
+
+	// For inner nodes, check all children
+	if node.IsInner() {
+		inner, ok := node.(*InnerNode)
+		if !ok {
+			return ErrInvalidType
+		}
+
+		for i := 0; i < BranchFactor; i++ {
+			if inner.IsEmptyBranch(i) {
+				continue
+			}
+
+			// Get child
+			child, err := inner.Child(i)
+			if err != nil {
+				return err
+			}
+
+			childNodeID, err := nodeID.ChildNodeID(uint8(i))
+			if err != nil {
+				return err
+			}
+
+			if child == nil {
+				// Child is missing - add to missing list
+				childHash, _ := inner.GetChildHash(i)
+				*missingNodes = append(*missingNodes, MissingNode{
+					NodeID: childNodeID,
+					Hash:   childHash,
+				})
+			} else {
+				// Child exists - recurse
+				err = sm.walkMapUnsafe(child, childNodeID, visited, missingNodes)
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
+}
+

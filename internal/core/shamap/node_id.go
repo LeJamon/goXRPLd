@@ -263,6 +263,16 @@ func (n NodeID) IsAncestorOf(descendant NodeID) bool {
 	return descendant.IsDescendantOf(n)
 }
 
+// CreateNodeIDAtDepth creates a NodeID at a specific depth for a given key
+// This is equivalent to rippled's SHAMapNodeID::createID
+func CreateNodeIDAtDepth(depth int, key [32]byte) (NodeID, error) {
+	if depth < 0 || depth > MaxDepth {
+		return NodeID{}, fmt.Errorf("invalid depth %d: must be between 0 and %d", depth, MaxDepth)
+	}
+
+	return CreateNodeID(uint8(depth), key)
+}
+
 // Validate performs validation on the NodeID
 func (n NodeID) Validate() error {
 	if n.depth > MaxDepth {
