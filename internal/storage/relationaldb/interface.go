@@ -113,6 +113,8 @@ type LedgerRepository interface {
 	GetLedgerInfoBySeq(ctx context.Context, seq LedgerIndex) (*LedgerInfo, error)
 	GetLedgerInfoByHash(ctx context.Context, hash Hash) (*LedgerInfo, error)
 	GetNewestLedgerInfo(ctx context.Context) (*LedgerInfo, error)
+	GetLimitedOldestLedgerInfo(ctx context.Context, minSeq LedgerIndex) (*LedgerInfo, error)
+	GetLimitedNewestLedgerInfo(ctx context.Context, minSeq LedgerIndex) (*LedgerInfo, error)
 	GetHashByIndex(ctx context.Context, seq LedgerIndex) (*Hash, error)
 	GetHashesByIndex(ctx context.Context, seq LedgerIndex) (*LedgerHashPair, error)
 	GetHashesByRange(ctx context.Context, minSeq, maxSeq LedgerIndex) (map[LedgerIndex]LedgerHashPair, error)
@@ -153,6 +155,8 @@ type SystemRepository interface {
 	GetKBUsedAll(ctx context.Context) (uint32, error)
 	Ping(ctx context.Context) error
 	Begin(ctx context.Context) (TransactionContext, error)
+	CloseLedgerDB(ctx context.Context) error
+	CloseTransactionDB(ctx context.Context) error
 }
 
 // TransactionContext represents a database transaction context with repository access

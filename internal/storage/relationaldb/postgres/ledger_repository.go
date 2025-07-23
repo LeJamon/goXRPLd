@@ -176,6 +176,78 @@ func (r *LedgerRepository) GetNewestLedgerInfo(ctx context.Context) (*relational
 	return &info, nil
 }
 
+func (r *LedgerRepository) GetLimitedOldestLedgerInfo(ctx context.Context, minSeq relationaldb.LedgerIndex) (*relationaldb.LedgerInfo, error) {
+	query := `SELECT ledger_hash, ledger_seq, prev_hash, account_set_hash, trans_set_hash, 
+			  total_coins, closing_time, prev_closing_time, close_time_res, close_flags
+			  FROM ledgers WHERE ledger_seq >= $1 ORDER BY ledger_seq ASC LIMIT 1`
+
+	var info relationaldb.LedgerInfo
+	var hashBytes, parentHashBytes, accountHashBytes, txHashBytes []byte
+	var totalCoinsStr string
+	var closingTime, prevClosingTime int64
+
+	err := r.getExecutor().QueryRowContext(ctx, query, minSeq).Scan(
+		&hashBytes, &info.Sequence, &parentHashBytes, &accountHashBytes, &txHashBytes,
+		&totalCoinsStr, &closingTime, &prevClosingTime, &info.CloseTimeRes, &info.CloseFlags)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, relationaldb.NewQueryError("get_limited_oldest_ledger_info", "failed to query oldest ledger with limit", err)
+	}
+
+	copy(info.Hash[:], hashBytes)
+	copy(info.ParentHash[:], parentHashBytes)
+	copy(info.AccountHash[:], accountHashBytes)
+	copy(info.TransactionHash[:], txHashBytes)
+
+	if totalCoins, err := strconv.ParseInt(totalCoinsStr, 10, 64); err == nil {
+		info.TotalCoins = relationaldb.Amount(totalCoins)
+	}
+
+	info.CloseTime = time.Unix(closingTime+946684800, 0).UTC()
+	info.ParentCloseTime = time.Unix(prevClosingTime+946684800, 0).UTC()
+
+	return &info, nil
+}
+
+func (r *LedgerRepository) GetLimitedNewestLedgerInfo(ctx context.Context, minSeq relationaldb.LedgerIndex) (*relationaldb.LedgerInfo, error) {
+	query := `SELECT ledger_hash, ledger_seq, prev_hash, account_set_hash, trans_set_hash, 
+			  total_coins, closing_time, prev_closing_time, close_time_res, close_flags
+			  FROM ledgers WHERE ledger_seq >= $1 ORDER BY ledger_seq DESC LIMIT 1`
+
+	var info relationaldb.LedgerInfo
+	var hashBytes, parentHashBytes, accountHashBytes, txHashBytes []byte
+	var totalCoinsStr string
+	var closingTime, prevClosingTime int64
+
+	err := r.getExecutor().QueryRowContext(ctx, query, minSeq).Scan(
+		&hashBytes, &info.Sequence, &parentHashBytes, &accountHashBytes, &txHashBytes,
+		&totalCoinsStr, &closingTime, &prevClosingTime, &info.CloseTimeRes, &info.CloseFlags)
+
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, relationaldb.NewQueryError("get_limited_newest_ledger_info", "failed to query newest ledger with limit", err)
+	}
+
+	copy(info.Hash[:], hashBytes)
+	copy(info.ParentHash[:], parentHashBytes)
+	copy(info.AccountHash[:], accountHashBytes)
+	copy(info.TransactionHash[:], txHashBytes)
+
+	if totalCoins, err := strconv.ParseInt(totalCoinsStr, 10, 64); err == nil {
+		info.TotalCoins = relationaldb.Amount(totalCoins)
+	}
+
+	info.CloseTime = time.Unix(closingTime+946684800, 0).UTC()
+	info.ParentCloseTime = time.Unix(prevClosingTime+946684800, 0).UTC()
+
+	return &info, nil
+}
+
 func (r *LedgerRepository) GetHashByIndex(ctx context.Context, seq relationaldb.LedgerIndex) (*relationaldb.Hash, error) {
 	var hashBytes []byte
 	err := r.getExecutor().QueryRowContext(ctx, "SELECT ledger_hash FROM ledgers WHERE ledger_seq = $1", seq).Scan(&hashBytes)

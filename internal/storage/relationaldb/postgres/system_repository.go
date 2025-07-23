@@ -57,3 +57,17 @@ func (r *SystemRepository) Begin(ctx context.Context) (relationaldb.TransactionC
 
 	return NewTransactionContext(tx), nil
 }
+
+// CloseLedgerDB closes the ledger database connection.
+// In PostgreSQL, this is a no-op since we use a single connection pool.
+func (r *SystemRepository) CloseLedgerDB(ctx context.Context) error {
+	// PostgreSQL uses a single connection pool, so this is a no-op
+	return nil
+}
+
+// CloseTransactionDB closes the transaction database connection.
+// In PostgreSQL, this is a no-op since we use a single connection pool.
+func (r *SystemRepository) CloseTransactionDB(ctx context.Context) error {
+	// PostgreSQL uses a single connection pool, so this is a no-op
+	return nil
+}
