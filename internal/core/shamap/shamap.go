@@ -67,13 +67,22 @@ func (t Type) String() string {
 
 // SHAMap is the main structure representing the tree
 type SHAMap struct {
-	mu        sync.RWMutex
-	root      *InnerNode
-	mapType   Type
+	// Synchronization
+	mu sync.RWMutex
+	
+	// Core tree structure  
+	root *InnerNode
+	
+	// Configuration (immutable after creation)
+	mapType Type
+	
+	// Runtime state
 	state     State
 	ledgerSeq uint32
-	full      bool
-	backed    bool
+	
+	// Sync/storage state
+	full   bool // true when all referenced nodes are loaded
+	backed bool // true when backed by persistent storage
 }
 
 // New creates a new empty SHAMap with the specified type
@@ -1242,7 +1251,7 @@ func (sm *SHAMap) findMissingNodesUnsafe(node Node, nodeID NodeID, visited map[[
 	}
 
 	nodeHash := node.Hash()
-	
+
 	// Skip if already visited this hash
 	if visited[nodeHash] {
 		return nil
@@ -1331,7 +1340,7 @@ func (sm *SHAMap) walkMapUnsafe(node Node, nodeID NodeID, visited map[[32]byte]b
 	}
 
 	nodeHash := node.Hash()
-	
+
 	// Skip if already visited this hash
 	if visited[nodeHash] {
 		return nil
@@ -1381,3 +1390,462 @@ func (sm *SHAMap) walkMapUnsafe(node Node, nodeID NodeID, visited map[[32]byte]b
 	return nil
 }
 
+// ============================================================================
+// Synchronization Methods
+// ============================================================================
+
+// SetSyncing sets the map to syncing state
+func (sm *SHAMap) SetSyncing() error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if sm.state == StateSyncing {
+		return ErrSyncInProgress
+	}
+
+	sm.state = StateSyncing
+	return nil
+}
+
+// ClearSyncing clears the syncing state and sets to modifying
+func (sm *SHAMap) ClearSyncing() error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if sm.state != StateSyncing {
+		return ErrNotSyncing
+	}
+
+	sm.state = StateModifying
+	return nil
+}
+
+// IsSyncing returns true if the map is in syncing state
+func (sm *SHAMap) IsSyncing() bool {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.state == StateSyncing
+}
+
+// LedgerSeq returns the ledger sequence number
+func (sm *SHAMap) LedgerSeq() uint32 {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.ledgerSeq
+}
+
+// IsFull returns true if the map is marked as full
+func (sm *SHAMap) IsFull() bool {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.full
+}
+
+// SetBacked marks the map as backed by persistent storage
+func (sm *SHAMap) SetBacked() {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.backed = true
+}
+
+// IsBacked returns true if the map is backed by persistent storage
+func (sm *SHAMap) IsBacked() bool {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.backed
+}
+
+// AddKnownNode adds a node received from a peer during synchronization
+func (sm *SHAMap) AddKnownNode(nodeID NodeID, nodeData []byte, filter SyncFilter) AddNodeResult {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	result := AddNodeResult{}
+
+	// Deserialize the node
+	node, err := DeserializeNodeFromWire(nodeData)
+	if err != nil {
+		result.Status = AddNodeInvalid
+		result.Bad = 1
+		return result
+	}
+
+	// Verify the node's hash matches what we expect
+	nodeHash := node.Hash()
+	expectedHash := sm.getExpectedHashUnsafe(nodeID)
+	if expectedHash != [32]byte{} && nodeHash != expectedHash {
+		result.Status = AddNodeInvalid
+		result.Bad = 1
+		return result
+	}
+
+	// Try to add the node to the tree
+	added, err := sm.addKnownNodeUnsafe(nodeID, node)
+	if err != nil {
+		result.Status = AddNodeInvalid
+		result.Bad = 1
+		return result
+	}
+
+	if !added {
+		result.Status = AddNodeDuplicate
+		result.Duplicate = 1
+		return result
+	}
+
+	result.Status = AddNodeUseful
+	result.Good = 1
+
+	// Notify the filter
+	if filter != nil {
+		filter.GotNode(false, nodeHash, sm.ledgerSeq, nodeData, node.Type())
+	}
+
+	return result
+}
+
+// AddRootNode sets the root node during synchronization
+func (sm *SHAMap) AddRootNode(hash [32]byte, nodeData []byte, filter SyncFilter) AddNodeResult {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	result := AddNodeResult{}
+
+	// Deserialize the root node
+	node, err := DeserializeNodeFromWire(nodeData)
+	if err != nil {
+		result.Status = AddNodeInvalid
+		result.Bad = 1
+		return result
+	}
+
+	// Verify the hash matches
+	if node.Hash() != hash {
+		result.Status = AddNodeInvalid
+		result.Bad = 1
+		return result
+	}
+
+	// Root must be an inner node (in rippled, roots are always inner nodes)
+	if !node.IsInner() {
+		// If we have a single leaf, wrap it in an inner node
+		innerRoot := NewInnerNode()
+		rootNodeID := NewRootNodeID()
+
+		// For single leaf, we need to determine which branch it should go in
+		if leafNode, ok := node.(LeafNode); ok {
+			item := leafNode.Item()
+			if item != nil {
+				key := item.Key()
+				branch := SelectBranch(rootNodeID, key)
+				if err := innerRoot.SetChild(int(branch), node); err != nil {
+					result.Status = AddNodeInvalid
+					result.Bad = 1
+					return result
+				}
+			}
+		}
+		sm.root = innerRoot
+	} else {
+		sm.root = node.(*InnerNode)
+	}
+
+	result.Status = AddNodeUseful
+	result.Good = 1
+
+	// Mark as not full since we just set a new root
+	sm.full = false
+
+	// Notify the filter
+	if filter != nil {
+		filter.GotNode(false, hash, sm.ledgerSeq, nodeData, node.Type())
+	}
+
+	return result
+}
+
+// FetchRoot initializes the map with a root node from the sync filter
+func (sm *SHAMap) FetchRoot(hash [32]byte, filter SyncFilter) bool {
+	if filter == nil {
+		return false
+	}
+
+	nodeData, found := filter.GetNode(hash)
+	if !found {
+		return false
+	}
+
+	result := sm.AddRootNode(hash, nodeData, filter)
+	return result.Status == AddNodeUseful
+}
+
+// GetNodeFat retrieves a node and optionally its descendants for efficient transmission
+func (sm *SHAMap) GetNodeFat(nodeID NodeID, fatLeaves bool, depth uint32) ([]NodeData, error) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	var result []NodeData
+
+	// Find the requested node
+	node, err := sm.getNodeUnsafe(nodeID)
+	if err != nil {
+		return nil, err
+	}
+	if node == nil {
+		return nil, ErrNodeNotFound
+	}
+
+	// Serialize the main node
+	nodeData, err := node.SerializeForWire()
+	if err != nil {
+		return nil, err
+	}
+
+	result = append(result, NodeData{
+		NodeID: nodeID,
+		Data:   nodeData,
+	})
+
+	// If depth > 0, include children
+	if depth > 0 && node.IsInner() {
+		inner, ok := node.(*InnerNode)
+		if !ok {
+			return result, nil
+		}
+
+		err = sm.addChildrenToFatNode(inner, nodeID, fatLeaves, depth-1, &result)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return result, nil
+}
+
+// GetMissingNodesFiltered returns missing nodes with filter support
+func (sm *SHAMap) GetMissingNodesFiltered(maxNodes int, filter SyncFilter) []MissingNodeRequest {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	var requests []MissingNodeRequest
+	var missingNodes []MissingNode
+
+	// Get missing nodes using existing functionality
+	_ = sm.walkMapUnsafe(sm.root, NewRootNodeID(), make(map[[32]byte]bool), &missingNodes)
+
+	// Convert to requests and limit count
+	for i, missing := range missingNodes {
+		if i >= maxNodes {
+			break
+		}
+
+		// Check if filter can provide this node
+		if filter != nil {
+			if nodeData, found := filter.GetNode(missing.Hash); found {
+				// Add the node using the retrieved data
+				sm.addKnownNodeByHashUnsafe(missing.NodeID, missing.Hash, nodeData, filter)
+				continue
+			}
+		}
+
+		requests = append(requests, MissingNodeRequest{
+			NodeID: missing.NodeID,
+			Hash:   missing.Hash,
+		})
+	}
+
+	return requests
+}
+
+// HasInnerNode checks if a specific inner node exists with the expected hash
+func (sm *SHAMap) HasInnerNode(nodeID NodeID, expectedHash [32]byte) bool {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	node, err := sm.getNodeUnsafe(nodeID)
+	if err != nil || node == nil {
+		return false
+	}
+
+	return node.IsInner() && node.Hash() == expectedHash
+}
+
+// HasLeafNode checks if a leaf node exists for the given key with the expected hash
+func (sm *SHAMap) HasLeafNode(key [32]byte, expectedHash [32]byte) bool {
+	_, found, err := sm.Get(key)
+	if err != nil || !found {
+		return false
+	}
+
+	// Find the leaf node containing this item
+	leaf, err := sm.walkToKey(key, nil)
+	if err != nil || leaf == nil {
+		return false
+	}
+
+	return leaf.IsLeaf() && leaf.Hash() == expectedHash
+}
+
+// ============================================================================
+// Helper methods for sync operations
+// ============================================================================
+
+// getExpectedHashUnsafe returns the expected hash for a node at the given position
+func (sm *SHAMap) getExpectedHashUnsafe(nodeID NodeID) [32]byte {
+	if nodeID.IsRoot() {
+		return sm.root.Hash()
+	}
+
+	// Navigate to parent and get the expected child hash
+	parentID := nodeID.Parent()
+	parentNode, err := sm.getNodeUnsafe(parentID)
+	if err != nil || parentNode == nil || !parentNode.IsInner() {
+		return [32]byte{}
+	}
+
+	inner := parentNode.(*InnerNode)
+	branch := nodeID.GetBranch()
+	hash, exists := inner.GetChildHash(int(branch))
+	if !exists {
+		return [32]byte{}
+	}
+
+	return hash
+}
+
+// addKnownNodeUnsafe adds a node to the tree at the specified position
+func (sm *SHAMap) addKnownNodeUnsafe(nodeID NodeID, node Node) (bool, error) {
+	if nodeID.IsRoot() {
+		// Setting root node
+		if node.IsInner() {
+			sm.root = node.(*InnerNode)
+			return true, nil
+		}
+		return false, ErrInvalidRoot
+	}
+
+	// Navigate to parent
+	parentID := nodeID.Parent()
+	parentNode, err := sm.getNodeUnsafe(parentID)
+	if err != nil {
+		return false, err
+	}
+	if parentNode == nil || !parentNode.IsInner() {
+		return false, ErrInvalidNodeID
+	}
+
+	inner := parentNode.(*InnerNode)
+	branch := int(nodeID.GetBranch())
+
+	// Check if already exists
+	existing, _ := inner.Child(branch)
+	if existing != nil && existing.Hash() == node.Hash() {
+		return false, nil // Duplicate
+	}
+
+	// Set the child
+	return true, inner.SetChild(branch, node)
+}
+
+// addKnownNodeByHashUnsafe adds a node by deserializing the provided data
+func (sm *SHAMap) addKnownNodeByHashUnsafe(nodeID NodeID, expectedHash [32]byte, nodeData []byte, filter SyncFilter) error {
+	node, err := DeserializeNodeFromWire(nodeData)
+	if err != nil {
+		return err
+	}
+
+	if node.Hash() != expectedHash {
+		return ErrNodeMismatch
+	}
+
+	_, err = sm.addKnownNodeUnsafe(nodeID, node)
+	if err != nil {
+		return err
+	}
+
+	// Notify filter
+	if filter != nil {
+		filter.GotNode(true, expectedHash, sm.ledgerSeq, nodeData, node.Type())
+	}
+
+	return nil
+}
+
+// addChildrenToFatNode recursively adds children to the fat node response
+func (sm *SHAMap) addChildrenToFatNode(inner *InnerNode, nodeID NodeID, fatLeaves bool, depth uint32, result *[]NodeData) error {
+	for i := 0; i < BranchFactor; i++ {
+		if inner.IsEmptyBranch(i) {
+			continue
+		}
+
+		child, err := inner.Child(i)
+		if err != nil {
+			continue
+		}
+		if child == nil {
+			continue
+		}
+
+		childNodeID, err := nodeID.ChildNodeID(uint8(i))
+		if err != nil {
+			continue
+		}
+
+		// Include this child if it's an inner node, or if it's a leaf and fatLeaves is true
+		if child.IsInner() || fatLeaves {
+			childData, err := child.SerializeForWire()
+			if err != nil {
+				continue
+			}
+
+			*result = append(*result, NodeData{
+				NodeID: childNodeID,
+				Data:   childData,
+			})
+
+			// Recurse if there's more depth and this is an inner node
+			if depth > 0 && child.IsInner() {
+				childInner := child.(*InnerNode)
+				err = sm.addChildrenToFatNode(childInner, childNodeID, fatLeaves, depth-1, result)
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// getNodeUnsafe retrieves a node by its NodeID (assumes lock is held)
+func (sm *SHAMap) getNodeUnsafe(nodeID NodeID) (Node, error) {
+	if nodeID.IsRoot() {
+		return sm.root, nil
+	}
+
+	// Navigate from root to the target node
+	current := Node(sm.root)
+	depth := uint8(0)
+
+	for depth < nodeID.GetDepth() {
+		if !current.IsInner() {
+			return nil, ErrNodeNotFound
+		}
+
+		inner := current.(*InnerNode)
+		branch := nodeID.GetBranchAtDepth(depth)
+
+		child, err := inner.Child(int(branch))
+		if err != nil {
+			return nil, err
+		}
+		if child == nil {
+			return nil, ErrNodeNotFound
+		}
+
+		current = child
+		depth++
+	}
+
+	return current, nil
+}

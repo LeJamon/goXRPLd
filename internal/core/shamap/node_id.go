@@ -300,3 +300,54 @@ func (n NodeID) Validate() error {
 
 	return nil
 }
+
+// Parent returns the parent NodeID
+func (n NodeID) Parent() NodeID {
+	if n.IsRoot() {
+		return n // Root has no parent, return self
+	}
+	parent, _ := n.ParentNodeID()
+	return parent
+}
+
+// GetBranch returns the branch value for this NodeID from its parent
+func (n NodeID) GetBranch() uint8 {
+	if n.IsRoot() {
+		return 0
+	}
+	
+	parentDepth := n.depth - 1
+	byteIndex := parentDepth / 2
+	if byteIndex >= 32 {
+		return 0
+	}
+	
+	b := n.id[byteIndex]
+	if parentDepth%2 == 0 {
+		return b >> 4 // Use upper 4 bits
+	}
+	return b & BranchMask // Use lower 4 bits
+}
+
+// GetDepth returns the depth of this NodeID
+func (n NodeID) GetDepth() uint8 {
+	return n.depth
+}
+
+// GetBranchAtDepth returns the branch value at a specific depth
+func (n NodeID) GetBranchAtDepth(depth uint8) uint8 {
+	if depth >= n.depth {
+		return 0
+	}
+	
+	byteIndex := depth / 2
+	if byteIndex >= 32 {
+		return 0
+	}
+	
+	b := n.id[byteIndex]
+	if depth%2 == 0 {
+		return b >> 4 // Use upper 4 bits
+	}
+	return b & BranchMask // Use lower 4 bits
+}

@@ -266,7 +266,9 @@ func TestBuildAndTear(t *testing.T) {
 			t.Errorf("Item %d should have been deleted", k)
 		}
 
-		// TODO Check invariants if you have that method
+		// TODO
+		//
+		//Check invariants if you have that method
 		// if err := sMap.Invariants(); err != nil {
 		//     t.Fatalf("Invariants check failed after deleting item %d: %v", k, err)
 		// }
