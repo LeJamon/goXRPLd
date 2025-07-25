@@ -1,0 +1,236 @@
+package config
+
+import (
+	"fmt"
+	"strings"
+)
+
+// ServerConfig represents the [server] section
+// This defines the ports that the server will listen on and default values
+type ServerConfig struct {
+	Ports    []string `toml:"ports" mapstructure:"ports"`       // List of port names to enable
+	Port     int      `toml:"port" mapstructure:"port"`         // Default port number
+	IP       string   `toml:"ip" mapstructure:"ip"`             // Default IP address
+	Protocol string   `toml:"protocol" mapstructure:"protocol"` // Default protocol
+	Limit    int      `toml:"limit" mapstructure:"limit"`       // Default connection limit
+	User     string   `toml:"user" mapstructure:"user"`         // Default HTTP basic auth user
+	Password string   `toml:"password" mapstructure:"password"` // Default HTTP basic auth password
+}
+
+// PortConfig represents individual port configurations like [port_rpc_admin_local]
+// Each port section in the config becomes one of these structs
+type PortConfig struct {
+	// Basic port settings
+	Port     int    `toml:"port" mapstructure:"port"`
+	IP       string `toml:"ip" mapstructure:"ip"`
+	Protocol string `toml:"protocol" mapstructure:"protocol"`
+	Limit    int    `toml:"limit" mapstructure:"limit"`
+
+	// HTTP Basic Authentication
+	User     string `toml:"user" mapstructure:"user"`
+	Password string `toml:"password" mapstructure:"password"`
+
+	// Administrative access control
+	Admin         []string `toml:"admin" mapstructure:"admin"`
+	AdminUser     string   `toml:"admin_user" mapstructure:"admin_user"`
+	AdminPassword string   `toml:"admin_password" mapstructure:"admin_password"`
+
+	// Secure gateway (for proxies)
+	SecureGateway []string `toml:"secure_gateway" mapstructure:"secure_gateway"`
+
+	// SSL/TLS configuration
+	SSLKey     string `toml:"ssl_key" mapstructure:"ssl_key"`
+	SSLCert    string `toml:"ssl_cert" mapstructure:"ssl_cert"`
+	SSLChain   string `toml:"ssl_chain" mapstructure:"ssl_chain"`
+	SSLCiphers string `toml:"ssl_ciphers" mapstructure:"ssl_ciphers"`
+
+	// WebSocket specific settings
+	SendQueueLimit int `toml:"send_queue_limit" mapstructure:"send_queue_limit"`
+
+	// WebSocket permessage-deflate extension options
+	PermessageDeflate       bool `toml:"permessage_deflate" mapstructure:"permessage_deflate"`
+	ClientMaxWindowBits     int  `toml:"client_max_window_bits" mapstructure:"client_max_window_bits"`
+	ServerMaxWindowBits     int  `toml:"server_max_window_bits" mapstructure:"server_max_window_bits"`
+	ClientNoContextTakeover bool `toml:"client_no_context_takeover" mapstructure:"client_no_context_takeover"`
+	ServerNoContextTakeover bool `toml:"server_no_context_takeover" mapstructure:"server_no_context_takeover"`
+	CompressLevel           int  `toml:"compress_level" mapstructure:"compress_level"`
+	MemoryLevel             int  `toml:"memory_level" mapstructure:"memory_level"`
+}
+
+// IsSecure returns true if the port is configured for SSL/TLS
+func (p *PortConfig) IsSecure() bool {
+	return containsProtocol(p.Protocol, "https") || containsProtocol(p.Protocol, "wss")
+}
+
+// HasHTTP returns true if the port supports HTTP protocol
+func (p *PortConfig) HasHTTP() bool {
+	return containsProtocol(p.Protocol, "http")
+}
+
+// HasHTTPS returns true if the port supports HTTPS protocol
+func (p *PortConfig) HasHTTPS() bool {
+	return containsProtocol(p.Protocol, "https")
+}
+
+// HasWebSocket returns true if the port supports WebSocket protocol
+func (p *PortConfig) HasWebSocket() bool {
+	return containsProtocol(p.Protocol, "ws")
+}
+
+// HasSecureWebSocket returns true if the port supports secure WebSocket protocol
+func (p *PortConfig) HasSecureWebSocket() bool {
+	return containsProtocol(p.Protocol, "wss")
+}
+
+// HasPeer returns true if the port supports peer protocol
+func (p *PortConfig) HasPeer() bool {
+	return containsProtocol(p.Protocol, "peer")
+}
+
+// HasGRPC returns true if the port supports gRPC protocol
+func (p *PortConfig) HasGRPC() bool {
+	return containsProtocol(p.Protocol, "grpc")
+}
+
+// IsAdminPort returns true if the port has administrative access configured
+func (p *PortConfig) IsAdminPort() bool {
+	return len(p.Admin) > 0 || p.AdminUser != ""
+}
+
+// HasBasicAuth returns true if the port has HTTP basic authentication configured
+func (p *PortConfig) HasBasicAuth() bool {
+	return p.User != "" && p.Password != ""
+}
+
+// HasAdminAuth returns true if the port has admin authentication configured
+func (p *PortConfig) HasAdminAuth() bool {
+	return p.AdminUser != "" && p.AdminPassword != ""
+}
+
+// HasSecureGateway returns true if the port has secure gateway configured
+func (p *PortConfig) HasSecureGateway() bool {
+	return len(p.SecureGateway) > 0
+}
+
+// HasSSLConfig returns true if SSL certificate files are configured
+func (p *PortConfig) HasSSLConfig() bool {
+	return p.SSLKey != "" && (p.SSLCert != "" || p.SSLChain != "")
+}
+
+// GetBindAddress returns the full bind address (IP:Port)
+func (p *PortConfig) GetBindAddress() string {
+	if p.IP == "" {
+		return ":0" // Invalid, but will be caught by validation
+	}
+	if p.Port == 0 {
+		return p.IP + ":0"
+	}
+	return fmt.Sprintf("%s:%d", p.IP, p.Port)
+}
+
+// Validate performs validation on the port configuration
+func (p *PortConfig) Validate() error {
+	if p.Port == 0 {
+		return fmt.Errorf("port number is required")
+	}
+	if p.Port < 1 || p.Port > 65535 {
+		return fmt.Errorf("port number must be between 1 and 65535, got %d", p.Port)
+	}
+	if p.IP == "" {
+		return fmt.Errorf("IP address is required")
+	}
+	if p.Protocol == "" {
+		return fmt.Errorf("protocol is required")
+	}
+
+	// Validate protocol combinations
+	if err := p.validateProtocols(); err != nil {
+		return err
+	}
+
+	// Validate SSL configuration
+	if p.IsSecure() && !p.HasSSLConfig() {
+		// This is allowed - rippled will generate self-signed certificates
+		// No error, just a note for the user
+	}
+
+	// Validate compression settings
+	if p.CompressLevel < 0 || p.CompressLevel > 9 {
+		return fmt.Errorf("compress_level must be between 0 and 9, got %d", p.CompressLevel)
+	}
+	if p.MemoryLevel != 0 && (p.MemoryLevel < 1 || p.MemoryLevel > 9) {
+		return fmt.Errorf("memory_level must be between 1 and 9, got %d", p.MemoryLevel)
+	}
+
+	// Validate window bits
+	if p.ClientMaxWindowBits != 0 && (p.ClientMaxWindowBits < 9 || p.ClientMaxWindowBits > 15) {
+		return fmt.Errorf("client_max_window_bits must be between 9 and 15, got %d", p.ClientMaxWindowBits)
+	}
+	if p.ServerMaxWindowBits != 0 && (p.ServerMaxWindowBits < 9 || p.ServerMaxWindowBits > 15) {
+		return fmt.Errorf("server_max_window_bits must be between 9 and 15, got %d", p.ServerMaxWindowBits)
+	}
+
+	return nil
+}
+
+// validateProtocols validates that protocol combinations are valid
+func (p *PortConfig) validateProtocols() error {
+	protocols := parseProtocols(p.Protocol)
+	
+	hasWebSocket := false
+	hasNonWebSocket := false
+	peerCount := 0
+
+	for _, protocol := range protocols {
+		switch protocol {
+		case "ws", "wss":
+			hasWebSocket = true
+		case "http", "https":
+			hasNonWebSocket = true  
+		case "peer":
+			peerCount++
+		case "grpc":
+			hasNonWebSocket = true
+		default:
+			return fmt.Errorf("unknown protocol: %s", protocol)
+		}
+	}
+
+	// Check for invalid combinations
+	if hasWebSocket && hasNonWebSocket {
+		return fmt.Errorf("websocket and non-websocket protocols cannot be combined on the same port")
+	}
+
+	if peerCount > 1 {
+		return fmt.Errorf("only one peer protocol can be specified per port")
+	}
+
+	return nil
+}
+
+// parseProtocols parses a comma-separated protocol string
+func parseProtocols(protocolStr string) []string {
+	if protocolStr == "" {
+		return nil
+	}
+	
+	protocols := make([]string, 0)
+	current := ""
+	
+	for _, char := range protocolStr {
+		if char == ',' || char == ' ' {
+			if current != "" {
+				protocols = append(protocols, strings.TrimSpace(current))
+				current = ""
+			}
+		} else {
+			current += string(char)
+		}
+	}
+	
+	if current != "" {
+		protocols = append(protocols, strings.TrimSpace(current))
+	}
+	
+	return protocols
+}
