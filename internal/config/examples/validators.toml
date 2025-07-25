@@ -1,0 +1,58 @@
+# Example validators.toml configuration file
+# This is the TOML equivalent of validators.txt
+
+# =============================================================================
+# Validator Configuration
+# =============================================================================
+
+# Manual validator list (not recommended for production)
+# List the validation public keys of nodes to always accept as validators
+# validators = [
+#     "n9KorY8QtTdRx7TVDpwnG9NvyxsDwHUKUEeDLY3AkiGncVaSXZi5",
+#     "n9MqiExBcoG19UXwoLjBJnhsxEhAZMuWwJDRdkyDz1EkEkwzQTNt"
+# ]
+
+# Validator list sites (recommended approach)
+# URIs serving lists of recommended validators
+validator_list_sites = [
+    "https://vl.ripple.com",
+    "https://unl.xrplf.org"
+]
+
+# Validator list publisher keys
+# Hex-encoded keys belonging to trusted validator list publishers
+# Validator lists fetched from sites will only be considered if accompanied
+# by a valid signature from one of these trusted publisher keys
+validator_list_keys = [
+    # vl.ripple.com
+    "ED2677ABFFD1B33AC6FBC3062B71F1E8397C1505E1C42C64D11AD1B28FF73F4734",
+    # unl.xrplf.org  
+    "ED42AEC58B701EEBB77356FFFEC26F83C1F0407263530F068C7C73D392C7E06FD1"
+]
+
+# Validator list threshold
+# Minimum number of validator lists on which a validator must be listed
+# to be used. Set to 0 for auto-calculation:
+# - If < 3 publisher keys: threshold = 1
+# - If >= 3 publisher keys: threshold = floor(keys/2) + 1
+validator_list_threshold = 0
+
+# =============================================================================
+# Network-Specific Examples
+# =============================================================================
+
+# For testnet, use these settings instead:
+# validator_list_sites = [
+#     "https://vl.altnet.rippletest.net"
+# ]
+# validator_list_keys = [
+#     "ED264807102805220DA0F312E71FC2C69E1552C9C5790F6C25E3729DEB573D5860"
+# ]
+
+# For devnet or private networks, configure manually:
+# validators = [
+#     "n9L81uNCaPgtUJfaHh89gmdvXKAmSt5Gdsw2g1iPWaPkAHW5Nm4C",
+#     "n9KiYM9CgngLvtRCQHZwgC2gjpdaZcCcbt3VboxiNFcKuwFVujzS"
+# ]
+# validator_list_sites = []
+# validator_list_keys = []
