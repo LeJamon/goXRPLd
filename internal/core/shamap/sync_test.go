@@ -48,7 +48,7 @@ func (m *MockSyncFilter) AddNode(hash [32]byte, data []byte) {
 
 // TestSyncFilterBasic tests basic SyncFilter functionality
 func TestSyncFilterBasic(t *testing.T) {
-	sMap, err := New(TypeTransaction)
+	sMap, err := New(TypeTransaction, nil)
 	if err != nil {
 		t.Fatalf("Failed to create SHAMap: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestSyncFilterBasic(t *testing.T) {
 // TestAddKnownNode tests adding nodes during synchronization
 func TestAddKnownNode(t *testing.T) {
 	// Create source map
-	sourceMap, err := New(TypeTransaction)
+	sourceMap, err := New(TypeTransaction, nil)
 	if err != nil {
 		t.Fatalf("Failed to create source SHAMap: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestAddKnownNode(t *testing.T) {
 	}
 
 	// Create destination map
-	destMap, err := New(TypeTransaction)
+	destMap, err := New(TypeTransaction, nil)
 	if err != nil {
 		t.Fatalf("Failed to create dest SHAMap: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestAddKnownNode(t *testing.T) {
 // TestAddRootNode tests setting root nodes during sync
 func TestAddRootNode(t *testing.T) {
 	// Create a map with some data
-	sourceMap, err := New(TypeState)
+	sourceMap, err := New(TypeState, nil)
 	if err != nil {
 		t.Fatalf("Failed to create source map: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestAddRootNode(t *testing.T) {
 	}
 
 	// Create destination map
-	destMap, err := New(TypeState)
+	destMap, err := New(TypeState, nil)
 	if err != nil {
 		t.Fatalf("Failed to create dest map: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestAddRootNode(t *testing.T) {
 
 // TestGetNodeFat tests fat node retrieval
 func TestGetNodeFat(t *testing.T) {
-	sMap, err := New(TypeTransaction)
+	sMap, err := New(TypeTransaction, nil)
 	if err != nil {
 		t.Fatalf("Failed to create SHAMap: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestGetNodeFat(t *testing.T) {
 
 // TestSyncStates tests sync state management
 func TestSyncStates(t *testing.T) {
-	sMap, err := New(TypeTransaction)
+	sMap, err := New(TypeTransaction, nil)
 	if err != nil {
 		t.Fatalf("Failed to create SHAMap: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestSyncStates(t *testing.T) {
 
 // TestHasNodes tests node existence checks
 func TestHasNodes(t *testing.T) {
-	sMap, err := New(TypeState)
+	sMap, err := New(TypeState, nil)
 	if err != nil {
 		t.Fatalf("Failed to create SHAMap: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestHasNodes(t *testing.T) {
 
 // TestGetMissingNodesFiltered tests filtered missing node retrieval
 func TestGetMissingNodesFiltered(t *testing.T) {
-	sMap, err := New(TypeTransaction)
+	sMap, err := New(TypeTransaction, nil)
 	if err != nil {
 		t.Fatalf("Failed to create SHAMap: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestGetMissingNodesFiltered(t *testing.T) {
 // TestFetchRoot tests root fetching during sync
 func TestFetchRoot(t *testing.T) {
 	// Create source map
-	sourceMap, err := New(TypeTransaction)
+	sourceMap, err := New(TypeTransaction, nil)
 	if err != nil {
 		t.Fatalf("Failed to create source map: %v", err)
 	}
@@ -396,7 +396,7 @@ func TestFetchRoot(t *testing.T) {
 	}
 
 	// Create destination map
-	destMap, err := New(TypeTransaction)
+	destMap, err := New(TypeTransaction, nil)
 	if err != nil {
 		t.Fatalf("Failed to create dest map: %v", err)
 	}
@@ -437,7 +437,7 @@ func TestFetchRoot(t *testing.T) {
 // TestSyncWorkflow tests a complete sync workflow
 func TestSyncWorkflow(t *testing.T) {
 	// Create source map with multiple items
-	sourceMap, err := New(TypeTransaction)
+	sourceMap, err := New(TypeTransaction, nil)
 	if err != nil {
 		t.Fatalf("Failed to create source map: %v", err)
 	}
@@ -459,7 +459,7 @@ func TestSyncWorkflow(t *testing.T) {
 	}
 
 	// Create destination map for sync
-	destMap, err := New(TypeTransaction)
+	destMap, err := New(TypeTransaction, nil)
 	if err != nil {
 		t.Fatalf("Failed to create dest map: %v", err)
 	}
@@ -506,7 +506,7 @@ func TestSyncWorkflow(t *testing.T) {
 
 // TestAddNodeResultTypes tests different AddNodeResult scenarios
 func TestAddNodeResultTypes(t *testing.T) {
-	sMap, err := New(TypeTransaction)
+	sMap, err := New(TypeTransaction, nil)
 	if err != nil {
 		t.Fatalf("Failed to create SHAMap: %v", err)
 	}

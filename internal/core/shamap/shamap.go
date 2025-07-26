@@ -2,9 +2,12 @@ package shamap
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"sync"
+
+	"github.com/LeJamon/goXRPLd/internal/storage/nodestore"
 )
 
 // Common errors
@@ -69,33 +72,36 @@ func (t Type) String() string {
 type SHAMap struct {
 	// Synchronization
 	mu sync.RWMutex
-	
-	// Core tree structure  
+
+	// Core tree structure
 	root *InnerNode
-	
+
 	// Configuration (immutable after creation)
 	mapType Type
-	
+	storage nodestore.Database // nil for in-memory only, non-nil for backed maps
+
 	// Runtime state
 	state     State
 	ledgerSeq uint32
-	
+
 	// Sync/storage state
 	full   bool // true when all referenced nodes are loaded
 	backed bool // true when backed by persistent storage
 }
 
 // New creates a new empty SHAMap with the specified type
-func New(mapType Type) (*SHAMap, error) {
+// For in-memory only maps, pass nil for storage
+func New(mapType Type, storage nodestore.Database) (*SHAMap, error) {
 	root := NewInnerNode()
 
 	return &SHAMap{
 		root:      root,
 		mapType:   mapType,
+		storage:   storage,
 		state:     StateModifying,
 		ledgerSeq: 0,
 		full:      true,
-		backed:    false,
+		backed:    storage != nil,
 	}, nil
 }
 
@@ -237,9 +243,9 @@ func (sm *SHAMap) walkToKey(key [32]byte, stack *NodeStack) (Node, error) {
 			return nil, nil // Empty slot
 		}
 
-		child, err := inner.Child(int(branch))
+		child, err := sm.fetchChildNode(inner, int(branch))
 		if err != nil {
-			return nil, fmt.Errorf("failed to get child: %w", err)
+			return nil, fmt.Errorf("failed to fetch child: %w", err)
 		}
 		if child == nil {
 			return nil, nil // Empty slot
@@ -290,9 +296,9 @@ func (sm *SHAMap) walkTowardsKey(key [32]byte, stack *NodeStack) (Node, error) {
 			return nil, nil
 		}
 
-		child, err := inner.Child(int(branch))
+		child, err := sm.fetchChildNode(inner, int(branch))
 		if err != nil {
-			return nil, fmt.Errorf("failed to get child: %w", err)
+			return nil, fmt.Errorf("failed to fetch child: %w", err)
 		}
 		if child == nil {
 			// Empty slot - key doesn't exist
@@ -484,9 +490,9 @@ func (sm *SHAMap) walkToKeyForDirty(key [32]byte, stack *NodeStack) (Node, error
 			return nil, nil
 		}
 
-		child, err := inner.Child(int(branch))
+		child, err := sm.fetchChildNode(inner, int(branch))
 		if err != nil {
-			return nil, fmt.Errorf("failed to get child: %w", err)
+			return nil, fmt.Errorf("failed to fetch child: %w", err)
 		}
 		if child == nil {
 			return nil, nil
@@ -514,6 +520,14 @@ func (sm *SHAMap) dirtyUp(stack *NodeStack, target [32]byte, child Node) (Node, 
 	}
 
 	currentChild := child
+
+	// Persist the initial child node if we have storage
+	if sm.backed && sm.storage != nil {
+		if err := sm.storeNodeToStorage(currentChild); err != nil {
+			return nil, fmt.Errorf("failed to persist child node: %w", err)
+		}
+	}
+
 	for !stack.IsEmpty() {
 		node, nodeID, ok := stack.Pop()
 		if !ok {
@@ -530,6 +544,13 @@ func (sm *SHAMap) dirtyUp(stack *NodeStack, target [32]byte, child Node) (Node, 
 			return nil, fmt.Errorf("failed to set child: %w", err)
 		}
 
+		// Persist the modified inner node if we have storage
+		if sm.backed && sm.storage != nil {
+			if err := sm.storeNodeToStorage(inner); err != nil {
+				return nil, fmt.Errorf("failed to persist inner node: %w", err)
+			}
+		}
+
 		currentChild = inner
 	}
 
@@ -540,6 +561,14 @@ func (sm *SHAMap) dirtyUp(stack *NodeStack, target [32]byte, child Node) (Node, 
 func (sm *SHAMap) assignRoot(newRoot Node, key [32]byte) error {
 	if innerRoot, ok := newRoot.(*InnerNode); ok {
 		sm.root = innerRoot
+
+		// Persist the new root if we have storage
+		if sm.backed && sm.storage != nil {
+			if err := sm.storeNodeToStorage(sm.root); err != nil {
+				return fmt.Errorf("failed to persist new root: %w", err)
+			}
+		}
+
 		return nil
 	}
 
@@ -550,6 +579,13 @@ func (sm *SHAMap) assignRoot(newRoot Node, key [32]byte) error {
 
 	if err := sm.root.SetChild(int(branch), newRoot); err != nil {
 		return fmt.Errorf("failed to set child in new root: %w", err)
+	}
+
+	// Persist the wrapped root if we have storage
+	if sm.backed && sm.storage != nil {
+		if err := sm.storeNodeToStorage(sm.root); err != nil {
+			return fmt.Errorf("failed to persist wrapped root: %w", err)
+		}
 	}
 
 	return nil
@@ -578,6 +614,13 @@ func (sm *SHAMap) Delete(key [32]byte) error {
 
 	if rootInner, ok := newRoot.(*InnerNode); ok {
 		sm.root = rootInner
+
+		// Persist the new root after deletion if we have storage
+		if sm.backed && sm.storage != nil {
+			if err := sm.storeNodeToStorage(sm.root); err != nil {
+				return fmt.Errorf("failed to persist root after deletion: %w", err)
+			}
+		}
 	} else {
 		return fmt.Errorf("expected root to be InnerNode, got %T", newRoot)
 	}
@@ -857,6 +900,93 @@ func getBranchAtDepth(key [32]byte, depth int) int {
 		return int(b >> 4) // Use upper 4 bits
 	}
 	return int(b & 0x0F) // Use lower 4 bits
+}
+
+// fetchChildNode retrieves a child node, using storage if necessary when backed=true
+func (sm *SHAMap) fetchChildNode(inner *InnerNode, branch int) (Node, error) {
+	// First try to get child from memory
+	child, err := inner.Child(branch)
+	if err != nil {
+		return nil, err
+	}
+
+	// If child is already in memory, return it
+	if child != nil {
+		return child, nil
+	}
+
+	// If we're not backed by storage, child doesn't exist
+	if !sm.backed || sm.storage == nil {
+		return nil, nil
+	}
+
+	// Check if we have a hash for this branch
+	childHash, exists := inner.GetChildHash(branch)
+	if !exists {
+		return nil, nil // Empty branch
+	}
+
+	// Try to fetch from storage
+	return sm.fetchNodeFromStorage(childHash)
+}
+
+// fetchNodeFromStorage retrieves a node from storage by its hash
+func (sm *SHAMap) fetchNodeFromStorage(hash [32]byte) (Node, error) {
+	if sm.storage == nil {
+		return nil, nil
+	}
+
+	// Retrieve from storage
+	nodeData, err := sm.storage.Fetch(context.Background(), nodestore.Hash256(hash))
+	if err != nil {
+		if nodestore.IsNotFound(err) {
+			return nil, nil // Node not found in storage
+		}
+		return nil, fmt.Errorf("failed to fetch node from storage: %w", err)
+	}
+	if nodeData == nil {
+		return nil, nil // Node not found in storage
+	}
+
+	// Deserialize the node
+	node, err := DeserializeNodeFromWire(nodeData.Data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to deserialize node from storage: %w", err)
+	}
+
+	// Verify hash integrity
+	if node.Hash() != hash {
+		return nil, fmt.Errorf("hash mismatch for node from storage: expected %x, got %x", hash, node.Hash())
+	}
+
+	return node, nil
+}
+
+// storeNodeToStorage persists a node to storage if backed
+func (sm *SHAMap) storeNodeToStorage(node Node) error {
+	if !sm.backed || sm.storage == nil {
+		return nil // Not backed, nothing to do
+	}
+
+	// Serialize the node
+	nodeData, err := node.SerializeForWire()
+	if err != nil {
+		return fmt.Errorf("failed to serialize node for storage: %w", err)
+	}
+
+	// Store in nodestore
+	nodeHash := node.Hash()
+	storageNode := &nodestore.Node{
+		Type: nodestore.NodeTransaction, // TODO: map from SHAMap node type to nodestore type
+		Hash: nodestore.Hash256(nodeHash),
+		Data: nodeData,
+	}
+	err = sm.storage.Store(context.Background(), storageNode)
+	if err != nil {
+		return fmt.Errorf("failed to store node to storage: %w", err)
+	}
+
+	return nil
 }
 
 // createSplitStructure creates the inner node structure needed to separate two keys

@@ -50,7 +50,7 @@ func TestAddAndTraverse(t *testing.T) {
 	i4 := makeItem(h4, intToBytes(4))
 
 	// Create a SHAMap
-	sMap, err := New(TypeTransaction)
+	sMap, err := New(TypeTransaction, nil)
 	if err != nil {
 		t.Fatalf("Failed to create SHAMap: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestBuildAndTear(t *testing.T) {
 	}
 
 	// Create a SHAMap
-	sMap, err := New(TypeTransaction)
+	sMap, err := New(TypeTransaction, nil)
 	if err != nil {
 		t.Fatalf("Failed to create SHAMap: %v", err)
 	}
@@ -296,7 +296,7 @@ func TestIteration(t *testing.T) {
 		hexToHash("292891fe4ef6cee585fdc6fda1e09eb4d386363158ec3321b8123e5a772c6ca8"), // keys[7]
 	}
 
-	sMap, err := New(TypeTransaction)
+	sMap, err := New(TypeTransaction, nil)
 	if err != nil {
 		t.Fatalf("Failed to create SHAMap: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestIteration(t *testing.T) {
 func TestSnapshot(t *testing.T) {
 	h1 := hexToHash("092891fe4ef6cee585fdc6fda0e09eb4d386363158ec3321b8123e5a772c6ca7")
 
-	sMap, err := New(TypeTransaction)
+	sMap, err := New(TypeTransaction, nil)
 	if err != nil {
 		t.Fatalf("Failed to create SHAMap: %v", err)
 	}
@@ -435,7 +435,7 @@ func TestSnapshot(t *testing.T) {
 func TestImmutability(t *testing.T) {
 	key := hexToHash("092891fe4ef6cee585fdc6fda0e09eb4d386363158ec3321b8123e5a772c6ca7")
 
-	sMap, err := New(TypeTransaction)
+	sMap, err := New(TypeTransaction, nil)
 	if err != nil {
 		t.Fatalf("Failed to create SHAMap: %v", err)
 	}
@@ -463,7 +463,7 @@ func TestImmutability(t *testing.T) {
 
 // TestErrorHandling tests various error conditions
 func TestErrorHandling(t *testing.T) {
-	sMap, err := New(TypeTransaction)
+	sMap, err := New(TypeTransaction, nil)
 	if err != nil {
 		t.Fatalf("Failed to create SHAMap: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestErrorHandling(t *testing.T) {
 
 // TestConcurrency tests concurrent access to the SHAMap
 func TestConcurrency(t *testing.T) {
-	sMap, err := New(TypeState)
+	sMap, err := New(TypeState, nil)
 	if err != nil {
 		t.Fatalf("Failed to create SHAMap: %v", err)
 	}
@@ -546,7 +546,7 @@ func TestConcurrency(t *testing.T) {
 // Benchmarks
 
 func BenchmarkPut(b *testing.B) {
-	sMap, err := New(TypeTransaction)
+	sMap, err := New(TypeTransaction, nil)
 	if err != nil {
 		b.Fatalf("Failed to create SHAMap: %v", err)
 	}
@@ -566,7 +566,7 @@ func BenchmarkPut(b *testing.B) {
 }
 
 func BenchmarkGet(b *testing.B) {
-	sMap, err := New(TypeTransaction)
+	sMap, err := New(TypeTransaction, nil)
 	if err != nil {
 		b.Fatalf("Failed to create SHAMap: %v", err)
 	}
@@ -591,7 +591,7 @@ func BenchmarkGet(b *testing.B) {
 }
 
 func BenchmarkSnapshot(b *testing.B) {
-	sMap, err := New(TypeTransaction)
+	sMap, err := New(TypeTransaction, nil)
 	if err != nil {
 		b.Fatalf("Failed to create SHAMap: %v", err)
 	}
@@ -675,7 +675,7 @@ func nextPrefix(current string, isTail bool) string {
 
 // TestProofPath tests Merkle proof generation and verification - matches rippled SHAMapPathProof_test
 func TestProofPath(t *testing.T) {
-	sMap, err := New(TypeState)
+	sMap, err := New(TypeState, nil)
 	if err != nil {
 		t.Fatalf("Failed to create SHAMap: %v", err)
 	}

@@ -19,9 +19,9 @@ func (sm *SHAMap) GetProofPath(key [32]byte) (*ProofPath, error) {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	// Use walkTowardsKey to find the leaf and build the path
+	// Use walkToKey to find the leaf and build the path
 	stack := NewNodeStack()
-	leaf, err := sm.walkTowardsKey(key, stack)
+	leaf, err := sm.walkToKey(key, stack)
 	if err != nil {
 		return nil, fmt.Errorf("failed to walk to key: %w", err)
 	}
