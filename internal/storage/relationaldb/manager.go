@@ -64,10 +64,10 @@ func (m *NoOpMetrics) SetGauge(name string, value float64, tags map[string]strin
 
 // Manager provides lifecycle management and utilities for database operations
 type Manager struct {
-	db      Database
-	config  *Config
-	logger  Logger
-	metrics Metrics
+	repoManager RepositoryManager
+	config      *Config
+	logger      Logger
+	metrics     Metrics
 
 	// Health checking
 	healthCheckInterval time.Duration
@@ -119,9 +119,9 @@ func WithMaintenanceInterval(interval time.Duration) ManagerOption {
 }
 
 // NewManager creates a new database manager
-func NewManager(db Database, config *Config, options ...ManagerOption) *Manager {
+func NewManager(repoManager RepositoryManager, config *Config, options ...ManagerOption) *Manager {
 	manager := &Manager{
-		db:                  db,
+		repoManager:         repoManager,
 		config:              config,
 		logger:              NewDefaultLogger(),
 		metrics:             &NoOpMetrics{},
@@ -147,7 +147,7 @@ func (m *Manager) Open(ctx context.Context) error {
 	}
 
 	// Open database connection
-	if err := m.db.Open(ctx); err != nil {
+	if err := m.repoManager.Open(ctx); err != nil {
 		m.lastError = err
 		m.logger.Error("Failed to open database connection", "error", err)
 		m.metrics.IncrementCounter("db.connection.failed", map[string]string{
@@ -157,7 +157,7 @@ func (m *Manager) Open(ctx context.Context) error {
 	}
 
 	// Perform initial health check
-	if err := m.db.Ping(ctx); err != nil {
+	if err := m.repoManager.System().Ping(ctx); err != nil {
 		m.lastError = err
 		m.logger.Error("Database health check failed", "error", err)
 		m.metrics.IncrementCounter("db.health_check.failed", map[string]string{
@@ -198,7 +198,7 @@ func (m *Manager) Close(ctx context.Context) error {
 	m.stopMaintenance()
 
 	// Close database connection
-	if err := m.db.Close(ctx); err != nil {
+	if err := m.repoManager.Close(ctx); err != nil {
 		m.logger.Error("Failed to close database connection", "error", err)
 		m.metrics.IncrementCounter("db.connection.close_failed", map[string]string{
 			"driver": m.config.Driver,
@@ -250,7 +250,7 @@ func (m *Manager) HealthCheck(ctx context.Context) error {
 		return err
 	}
 
-	if err := m.db.Ping(ctx); err != nil {
+	if err := m.repoManager.System().Ping(ctx); err != nil {
 		m.mu.Lock()
 		m.lastError = err
 		m.mu.Unlock()
@@ -350,38 +350,15 @@ func (m *Manager) ExecuteWithRetry(ctx context.Context, operation func() error) 
 }
 
 // ExecuteInTransaction executes a function within a transaction with retry logic
-func (m *Manager) ExecuteInTransaction(ctx context.Context, operation func(Transaction) error) error {
+func (m *Manager) ExecuteInTransaction(ctx context.Context, operation func(TransactionContext) error) error {
 	return m.ExecuteWithRetry(ctx, func() error {
-		tx, err := m.db.Begin(ctx)
-		if err != nil {
-			return WrapError(err, "begin_transaction")
-		}
-
-		defer func() {
-			if p := recover(); p != nil {
-				tx.Rollback(ctx)
-				panic(p)
-			}
-		}()
-
-		if err := operation(tx); err != nil {
-			if rbErr := tx.Rollback(ctx); rbErr != nil {
-				m.logger.Error("Failed to rollback transaction", "error", rbErr)
-			}
-			return err
-		}
-
-		if err := tx.Commit(ctx); err != nil {
-			return WrapError(err, "commit_transaction")
-		}
-
-		return nil
+		return m.repoManager.WithTransaction(ctx, operation)
 	})
 }
 
-// GetDatabase returns the underlying database instance
-func (m *Manager) GetDatabase() Database {
-	return m.db
+// GetRepositoryManager returns the underlying repository manager
+func (m *Manager) GetRepositoryManager() RepositoryManager {
+	return m.repoManager
 }
 
 // GetConfig returns the configuration
@@ -469,7 +446,7 @@ func (m *Manager) performMaintenance(ctx context.Context) {
 	}()
 
 	// Check space
-	if hasSpace, err := m.db.HasLedgerSpace(ctx); err != nil {
+	if hasSpace, err := m.repoManager.Ledger().HasLedgerSpace(ctx); err != nil {
 		m.logger.Error("Failed to check ledger space", "error", err)
 	} else if !hasSpace {
 		m.logger.Warn("Low ledger database space")
@@ -478,7 +455,7 @@ func (m *Manager) performMaintenance(ctx context.Context) {
 		})
 	}
 
-	if hasSpace, err := m.db.HasTransactionSpace(ctx); err != nil {
+	if hasSpace, err := m.repoManager.Transaction().HasTransactionSpace(ctx); err != nil {
 		m.logger.Error("Failed to check transaction space", "error", err)
 	} else if !hasSpace {
 		m.logger.Warn("Low transaction database space")
@@ -488,7 +465,7 @@ func (m *Manager) performMaintenance(ctx context.Context) {
 	}
 
 	// Collect usage statistics
-	if kbUsed, err := m.db.GetKBUsedAll(ctx); err != nil {
+	if kbUsed, err := m.repoManager.System().GetKBUsedAll(ctx); err != nil {
 		m.logger.Error("Failed to get database usage", "error", err)
 	} else {
 		m.metrics.SetGauge("db.space.used_kb", float64(kbUsed), map[string]string{
@@ -497,7 +474,7 @@ func (m *Manager) performMaintenance(ctx context.Context) {
 		})
 	}
 
-	if kbUsed, err := m.db.GetKBUsedLedger(ctx); err != nil {
+	if kbUsed, err := m.repoManager.Ledger().GetKBUsedLedger(ctx); err != nil {
 		m.logger.Error("Failed to get ledger database usage", "error", err)
 	} else {
 		m.metrics.SetGauge("db.space.used_kb", float64(kbUsed), map[string]string{
@@ -506,7 +483,7 @@ func (m *Manager) performMaintenance(ctx context.Context) {
 		})
 	}
 
-	if kbUsed, err := m.db.GetKBUsedTransaction(ctx); err != nil {
+	if kbUsed, err := m.repoManager.Transaction().GetKBUsedTransaction(ctx); err != nil {
 		m.logger.Error("Failed to get transaction database usage", "error", err)
 	} else {
 		m.metrics.SetGauge("db.space.used_kb", float64(kbUsed), map[string]string{
