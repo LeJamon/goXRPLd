@@ -19,4 +19,20 @@ type Ledger struct {
 	Fees      XRPAmount.Fees
 }
 
-//func StoreLedger()
+func (l *Ledger) Sequence() uint32 {
+	return l.Header.LedgerIndex
+}
+
+func (l *Ledger) Hash() [32]byte {
+	return l.Header.Hash
+}
+
+func (l *Ledger) StoreLedger() (bool, error) {
+	return insertLedger(l, l.Header.Validated)
+}
+
+func insertLedger(l *Ledger, valid bool) (bool, error) {
+
+}
+
+func (l *Ledger) RetrieveLedger() (bool, error) {}
