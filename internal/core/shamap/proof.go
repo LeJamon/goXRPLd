@@ -5,60 +5,53 @@ import (
 	"fmt"
 )
 
+// ProofPath represents a Merkle proof path from a leaf to the root
 type ProofPath struct {
-	Key   [32]byte
-	Path  [][]byte
+	// Key is the key being proven
+	Key [32]byte
+	// Path contains serialized nodes from leaf to root
+	Path [][]byte
+	// Found indicates whether the key exists in the tree
 	Found bool
 }
 
+// GetProofPath returns a proof path for the given key.
+// The path consists of serialized nodes from leaf to root.
+// Returns nil if the key does not exist in the map.
 func (sm *SHAMap) GetProofPath(key [32]byte) (*ProofPath, error) {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
 	stack := NewNodeStack()
 	leaf, err := sm.walkToKey(key, stack)
 	if err != nil {
 		return nil, err
 	}
 
+	// Verify we found the right leaf
 	if leaf == nil {
 		return &ProofPath{Key: key, Found: false}, nil
 	}
 
-	// Build and return proof
-	return sm.buildProofFromStack(key, stack)
-}
-
-func (sm *SHAMap) buildProofFromStack(key [32]byte, stack *NodeStack) (*ProofPath, error) {
-	if stack.IsEmpty() {
+	// Check if it's a leaf node
+	leafNode, ok := leaf.(LeafNode)
+	if !ok {
 		return &ProofPath{Key: key, Found: false}, nil
-	}
-
-	// Get the leaf node (top of stack) and verify it contains our key
-	topNode, _, ok := stack.Top()
-	if !ok {
-		return nil, errors.New("empty stack")
-	}
-
-	// Check if it's a leaf node using the interface
-	leafNode, ok := topNode.(LeafNode)
-	if !ok {
-		return nil, errors.New("top of stack is not a leaf node")
 	}
 
 	// Verify this leaf contains the target key
 	item := leafNode.Item()
-	if item == nil {
-		return nil, errors.New("leaf node has nil item")
-	}
-
-	leafKey := item.Key()
-	if leafKey != key {
+	if item == nil || item.Key() != key {
 		return &ProofPath{Key: key, Found: false}, nil
 	}
 
-	// Build proof path by serializing all nodes in the stack
+	// Build proof path in leaf-to-root order
+	// walkToKey pushes nodes in root-to-leaf order, including the leaf at the end
+	// So stack has: [root, ..., parent_of_leaf, leaf]
+	// We need to iterate in reverse to get: [leaf, parent_of_leaf, ..., root]
 	path := make([][]byte, 0, stack.Len())
 
-	// Iterate through stack entries (leaf to root order)
-	for i := 0; i < stack.Len(); i++ {
+	for i := stack.Len() - 1; i >= 0; i-- {
 		node := stack.entries[i].node
 
 		// Serialize the node for wire transmission
@@ -77,13 +70,20 @@ func (sm *SHAMap) buildProofFromStack(key [32]byte, stack *NodeStack) (*ProofPat
 	}, nil
 }
 
-/*func VerifyProofPath(rootHash [32]byte, key [32]byte, path [][]byte) error {
-	if len(path) == 0 {
-		return errors.New("empty proof path")
-	}
-
-	if len(path) > 65 {
-		return errors.New("proof path too long")
+// VerifyProofPath verifies a Merkle proof path.
+// It checks that the path correctly proves the existence of a key
+// with the given root hash.
+//
+// Parameters:
+//   - rootHash: the expected root hash of the SHAMap
+//   - key: the key being proven
+//   - path: serialized nodes from leaf to root
+//
+// Returns true if the proof is valid, false otherwise.
+func VerifyProofPath(rootHash [32]byte, key [32]byte, path [][]byte) bool {
+	// Validate path length
+	if len(path) == 0 || len(path) > MaxDepth+1 {
+		return false
 	}
 
 	currentHash := rootHash
@@ -93,70 +93,337 @@ func (sm *SHAMap) buildProofFromStack(key [32]byte, stack *NodeStack) (*ProofPat
 		nodeData := path[i]
 
 		// Deserialize the node from wire format
+		// This may fail if the data is malformed (e.g., from network)
 		node, err := DeserializeNodeFromWire(nodeData)
 		if err != nil {
-			return fmt.Errorf("failed to deserialize node at position %d: %w", i, err)
+			return false
 		}
 
 		// Update the node's hash and verify it matches expected
 		if err := node.UpdateHash(); err != nil {
-			return fmt.Errorf("failed to update hash for node at position %d: %w", i, err)
+			return false
 		}
 
 		nodeHash := node.Hash()
 		if nodeHash != currentHash {
-			return fmt.Errorf("hash mismatch at position %d", i)
+			return false
 		}
 
+		// Calculate depth from root (0 = root, increases toward leaf)
 		depth := len(path) - 1 - i
 
 		if node.IsInner() {
-			// This should be an inner node, follow the branch toward our key
+			// This is an inner node, follow the branch toward our key
 			innerNode, ok := node.(*InnerNode)
 			if !ok {
-				return fmt.Errorf("node claims to be inner but type assertion failed at position %d", i)
+				return false
+			}
+
+			// Create node ID at this depth to determine which branch to follow
+			nodeID, err := CreateNodeID(uint8(depth), key)
+			if err != nil {
+				return false
 			}
 
 			// Calculate which branch to follow
-			nodeID := CreateNodeIDAtDepth(depth, key)
 			branch := SelectBranch(nodeID, key)
 
 			// Get the hash of the child we should follow
-			childHash, exists := innerNode.GetChildHash(int(branch))
-			if !exists {
-				return fmt.Errorf("required branch %d is empty at position %d", branch, i)
+			childHash, err := innerNode.ChildHash(int(branch))
+			if err != nil {
+				return false
+			}
+
+			// Check if branch is empty (zero hash means no child)
+			if childHash == ([32]byte{}) {
+				return false
 			}
 
 			currentHash = childHash
 		} else if node.IsLeaf() {
 			// This should be the final leaf node
+			// Verify we've exhausted all blobs (leaf must be at position 0)
 			if i != 0 {
-				return fmt.Errorf("leaf node found before end of path at position %d", i)
+				return false
 			}
 
 			// Verify this leaf contains our target key
 			leafNode, ok := node.(LeafNode)
 			if !ok {
-				return fmt.Errorf("node claims to be leaf but doesn't implement LeafNode interface")
+				return false
 			}
 
 			item := leafNode.Item()
 			if item == nil {
-				return errors.New("leaf node has nil item")
+				return false
 			}
 
 			leafKey := item.Key()
 			if leafKey != key {
-				return errors.New("leaf key doesn't match target key")
+				return false
 			}
 
-			// Successfully reached the target leaf
-			return nil
+			// Successfully verified the proof - leaf key matches target
+			return true
 		} else {
-			return fmt.Errorf("node is neither inner nor leaf at position %d", i)
+			// Node is neither inner nor leaf - invalid
+			return false
 		}
 	}
 
-	return errors.New("path verification failed - did not reach leaf")
+	// If we get here without finding a leaf, the proof is invalid
+	return false
 }
-*/
+
+// VerifyProofPathWithValue verifies a Merkle proof path and returns the value if valid.
+// This is useful when you want to both verify the proof and extract the proven data.
+//
+// Parameters:
+//   - rootHash: the expected root hash of the SHAMap
+//   - key: the key being proven
+//   - path: serialized nodes from leaf to root
+//
+// Returns the item data if proof is valid, nil otherwise.
+func VerifyProofPathWithValue(rootHash [32]byte, key [32]byte, path [][]byte) []byte {
+	// Validate path length
+	if len(path) == 0 || len(path) > MaxDepth+1 {
+		return nil
+	}
+
+	currentHash := rootHash
+
+	// Process path from root to leaf
+	for i := len(path) - 1; i >= 0; i-- {
+		nodeData := path[i]
+
+		node, err := DeserializeNodeFromWire(nodeData)
+		if err != nil {
+			return nil
+		}
+
+		if err := node.UpdateHash(); err != nil {
+			return nil
+		}
+
+		nodeHash := node.Hash()
+		if nodeHash != currentHash {
+			return nil
+		}
+
+		depth := len(path) - 1 - i
+
+		if node.IsInner() {
+			innerNode, ok := node.(*InnerNode)
+			if !ok {
+				return nil
+			}
+
+			nodeID, err := CreateNodeID(uint8(depth), key)
+			if err != nil {
+				return nil
+			}
+
+			branch := SelectBranch(nodeID, key)
+
+			childHash, err := innerNode.ChildHash(int(branch))
+			if err != nil {
+				return nil
+			}
+
+			if childHash == ([32]byte{}) {
+				return nil
+			}
+
+			currentHash = childHash
+		} else if node.IsLeaf() {
+			if i != 0 {
+				return nil
+			}
+
+			leafNode, ok := node.(LeafNode)
+			if !ok {
+				return nil
+			}
+
+			item := leafNode.Item()
+			if item == nil {
+				return nil
+			}
+
+			if item.Key() != key {
+				return nil
+			}
+
+			// Return a copy of the data
+			return item.Data()
+		} else {
+			return nil
+		}
+	}
+
+	return nil
+}
+
+// ProofPathError represents an error that occurred during proof verification
+// with additional context about where in the path the error occurred.
+type ProofPathError struct {
+	Position int
+	Depth    int
+	Message  string
+	Err      error
+}
+
+func (e *ProofPathError) Error() string {
+	if e.Err != nil {
+		return fmt.Sprintf("proof error at position %d (depth %d): %s: %v",
+			e.Position, e.Depth, e.Message, e.Err)
+	}
+	return fmt.Sprintf("proof error at position %d (depth %d): %s",
+		e.Position, e.Depth, e.Message)
+}
+
+func (e *ProofPathError) Unwrap() error {
+	return e.Err
+}
+
+// VerifyProofPathDetailed verifies a Merkle proof path with detailed error reporting.
+// Unlike VerifyProofPath which returns a simple bool, this function returns
+// a detailed error explaining why verification failed.
+//
+// Returns nil if the proof is valid, or a ProofPathError explaining the failure.
+func VerifyProofPathDetailed(rootHash [32]byte, key [32]byte, path [][]byte) error {
+	if len(path) == 0 {
+		return &ProofPathError{Position: -1, Depth: -1, Message: "empty proof path"}
+	}
+
+	if len(path) > MaxDepth+1 {
+		return &ProofPathError{
+			Position: -1,
+			Depth:    -1,
+			Message:  fmt.Sprintf("proof path too long: %d > %d", len(path), MaxDepth+1),
+		}
+	}
+
+	currentHash := rootHash
+
+	for i := len(path) - 1; i >= 0; i-- {
+		nodeData := path[i]
+		depth := len(path) - 1 - i
+
+		node, err := DeserializeNodeFromWire(nodeData)
+		if err != nil {
+			return &ProofPathError{
+				Position: i,
+				Depth:    depth,
+				Message:  "failed to deserialize node",
+				Err:      err,
+			}
+		}
+
+		if err := node.UpdateHash(); err != nil {
+			return &ProofPathError{
+				Position: i,
+				Depth:    depth,
+				Message:  "failed to compute node hash",
+				Err:      err,
+			}
+		}
+
+		nodeHash := node.Hash()
+		if nodeHash != currentHash {
+			return &ProofPathError{
+				Position: i,
+				Depth:    depth,
+				Message:  "hash mismatch",
+			}
+		}
+
+		if node.IsInner() {
+			innerNode, ok := node.(*InnerNode)
+			if !ok {
+				return &ProofPathError{
+					Position: i,
+					Depth:    depth,
+					Message:  "node claims to be inner but type assertion failed",
+				}
+			}
+
+			nodeID, err := CreateNodeID(uint8(depth), key)
+			if err != nil {
+				return &ProofPathError{
+					Position: i,
+					Depth:    depth,
+					Message:  "failed to create node ID",
+					Err:      err,
+				}
+			}
+
+			branch := SelectBranch(nodeID, key)
+
+			childHash, err := innerNode.ChildHash(int(branch))
+			if err != nil {
+				return &ProofPathError{
+					Position: i,
+					Depth:    depth,
+					Message:  fmt.Sprintf("failed to get child hash for branch %d", branch),
+					Err:      err,
+				}
+			}
+
+			if childHash == ([32]byte{}) {
+				return &ProofPathError{
+					Position: i,
+					Depth:    depth,
+					Message:  fmt.Sprintf("required branch %d is empty", branch),
+				}
+			}
+
+			currentHash = childHash
+		} else if node.IsLeaf() {
+			if i != 0 {
+				return &ProofPathError{
+					Position: i,
+					Depth:    depth,
+					Message:  "leaf node found before end of path",
+				}
+			}
+
+			leafNode, ok := node.(LeafNode)
+			if !ok {
+				return &ProofPathError{
+					Position: i,
+					Depth:    depth,
+					Message:  "node claims to be leaf but doesn't implement LeafNode interface",
+				}
+			}
+
+			item := leafNode.Item()
+			if item == nil {
+				return &ProofPathError{
+					Position: i,
+					Depth:    depth,
+					Message:  "leaf node has nil item",
+				}
+			}
+
+			if item.Key() != key {
+				return &ProofPathError{
+					Position: i,
+					Depth:    depth,
+					Message:  "leaf key doesn't match target key",
+				}
+			}
+
+			// Success
+			return nil
+		} else {
+			return &ProofPathError{
+				Position: i,
+				Depth:    depth,
+				Message:  "node is neither inner nor leaf",
+			}
+		}
+	}
+
+	return errors.New("proof verification failed - did not reach leaf")
+}
