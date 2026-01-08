@@ -153,11 +153,13 @@ func (n *InnerNode) updateHashUnsafe() error {
 		if n.isBranch&(1<<i) != 0 {
 			child := n.children[i]
 			if child != nil {
+				// Get hash from actual child node
 				childHash := child.Hash()
 				data = append(data, childHash[:])
 			} else {
-				// This shouldn't happen if isBranch is correct, but handle it
-				data = append(data, zeroHash)
+				// Child is nil but branch is set - use stored hash
+				// This happens when node is deserialized from wire format
+				data = append(data, n.hashes[i][:])
 			}
 		} else {
 			// Empty branch: contribute 32 zero bytes
