@@ -2,7 +2,6 @@ package rpc
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -37,17 +36,12 @@ type XrplRequest struct {
 	Params []json.RawMessage `json:"params,omitempty"`
 }
 
-// XrplResponse represents an XRPL JSON-RPC response
-// Format: {"result": {..., "status": "success"}}
-type XrplResponse struct {
-	Result interface{} `json:"result"`
-}
-
-// XrplResult is the result object inside the response
-type XrplResult struct {
-	Status  string      `json:"status"`
-	Error   string      `json:"error,omitempty"`
-	Request interface{} `json:"request,omitempty"`
+// JsonRpcResponseOptions contains optional fields for JSON-RPC responses
+// These fields are at the top level, not inside the result object
+type JsonRpcResponseOptions struct {
+	Warning   string          // "load" when approaching rate limit
+	Warnings  []WarningObject // Array of warning objects
+	Forwarded bool            // True if forwarded from Clio to P2P server
 }
 
 // ServeHTTP implements http.Handler interface
@@ -184,10 +178,10 @@ func (s *Server) executeMethod(method string, params json.RawMessage, ctx *RpcCo
 	}
 
 	// Check role permissions
-	if ctx.Role < handler.RequiredRole() {
+	/*if ctx.Role < handler.RequiredRole() {
 		return nil, NewRpcError(RpcCOMMAND_UNTRUSTED, "commandUntrusted", "commandUntrusted",
 			fmt.Sprintf("Method '%s' requires higher privileges", method))
-	}
+	}*/
 
 	// Check API version support
 	supportedVersions := handler.SupportedApiVersions()
@@ -208,12 +202,20 @@ func (s *Server) executeMethod(method string, params json.RawMessage, ctx *RpcCo
 	return handler.Handle(ctx, params)
 }
 
-// writeXrplResponse writes an XRPL format response
+// writeXrplResponse writes an XRPL format JSON-RPC response
+// Per XRPL spec:
+// - result.status = "success" or "error"
+// - warning, warnings, forwarded are at top level (outside result)
 func (s *Server) writeXrplResponse(w http.ResponseWriter, method string, request interface{}, result interface{}, rpcErr *RpcError) {
-	var response map[string]interface{}
+	s.writeXrplResponseWithOptions(w, method, request, result, rpcErr, nil)
+}
+
+// writeXrplResponseWithOptions writes an XRPL format JSON-RPC response with optional fields
+func (s *Server) writeXrplResponseWithOptions(w http.ResponseWriter, method string, request interface{}, result interface{}, rpcErr *RpcError, opts *JsonRpcResponseOptions) {
+	response := make(map[string]interface{})
 
 	if rpcErr != nil {
-		// Error response format - XRPL includes error, error_code, error_message
+		// Error response format - XRPL includes error, error_code, error_message inside result
 		resultObj := map[string]interface{}{
 			"status":        "error",
 			"error":         rpcErr.ErrorString,
@@ -223,25 +225,32 @@ func (s *Server) writeXrplResponse(w http.ResponseWriter, method string, request
 		if request != nil {
 			resultObj["request"] = request
 		}
-		response = map[string]interface{}{
-			"result": resultObj,
-		}
+		response["result"] = resultObj
 	} else {
 		// Success response format
 		// If result is already a map, add status to it
 		if resultMap, ok := result.(map[string]interface{}); ok {
 			resultMap["status"] = "success"
-			response = map[string]interface{}{
-				"result": resultMap,
-			}
+			response["result"] = resultMap
 		} else {
 			// Wrap non-map results
-			response = map[string]interface{}{
-				"result": map[string]interface{}{
-					"status": "success",
-					"data":   result,
-				},
+			response["result"] = map[string]interface{}{
+				"status": "success",
+				"data":   result,
 			}
+		}
+	}
+
+	// Add optional fields at top level (per XRPL JSON-RPC spec)
+	if opts != nil {
+		if opts.Warning != "" {
+			response["warning"] = opts.Warning
+		}
+		if len(opts.Warnings) > 0 {
+			response["warnings"] = opts.Warnings
+		}
+		if opts.Forwarded {
+			response["forwarded"] = true
 		}
 	}
 

@@ -316,15 +316,7 @@ func (ws *WebSocketServer) handlePathFind(wsConn *WebSocketConnection, ctx *RpcC
 	// This creates a persistent path-finding session that sends updates
 	// as market conditions change
 
-	response := WebSocketResponse{
-		Type:   "response",
-		ID:     cmd.ID,
-		Status: "error",
-		Error:  NewRpcError(RpcNOT_SUPPORTED, "notSupported", "notSupported", "path_find not yet implemented"),
-		ApiVersion: ctx.ApiVersion,
-	}
-
-	ws.sendResponse(wsConn, response)
+	ws.sendError(wsConn, NewRpcError(RpcNOT_SUPPORTED, "notSupported", "notSupported", "path_find not yet implemented"), cmd.ID)
 }
 
 // handleRPCMethod processes regular RPC method calls over WebSocket
@@ -361,8 +353,27 @@ func (ws *WebSocketServer) handleRPCMethod(wsConn *WebSocketConnection, ctx *Rpc
 	}
 }
 
+// WebSocketResponseOptions contains optional fields for WebSocket responses
+type WebSocketResponseOptions struct {
+	Warning   string          // "load" when approaching rate limit
+	Warnings  []WarningObject // Array of warning objects
+	Forwarded bool            // True if forwarded from Clio to P2P server
+}
+
 // sendResponse sends a WebSocket response
 func (ws *WebSocketServer) sendResponse(wsConn *WebSocketConnection, response WebSocketResponse) {
+	ws.sendResponseWithOptions(wsConn, response, nil)
+}
+
+// sendResponseWithOptions sends a WebSocket response with optional warning/forwarded fields
+func (ws *WebSocketServer) sendResponseWithOptions(wsConn *WebSocketConnection, response WebSocketResponse, opts *WebSocketResponseOptions) {
+	// Apply optional fields if provided
+	if opts != nil {
+		response.Warning = opts.Warning
+		response.Warnings = opts.Warnings
+		response.Forwarded = opts.Forwarded
+	}
+
 	data, err := json.Marshal(response)
 	if err != nil {
 		log.Printf("Failed to marshal WebSocket response: %v", err)
@@ -383,16 +394,26 @@ func (ws *WebSocketServer) sendResponse(wsConn *WebSocketConnection, response We
 
 // sendError sends a WebSocket error response with flat error fields (XRPL format)
 func (ws *WebSocketServer) sendError(wsConn *WebSocketConnection, rpcErr *RpcError, id interface{}) {
-	// XRPL WebSocket error format has error fields at top level, not nested
-	response := map[string]interface{}{
-		"type":          "response",
-		"status":        "error",
-		"error":         rpcErr.ErrorString,
-		"error_code":    rpcErr.Code,
-		"error_message": rpcErr.Message,
+	ws.sendErrorWithOptions(wsConn, rpcErr, id, nil)
+}
+
+// sendErrorWithOptions sends a WebSocket error response with optional warning/forwarded fields
+// Per XRPL WebSocket spec, error fields are at top level (not nested in result)
+func (ws *WebSocketServer) sendErrorWithOptions(wsConn *WebSocketConnection, rpcErr *RpcError, id interface{}, opts *WebSocketResponseOptions) {
+	response := WebSocketResponse{
+		Type:         "response",
+		Status:       "error",
+		ID:           id,
+		Error:        rpcErr.ErrorString,
+		ErrorCode:    rpcErr.Code,
+		ErrorMessage: rpcErr.Message,
 	}
-	if id != nil {
-		response["id"] = id
+
+	// Apply optional fields if provided
+	if opts != nil {
+		response.Warning = opts.Warning
+		response.Warnings = opts.Warnings
+		response.Forwarded = opts.Forwarded
 	}
 
 	data, err := json.Marshal(response)
