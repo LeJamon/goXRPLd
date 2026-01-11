@@ -428,13 +428,34 @@ func (a *LedgerServiceAdapter) GetLedgerData(ledgerIndex string, limit uint32, m
 		}
 	}
 
-	return &LedgerDataResult{
+	rpcResult := &LedgerDataResult{
 		LedgerIndex: result.LedgerIndex,
 		LedgerHash:  result.LedgerHash,
 		State:       state,
 		Marker:      result.Marker,
 		Validated:   result.Validated,
-	}, nil
+	}
+
+	// Convert ledger header info if present
+	if result.LedgerHeader != nil {
+		rpcResult.LedgerHeader = &LedgerHeaderInfo{
+			AccountHash:         result.LedgerHeader.AccountHash,
+			CloseFlags:          result.LedgerHeader.CloseFlags,
+			CloseTime:           result.LedgerHeader.CloseTime,
+			CloseTimeHuman:      result.LedgerHeader.CloseTimeHuman,
+			CloseTimeISO:        result.LedgerHeader.CloseTimeISO,
+			CloseTimeResolution: result.LedgerHeader.CloseTimeResolution,
+			Closed:              result.LedgerHeader.Closed,
+			LedgerHash:          result.LedgerHeader.LedgerHash,
+			LedgerIndex:         result.LedgerHeader.LedgerIndex,
+			ParentCloseTime:     result.LedgerHeader.ParentCloseTime,
+			ParentHash:          result.LedgerHeader.ParentHash,
+			TotalCoins:          result.LedgerHeader.TotalCoins,
+			TransactionHash:     result.LedgerHeader.TransactionHash,
+		}
+	}
+
+	return rpcResult, nil
 }
 
 // GetAccountObjects retrieves all objects owned by an account

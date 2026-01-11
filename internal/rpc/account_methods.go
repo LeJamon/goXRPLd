@@ -43,7 +43,7 @@ func (m *AccountInfoMethod) Handle(ctx *RpcContext, params json.RawMessage) (int
 	// Determine ledger index to use
 	ledgerIndex := "current"
 	if request.LedgerIndex != "" {
-		ledgerIndex = request.LedgerIndex
+		ledgerIndex = request.LedgerIndex.String()
 	} else if request.LedgerHash != "" {
 		// TODO: Support lookup by hash
 		ledgerIndex = "validated"
@@ -270,7 +270,7 @@ func (m *AccountLinesMethod) Handle(ctx *RpcContext, params json.RawMessage) (in
 	// Determine ledger index to use
 	ledgerIndex := "current"
 	if request.LedgerIndex != "" {
-		ledgerIndex = request.LedgerIndex
+		ledgerIndex = request.LedgerIndex.String()
 	}
 
 	// Get account lines from the ledger service
@@ -397,7 +397,7 @@ func (m *AccountObjectsMethod) Handle(ctx *RpcContext, params json.RawMessage) (
 	// Determine ledger index to use
 	ledgerIndex := "current"
 	if request.LedgerIndex != "" {
-		ledgerIndex = request.LedgerIndex
+		ledgerIndex = request.LedgerIndex.String()
 	}
 
 	// Get account objects from the ledger service
@@ -474,7 +474,7 @@ func (m *AccountOffersMethod) Handle(ctx *RpcContext, params json.RawMessage) (i
 	// Determine ledger index to use
 	ledgerIndex := "current"
 	if request.LedgerIndex != "" {
-		ledgerIndex = request.LedgerIndex
+		ledgerIndex = request.LedgerIndex.String()
 	}
 
 	// Get account offers from the ledger service

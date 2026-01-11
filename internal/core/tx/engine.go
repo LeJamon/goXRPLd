@@ -4,9 +4,12 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strconv"
+	"strings"
 
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
+	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
@@ -725,90 +728,48 @@ func parseAccountRoot(data []byte) (*AccountRoot, error) {
 }
 
 func serializeAccountRoot(account *AccountRoot) ([]byte, error) {
-	var buf []byte
-
-	// Write LedgerEntryType (UInt16, field 1)
-	buf = append(buf, (fieldTypeUInt16<<4)|fieldCodeLedgerEntryType)
-	buf = append(buf, 0x00, 0x61) // AccountRoot = 0x0061
-
-	// Write Flags (UInt32, field 2)
-	buf = append(buf, (fieldTypeUInt32<<4)|fieldCodeFlags)
-	flagsBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(flagsBuf, account.Flags)
-	buf = append(buf, flagsBuf...)
-
-	// Write Sequence (UInt32, field 4)
-	buf = append(buf, (fieldTypeUInt32<<4)|fieldCodeSequence)
-	seqBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(seqBuf, account.Sequence)
-	buf = append(buf, seqBuf...)
-
-	// Write OwnerCount (UInt32, field 17) - need extended field code
-	buf = append(buf, (fieldTypeUInt32<<4)|0) // type=2, field=0 means extended
-	buf = append(buf, fieldCodeOwnerCount)
-	ownerBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(ownerBuf, account.OwnerCount)
-	buf = append(buf, ownerBuf...)
-
-	// Write TransferRate if set (UInt32, field 11)
-	if account.TransferRate > 0 {
-		buf = append(buf, (fieldTypeUInt32<<4)|fieldCodeTransferRate)
-		rateBuf := make([]byte, 4)
-		binary.BigEndian.PutUint32(rateBuf, account.TransferRate)
-		buf = append(buf, rateBuf...)
+	// Build the JSON representation for the binary codec
+	jsonObj := map[string]any{
+		"LedgerEntryType": "AccountRoot",
+		"Balance":         fmt.Sprintf("%d", account.Balance), // XRP balance as drops string
+		"Sequence":        account.Sequence,
+		"OwnerCount":      account.OwnerCount,
+		"Flags":           account.Flags,
 	}
 
-	// Write Balance (Amount, field 1)
-	buf = append(buf, (fieldTypeAmount<<4)|fieldCodeBalance)
-	// XRP amount format: bit 63 = 0 (XRP), bit 62 = 1 (positive), bits 0-61 = drops
-	balanceVal := account.Balance | 0x4000000000000000 // Set positive bit
-	balBuf := make([]byte, 8)
-	binary.BigEndian.PutUint64(balBuf, balanceVal)
-	buf = append(buf, balBuf...)
-
-	// Write Account (AccountID, field 1)
+	// Add Account if set
 	if account.Account != "" {
-		accountID, err := decodeAccountID(account.Account)
-		if err == nil {
-			buf = append(buf, (fieldTypeAccount<<4)|fieldCodeAccount)
-			buf = append(buf, 20) // Length
-			buf = append(buf, accountID[:]...)
-		}
+		jsonObj["Account"] = account.Account
 	}
 
-	// Write RegularKey if set (AccountID, field 8)
+	// Add TransferRate if set
+	if account.TransferRate > 0 {
+		jsonObj["TransferRate"] = account.TransferRate
+	}
+
+	// Add RegularKey if set
 	if account.RegularKey != "" {
-		regKeyID, err := decodeAccountID(account.RegularKey)
-		if err == nil {
-			buf = append(buf, (fieldTypeAccount<<4)|fieldCodeRegularKey)
-			buf = append(buf, 20) // Length
-			buf = append(buf, regKeyID[:]...)
-		}
+		jsonObj["RegularKey"] = account.RegularKey
 	}
 
-	// Write Domain if set (Blob, field 7)
+	// Add Domain if set (as hex string)
 	if account.Domain != "" {
-		buf = append(buf, (fieldTypeBlob<<4)|7)
-		domainBytes := []byte(account.Domain)
-		if len(domainBytes) <= 192 {
-			buf = append(buf, byte(len(domainBytes)))
-		} else {
-			// Extended length - simplified
-			buf = append(buf, 193, byte(len(domainBytes)-193))
-		}
-		buf = append(buf, domainBytes...)
+		jsonObj["Domain"] = strings.ToUpper(hex.EncodeToString([]byte(account.Domain)))
 	}
 
-	// Write EmailHash if set (Hash128, field 1)
+	// Add EmailHash if set
 	if account.EmailHash != "" {
-		hashBytes, err := hex.DecodeString(account.EmailHash)
-		if err == nil && len(hashBytes) == 16 {
-			buf = append(buf, (fieldTypeHash128<<4)|fieldCodeEmailHash)
-			buf = append(buf, hashBytes...)
-		}
+		jsonObj["EmailHash"] = strings.ToUpper(account.EmailHash)
 	}
 
-	return buf, nil
+	// Encode using the binary codec
+	hexStr, err := binarycodec.Encode(jsonObj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode AccountRoot: %w", err)
+	}
+
+	// Convert hex string to bytes
+	return hex.DecodeString(hexStr)
 }
 
 // applySetRegularKey applies a SetRegularKey transaction
@@ -1107,103 +1068,93 @@ func (e *Engine) applyAccountDelete(tx *AccountDelete, account *AccountRoot, met
 
 // Helper function to serialize a SignerList
 func serializeSignerList(tx *SignerListSet, ownerID [20]byte) ([]byte, error) {
-	var buf []byte
+	// Convert owner ID to classic address
+	ownerAddress, err := addresscodec.EncodeAccountIDToClassicAddress(ownerID[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode owner address: %w", err)
+	}
 
-	// Write LedgerEntryType (UInt16, field 1)
-	buf = append(buf, (fieldTypeUInt16<<4)|fieldCodeLedgerEntryType)
-	buf = append(buf, 0x00, 0x53) // SignerList = 0x0053
+	// Build the JSON representation for the binary codec
+	jsonObj := map[string]any{
+		"LedgerEntryType": "SignerList",
+		"Account":         ownerAddress,
+		"SignerQuorum":    tx.SignerQuorum,
+		"OwnerNode":       "0", // UInt64 as string
+	}
 
-	// Write Flags (UInt32, field 2)
-	buf = append(buf, (fieldTypeUInt32<<4)|fieldCodeFlags)
-	flagsBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(flagsBuf, 0)
-	buf = append(buf, flagsBuf...)
+	// Add SignerEntries if present
+	if len(tx.SignerEntries) > 0 {
+		signerEntries := make([]map[string]any, len(tx.SignerEntries))
+		for i, entry := range tx.SignerEntries {
+			signerEntries[i] = map[string]any{
+				"SignerEntry": map[string]any{
+					"Account":      entry.SignerEntry.Account,
+					"SignerWeight": entry.SignerEntry.SignerWeight,
+				},
+			}
+		}
+		jsonObj["SignerEntries"] = signerEntries
+	}
 
-	// Write SignerQuorum (UInt32, field 35)
-	buf = append(buf, (fieldTypeUInt32<<4)|0) // Extended field code
-	buf = append(buf, 35)                      // SignerQuorum field code
-	quorumBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(quorumBuf, tx.SignerQuorum)
-	buf = append(buf, quorumBuf...)
+	// Encode using the binary codec
+	hexStr, err := binarycodec.Encode(jsonObj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode SignerList: %w", err)
+	}
 
-	// Write OwnerNode (UInt64, field 2) - placeholder
-	buf = append(buf, (fieldTypeUInt64<<4)|2)
-	nodeBuf := make([]byte, 8)
-	buf = append(buf, nodeBuf...)
-
-	// Write Account (AccountID, field 1)
-	buf = append(buf, (fieldTypeAccount<<4)|fieldCodeAccount)
-	buf = append(buf, 20)
-	buf = append(buf, ownerID[:]...)
-
-	// Simplified: Skip SignerEntries array serialization for now
-	// In a full implementation, we'd serialize the array properly
-
-	return buf, nil
+	// Convert hex string to bytes
+	return hex.DecodeString(hexStr)
 }
 
 // Helper function to serialize a Ticket
 func serializeTicket(ownerID [20]byte, ticketSeq uint32) ([]byte, error) {
-	var buf []byte
+	ownerAddress, err := addresscodec.EncodeAccountIDToClassicAddress(ownerID[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode owner address: %w", err)
+	}
 
-	// Write LedgerEntryType (UInt16, field 1)
-	buf = append(buf, (fieldTypeUInt16<<4)|fieldCodeLedgerEntryType)
-	buf = append(buf, 0x00, 0x54) // Ticket = 0x0054
+	jsonObj := map[string]any{
+		"LedgerEntryType": "Ticket",
+		"Account":         ownerAddress,
+		"TicketSequence":  ticketSeq,
+		"OwnerNode":       "0",
+		"Flags":           uint32(0),
+	}
 
-	// Write Flags (UInt32, field 2)
-	buf = append(buf, (fieldTypeUInt32<<4)|fieldCodeFlags)
-	flagsBuf := make([]byte, 4)
-	buf = append(buf, flagsBuf...)
+	hexStr, err := binarycodec.Encode(jsonObj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode Ticket: %w", err)
+	}
 
-	// Write TicketSequence (UInt32, field 41)
-	buf = append(buf, (fieldTypeUInt32<<4)|0) // Extended field code
-	buf = append(buf, 41)                      // TicketSequence field code
-	seqBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(seqBuf, ticketSeq)
-	buf = append(buf, seqBuf...)
-
-	// Write OwnerNode (UInt64, field 2)
-	buf = append(buf, (fieldTypeUInt64<<4)|2)
-	nodeBuf := make([]byte, 8)
-	buf = append(buf, nodeBuf...)
-
-	// Write Account (AccountID, field 1)
-	buf = append(buf, (fieldTypeAccount<<4)|fieldCodeAccount)
-	buf = append(buf, 20)
-	buf = append(buf, ownerID[:]...)
-
-	return buf, nil
+	return hex.DecodeString(hexStr)
 }
 
 // Helper function to serialize a DepositPreauth
 func serializeDepositPreauth(ownerID, authorizedID [20]byte) ([]byte, error) {
-	var buf []byte
+	ownerAddress, err := addresscodec.EncodeAccountIDToClassicAddress(ownerID[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode owner address: %w", err)
+	}
 
-	// Write LedgerEntryType (UInt16, field 1)
-	buf = append(buf, (fieldTypeUInt16<<4)|fieldCodeLedgerEntryType)
-	buf = append(buf, 0x00, 0x70) // DepositPreauth = 0x0070
+	authorizedAddress, err := addresscodec.EncodeAccountIDToClassicAddress(authorizedID[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode authorized address: %w", err)
+	}
 
-	// Write Flags (UInt32, field 2)
-	buf = append(buf, (fieldTypeUInt32<<4)|fieldCodeFlags)
-	flagsBuf := make([]byte, 4)
-	buf = append(buf, flagsBuf...)
+	jsonObj := map[string]any{
+		"LedgerEntryType": "DepositPreauth",
+		"Account":         ownerAddress,
+		"Authorize":       authorizedAddress,
+		"OwnerNode":       "0",
+		"Flags":           uint32(0),
+	}
 
-	// Write OwnerNode (UInt64, field 2)
-	buf = append(buf, (fieldTypeUInt64<<4)|2)
-	nodeBuf := make([]byte, 8)
-	buf = append(buf, nodeBuf...)
+	hexStr, err := binarycodec.Encode(jsonObj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode DepositPreauth: %w", err)
+	}
 
-	// Write Account (AccountID, field 1)
-	buf = append(buf, (fieldTypeAccount<<4)|fieldCodeAccount)
-	buf = append(buf, 20)
-	buf = append(buf, ownerID[:]...)
-
-	// Write Authorize (AccountID, field 3)
-	buf = append(buf, (fieldTypeAccount<<4)|3)
-	buf = append(buf, 20)
-	buf = append(buf, authorizedID[:]...)
-
-	return buf, nil
+	return hex.DecodeString(hexStr)
 }
 
 // applyEscrowCreate applies an EscrowCreate transaction
@@ -1477,72 +1428,43 @@ type EscrowData struct {
 
 // Helper function to serialize an Escrow
 func serializeEscrow(tx *EscrowCreate, ownerID, destID [20]byte, sequence uint32, amount uint64) ([]byte, error) {
-	var buf []byte
+	ownerAddress, err := addresscodec.EncodeAccountIDToClassicAddress(ownerID[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode owner address: %w", err)
+	}
 
-	// Write LedgerEntryType (UInt16, field 1)
-	buf = append(buf, (fieldTypeUInt16<<4)|fieldCodeLedgerEntryType)
-	buf = append(buf, 0x00, 0x75) // Escrow = 0x0075
+	destAddress, err := addresscodec.EncodeAccountIDToClassicAddress(destID[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode destination address: %w", err)
+	}
 
-	// Write Flags (UInt32, field 2)
-	buf = append(buf, (fieldTypeUInt32<<4)|fieldCodeFlags)
-	flagsBuf := make([]byte, 4)
-	buf = append(buf, flagsBuf...)
+	jsonObj := map[string]any{
+		"LedgerEntryType": "Escrow",
+		"Account":         ownerAddress,
+		"Destination":     destAddress,
+		"Amount":          fmt.Sprintf("%d", amount),
+		"OwnerNode":       "0",
+		"Flags":           uint32(0),
+	}
 
-	// Write SourceTag if present (UInt32, field 3)
-	// Skip for now
-
-	// Write Amount (Amount, field 1)
-	buf = append(buf, (fieldTypeAmount<<4)|fieldCodeBalance)
-	amountVal := amount | 0x4000000000000000 // Set positive bit
-	amtBuf := make([]byte, 8)
-	binary.BigEndian.PutUint64(amtBuf, amountVal)
-	buf = append(buf, amtBuf...)
-
-	// Write FinishAfter if present (UInt32, field 36)
 	if tx.FinishAfter != nil {
-		buf = append(buf, (fieldTypeUInt32<<4)|0) // Extended
-		buf = append(buf, 36)
-		faBuf := make([]byte, 4)
-		binary.BigEndian.PutUint32(faBuf, *tx.FinishAfter)
-		buf = append(buf, faBuf...)
+		jsonObj["FinishAfter"] = *tx.FinishAfter
 	}
 
-	// Write CancelAfter if present (UInt32, field 37)
 	if tx.CancelAfter != nil {
-		buf = append(buf, (fieldTypeUInt32<<4)|0) // Extended
-		buf = append(buf, 37)
-		caBuf := make([]byte, 4)
-		binary.BigEndian.PutUint32(caBuf, *tx.CancelAfter)
-		buf = append(buf, caBuf...)
+		jsonObj["CancelAfter"] = *tx.CancelAfter
 	}
 
-	// Write OwnerNode (UInt64, field 2)
-	buf = append(buf, (fieldTypeUInt64<<4)|2)
-	nodeBuf := make([]byte, 8)
-	buf = append(buf, nodeBuf...)
-
-	// Write Account (AccountID, field 1)
-	buf = append(buf, (fieldTypeAccount<<4)|fieldCodeAccount)
-	buf = append(buf, 20)
-	buf = append(buf, ownerID[:]...)
-
-	// Write Destination (AccountID, field 3)
-	buf = append(buf, (fieldTypeAccount<<4)|3)
-	buf = append(buf, 20)
-	buf = append(buf, destID[:]...)
-
-	// Write Condition if present (Blob)
 	if tx.Condition != "" {
-		condBytes, _ := hex.DecodeString(tx.Condition)
-		if len(condBytes) > 0 {
-			buf = append(buf, (fieldTypeBlob<<4)|0) // Extended
-			buf = append(buf, 25)                   // Condition field code
-			buf = append(buf, byte(len(condBytes)))
-			buf = append(buf, condBytes...)
-		}
+		jsonObj["Condition"] = tx.Condition
 	}
 
-	return buf, nil
+	hexStr, err := binarycodec.Encode(jsonObj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode Escrow: %w", err)
+	}
+
+	return hex.DecodeString(hexStr)
 }
 
 // Helper function to parse an Escrow ledger entry
@@ -1950,125 +1872,72 @@ func (e *Engine) applyPaymentChannelClaim(tx *PaymentChannelClaim, account *Acco
 
 // Helper function to serialize a PayChannel
 func serializePayChannel(tx *PaymentChannelCreate, ownerID, destID [20]byte, amount uint64) ([]byte, error) {
-	var buf []byte
+	ownerAddress, err := addresscodec.EncodeAccountIDToClassicAddress(ownerID[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode owner address: %w", err)
+	}
 
-	// Write LedgerEntryType (UInt16, field 1)
-	buf = append(buf, (fieldTypeUInt16<<4)|fieldCodeLedgerEntryType)
-	buf = append(buf, 0x00, 0x78) // PayChannel = 0x0078
+	destAddress, err := addresscodec.EncodeAccountIDToClassicAddress(destID[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode destination address: %w", err)
+	}
 
-	// Write Flags (UInt32, field 2)
-	buf = append(buf, (fieldTypeUInt32<<4)|fieldCodeFlags)
-	flagsBuf := make([]byte, 4)
-	buf = append(buf, flagsBuf...)
+	jsonObj := map[string]any{
+		"LedgerEntryType": "PayChannel",
+		"Account":         ownerAddress,
+		"Destination":     destAddress,
+		"Amount":          fmt.Sprintf("%d", amount),
+		"Balance":         "0",
+		"SettleDelay":     tx.SettleDelay,
+		"OwnerNode":       "0",
+		"Flags":           uint32(0),
+	}
 
-	// Write SettleDelay (UInt32, field 39)
-	buf = append(buf, (fieldTypeUInt32<<4)|0)
-	buf = append(buf, 39)
-	sdBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(sdBuf, tx.SettleDelay)
-	buf = append(buf, sdBuf...)
-
-	// Write CancelAfter if present (UInt32, field 37)
 	if tx.CancelAfter != nil {
-		buf = append(buf, (fieldTypeUInt32<<4)|0)
-		buf = append(buf, 37)
-		caBuf := make([]byte, 4)
-		binary.BigEndian.PutUint32(caBuf, *tx.CancelAfter)
-		buf = append(buf, caBuf...)
+		jsonObj["CancelAfter"] = *tx.CancelAfter
 	}
 
-	// Write Amount (Amount, field 1)
-	buf = append(buf, (fieldTypeAmount<<4)|fieldCodeBalance)
-	amountVal := amount | 0x4000000000000000
-	amtBuf := make([]byte, 8)
-	binary.BigEndian.PutUint64(amtBuf, amountVal)
-	buf = append(buf, amtBuf...)
-
-	// Write Balance (Amount, field 5) - starts at 0
-	buf = append(buf, (fieldTypeAmount<<4)|5)
-	balBuf := make([]byte, 8)
-	binary.BigEndian.PutUint64(balBuf, 0x4000000000000000)
-	buf = append(buf, balBuf...)
-
-	// Write OwnerNode (UInt64, field 2)
-	buf = append(buf, (fieldTypeUInt64<<4)|2)
-	nodeBuf := make([]byte, 8)
-	buf = append(buf, nodeBuf...)
-
-	// Write Account (AccountID, field 1)
-	buf = append(buf, (fieldTypeAccount<<4)|fieldCodeAccount)
-	buf = append(buf, 20)
-	buf = append(buf, ownerID[:]...)
-
-	// Write Destination (AccountID, field 3)
-	buf = append(buf, (fieldTypeAccount<<4)|3)
-	buf = append(buf, 20)
-	buf = append(buf, destID[:]...)
-
-	// Write PublicKey (Blob, field 28)
 	if tx.PublicKey != "" {
-		pkBytes, _ := hex.DecodeString(tx.PublicKey)
-		if len(pkBytes) > 0 {
-			buf = append(buf, (fieldTypeBlob<<4)|0)
-			buf = append(buf, 28)
-			buf = append(buf, byte(len(pkBytes)))
-			buf = append(buf, pkBytes...)
-		}
+		jsonObj["PublicKey"] = tx.PublicKey
 	}
 
-	return buf, nil
+	hexStr, err := binarycodec.Encode(jsonObj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode PayChannel: %w", err)
+	}
+
+	return hex.DecodeString(hexStr)
 }
 
 // Helper function to serialize a PayChannel from data
 func serializePayChannelFromData(channel *PayChannelData) ([]byte, error) {
-	var buf []byte
+	ownerAddress, err := addresscodec.EncodeAccountIDToClassicAddress(channel.Account[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode owner address: %w", err)
+	}
 
-	// Write LedgerEntryType (UInt16, field 1)
-	buf = append(buf, (fieldTypeUInt16<<4)|fieldCodeLedgerEntryType)
-	buf = append(buf, 0x00, 0x78) // PayChannel = 0x0078
+	destAddress, err := addresscodec.EncodeAccountIDToClassicAddress(channel.DestinationID[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode destination address: %w", err)
+	}
 
-	// Write Flags (UInt32, field 2)
-	buf = append(buf, (fieldTypeUInt32<<4)|fieldCodeFlags)
-	flagsBuf := make([]byte, 4)
-	buf = append(buf, flagsBuf...)
+	jsonObj := map[string]any{
+		"LedgerEntryType": "PayChannel",
+		"Account":         ownerAddress,
+		"Destination":     destAddress,
+		"Amount":          fmt.Sprintf("%d", channel.Amount),
+		"Balance":         fmt.Sprintf("%d", channel.Balance),
+		"SettleDelay":     channel.SettleDelay,
+		"OwnerNode":       "0",
+		"Flags":           uint32(0),
+	}
 
-	// Write SettleDelay (UInt32, field 39)
-	buf = append(buf, (fieldTypeUInt32<<4)|0)
-	buf = append(buf, 39)
-	sdBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(sdBuf, channel.SettleDelay)
-	buf = append(buf, sdBuf...)
+	hexStr, err := binarycodec.Encode(jsonObj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode PayChannel: %w", err)
+	}
 
-	// Write Amount (Amount, field 1)
-	buf = append(buf, (fieldTypeAmount<<4)|fieldCodeBalance)
-	amountVal := channel.Amount | 0x4000000000000000
-	amtBuf := make([]byte, 8)
-	binary.BigEndian.PutUint64(amtBuf, amountVal)
-	buf = append(buf, amtBuf...)
-
-	// Write Balance (Amount, field 5)
-	buf = append(buf, (fieldTypeAmount<<4)|5)
-	balVal := channel.Balance | 0x4000000000000000
-	balBuf := make([]byte, 8)
-	binary.BigEndian.PutUint64(balBuf, balVal)
-	buf = append(buf, balBuf...)
-
-	// Write OwnerNode (UInt64, field 2)
-	buf = append(buf, (fieldTypeUInt64<<4)|2)
-	nodeBuf := make([]byte, 8)
-	buf = append(buf, nodeBuf...)
-
-	// Write Account (AccountID, field 1)
-	buf = append(buf, (fieldTypeAccount<<4)|fieldCodeAccount)
-	buf = append(buf, 20)
-	buf = append(buf, channel.Account[:]...)
-
-	// Write Destination (AccountID, field 3)
-	buf = append(buf, (fieldTypeAccount<<4)|3)
-	buf = append(buf, 20)
-	buf = append(buf, channel.DestinationID[:]...)
-
-	return buf, nil
+	return hex.DecodeString(hexStr)
 }
 
 // Helper function to parse a PayChannel ledger entry
@@ -2452,72 +2321,44 @@ func (e *Engine) applyCheckCancel(tx *CheckCancel, account *AccountRoot, metadat
 
 // Helper function to serialize a Check
 func serializeCheck(tx *CheckCreate, ownerID, destID [20]byte, sequence uint32, sendMax uint64) ([]byte, error) {
-	var buf []byte
+	ownerAddress, err := addresscodec.EncodeAccountIDToClassicAddress(ownerID[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode owner address: %w", err)
+	}
 
-	// Write LedgerEntryType (UInt16, field 1)
-	buf = append(buf, (fieldTypeUInt16<<4)|fieldCodeLedgerEntryType)
-	buf = append(buf, 0x00, 0x43) // Check = 0x0043
+	destAddress, err := addresscodec.EncodeAccountIDToClassicAddress(destID[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode destination address: %w", err)
+	}
 
-	// Write Flags (UInt32, field 2)
-	buf = append(buf, (fieldTypeUInt32<<4)|fieldCodeFlags)
-	flagsBuf := make([]byte, 4)
-	buf = append(buf, flagsBuf...)
+	jsonObj := map[string]any{
+		"LedgerEntryType": "Check",
+		"Account":         ownerAddress,
+		"Destination":     destAddress,
+		"SendMax":         fmt.Sprintf("%d", sendMax),
+		"Sequence":        sequence,
+		"OwnerNode":       "0",
+		"Flags":           uint32(0),
+	}
 
-	// Write Sequence (UInt32, field 4)
-	buf = append(buf, (fieldTypeUInt32<<4)|fieldCodeSequence)
-	seqBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(seqBuf, sequence)
-	buf = append(buf, seqBuf...)
-
-	// Write Expiration if present (UInt32, field 10)
 	if tx.Expiration != nil {
-		buf = append(buf, (fieldTypeUInt32<<4)|10)
-		expBuf := make([]byte, 4)
-		binary.BigEndian.PutUint32(expBuf, *tx.Expiration)
-		buf = append(buf, expBuf...)
+		jsonObj["Expiration"] = *tx.Expiration
 	}
 
-	// Write DestinationTag if present (UInt32, field 14)
 	if tx.DestinationTag != nil {
-		buf = append(buf, (fieldTypeUInt32<<4)|14)
-		tagBuf := make([]byte, 4)
-		binary.BigEndian.PutUint32(tagBuf, *tx.DestinationTag)
-		buf = append(buf, tagBuf...)
+		jsonObj["DestinationTag"] = *tx.DestinationTag
 	}
 
-	// Write SendMax (Amount, field 9)
-	buf = append(buf, (fieldTypeAmount<<4)|9)
-	amountVal := sendMax | 0x4000000000000000
-	amtBuf := make([]byte, 8)
-	binary.BigEndian.PutUint64(amtBuf, amountVal)
-	buf = append(buf, amtBuf...)
-
-	// Write OwnerNode (UInt64, field 2)
-	buf = append(buf, (fieldTypeUInt64<<4)|2)
-	nodeBuf := make([]byte, 8)
-	buf = append(buf, nodeBuf...)
-
-	// Write Account (AccountID, field 1)
-	buf = append(buf, (fieldTypeAccount<<4)|fieldCodeAccount)
-	buf = append(buf, 20)
-	buf = append(buf, ownerID[:]...)
-
-	// Write Destination (AccountID, field 3)
-	buf = append(buf, (fieldTypeAccount<<4)|3)
-	buf = append(buf, 20)
-	buf = append(buf, destID[:]...)
-
-	// Write InvoiceID if present (Hash256, field 17)
 	if tx.InvoiceID != "" {
-		invoiceBytes, err := hex.DecodeString(tx.InvoiceID)
-		if err == nil && len(invoiceBytes) == 32 {
-			buf = append(buf, (fieldTypeHash256<<4)|0)
-			buf = append(buf, 17) // InvoiceID field code
-			buf = append(buf, invoiceBytes...)
-		}
+		jsonObj["InvoiceID"] = tx.InvoiceID
 	}
 
-	return buf, nil
+	hexStr, err := binarycodec.Encode(jsonObj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode Check: %w", err)
+	}
+
+	return hex.DecodeString(hexStr)
 }
 
 // Helper function to parse a Check ledger entry
@@ -3175,53 +3016,43 @@ func (e *Engine) applyNFTokenAcceptOffer(tx *NFTokenAcceptOffer, account *Accoun
 
 // Helper function to serialize an NFToken page
 func serializeNFTokenPage(page *NFTokenPageData) ([]byte, error) {
-	var buf []byte
+	jsonObj := map[string]any{
+		"LedgerEntryType": "NFTokenPage",
+		"Flags":           uint32(0),
+	}
 
-	// Write LedgerEntryType (UInt16, field 1)
-	buf = append(buf, (fieldTypeUInt16<<4)|fieldCodeLedgerEntryType)
-	buf = append(buf, 0x00, 0x50) // NFTokenPage = 0x0050
-
-	// Write Flags (UInt32, field 2)
-	buf = append(buf, (fieldTypeUInt32<<4)|fieldCodeFlags)
-	flagsBuf := make([]byte, 4)
-	buf = append(buf, flagsBuf...)
-
-	// Write PreviousPageMin if set (Hash256, field 25)
 	var emptyHash [32]byte
 	if page.PreviousPageMin != emptyHash {
-		buf = append(buf, (fieldTypeHash256<<4)|0)
-		buf = append(buf, 25)
-		buf = append(buf, page.PreviousPageMin[:]...)
+		jsonObj["PreviousPageMin"] = strings.ToUpper(hex.EncodeToString(page.PreviousPageMin[:]))
 	}
 
-	// Write NextPageMin if set (Hash256, field 26)
 	if page.NextPageMin != emptyHash {
-		buf = append(buf, (fieldTypeHash256<<4)|0)
-		buf = append(buf, 26)
-		buf = append(buf, page.NextPageMin[:]...)
+		jsonObj["NextPageMin"] = strings.ToUpper(hex.EncodeToString(page.NextPageMin[:]))
 	}
 
-	// Write NFTokens array (simplified - just the first token for now)
-	// In full implementation, would properly serialize the array
-	for _, token := range page.NFTokens {
-		// Write NFTokenID
-		buf = append(buf, (fieldTypeHash256<<4)|0)
-		buf = append(buf, 10) // NFTokenID field code
-		buf = append(buf, token.NFTokenID[:]...)
-
-		// Write URI if present
-		if token.URI != "" {
-			uriBytes, _ := hex.DecodeString(token.URI)
-			if len(uriBytes) > 0 {
-				buf = append(buf, (fieldTypeBlob<<4)|0)
-				buf = append(buf, 5) // URI field code
-				buf = append(buf, byte(len(uriBytes)))
-				buf = append(buf, uriBytes...)
+	// Build NFTokens array
+	if len(page.NFTokens) > 0 {
+		nfTokens := make([]map[string]any, len(page.NFTokens))
+		for i, token := range page.NFTokens {
+			nfToken := map[string]any{
+				"NFToken": map[string]any{
+					"NFTokenID": strings.ToUpper(hex.EncodeToString(token.NFTokenID[:])),
+				},
 			}
+			if token.URI != "" {
+				nfToken["NFToken"].(map[string]any)["URI"] = token.URI
+			}
+			nfTokens[i] = nfToken
 		}
+		jsonObj["NFTokens"] = nfTokens
 	}
 
-	return buf, nil
+	hexStr, err := binarycodec.Encode(jsonObj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode NFTokenPage: %w", err)
+	}
+
+	return hex.DecodeString(hexStr)
 }
 
 // Helper function to parse an NFToken page
@@ -3325,59 +3156,34 @@ func parseNFTokenPage(data []byte) (*NFTokenPageData, error) {
 
 // Helper function to serialize an NFToken offer
 func serializeNFTokenOffer(tx *NFTokenCreateOffer, ownerID [20]byte, tokenID [32]byte, amount uint64, sequence uint32) ([]byte, error) {
-	var buf []byte
+	ownerAddress, err := addresscodec.EncodeAccountIDToClassicAddress(ownerID[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode owner address: %w", err)
+	}
 
-	// Write LedgerEntryType (UInt16, field 1)
-	buf = append(buf, (fieldTypeUInt16<<4)|fieldCodeLedgerEntryType)
-	buf = append(buf, 0x00, 0x37) // NFTokenOffer = 0x0037
+	jsonObj := map[string]any{
+		"LedgerEntryType": "NFTokenOffer",
+		"Account":         ownerAddress,
+		"Amount":          fmt.Sprintf("%d", amount),
+		"NFTokenID":       strings.ToUpper(hex.EncodeToString(tokenID[:])),
+		"OwnerNode":       "0",
+		"Flags":           tx.GetFlags(),
+	}
 
-	// Write Flags (UInt32, field 2)
-	buf = append(buf, (fieldTypeUInt32<<4)|fieldCodeFlags)
-	flagsBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(flagsBuf, tx.GetFlags())
-	buf = append(buf, flagsBuf...)
-
-	// Write Expiration if present (UInt32, field 10)
 	if tx.Expiration != nil {
-		buf = append(buf, (fieldTypeUInt32<<4)|10)
-		expBuf := make([]byte, 4)
-		binary.BigEndian.PutUint32(expBuf, *tx.Expiration)
-		buf = append(buf, expBuf...)
+		jsonObj["Expiration"] = *tx.Expiration
 	}
 
-	// Write Amount (Amount, field 1)
-	buf = append(buf, (fieldTypeAmount<<4)|fieldCodeBalance)
-	amountVal := amount | 0x4000000000000000
-	amtBuf := make([]byte, 8)
-	binary.BigEndian.PutUint64(amtBuf, amountVal)
-	buf = append(buf, amtBuf...)
-
-	// Write OwnerNode (UInt64, field 2)
-	buf = append(buf, (fieldTypeUInt64<<4)|2)
-	nodeBuf := make([]byte, 8)
-	buf = append(buf, nodeBuf...)
-
-	// Write NFTokenID (Hash256, field 10)
-	buf = append(buf, (fieldTypeHash256<<4)|0)
-	buf = append(buf, 10)
-	buf = append(buf, tokenID[:]...)
-
-	// Write Account (AccountID, field 1)
-	buf = append(buf, (fieldTypeAccount<<4)|fieldCodeAccount)
-	buf = append(buf, 20)
-	buf = append(buf, ownerID[:]...)
-
-	// Write Destination if present (AccountID, field 3)
 	if tx.Destination != "" {
-		destID, err := decodeAccountID(tx.Destination)
-		if err == nil {
-			buf = append(buf, (fieldTypeAccount<<4)|3)
-			buf = append(buf, 20)
-			buf = append(buf, destID[:]...)
-		}
+		jsonObj["Destination"] = tx.Destination
 	}
 
-	return buf, nil
+	hexStr, err := binarycodec.Encode(jsonObj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode NFTokenOffer: %w", err)
+	}
+
+	return hex.DecodeString(hexStr)
 }
 
 // Helper function to parse an NFToken offer
@@ -3810,35 +3616,25 @@ func (e *Engine) applyAMMClawback(tx *AMMClawback, account *AccountRoot, metadat
 
 // Helper function to serialize an AMM entry
 func serializeAMM(amm *AMMData, ownerID [20]byte) ([]byte, error) {
-	var buf []byte
+	accountAddress, err := addresscodec.EncodeAccountIDToClassicAddress(amm.Account[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode AMM account address: %w", err)
+	}
 
-	// Write LedgerEntryType (UInt16, field 1)
-	buf = append(buf, (fieldTypeUInt16<<4)|fieldCodeLedgerEntryType)
-	buf = append(buf, 0x00, 0x79) // AMM = 0x0079
+	jsonObj := map[string]any{
+		"LedgerEntryType": "AMM",
+		"Account":         accountAddress,
+		"TradingFee":      amm.TradingFee,
+		"OwnerNode":       "0",
+		"Flags":           uint32(0),
+	}
 
-	// Write Flags (UInt32, field 2)
-	buf = append(buf, (fieldTypeUInt32<<4)|fieldCodeFlags)
-	flagsBuf := make([]byte, 4)
-	buf = append(buf, flagsBuf...)
+	hexStr, err := binarycodec.Encode(jsonObj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode AMM: %w", err)
+	}
 
-	// Write TradingFee (UInt16, field 48)
-	buf = append(buf, (fieldTypeUInt16<<4)|0)
-	buf = append(buf, 48)
-	feeBuf := make([]byte, 2)
-	binary.BigEndian.PutUint16(feeBuf, amm.TradingFee)
-	buf = append(buf, feeBuf...)
-
-	// Write OwnerNode (UInt64, field 2)
-	buf = append(buf, (fieldTypeUInt64<<4)|2)
-	nodeBuf := make([]byte, 8)
-	buf = append(buf, nodeBuf...)
-
-	// Write Account (AccountID, field 1)
-	buf = append(buf, (fieldTypeAccount<<4)|fieldCodeAccount)
-	buf = append(buf, 20)
-	buf = append(buf, amm.Account[:]...)
-
-	return buf, nil
+	return hex.DecodeString(hexStr)
 }
 
 // Phase 5: XChain, DID, Oracle, MPToken implementations

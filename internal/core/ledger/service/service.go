@@ -1388,12 +1388,49 @@ type LedgerDataResult struct {
 	State       []LedgerDataItem `json:"state"`
 	Marker      string           `json:"marker,omitempty"`
 	Validated   bool             `json:"validated"`
+	// Ledger header information for first query (without marker)
+	LedgerHeader *LedgerHeaderInfo `json:"ledger,omitempty"`
+}
+
+// LedgerHeaderInfo contains complete ledger header data for responses
+type LedgerHeaderInfo struct {
+	AccountHash         [32]byte  `json:"account_hash"`
+	CloseFlags          uint8     `json:"close_flags"`
+	CloseTime           int64     `json:"close_time"`           // Seconds since Ripple epoch
+	CloseTimeHuman      string    `json:"close_time_human"`     // Human-readable format
+	CloseTimeISO        string    `json:"close_time_iso"`       // ISO 8601 format
+	CloseTimeResolution uint32    `json:"close_time_resolution"`
+	Closed              bool      `json:"closed"`
+	LedgerHash          [32]byte  `json:"ledger_hash"`
+	LedgerIndex         uint32    `json:"ledger_index"`
+	ParentCloseTime     int64     `json:"parent_close_time"`
+	ParentHash          [32]byte  `json:"parent_hash"`
+	TotalCoins          uint64    `json:"total_coins"`          // Total XRP drops
+	TransactionHash     [32]byte  `json:"transaction_hash"`
 }
 
 // LedgerDataItem represents a single state entry
 type LedgerDataItem struct {
 	Index string `json:"index"`
 	Data  []byte `json:"data"`
+}
+
+// RippleEpoch is January 1, 2000 00:00:00 UTC
+var RippleEpoch = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// toRippleTime converts a time.Time to seconds since Ripple epoch
+func toRippleTime(t time.Time) int64 {
+	return t.Unix() - RippleEpoch.Unix()
+}
+
+// formatCloseTimeHuman formats close time in XRPL human-readable format
+func formatCloseTimeHuman(t time.Time) string {
+	return t.UTC().Format("2006-Jan-02 15:04:05.000000000 UTC")
+}
+
+// formatCloseTimeISO formats close time in ISO 8601 format
+func formatCloseTimeISO(t time.Time) string {
+	return t.UTC().Format("2006-01-02T15:04:05Z")
 }
 
 // GetLedgerData retrieves all ledger state entries with optional pagination
@@ -1427,6 +1464,26 @@ func (s *Service) GetLedgerData(ledgerIndex string, limit uint32, marker string)
 				copy(startKey[:], decoded)
 				hasMarker = true
 			}
+		}
+	}
+
+	// Include ledger header info only on first query (no marker)
+	if !hasMarker {
+		hdr := targetLedger.Header()
+		result.LedgerHeader = &LedgerHeaderInfo{
+			AccountHash:         hdr.AccountHash,
+			CloseFlags:          hdr.CloseFlags,
+			CloseTime:           toRippleTime(hdr.CloseTime),
+			CloseTimeHuman:      formatCloseTimeHuman(hdr.CloseTime),
+			CloseTimeISO:        formatCloseTimeISO(hdr.CloseTime),
+			CloseTimeResolution: hdr.CloseTimeResolution,
+			Closed:              targetLedger.IsClosed() || targetLedger.IsValidated(),
+			LedgerHash:          hdr.Hash,
+			LedgerIndex:         hdr.LedgerIndex,
+			ParentCloseTime:     toRippleTime(hdr.ParentCloseTime),
+			ParentHash:          hdr.ParentHash,
+			TotalCoins:          hdr.Drops,
+			TransactionHash:     hdr.TxHash,
 		}
 	}
 

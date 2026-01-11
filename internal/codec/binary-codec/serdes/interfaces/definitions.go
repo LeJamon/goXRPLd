@@ -1,7 +1,11 @@
+// Package interfaces defines interfaces for binary serialization and deserialization of XRPL fields.
+//
+//revive:disable:var-naming
 package interfaces
 
 import "github.com/LeJamon/goXRPLd/internal/codec/binary-codec/definitions"
 
+// Definitions provides methods to look up and create XRPL field definitions by name or header.
 type Definitions interface {
 	GetFieldNameByFieldHeader(fh definitions.FieldHeader) (string, error)
 	GetFieldInstanceByFieldName(fieldName string) (*definitions.FieldInstance, error)

@@ -2,7 +2,11 @@ package tx
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
+	"fmt"
+
+	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 )
 
 // OfferCreate places an offer on the decentralized exchange.
@@ -175,125 +179,35 @@ const (
 
 // serializeLedgerOffer serializes a LedgerOffer to binary for storage
 func serializeLedgerOffer(offer *LedgerOffer) ([]byte, error) {
-	var buf []byte
-
-	// Write LedgerEntryType (UInt16, field 1)
-	buf = append(buf, (fieldTypeUInt16<<4)|fieldCodeLedgerEntryType)
-	buf = append(buf, 0x00, 0x6F) // Offer = 0x006F
-
-	// Write Flags (UInt32, field 2)
-	buf = append(buf, (fieldTypeUInt32<<4)|fieldCodeFlags)
-	flagsBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(flagsBuf, offer.Flags)
-	buf = append(buf, flagsBuf...)
-
-	// Write Sequence (UInt32, field 4)
-	buf = append(buf, (fieldTypeUInt32<<4)|4)
-	seqBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(seqBuf, offer.Sequence)
-	buf = append(buf, seqBuf...)
-
-	// Write TakerPays (Amount, field 4)
-	buf = append(buf, (fieldTypeAmount<<4)|4)
-	takerPaysBytes, err := serializeAmountBytes(offer.TakerPays)
-	if err != nil {
-		return nil, err
-	}
-	buf = append(buf, takerPaysBytes...)
-
-	// Write TakerGets (Amount, field 5)
-	buf = append(buf, (fieldTypeAmount<<4)|5)
-	takerGetsBytes, err := serializeAmountBytes(offer.TakerGets)
-	if err != nil {
-		return nil, err
-	}
-	buf = append(buf, takerGetsBytes...)
-
-	// Write Account (AccountID, field 3)
-	buf = append(buf, (fieldTypeAccountID<<4)|3)
-	accountID, err := decodeAccountID(offer.Account)
-	if err != nil {
-		return nil, err
-	}
-	buf = append(buf, accountID[:]...)
-
-	// Write BookNode (UInt64, field 3)
-	buf = append(buf, (fieldTypeUInt64<<4)|3)
-	bookNodeBuf := make([]byte, 8)
-	binary.BigEndian.PutUint64(bookNodeBuf, offer.BookNode)
-	buf = append(buf, bookNodeBuf...)
-
-	// Write OwnerNode (UInt64, field 2)
-	buf = append(buf, (fieldTypeUInt64<<4)|2)
-	ownerNodeBuf := make([]byte, 8)
-	binary.BigEndian.PutUint64(ownerNodeBuf, offer.OwnerNode)
-	buf = append(buf, ownerNodeBuf...)
-
-	return buf, nil
-}
-
-// serializeAmountBytes serializes an Amount to binary
-func serializeAmountBytes(amt Amount) ([]byte, error) {
-	if amt.IsNative() {
-		// XRP amount - 8 bytes
-		drops, err := parseDropsString(amt.Value)
-		if err != nil {
-			return nil, err
+	// Helper function to convert Amount to JSON format
+	amountToJSON := func(amt Amount) any {
+		if amt.IsNative() {
+			return amt.Value
 		}
-		buf := make([]byte, 8)
-		// Set bit 62 (positive XRP amount, not IOU)
-		value := drops | 0x4000000000000000
-		binary.BigEndian.PutUint64(buf, value)
-		return buf, nil
+		return map[string]any{
+			"value":    amt.Value,
+			"currency": amt.Currency,
+			"issuer":   amt.Issuer,
+		}
 	}
 
-	// IOU amount - 48 bytes
-	iou := NewIOUAmount(amt.Value, amt.Currency, amt.Issuer)
-	return serializeIOUAmountForOffer(iou)
-}
-
-// serializeIOUAmountForOffer serializes an IOUAmount to bytes
-func serializeIOUAmountForOffer(amount IOUAmount) ([]byte, error) {
-	buf := make([]byte, 48)
-
-	if amount.IsZero() {
-		// Zero representation
-		buf[0] = 0x80
-		return buf, nil
+	jsonObj := map[string]any{
+		"LedgerEntryType": "Offer",
+		"Account":         offer.Account,
+		"Flags":           offer.Flags,
+		"Sequence":        offer.Sequence,
+		"TakerPays":       amountToJSON(offer.TakerPays),
+		"TakerGets":       amountToJSON(offer.TakerGets),
+		"BookNode":        fmt.Sprintf("%d", offer.BookNode),
+		"OwnerNode":       fmt.Sprintf("%d", offer.OwnerNode),
 	}
 
-	// Calculate mantissa and exponent
-	value := amount.Value
-	positive := value.Sign() >= 0
-	if !positive {
-		value = value.Neg(value)
+	hexStr, err := binarycodec.Encode(jsonObj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode Offer: %w", err)
 	}
 
-	// Normalize to mantissa with 15-16 significant digits
-	mantissa, exponent := normalizeIOUValue(value)
-
-	// Build the 8-byte value
-	var rawValue uint64 = 0x8000000000000000 // Set "not XRP" bit
-	if positive {
-		rawValue |= 0x4000000000000000 // Set positive bit
-	}
-	rawValue |= uint64((exponent+97)&0xFF) << 54 // Add exponent
-	rawValue |= mantissa & 0x003FFFFFFFFFFFFF   // Add mantissa
-
-	binary.BigEndian.PutUint64(buf[0:8], rawValue)
-
-	// Write currency (standard 3-char code at bytes 12-15)
-	if len(amount.Currency) == 3 {
-		buf[12] = amount.Currency[0]
-		buf[13] = amount.Currency[1]
-		buf[14] = amount.Currency[2]
-	}
-
-	// Write issuer
-	issuerID, _ := decodeAccountID(amount.Issuer)
-	copy(buf[28:48], issuerID[:])
-
-	return buf, nil
+	return hex.DecodeString(hexStr)
 }
 
 // parseDropsString parses an XRP drops value from string

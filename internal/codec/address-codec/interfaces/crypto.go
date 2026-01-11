@@ -1,3 +1,4 @@
+//revive:disable:var-naming
 package interfaces
 
 // CryptoImplementation defines an interface for implementing cryptographic operations

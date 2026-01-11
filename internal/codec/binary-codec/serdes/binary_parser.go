@@ -1,3 +1,4 @@
+// Package serdes provides utilities to parse and serialize XRPL binary data fields.
 package serdes
 
 import (
@@ -18,6 +19,7 @@ var (
 	ErrInvalidFieldcode = errors.New("invalid fieldcode")
 )
 
+// BinaryParser parses binary-encoded XRPL data into field instances based on definitions.
 type BinaryParser struct {
 	data        []byte
 	definitions interfaces.Definitions

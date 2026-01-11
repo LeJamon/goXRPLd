@@ -71,7 +71,7 @@ func EncodeQuality(quality string) (string, error) {
 	return strings.ToUpper(hex.EncodeToString(serialized)), nil
 }
 
-// Decode a quality amount from a hex string to a string.
+// DecodeQuality decodes a quality amount from a hex string to a string.
 func DecodeQuality(quality string) (string, error) {
 	if quality == "" {
 		return "", ErrInvalidQuality

@@ -3,7 +3,10 @@ package rpc
 import (
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strconv"
+
+	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 )
 
 // LedgerMethod handles the ledger RPC method
@@ -53,7 +56,7 @@ func (m *LedgerMethod) Handle(ctx *RpcContext, params json.RawMessage) (interfac
 		validated = targetLedger.IsValidated()
 	} else {
 		// Look up by index
-		ledgerIndex := request.LedgerIndex
+		ledgerIndex := request.LedgerIndex.String()
 		if ledgerIndex == "" {
 			ledgerIndex = "validated"
 		}
@@ -99,16 +102,16 @@ func (m *LedgerMethod) Handle(ctx *RpcContext, params json.RawMessage) (interfac
 	parentHash := hex.EncodeToString(parent[:])
 
 	ledgerInfo := map[string]interface{}{
-		"accepted":            true,
-		"close_flags":         0,
-		"closed":              targetLedger.IsClosed(),
-		"hash":                ledgerHash,
-		"ledger_hash":         ledgerHash,
-		"ledger_index":        strconv.FormatUint(uint64(targetLedger.Sequence()), 10),
-		"parent_hash":         parentHash,
-		"seqNum":              strconv.FormatUint(uint64(targetLedger.Sequence()), 10),
-		"totalCoins":          strconv.FormatUint(targetLedger.TotalDrops(), 10),
-		"total_coins":         strconv.FormatUint(targetLedger.TotalDrops(), 10),
+		"accepted":     true,
+		"close_flags":  0,
+		"closed":       targetLedger.IsClosed(),
+		"hash":         ledgerHash,
+		"ledger_hash":  ledgerHash,
+		"ledger_index": strconv.FormatUint(uint64(targetLedger.Sequence()), 10),
+		"parent_hash":  parentHash,
+		"seqNum":       strconv.FormatUint(uint64(targetLedger.Sequence()), 10),
+		"totalCoins":   strconv.FormatUint(targetLedger.TotalDrops(), 10),
+		"total_coins":  strconv.FormatUint(targetLedger.TotalDrops(), 10),
 	}
 
 	response := map[string]interface{}{
@@ -242,7 +245,7 @@ func (m *LedgerDataMethod) Handle(ctx *RpcContext, params json.RawMessage) (inte
 	// Determine ledger index to use
 	ledgerIndex := "current"
 	if request.LedgerIndex != "" {
-		ledgerIndex = request.LedgerIndex
+		ledgerIndex = request.LedgerIndex.String()
 	}
 
 	// Parse marker as string
@@ -259,12 +262,37 @@ func (m *LedgerDataMethod) Handle(ctx *RpcContext, params json.RawMessage) (inte
 		return nil, RpcErrorInternal("Failed to get ledger data: " + err.Error())
 	}
 
-	// Build state array
+	// Build state array based on binary flag
 	state := make([]map[string]interface{}, len(result.State))
 	for i, item := range result.State {
-		state[i] = map[string]interface{}{
-			"index": item.Index,
-			"data":  hex.EncodeToString(item.Data),
+		if request.Binary {
+			// Binary format: just data and index as hex
+			state[i] = map[string]interface{}{
+				"data":  hex.EncodeToString(item.Data),
+				"index": item.Index,
+			}
+		} else {
+			// JSON format: deserialize the ledger entry
+			jsonObj, err := deserializeLedgerEntry(item.Data)
+			if err != nil {
+				println(err.Error())
+				// Fallback to binary format if deserialization fails
+				state[i] = map[string]interface{}{
+					"data":  hex.EncodeToString(item.Data),
+					"index": item.Index,
+				}
+			} else {
+				// Add index field to the deserialized object
+				if objMap, ok := jsonObj.(map[string]interface{}); ok {
+					objMap["index"] = item.Index
+					state[i] = objMap
+				} else {
+					state[i] = map[string]interface{}{
+						"data":  hex.EncodeToString(item.Data),
+						"index": item.Index,
+					}
+				}
+			}
 		}
 	}
 
@@ -275,11 +303,105 @@ func (m *LedgerDataMethod) Handle(ctx *RpcContext, params json.RawMessage) (inte
 		"validated":    result.Validated,
 	}
 
+	// Include ledger header info on first query (when no marker was provided)
+	if result.LedgerHeader != nil {
+		if request.Binary {
+			// Binary format: include ledger_data as hex serialization
+			response["ledger"] = map[string]interface{}{
+				"ledger_data": formatLedgerHeaderBinary(result.LedgerHeader),
+				"closed":      result.LedgerHeader.Closed,
+			}
+		} else {
+			// JSON format: include full ledger header fields
+			response["ledger"] = map[string]interface{}{
+				"account_hash":          hex.EncodeToString(result.LedgerHeader.AccountHash[:]),
+				"close_flags":           result.LedgerHeader.CloseFlags,
+				"close_time":            result.LedgerHeader.CloseTime,
+				"close_time_human":      result.LedgerHeader.CloseTimeHuman,
+				"close_time_iso":        result.LedgerHeader.CloseTimeISO,
+				"close_time_resolution": result.LedgerHeader.CloseTimeResolution,
+				"closed":                result.LedgerHeader.Closed,
+				"ledger_hash":           hex.EncodeToString(result.LedgerHeader.LedgerHash[:]),
+				"ledger_index":          result.LedgerHeader.LedgerIndex,
+				"parent_close_time":     result.LedgerHeader.ParentCloseTime,
+				"parent_hash":           hex.EncodeToString(result.LedgerHeader.ParentHash[:]),
+				"total_coins":           fmt.Sprintf("%d", result.LedgerHeader.TotalCoins),
+				"transaction_hash":      hex.EncodeToString(result.LedgerHeader.TransactionHash[:]),
+			}
+		}
+	}
+
 	if result.Marker != "" {
 		response["marker"] = result.Marker
 	}
 
 	return response, nil
+}
+
+// formatLedgerHeaderBinary creates a hex-encoded binary representation of ledger header
+func formatLedgerHeaderBinary(hdr *LedgerHeaderInfo) string {
+	// This is a simplified binary format - real implementation would match rippled's serialization
+	var buf []byte
+
+	// Sequence (4 bytes)
+	seqBytes := make([]byte, 4)
+	seqBytes[0] = byte(hdr.LedgerIndex >> 24)
+	seqBytes[1] = byte(hdr.LedgerIndex >> 16)
+	seqBytes[2] = byte(hdr.LedgerIndex >> 8)
+	seqBytes[3] = byte(hdr.LedgerIndex)
+	buf = append(buf, seqBytes...)
+
+	// Total coins (8 bytes)
+	coinsBytes := make([]byte, 8)
+	coinsBytes[0] = byte(hdr.TotalCoins >> 56)
+	coinsBytes[1] = byte(hdr.TotalCoins >> 48)
+	coinsBytes[2] = byte(hdr.TotalCoins >> 40)
+	coinsBytes[3] = byte(hdr.TotalCoins >> 32)
+	coinsBytes[4] = byte(hdr.TotalCoins >> 24)
+	coinsBytes[5] = byte(hdr.TotalCoins >> 16)
+	coinsBytes[6] = byte(hdr.TotalCoins >> 8)
+	coinsBytes[7] = byte(hdr.TotalCoins)
+	buf = append(buf, coinsBytes...)
+
+	// Parent hash, tx hash, account hash
+	buf = append(buf, hdr.ParentHash[:]...)
+	buf = append(buf, hdr.TransactionHash[:]...)
+	buf = append(buf, hdr.AccountHash[:]...)
+
+	// Parent close time (4 bytes)
+	pctBytes := make([]byte, 4)
+	pct := uint32(hdr.ParentCloseTime)
+	pctBytes[0] = byte(pct >> 24)
+	pctBytes[1] = byte(pct >> 16)
+	pctBytes[2] = byte(pct >> 8)
+	pctBytes[3] = byte(pct)
+	buf = append(buf, pctBytes...)
+
+	// Close time (4 bytes)
+	ctBytes := make([]byte, 4)
+	ct := uint32(hdr.CloseTime)
+	ctBytes[0] = byte(ct >> 24)
+	ctBytes[1] = byte(ct >> 16)
+	ctBytes[2] = byte(ct >> 8)
+	ctBytes[3] = byte(ct)
+	buf = append(buf, ctBytes...)
+
+	// Close time resolution (1 byte) and close flags (1 byte)
+	buf = append(buf, byte(hdr.CloseTimeResolution))
+	buf = append(buf, hdr.CloseFlags)
+
+	return hex.EncodeToString(buf)
+}
+
+// deserializeLedgerEntry converts binary ledger entry data to JSON format
+func deserializeLedgerEntry(data []byte) (interface{}, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("empty data")
+	}
+
+	// Use the binary codec's Decode function to convert binary to JSON
+	println("HEX VALUE TO DECODE: ", hex.EncodeToString(data))
+	return binarycodec.Decode(hex.EncodeToString(data))
 }
 
 func (m *LedgerDataMethod) RequiredRole() Role {
@@ -298,14 +420,14 @@ func (m *LedgerEntryMethod) Handle(ctx *RpcContext, params json.RawMessage) (int
 	var request struct {
 		LedgerSpecifier
 		// Object specification methods (mutually exclusive):
-		Index       string `json:"index,omitempty"`        // Direct object ID
-		AccountRoot string `json:"account_root,omitempty"` // Account address
-		Check       string `json:"check,omitempty"`        // Check object ID
+		Index          string `json:"index,omitempty"`        // Direct object ID
+		AccountRoot    string `json:"account_root,omitempty"` // Account address
+		Check          string `json:"check,omitempty"`        // Check object ID
 		DepositPreauth struct {
 			Owner      string `json:"owner"`
 			Authorized string `json:"authorized"`
 		} `json:"deposit_preauth,omitempty"`
-		DirectoryNode  string `json:"directory,omitempty"`        // Directory ID
+		DirectoryNode string `json:"directory,omitempty"` // Directory ID
 		Escrow        struct {
 			Owner string `json:"owner"`
 			Seq   uint32 `json:"seq"`
@@ -343,7 +465,7 @@ func (m *LedgerEntryMethod) Handle(ctx *RpcContext, params json.RawMessage) (int
 	// Determine ledger index to use
 	ledgerIndex := "validated"
 	if request.LedgerIndex != "" {
-		ledgerIndex = request.LedgerIndex
+		ledgerIndex = request.LedgerIndex.String()
 	}
 
 	// Determine the entry key

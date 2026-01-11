@@ -47,7 +47,7 @@ func (m *BookOffersMethod) Handle(ctx *RpcContext, params json.RawMessage) (inte
 	// Determine ledger index to use
 	ledgerIndex := "current"
 	if request.LedgerIndex != "" {
-		ledgerIndex = request.LedgerIndex
+		ledgerIndex = request.LedgerIndex.String()
 	}
 
 	// Get book offers from the ledger service

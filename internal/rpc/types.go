@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 )
 
 // JSON-RPC 2.0 Request
@@ -189,10 +190,39 @@ type StreamMessage struct {
 
 // Common parameter structures used across multiple methods
 
+// LedgerIndex is a custom type that can unmarshal from either a JSON number or string
+// This matches XRPL API behavior where ledger_index can be: 12345, "12345", "validated", "current", "closed"
+type LedgerIndex string
+
+// UnmarshalJSON implements custom unmarshaling for LedgerIndex
+func (li *LedgerIndex) UnmarshalJSON(data []byte) error {
+	// First try to unmarshal as a string (handles "validated", "current", "closed", "12345")
+	var strVal string
+	if err := json.Unmarshal(data, &strVal); err == nil {
+		*li = LedgerIndex(strVal)
+		return nil
+	}
+
+	// Try to unmarshal as a number
+	var numVal uint64
+	if err := json.Unmarshal(data, &numVal); err == nil {
+		*li = LedgerIndex(fmt.Sprintf("%d", numVal))
+		return nil
+	}
+
+	// If both fail, return an error
+	return fmt.Errorf("ledger_index must be a number or string, got: %s", string(data))
+}
+
+// String returns the string representation of the LedgerIndex
+func (li LedgerIndex) String() string {
+	return string(li)
+}
+
 // LedgerSpecifier - used to specify which ledger to query
 type LedgerSpecifier struct {
-	LedgerHash  string `json:"ledger_hash,omitempty"`
-	LedgerIndex string `json:"ledger_index,omitempty"` // can be number or "validated", "current", "closed"
+	LedgerHash  string      `json:"ledger_hash,omitempty"`
+	LedgerIndex LedgerIndex `json:"ledger_index,omitempty"` // can be number or "validated", "current", "closed"
 }
 
 // Account parameter

@@ -302,13 +302,31 @@ type LedgerDataItem struct {
 	Data  []byte `json:"data"`
 }
 
+// LedgerHeaderInfo contains complete ledger header data for responses
+type LedgerHeaderInfo struct {
+	AccountHash         [32]byte `json:"account_hash"`
+	CloseFlags          uint8    `json:"close_flags"`
+	CloseTime           int64    `json:"close_time"`
+	CloseTimeHuman      string   `json:"close_time_human"`
+	CloseTimeISO        string   `json:"close_time_iso"`
+	CloseTimeResolution uint32   `json:"close_time_resolution"`
+	Closed              bool     `json:"closed"`
+	LedgerHash          [32]byte `json:"ledger_hash"`
+	LedgerIndex         uint32   `json:"ledger_index"`
+	ParentCloseTime     int64    `json:"parent_close_time"`
+	ParentHash          [32]byte `json:"parent_hash"`
+	TotalCoins          uint64   `json:"total_coins"`
+	TransactionHash     [32]byte `json:"transaction_hash"`
+}
+
 // LedgerDataResult contains ledger state data
 type LedgerDataResult struct {
-	LedgerIndex uint32           `json:"ledger_index"`
-	LedgerHash  [32]byte         `json:"ledger_hash"`
-	State       []LedgerDataItem `json:"state"`
-	Marker      string           `json:"marker,omitempty"`
-	Validated   bool             `json:"validated"`
+	LedgerIndex  uint32            `json:"ledger_index"`
+	LedgerHash   [32]byte          `json:"ledger_hash"`
+	State        []LedgerDataItem  `json:"state"`
+	Marker       string            `json:"marker,omitempty"`
+	Validated    bool              `json:"validated"`
+	LedgerHeader *LedgerHeaderInfo `json:"ledger,omitempty"`
 }
 
 // AccountObjectItem represents an account object

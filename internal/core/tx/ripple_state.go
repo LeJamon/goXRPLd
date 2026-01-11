@@ -2,8 +2,12 @@ package tx
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"math/big"
+
+	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 )
 
 // RippleState represents a trust line between two accounts
@@ -326,90 +330,35 @@ func parseIOUAmount(data []byte) (IOUAmount, error) {
 
 // serializeRippleState serializes a RippleState to binary
 func serializeRippleState(rs *RippleState) ([]byte, error) {
-	var buf []byte
-
-	// Write LedgerEntryType
-	buf = append(buf, (fieldTypeUInt16<<4)|fieldCodeLedgerEntryType)
-	buf = append(buf, 0x00, 0x72) // RippleState = 0x0072
-
-	// Write Flags
-	buf = append(buf, (fieldTypeUInt32<<4)|fieldCodeFlags)
-	flagsBuf := make([]byte, 4)
-	binary.BigEndian.PutUint32(flagsBuf, rs.Flags)
-	buf = append(buf, flagsBuf...)
-
-	// Write Balance (IOU Amount)
-	buf = append(buf, (fieldTypeAmount<<4)|fieldCodeRSBalance)
-	balBytes, _ := serializeIOUAmount(rs.Balance)
-	buf = append(buf, balBytes...)
-
-	// Write LowLimit
-	buf = append(buf, (fieldTypeAmount<<4)|fieldCodeLowLimit)
-	lowBytes, _ := serializeIOUAmount(rs.LowLimit)
-	buf = append(buf, lowBytes...)
-
-	// Write HighLimit
-	buf = append(buf, (fieldTypeAmount<<4)|fieldCodeHighLimit)
-	highBytes, _ := serializeIOUAmount(rs.HighLimit)
-	buf = append(buf, highBytes...)
-
-	// Write LowNode
-	buf = append(buf, (fieldTypeUInt64<<4)|fieldCodeLowNode)
-	lowNodeBuf := make([]byte, 8)
-	binary.BigEndian.PutUint64(lowNodeBuf, rs.LowNode)
-	buf = append(buf, lowNodeBuf...)
-
-	// Write HighNode
-	buf = append(buf, (fieldTypeUInt64<<4)|fieldCodeHighNode)
-	highNodeBuf := make([]byte, 8)
-	binary.BigEndian.PutUint64(highNodeBuf, rs.HighNode)
-	buf = append(buf, highNodeBuf...)
-
-	return buf, nil
-}
-
-// serializeIOUAmount serializes an IOU amount to 48 bytes
-func serializeIOUAmount(amount IOUAmount) ([]byte, error) {
-	buf := make([]byte, 48)
-
-	if amount.IsZero() {
-		// Zero representation
-		buf[0] = 0x80
-		return buf, nil
+	// Helper function to convert IOUAmount to JSON map
+	iouToJSON := func(amount IOUAmount) map[string]any {
+		valueStr := "0"
+		if amount.Value != nil {
+			valueStr = amount.Value.Text('f', -1)
+		}
+		return map[string]any{
+			"value":    valueStr,
+			"currency": amount.Currency,
+			"issuer":   amount.Issuer,
+		}
 	}
 
-	// Calculate mantissa and exponent
-	value := amount.Value
-	positive := value.Sign() >= 0
-	if !positive {
-		value = new(big.Float).Abs(value)
+	jsonObj := map[string]any{
+		"LedgerEntryType": "RippleState",
+		"Flags":           rs.Flags,
+		"Balance":         iouToJSON(rs.Balance),
+		"LowLimit":        iouToJSON(rs.LowLimit),
+		"HighLimit":       iouToJSON(rs.HighLimit),
+		"LowNode":         fmt.Sprintf("%d", rs.LowNode),
+		"HighNode":        fmt.Sprintf("%d", rs.HighNode),
 	}
 
-	// Normalize to mantissa with 15-16 significant digits
-	mantissa, exponent := normalizeIOUValue(value)
-
-	// Build the 8-byte value
-	var rawValue uint64 = 0x8000000000000000 // Set "not XRP" bit
-	if positive {
-		rawValue |= 0x4000000000000000 // Set positive bit
-	}
-	rawValue |= uint64((exponent+97)&0xFF) << 54 // Add exponent
-	rawValue |= mantissa & 0x003FFFFFFFFFFFFF   // Add mantissa
-
-	binary.BigEndian.PutUint64(buf[0:8], rawValue)
-
-	// Write currency (standard 3-char code at bytes 12-15)
-	if len(amount.Currency) == 3 {
-		buf[12] = amount.Currency[0]
-		buf[13] = amount.Currency[1]
-		buf[14] = amount.Currency[2]
+	hexStr, err := binarycodec.Encode(jsonObj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode RippleState: %w", err)
 	}
 
-	// Write issuer
-	issuerID, _ := decodeAccountID(amount.Issuer)
-	copy(buf[28:48], issuerID[:])
-
-	return buf, nil
+	return hex.DecodeString(hexStr)
 }
 
 // normalizeIOUValue normalizes a value to mantissa and exponent

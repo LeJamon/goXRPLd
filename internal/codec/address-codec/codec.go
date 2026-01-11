@@ -4,29 +4,39 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
-	"github.com/LeJamon/goXRPLd/internal/codec/address-codec/interfaces"
-	ED25519 "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/ed25519"
-	SECP256K1 "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/secp256k1"
+
+	"github.com/Peersyst/xrpl-go/address-codec/interfaces"
+	"github.com/Peersyst/xrpl-go/pkg/crypto"
 )
 
 const (
-	// Lengths in bytes
-	AccountAddressLength   = 20
-	AccountPublicKeyLength = 33
-	FamilySeedLength       = 16
-	NodePublicKeyLength    = 33
+	// AccountAddressLength is the length in bytes of a classic account address.
+	AccountAddressLength = 20
 
-	// Account/classic address prefix - value is 0
+	// AccountPublicKeyLength is the length in bytes of an account public key.
+	AccountPublicKeyLength = 33
+
+	// FamilySeedLength is the length in bytes of a family seed.
+	FamilySeedLength = 16
+
+	// NodePublicKeyLength is the length in bytes of a node/validation public key.
+	NodePublicKeyLength = 33
+
+	// AccountAddressPrefix is the classic address prefix (0x00).
 	AccountAddressPrefix = 0x00
-	// Account public key prefix - value is 35
+
+	// AccountPublicKeyPrefix is the prefix for account public keys (0x23).
 	AccountPublicKeyPrefix = 0x23
-	// Family seed prefix - value is 33
+
+	// FamilySeedPrefix is the prefix for family seeds (0x21).
 	FamilySeedPrefix = 0x21
-	// Node/validation public key prefix - value is 28
+
+	// NodePublicKeyPrefix is the prefix for node/validation public keys (0x1C).
 	NodePublicKeyPrefix = 0x1C
 )
 
-// Returns the base58 encoding of byte slice, with the given type prefix, whilst ensuring that the byte slice is the expected length.
+// Encode returns the Base58Check encoding of a byte slice with the given type prefix,
+// ensuring the byte slice has the expected length.
 func Encode(b []byte, typePrefix []byte, expectedLength int) (string, error) {
 
 	if len(b) != expectedLength {
@@ -36,7 +46,7 @@ func Encode(b []byte, typePrefix []byte, expectedLength int) (string, error) {
 	return Base58CheckEncode(b, typePrefix...), nil
 }
 
-// Returns the byte slice decoding of the base58-encoded string and prefix.
+// Decode returns the decoded byte slice of the base58-encoded string for the given prefix.
 func Decode(b58string string, typePrefix []byte) ([]byte, error) {
 
 	prefixLength := len(typePrefix)
@@ -51,7 +61,7 @@ func Decode(b58string string, typePrefix []byte) ([]byte, error) {
 	return result, err
 }
 
-// Returns the classic address from public key hex string.
+// EncodeClassicAddressFromPublicKeyHex returns the classic address from a public key hex string.
 func EncodeClassicAddressFromPublicKeyHex(pubkeyhex string) (string, error) {
 
 	pubkey, err := hex.DecodeString(pubkeyhex)
@@ -76,13 +86,19 @@ func EncodeClassicAddressFromPublicKeyHex(pubkeyhex string) (string, error) {
 	return address, nil
 }
 
-// Returns the decoded 'accountID' byte slice of the classic address.
+// DecodeClassicAddressToAccountID returns the prefix and accountID byte slice from a classic address.
 func DecodeClassicAddressToAccountID(cAddress string) (typePrefix, accountID []byte, err error) {
-	if len(DecodeBase58(cAddress)) != 25 {
+	decoded, err := Base58CheckDecode(cAddress)
+	if err != nil {
 		return nil, nil, ErrInvalidClassicAddress
 	}
 
-	return DecodeBase58(cAddress)[:1], DecodeBase58(cAddress)[1:21], nil
+	// Expected length is 21 bytes (1 prefix + 20 accountID) after removing 4-byte checksum
+	if len(decoded) != 21 {
+		return nil, nil, ErrInvalidClassicAddress
+	}
+
+	return decoded[:1], decoded[1:21], nil
 }
 
 // EncodeAccountIDToClassicAddress returns the classic address encoding of the accountId.
@@ -94,17 +110,17 @@ func EncodeAccountIDToClassicAddress(accountID []byte) (string, error) {
 	return Base58CheckEncode(accountID, AccountAddressPrefix), nil
 }
 
-// Returns a base58 encoding of a seed.
+// EncodeSeed returns a base58 encoding of a seed using the specified encoding type.
 func EncodeSeed(entropy []byte, encodingType interfaces.CryptoImplementation) (string, error) {
 
 	if len(entropy) != FamilySeedLength {
 		return "", &EncodeLengthError{Instance: "Entropy", Input: len(entropy), Expected: FamilySeedLength}
 	}
 
-	if encodingType == ED25519.ED25519() {
+	if encodingType == crypto.ED25519() {
 		prefix := []byte{0x01, 0xe1, 0x4b}
 		return Encode(entropy, prefix, FamilySeedLength)
-	} else if secp256k1 := SECP256K1.SECP256K1(); encodingType == secp256k1 {
+	} else if secp256k1 := crypto.SECP256K1(); encodingType == secp256k1 {
 		prefix := []byte{secp256k1.FamilySeedPrefix()}
 		return Encode(entropy, prefix, FamilySeedLength)
 	}
@@ -112,7 +128,7 @@ func EncodeSeed(entropy []byte, encodingType interfaces.CryptoImplementation) (s
 
 }
 
-// Returns decoded seed and its algorithm.
+// DecodeSeed returns the decoded seed and its corresponding algorithm.
 func DecodeSeed(seed string) ([]byte, interfaces.CryptoImplementation, error) {
 
 	// decoded := DecodeBase58(seed)
@@ -123,14 +139,14 @@ func DecodeSeed(seed string) ([]byte, interfaces.CryptoImplementation, error) {
 	}
 
 	if bytes.Equal(decoded[:3], []byte{0x01, 0xe1, 0x4b}) {
-		return decoded[3:], ED25519.ED25519(), nil
+		return decoded[3:], crypto.ED25519(), nil
 	}
 
-	return decoded[1:], SECP256K1.SECP256K1(), nil
+	return decoded[1:], crypto.SECP256K1(), nil
 
 }
 
-// Returns the node public key encoding of the byte slice as a base58 string.
+// EncodeNodePublicKey returns the base58 encoding of a node public key byte slice.
 func EncodeNodePublicKey(b []byte) (string, error) {
 
 	if len(b) != NodePublicKeyLength {
@@ -142,7 +158,7 @@ func EncodeNodePublicKey(b []byte) (string, error) {
 	return npk, nil
 }
 
-// Returns the decoded node public key encoding as a byte slice from a base58 string.
+// DecodeNodePublicKey returns the decoded node public key byte slice from a base58 string.
 func DecodeNodePublicKey(key string) ([]byte, error) {
 
 	decodedNodeKey, err := Decode(key, []byte{NodePublicKeyPrefix})
@@ -153,7 +169,7 @@ func DecodeNodePublicKey(key string) ([]byte, error) {
 	return decodedNodeKey, nil
 }
 
-// Returns the account public key encoding of the byte slice as a base58 string.
+// EncodeAccountPublicKey returns the base58 encoding of an account public key byte slice.
 func EncodeAccountPublicKey(b []byte) (string, error) {
 
 	if len(b) != AccountPublicKeyLength {
@@ -165,7 +181,7 @@ func EncodeAccountPublicKey(b []byte) (string, error) {
 	return apk, nil
 }
 
-// Returns the decoded account public key encoding as a byte slice from a base58 string.
+// DecodeAccountPublicKey returns the decoded account public key byte slice from a base58 string.
 func DecodeAccountPublicKey(key string) ([]byte, error) {
 
 	decodedAccountKey, err := Decode(key, []byte{AccountPublicKeyPrefix})

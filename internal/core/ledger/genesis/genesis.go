@@ -2,17 +2,19 @@ package genesis
 
 import (
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
-	"github.com/LeJamon/goXRPLd/internal/core/ledger/entry"
 	ledgerentries "github.com/LeJamon/goXRPLd/internal/core/ledger/entry/entries"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/header"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/protocol"
 	"github.com/LeJamon/goXRPLd/internal/core/shamap"
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
+	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
 	secp256k1 "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/secp256k1"
 )
@@ -368,7 +370,10 @@ func createFeeSettings(stateMap *shamap.SHAMap, cfg Config) error {
 // createAmendments creates the amendments entry with the specified amendments.
 func createAmendments(stateMap *shamap.SHAMap, amendments [][32]byte) error {
 	// Serialize amendments
-	data := serializeAmendments(amendments)
+	data, err := serializeAmendments(amendments)
+	if err != nil {
+		return err
+	}
 
 	// Get the keylet for amendments
 	k := keylet.Amendments()
@@ -427,111 +432,97 @@ func CalculateLedgerHash(h header.LedgerHeader) [32]byte {
 	return crypto.Sha512Half(data)
 }
 
-// serializeAccountRoot serializes an AccountRoot entry to bytes.
-// This is a simplified serialization - full implementation would use the binary codec.
+// serializeAccountRoot serializes an AccountRoot entry to bytes using the XRPL binary codec.
 func serializeAccountRoot(a *ledgerentries.AccountRoot) ([]byte, error) {
-	// Simplified serialization for genesis
-	// In production, this should use the full XRPL binary codec
-	var buf []byte
+	// Convert account ID to classic address
+	address, err := addresscodec.EncodeAccountIDToClassicAddress(a.Account[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode account address: %w", err)
+	}
 
-	// Entry type prefix (2 bytes)
-	typeBytes := make([]byte, 2)
-	binary.BigEndian.PutUint16(typeBytes, uint16(entry.TypeAccountRoot))
-	buf = append(buf, typeBytes...)
+	// Build the JSON representation for the binary codec
+	jsonObj := map[string]any{
+		"LedgerEntryType":   "AccountRoot",
+		"Account":           address,
+		"Balance":           fmt.Sprintf("%d", a.Balance), // XRP balance as drops string
+		"Sequence":          a.Sequence,
+		"OwnerCount":        a.OwnerCount,
+		"Flags":             a.Flags,
+		"PreviousTxnID":     "0000000000000000000000000000000000000000000000000000000000000000",
+		"PreviousTxnLgrSeq": uint32(0),
+	}
 
-	// Account ID (20 bytes)
-	buf = append(buf, a.Account[:]...)
+	// Encode using the binary codec
+	hexStr, err := binarycodec.Encode(jsonObj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode AccountRoot: %w", err)
+	}
 
-	// Balance (8 bytes)
-	balanceBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(balanceBytes, a.Balance)
-	buf = append(buf, balanceBytes...)
-
-	// Sequence (4 bytes)
-	seqBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(seqBytes, a.Sequence)
-	buf = append(buf, seqBytes...)
-
-	// Owner count (4 bytes)
-	ownerBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(ownerBytes, a.OwnerCount)
-	buf = append(buf, ownerBytes...)
-
-	// Flags (4 bytes)
-	flagBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(flagBytes, a.Flags)
-	buf = append(buf, flagBytes...)
-
-	return buf, nil
+	// Convert hex string to bytes
+	return hex.DecodeString(hexStr)
 }
 
-// serializeFeeSettings serializes a FeeSettings entry to bytes.
+// serializeFeeSettings serializes a FeeSettings entry to bytes using the XRPL binary codec.
 func serializeFeeSettings(f *ledgerentries.FeeSettings) ([]byte, error) {
-	var buf []byte
-
-	// Entry type prefix (2 bytes)
-	typeBytes := make([]byte, 2)
-	binary.BigEndian.PutUint16(typeBytes, uint16(entry.TypeFeeSettings))
-	buf = append(buf, typeBytes...)
+	// Build the JSON representation for the binary codec
+	jsonObj := map[string]any{
+		"LedgerEntryType": "FeeSettings",
+		"Flags":           uint32(0),
+	}
 
 	if f.IsUsingModernFees() {
-		// Modern format (XRPFees amendment)
-		baseFeeBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(baseFeeBytes, uint64(f.BaseFeeDrops))
-		buf = append(buf, baseFeeBytes...)
-
-		reserveBaseBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(reserveBaseBytes, uint64(f.ReserveBaseDrops))
-		buf = append(buf, reserveBaseBytes...)
-
-		reserveIncBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(reserveIncBytes, uint64(f.ReserveIncrementDrops))
-		buf = append(buf, reserveIncBytes...)
+		// Modern format (XRPFees amendment) - uses Amount fields
+		jsonObj["BaseFeeDrops"] = fmt.Sprintf("%d", f.BaseFeeDrops)
+		jsonObj["ReserveBaseDrops"] = fmt.Sprintf("%d", f.ReserveBaseDrops)
+		jsonObj["ReserveIncrementDrops"] = fmt.Sprintf("%d", f.ReserveIncrementDrops)
 	} else {
-		// Legacy format
+		// Legacy format - uses UInt64/UInt32 fields
+		// UInt64 fields (BaseFee) must be hex strings without leading zeros
 		if f.BaseFee != nil {
-			baseFeeBytes := make([]byte, 8)
-			binary.BigEndian.PutUint64(baseFeeBytes, *f.BaseFee)
-			buf = append(buf, baseFeeBytes...)
+			jsonObj["BaseFee"] = fmt.Sprintf("%x", *f.BaseFee)
 		}
 		if f.ReferenceFeeUnits != nil {
-			refFeeBytes := make([]byte, 4)
-			binary.BigEndian.PutUint32(refFeeBytes, *f.ReferenceFeeUnits)
-			buf = append(buf, refFeeBytes...)
+			jsonObj["ReferenceFeeUnits"] = *f.ReferenceFeeUnits
 		}
 		if f.ReserveBase != nil {
-			reserveBaseBytes := make([]byte, 4)
-			binary.BigEndian.PutUint32(reserveBaseBytes, *f.ReserveBase)
-			buf = append(buf, reserveBaseBytes...)
+			jsonObj["ReserveBase"] = *f.ReserveBase
 		}
 		if f.ReserveIncrement != nil {
-			reserveIncBytes := make([]byte, 4)
-			binary.BigEndian.PutUint32(reserveIncBytes, *f.ReserveIncrement)
-			buf = append(buf, reserveIncBytes...)
+			jsonObj["ReserveIncrement"] = *f.ReserveIncrement
 		}
 	}
 
-	return buf, nil
-}
-
-// serializeAmendments serializes an amendments list to bytes.
-func serializeAmendments(amendments [][32]byte) []byte {
-	var buf []byte
-
-	// Entry type prefix (2 bytes)
-	typeBytes := make([]byte, 2)
-	binary.BigEndian.PutUint16(typeBytes, uint16(entry.TypeAmendments))
-	buf = append(buf, typeBytes...)
-
-	// Number of amendments (4 bytes)
-	countBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(countBytes, uint32(len(amendments)))
-	buf = append(buf, countBytes...)
-
-	// Each amendment hash (32 bytes each)
-	for _, amendment := range amendments {
-		buf = append(buf, amendment[:]...)
+	// Encode using the binary codec
+	hexStr, err := binarycodec.Encode(jsonObj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode FeeSettings: %w", err)
 	}
 
-	return buf
+	// Convert hex string to bytes
+	return hex.DecodeString(hexStr)
+}
+
+// serializeAmendments serializes an amendments list to bytes using the XRPL binary codec.
+func serializeAmendments(amendments [][32]byte) ([]byte, error) {
+	// Convert amendment hashes to hex strings for Vector256
+	amendmentHexes := make([]string, len(amendments))
+	for i, amendment := range amendments {
+		amendmentHexes[i] = fmt.Sprintf("%064X", amendment)
+	}
+
+	// Build the JSON representation for the binary codec
+	jsonObj := map[string]any{
+		"LedgerEntryType": "Amendments",
+		"Flags":           uint32(0),
+		"Amendments":      amendmentHexes,
+	}
+
+	// Encode using the binary codec
+	hexStr, err := binarycodec.Encode(jsonObj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode Amendments: %w", err)
+	}
+
+	// Convert hex string to bytes
+	return hex.DecodeString(hexStr)
 }
