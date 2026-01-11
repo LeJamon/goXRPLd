@@ -159,25 +159,58 @@ func (ws *WebSocketServer) handleSend(wsConn *WebSocketConnection) {
 
 // handleMessage processes a single message from WebSocket
 func (ws *WebSocketServer) handleMessage(wsConn *WebSocketConnection, message []byte) {
-	// Parse WebSocket command
-	var cmd WebSocketCommand
-	if err := json.Unmarshal(message, &cmd); err != nil {
+	// Parse WebSocket command - XRPL format has command and params at top level
+	var cmdMap map[string]interface{}
+	if err := json.Unmarshal(message, &cmdMap); err != nil {
 		ws.sendError(wsConn, RpcErrorInvalidParams("Invalid JSON: "+err.Error()), nil)
 		return
+	}
+
+	// Extract command
+	command, ok := cmdMap["command"].(string)
+	if !ok || command == "" {
+		ws.sendError(wsConn, NewRpcError(RpcMISSING_COMMAND, "missingCommand", "missingCommand", "Missing command field"), nil)
+		return
+	}
+
+	// Extract ID (optional)
+	var id interface{}
+	if idVal, exists := cmdMap["id"]; exists {
+		id = idVal
+	}
+
+	// Build cmd struct
+	cmd := WebSocketCommand{
+		Command: command,
+		ID:      id,
+	}
+
+	// Remove command and id from params, pass the rest as params
+	delete(cmdMap, "command")
+	delete(cmdMap, "id")
+
+	// Handle api_version
+	var apiVersion int = DefaultApiVersion
+	if apiVer, exists := cmdMap["api_version"]; exists {
+		if ver, ok := apiVer.(float64); ok {
+			apiVersion = int(ver)
+		}
+		delete(cmdMap, "api_version")
+	}
+
+	// Convert remaining fields to params JSON
+	if len(cmdMap) > 0 {
+		paramsBytes, _ := json.Marshal(cmdMap)
+		cmd.Params = paramsBytes
 	}
 
 	// Create RPC context
 	rpcCtx := &RpcContext{
 		Context:    wsConn.ctx,
-		Role:       RoleGuest, // TODO: Implement proper role detection
-		ApiVersion: DefaultApiVersion,
-		IsAdmin:    false, // TODO: Implement admin detection
+		Role:       RoleGuest,
+		ApiVersion: apiVersion,
+		IsAdmin:    false,
 		ClientIP:   getWebSocketClientIP(wsConn.conn),
-	}
-
-	// Handle API version
-	if cmd.ApiVersion != nil {
-		rpcCtx.ApiVersion = *cmd.ApiVersion
 	}
 
 	// Handle subscription commands specially
@@ -348,15 +381,36 @@ func (ws *WebSocketServer) sendResponse(wsConn *WebSocketConnection, response We
 	}
 }
 
-// sendError sends a WebSocket error response
+// sendError sends a WebSocket error response with flat error fields (XRPL format)
 func (ws *WebSocketServer) sendError(wsConn *WebSocketConnection, rpcErr *RpcError, id interface{}) {
-	response := WebSocketResponse{
-		Type:   "response",
-		ID:     id,
-		Status: "error",
-		Error:  rpcErr,
+	// XRPL WebSocket error format has error fields at top level, not nested
+	response := map[string]interface{}{
+		"type":          "response",
+		"status":        "error",
+		"error":         rpcErr.ErrorString,
+		"error_code":    rpcErr.Code,
+		"error_message": rpcErr.Message,
 	}
-	ws.sendResponse(wsConn, response)
+	if id != nil {
+		response["id"] = id
+	}
+
+	data, err := json.Marshal(response)
+	if err != nil {
+		log.Printf("Failed to marshal WebSocket error response: %v", err)
+		return
+	}
+
+	select {
+	case wsConn.sendChannel <- data:
+		// Response sent
+	case <-wsConn.ctx.Done():
+		// Connection closed
+	default:
+		// Channel full, close connection
+		log.Printf("WebSocket send channel full, closing connection %s", wsConn.ID)
+		ws.closeConnection(wsConn)
+	}
 }
 
 // closeConnection closes a WebSocket connection

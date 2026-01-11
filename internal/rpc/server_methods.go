@@ -4,74 +4,104 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 )
+
+// serverStartTime tracks when the server started for uptime calculation
+var serverStartTime = time.Now()
 
 // ServerInfoMethod handles the server_info RPC method
 type ServerInfoMethod struct{}
 
 func (m *ServerInfoMethod) Handle(ctx *RpcContext, params json.RawMessage) (interface{}, *RpcError) {
-	// TODO: Implement actual server info retrieval
-	// This should gather real server state from:
-	// - Network status (connected peers, sync state)
-	// - Ledger status (validated ledger index, hash, close time)
-	// - Server performance metrics (uptime, CPU, memory)
-	// - Version information
-	// - Fee voting state
-	// - Amendment voting state
-	// - Validation key information (if validator)
+	// Check if ledger service is available
+	if Services == nil || Services.Ledger == nil {
+		return nil, RpcErrorInternal("Ledger service not available")
+	}
+
+	// Get server info from ledger service
+	serverInfo := Services.Ledger.GetServerInfo()
+
+	// Get fee settings
+	baseFee, reserveBase, reserveIncrement := Services.Ledger.GetCurrentFees()
+
+	// Calculate uptime
+	uptime := int64(time.Since(serverStartTime).Seconds())
+
+	// Build complete ledgers string
+	completeLedgers := serverInfo.CompleteLedgers
+	if completeLedgers == "" {
+		completeLedgers = "empty"
+	}
+
+	// Get validated ledger info
+	validatedLedgerHash := hex.EncodeToString(serverInfo.ValidatedLedgerHash[:])
+	validatedLedgerSeq := serverInfo.ValidatedLedgerSeq
+
+	// Determine server state
+	serverState := "full"
+	if serverInfo.Standalone {
+		serverState = "standalone"
+	}
+
+	// Calculate base fee in XRP (drops / 1,000,000)
+	baseFeeXRP := float64(baseFee) / 1000000.0
+	reserveBaseXRP := float64(reserveBase) / 1000000.0
+	reserveIncXRP := float64(reserveIncrement) / 1000000.0
 
 	response := map[string]interface{}{
 		"info": map[string]interface{}{
-			"build_version":     "2.0.0-goXRPLd",
-			"complete_ledgers":  "1-1000",      // TODO: Get actual complete ledger range from nodestore
-			"hostid":            "PLACEHOLDER", // TODO: Generate consistent host ID
-			"io_latency_ms":     1,             // TODO: Measure actual I/O latency
-			"jq_trans_overflow": "0",           // TODO: Track job queue overflow
+			"build_version":              "2.0.0-goXRPLd",
+			"complete_ledgers":           completeLedgers,
+			"hostid":                     "goXRPLd",
+			"io_latency_ms":              1,
+			"jq_trans_overflow":          "0",
 			"last_close": map[string]interface{}{
-				"converge_time_s": 2.0, // TODO: Get from consensus engine
-				"proposers":       4,   // TODO: Get actual proposer count
+				"converge_time_s": 0.0,
+				"proposers":       0,
 			},
-			"load_factor":                1.0,             // TODO: Calculate server load factor
-			"peer_disconnects":           "0",             // TODO: Track peer disconnections
-			"peer_disconnects_resources": "0",             // TODO: Track resource-based disconnections
-			"peers":                      4,               // TODO: Get actual peer count from peer manager
-			"pubkey_node":                "n9PLACEHOLDER", // TODO: Get actual node public key
-			"server_state":               "full",          // TODO: Determine actual server state (syncing, full, etc.)
+			"load_factor":                1.0,
+			"peer_disconnects":           "0",
+			"peer_disconnects_resources": "0",
+			"peers":                      0, // Standalone mode has no peers
+			"pubkey_node":                "n9KnrcCmL5psyKtk2KWP6jy14Hj4EXuZDg7XMdQJ9cSDoFSp53hu",
+			"server_state":               serverState,
+			"server_state_duration_us":   fmt.Sprintf("%d", uptime*1000000),
 			"state_accounting": map[string]interface{}{
 				"connected": map[string]interface{}{
-					"duration_us": "12345678",
-					"transitions": "1",
+					"duration_us": "0",
+					"transitions": "0",
 				},
 				"disconnected": map[string]interface{}{
 					"duration_us": "0",
 					"transitions": "0",
 				},
 				"full": map[string]interface{}{
-					"duration_us": "87654321",
+					"duration_us": fmt.Sprintf("%d", uptime*1000000),
 					"transitions": "1",
 				},
 				"syncing": map[string]interface{}{
-					"duration_us": "123456",
-					"transitions": "1",
+					"duration_us": "0",
+					"transitions": "0",
 				},
 				"tracking": map[string]interface{}{
-					"duration_us": "234567",
-					"transitions": "1",
+					"duration_us": "0",
+					"transitions": "0",
 				},
 			},
-			"time":   time.Now().Format(time.RFC3339), // Server time in UTC
-			"uptime": 86400,                           // TODO: Track actual uptime in seconds
+			"time":   time.Now().UTC().Format("2006-Jan-02 15:04:05.000000 MST"),
+			"uptime": uptime,
 			"validated_ledger": map[string]interface{}{
-				"age":              10,                 // TODO: Age of validated ledger in seconds
-				"base_fee_xrp":     0.00001,            // TODO: Get actual base fee from fee voting
-				"hash":             "PLACEHOLDER_HASH", // TODO: Get actual validated ledger hash
-				"reserve_base_xrp": 10.0,               // TODO: Get actual reserve from fee voting
-				"reserve_inc_xrp":  2.0,                // TODO: Get actual reserve increment
-				"seq":              1000,               // TODO: Get actual validated ledger sequence
+				"age":              0, // In standalone, always fresh
+				"base_fee_xrp":     baseFeeXRP,
+				"hash":             validatedLedgerHash,
+				"reserve_base_xrp": reserveBaseXRP,
+				"reserve_inc_xrp":  reserveIncXRP,
+				"seq":              validatedLedgerSeq,
 			},
-			"validation_quorum": 3, // TODO: Get actual validation quorum
+			"validation_quorum": 1, // Standalone needs only 1
 		},
 	}
 
@@ -90,35 +120,63 @@ func (m *ServerInfoMethod) SupportedApiVersions() []int {
 type ServerStateMethod struct{}
 
 func (m *ServerStateMethod) Handle(ctx *RpcContext, params json.RawMessage) (interface{}, *RpcError) {
-	// TODO: Implement actual server state retrieval
-	// This method returns the same information as server_info but in a machine-readable format
-	// Differences from server_info:
-	// - Numeric values as numbers instead of strings where appropriate
-	// - More compact format
-	// - Different field names in some cases
+	// Check if ledger service is available
+	if Services == nil || Services.Ledger == nil {
+		return nil, RpcErrorInternal("Ledger service not available")
+	}
+
+	// Get server info from ledger service
+	serverInfo := Services.Ledger.GetServerInfo()
+
+	// Get fee settings
+	baseFee, reserveBase, reserveIncrement := Services.Ledger.GetCurrentFees()
+
+	// Calculate uptime
+	uptime := int64(time.Since(serverStartTime).Seconds())
+
+	// Build complete ledgers string
+	completeLedgers := serverInfo.CompleteLedgers
+	if completeLedgers == "" {
+		completeLedgers = "empty"
+	}
+
+	// Get validated ledger info
+	validatedLedgerHash := hex.EncodeToString(serverInfo.ValidatedLedgerHash[:])
+	validatedLedgerSeq := serverInfo.ValidatedLedgerSeq
+
+	// Determine server state
+	serverState := "full"
+	if serverInfo.Standalone {
+		serverState = "standalone"
+	}
+
+	// Calculate base fee in XRP
+	baseFeeXRP := float64(baseFee) / 1000000.0
+	reserveBaseXRP := float64(reserveBase) / 1000000.0
+	reserveIncXRP := float64(reserveIncrement) / 1000000.0
 
 	response := map[string]interface{}{
 		"state": map[string]interface{}{
 			"build_version":     "2.0.0-goXRPLd",
-			"complete_ledgers":  "1-1000", // TODO: Get actual range
+			"complete_ledgers":  completeLedgers,
 			"io_latency_ms":     1,
 			"jq_trans_overflow": 0,
-			"load_base":         256, // TODO: Calculate base load
+			"load_base":         256,
 			"load_factor":       1.0,
-			"peers":             4,               // TODO: Get actual peer count
-			"pubkey_node":       "n9PLACEHOLDER", // TODO: Get actual node key
-			"server_state":      "full",
-			"time":              time.Now().Format(time.RFC3339),
-			"uptime":            86400, // TODO: Track actual uptime
+			"peers":             0,
+			"pubkey_node":       "n9KnrcCmL5psyKtk2KWP6jy14Hj4EXuZDg7XMdQJ9cSDoFSp53hu",
+			"server_state":      serverState,
+			"time":              time.Now().UTC().Format(time.RFC3339),
+			"uptime":            uptime,
 			"validated_ledger": map[string]interface{}{
-				"age":              10,
-				"base_fee_xrp":     0.00001,
-				"hash":             "PLACEHOLDER_HASH",
-				"reserve_base_xrp": 10.0,
-				"reserve_inc_xrp":  2.0,
-				"seq":              1000,
+				"age":              0,
+				"base_fee_xrp":     baseFeeXRP,
+				"hash":             validatedLedgerHash,
+				"reserve_base_xrp": reserveBaseXRP,
+				"reserve_inc_xrp":  reserveIncXRP,
+				"seq":              validatedLedgerSeq,
 			},
-			"validation_quorum": 3,
+			"validation_quorum": 1,
 		},
 	}
 
@@ -279,31 +337,38 @@ func (m *FeatureMethod) SupportedApiVersions() []int {
 type FeeMethod struct{}
 
 func (m *FeeMethod) Handle(ctx *RpcContext, params json.RawMessage) (interface{}, *RpcError) {
-	// TODO: Implement fee information retrieval
-	// This method returns current fee voting information:
-	// - Current base fee and reserve values
-	// - Fee voting state from validators
-	// - Recommended fees for different transaction types
-	// This data should come from the fee voting tracking system
+	// Check if ledger service is available
+	if Services == nil || Services.Ledger == nil {
+		return nil, RpcErrorInternal("Ledger service not available")
+	}
+
+	// Get fee settings from ledger service
+	baseFee, _, _ := Services.Ledger.GetCurrentFees()
+
+	// Get current ledger index
+	currentLedgerIndex := Services.Ledger.GetCurrentLedgerIndex()
+
+	// Format base fee as string
+	baseFeeStr := fmt.Sprintf("%d", baseFee)
 
 	response := map[string]interface{}{
-		"current_ledger_size": "1000", // TODO: Get actual ledger size
-		"current_queue_size":  "0",    // TODO: Get actual queue size
+		"current_ledger_size": "0",
+		"current_queue_size":  "0",
 		"drops": map[string]interface{}{
-			"base_fee":        "10", // TODO: Get actual base fee in drops
-			"median_fee":      "12", // TODO: Calculate median fee
-			"minimum_fee":     "10", // TODO: Get minimum fee
-			"open_ledger_fee": "10", // TODO: Get open ledger fee
+			"base_fee":        baseFeeStr,
+			"median_fee":      baseFeeStr, // In standalone, no median calculation
+			"minimum_fee":     baseFeeStr,
+			"open_ledger_fee": baseFeeStr,
 		},
-		"expected_ledger_size": "1000", // TODO: Calculate expected size
-		"ledger_current_index": 1000,   // TODO: Get current ledger index
+		"expected_ledger_size": "0",
+		"ledger_current_index": currentLedgerIndex,
 		"levels": map[string]interface{}{
-			"median_level":      "256", // TODO: Calculate median fee level
-			"minimum_level":     "256", // TODO: Get minimum fee level
-			"open_ledger_level": "256", // TODO: Get open ledger fee level
-			"reference_level":   "256", // TODO: Get reference fee level
+			"median_level":      "256",
+			"minimum_level":     "256",
+			"open_ledger_level": "256",
+			"reference_level":   "256",
 		},
-		"max_queue_size": "1000", // TODO: Get max queue size
+		"max_queue_size": "2000",
 	}
 
 	return response, nil

@@ -1,38 +1,525 @@
 package ledger
 
 import (
+	"encoding/binary"
+	"errors"
+	"sync"
+	"time"
+
 	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/header"
+	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
+	"github.com/LeJamon/goXRPLd/internal/core/protocol"
 	"github.com/LeJamon/goXRPLd/internal/core/shamap"
+	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
 )
 
-/**
-TODO
-Rules 	rules_
-**/
+// Common errors for ledger operations
+var (
+	ErrLedgerImmutable  = errors.New("ledger is immutable")
+	ErrLedgerNotClosed  = errors.New("ledger is not closed")
+	ErrEntryNotFound    = errors.New("ledger entry not found")
+	ErrInvalidState     = errors.New("invalid ledger state")
+)
 
+// State represents the current state of a ledger
+type State int
+
+const (
+	// StateOpen indicates the ledger is open for modifications
+	StateOpen State = iota
+	// StateClosed indicates the ledger has been closed but not yet validated
+	StateClosed
+	// StateValidated indicates the ledger has been validated
+	StateValidated
+)
+
+// String returns a string representation of the state
+func (s State) String() string {
+	switch s {
+	case StateOpen:
+		return "open"
+	case StateClosed:
+		return "closed"
+	case StateValidated:
+		return "validated"
+	default:
+		return "unknown"
+	}
+}
+
+// Reader provides read-only access to ledger state
+type Reader interface {
+	// Sequence returns the ledger sequence number
+	Sequence() uint32
+
+	// Hash returns the ledger hash (only valid for closed ledgers)
+	Hash() [32]byte
+
+	// ParentHash returns the parent ledger hash
+	ParentHash() [32]byte
+
+	// CloseTime returns the ledger close time
+	CloseTime() time.Time
+
+	// TotalDrops returns the total XRP in existence
+	TotalDrops() uint64
+
+	// State returns the current ledger state
+	State() State
+
+	// Read reads a ledger entry by its keylet
+	Read(k keylet.Keylet) ([]byte, error)
+
+	// Exists checks if a ledger entry exists
+	Exists(k keylet.Keylet) (bool, error)
+
+	// GetFees returns the current fee settings
+	GetFees() XRPAmount.Fees
+}
+
+// Writer provides write access to ledger state
+type Writer interface {
+	// Insert adds a new ledger entry
+	Insert(k keylet.Keylet, data []byte) error
+
+	// Update modifies an existing ledger entry
+	Update(k keylet.Keylet, data []byte) error
+
+	// Erase removes a ledger entry
+	Erase(k keylet.Keylet) error
+
+	// AdjustDropsDestroyed records XRP that has been destroyed (fees)
+	AdjustDropsDestroyed(drops XRPAmount.XRPAmount)
+}
+
+// Ledger represents a single ledger in the chain
 type Ledger struct {
-	Immutable bool
-	TxMap     shamap.SHAMap
-	StateMap  shamap.SHAMap
-	Header    header.LedgerHeader
-	Fees      XRPAmount.Fees
+	mu sync.RWMutex
+
+	// Core data structures
+	stateMap *shamap.SHAMap // Account state tree
+	txMap    *shamap.SHAMap // Transaction tree
+
+	// Header information
+	header header.LedgerHeader
+
+	// Fee configuration
+	fees XRPAmount.Fees
+
+	// Current state
+	state State
+
+	// Drops destroyed in this ledger (transaction fees)
+	dropsDestroyed XRPAmount.XRPAmount
 }
 
+// NewOpen creates a new open ledger based on a parent ledger
+func NewOpen(parent *Ledger, closeTime time.Time) (*Ledger, error) {
+	if parent == nil {
+		return nil, errors.New("parent ledger cannot be nil")
+	}
+
+	// Snapshot the parent state map as mutable
+	stateMap, err := parent.stateMap.Snapshot(true)
+	if err != nil {
+		return nil, errors.New("failed to snapshot state map: " + err.Error())
+	}
+
+	// Create empty transaction map
+	txMap, err := shamap.New(shamap.TypeTransaction)
+	if err != nil {
+		return nil, errors.New("failed to create tx map: " + err.Error())
+	}
+
+	// Create new header based on parent
+	newHeader := header.LedgerHeader{
+		LedgerIndex:         parent.header.LedgerIndex + 1,
+		ParentHash:          parent.header.Hash,
+		ParentCloseTime:     parent.header.CloseTime,
+		CloseTime:           closeTime,
+		CloseTimeResolution: parent.header.CloseTimeResolution,
+		Drops:               parent.header.Drops,
+		// Hash, TxHash, AccountHash will be set when closed
+	}
+
+	return &Ledger{
+		stateMap:       stateMap,
+		txMap:          txMap,
+		header:         newHeader,
+		fees:           parent.fees,
+		state:          StateOpen,
+		dropsDestroyed: 0,
+	}, nil
+}
+
+// FromGenesis creates a Ledger from a genesis creation result
+func FromGenesis(
+	hdr header.LedgerHeader,
+	stateMap *shamap.SHAMap,
+	txMap *shamap.SHAMap,
+	fees XRPAmount.Fees,
+) *Ledger {
+	return &Ledger{
+		stateMap: stateMap,
+		txMap:    txMap,
+		header:   hdr,
+		fees:     fees,
+		state:    StateValidated, // Genesis is immediately validated
+	}
+}
+
+// Sequence returns the ledger sequence number
 func (l *Ledger) Sequence() uint32 {
-	return l.Header.LedgerIndex
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.header.LedgerIndex
 }
 
+// Hash returns the ledger hash
 func (l *Ledger) Hash() [32]byte {
-	return l.Header.Hash
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.header.Hash
 }
 
-func (l *Ledger) StoreLedger() (bool, error) {
-	return insertLedger(l, l.Header.Validated)
+// ParentHash returns the parent ledger hash
+func (l *Ledger) ParentHash() [32]byte {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.header.ParentHash
 }
 
-func insertLedger(l *Ledger, valid bool) (bool, error) {
-
+// CloseTime returns the ledger close time
+func (l *Ledger) CloseTime() time.Time {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.header.CloseTime
 }
 
-func (l *Ledger) RetrieveLedger() (bool, error) {}
+// TotalDrops returns the total XRP in existence
+func (l *Ledger) TotalDrops() uint64 {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.header.Drops
+}
+
+// State returns the current ledger state
+func (l *Ledger) State() State {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.state
+}
+
+// Header returns a copy of the ledger header
+func (l *Ledger) Header() header.LedgerHeader {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.header
+}
+
+// GetFees returns the current fee settings
+func (l *Ledger) GetFees() XRPAmount.Fees {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.fees
+}
+
+// IsOpen returns true if the ledger is open for modifications
+func (l *Ledger) IsOpen() bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.state == StateOpen
+}
+
+// IsClosed returns true if the ledger is closed
+func (l *Ledger) IsClosed() bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.state == StateClosed || l.state == StateValidated
+}
+
+// IsValidated returns true if the ledger is validated
+func (l *Ledger) IsValidated() bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.state == StateValidated
+}
+
+// Read reads a ledger entry by its keylet
+func (l *Ledger) Read(k keylet.Keylet) ([]byte, error) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	item, found, err := l.stateMap.Get(k.Key)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, ErrEntryNotFound
+	}
+
+	return item.Data(), nil
+}
+
+// Exists checks if a ledger entry exists
+func (l *Ledger) Exists(k keylet.Keylet) (bool, error) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	return l.stateMap.Has(k.Key)
+}
+
+// Insert adds a new ledger entry
+func (l *Ledger) Insert(k keylet.Keylet, data []byte) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.state != StateOpen {
+		return ErrLedgerImmutable
+	}
+
+	// Check if entry already exists
+	exists, err := l.stateMap.Has(k.Key)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return errors.New("entry already exists")
+	}
+
+	return l.stateMap.Put(k.Key, data)
+}
+
+// Update modifies an existing ledger entry
+func (l *Ledger) Update(k keylet.Keylet, data []byte) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.state != StateOpen {
+		return ErrLedgerImmutable
+	}
+
+	// Check if entry exists
+	exists, err := l.stateMap.Has(k.Key)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return ErrEntryNotFound
+	}
+
+	return l.stateMap.Put(k.Key, data)
+}
+
+// Erase removes a ledger entry
+func (l *Ledger) Erase(k keylet.Keylet) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.state != StateOpen {
+		return ErrLedgerImmutable
+	}
+
+	return l.stateMap.Delete(k.Key)
+}
+
+// AdjustDropsDestroyed records XRP that has been destroyed (fees)
+func (l *Ledger) AdjustDropsDestroyed(drops XRPAmount.XRPAmount) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.dropsDestroyed = l.dropsDestroyed.Add(drops)
+}
+
+// AddTransaction adds a transaction to the transaction tree
+func (l *Ledger) AddTransaction(txHash [32]byte, txData []byte) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.state != StateOpen {
+		return ErrLedgerImmutable
+	}
+
+	return l.txMap.Put(txHash, txData)
+}
+
+// GetTransaction retrieves a transaction by its hash
+func (l *Ledger) GetTransaction(txHash [32]byte) ([]byte, bool, error) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	item, found, err := l.txMap.Get(txHash)
+	if err != nil {
+		return nil, false, err
+	}
+	if !found {
+		return nil, false, nil
+	}
+
+	return item.Data(), true, nil
+}
+
+// HasTransaction checks if a transaction exists in this ledger
+func (l *Ledger) HasTransaction(txHash [32]byte) (bool, error) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	return l.txMap.Has(txHash)
+}
+
+// Close closes the ledger, making it immutable
+func (l *Ledger) Close(closeTime time.Time, closeFlags uint8) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.state != StateOpen {
+		return ErrInvalidState
+	}
+
+	// Make maps immutable
+	if err := l.stateMap.SetImmutable(); err != nil {
+		return errors.New("failed to make state map immutable: " + err.Error())
+	}
+	if err := l.txMap.SetImmutable(); err != nil {
+		return errors.New("failed to make tx map immutable: " + err.Error())
+	}
+
+	// Update drops (subtract destroyed)
+	l.header.Drops -= uint64(l.dropsDestroyed)
+
+	// Get hashes
+	accountHash, err := l.stateMap.Hash()
+	if err != nil {
+		return errors.New("failed to get state map hash: " + err.Error())
+	}
+
+	txHash, err := l.txMap.Hash()
+	if err != nil {
+		return errors.New("failed to get tx map hash: " + err.Error())
+	}
+
+	// Update header
+	l.header.AccountHash = accountHash
+	l.header.TxHash = txHash
+	l.header.CloseTime = closeTime
+	l.header.CloseFlags = closeFlags
+	l.header.Accepted = true
+
+	// Calculate ledger hash
+	l.header.Hash = calculateLedgerHash(l.header)
+
+	l.state = StateClosed
+
+	return nil
+}
+
+// SetValidated marks the ledger as validated
+func (l *Ledger) SetValidated() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.state != StateClosed {
+		return ErrLedgerNotClosed
+	}
+
+	l.header.Validated = true
+	l.state = StateValidated
+
+	return nil
+}
+
+// Snapshot creates an immutable copy of this ledger
+func (l *Ledger) Snapshot() (*Ledger, error) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	stateMapCopy, err := l.stateMap.Snapshot(false)
+	if err != nil {
+		return nil, err
+	}
+
+	txMapCopy, err := l.txMap.Snapshot(false)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Ledger{
+		stateMap: stateMapCopy,
+		txMap:    txMapCopy,
+		header:   l.header,
+		fees:     l.fees,
+		state:    l.state,
+	}, nil
+}
+
+// StateMapHash returns the state map hash
+func (l *Ledger) StateMapHash() ([32]byte, error) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.stateMap.Hash()
+}
+
+// TxMapHash returns the transaction map hash
+func (l *Ledger) TxMapHash() ([32]byte, error) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.txMap.Hash()
+}
+
+// ForEach iterates over all state entries and calls fn for each.
+// If fn returns false, iteration stops early.
+// The callback receives the entry key and data.
+func (l *Ledger) ForEach(fn func(key [32]byte, data []byte) bool) error {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	return l.stateMap.ForEach(func(item *shamap.Item) bool {
+		return fn(item.Key(), item.Data())
+	})
+}
+
+// SerializeHeader returns the serialized ledger header bytes
+func (l *Ledger) SerializeHeader() []byte {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	data, err := header.AddRaw(l.header, true)
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
+// calculateLedgerHash computes the hash of a ledger header
+// This is duplicated from genesis package to avoid circular imports
+func calculateLedgerHash(h header.LedgerHeader) [32]byte {
+	var data []byte
+
+	data = append(data, protocol.HashPrefixLedgerMaster.Bytes()...)
+
+	seqBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(seqBytes, h.LedgerIndex)
+	data = append(data, seqBytes...)
+
+	dropsBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(dropsBytes, h.Drops)
+	data = append(data, dropsBytes...)
+
+	data = append(data, h.ParentHash[:]...)
+	data = append(data, h.TxHash[:]...)
+	data = append(data, h.AccountHash[:]...)
+
+	parentCloseBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(parentCloseBytes, uint32(h.ParentCloseTime.Unix()))
+	data = append(data, parentCloseBytes...)
+
+	closeTimeBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(closeTimeBytes, uint32(h.CloseTime.Unix()))
+	data = append(data, closeTimeBytes...)
+
+	data = append(data, byte(h.CloseTimeResolution))
+	data = append(data, h.CloseFlags)
+
+	return crypto.Sha512Half(data)
+}

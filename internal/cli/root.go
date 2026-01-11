@@ -47,6 +47,7 @@ func init() {
 	// Additional flags matching rippled
 	rootCmd.PersistentFlags().Bool("standalone", false, "run with no peers")
 	rootCmd.PersistentFlags().Bool("silent", false, "no output to console after startup")
+	rootCmd.PersistentFlags().String("genesis", "", "path to genesis JSON file (empty uses built-in defaults)")
 }
 
 // initConfig reads in config file and ENV variables if set.

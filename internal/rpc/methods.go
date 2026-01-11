@@ -65,6 +65,9 @@ func (s *Server) registerAllMethods() {
 	// Generic Methods
 	s.registry.Register("json", &JsonMethod{})
 	
+	// Standalone mode methods
+	s.registry.Register("ledger_accept", &LedgerAcceptMethod{})
+
 	// Admin Methods (require admin role)
 	s.registry.Register("stop", &StopMethod{})
 	s.registry.Register("validation_create", &ValidationCreateMethod{})

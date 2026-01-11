@@ -1,6 +1,7 @@
 package rpc
 
 import (
+	"encoding/hex"
 	"encoding/json"
 )
 
@@ -9,64 +10,91 @@ type BookOffersMethod struct{}
 
 func (m *BookOffersMethod) Handle(ctx *RpcContext, params json.RawMessage) (interface{}, *RpcError) {
 	var request struct {
-		TakerGets   json.RawMessage `json:"taker_gets"`
-		TakerPays   json.RawMessage `json:"taker_pays"`
-		Taker       string          `json:"taker,omitempty"`
+		TakerGets json.RawMessage `json:"taker_gets"`
+		TakerPays json.RawMessage `json:"taker_pays"`
+		Taker     string          `json:"taker,omitempty"`
 		LedgerSpecifier
 		PaginationParams
 	}
-	
+
 	if params != nil {
 		if err := json.Unmarshal(params, &request); err != nil {
 			return nil, RpcErrorInvalidParams("Invalid parameters: " + err.Error())
 		}
 	}
-	
+
 	if len(request.TakerGets) == 0 || len(request.TakerPays) == 0 {
 		return nil, RpcErrorInvalidParams("Both taker_gets and taker_pays are required")
 	}
-	
-	// TODO: Implement order book retrieval
-	// 1. Parse taker_gets and taker_pays currency specifications
-	// 2. Determine target ledger
-	// 3. Find DirectoryNode for the specified order book
-	// 4. Retrieve Offer objects from the book
-	// 5. Sort offers by quality (exchange rate)
-	// 6. Apply taker account filtering if provided
-	// 7. Apply pagination using marker and limit
-	// 8. Calculate owner funds for each offer
-	
-	response := map[string]interface{}{
-		"ledger_hash":  "PLACEHOLDER_LEDGER_HASH",
-		"ledger_index": 1000,
-		"offers": []interface{}{
-			// TODO: Load actual offers from order book
-			// Each offer should have structure:
-			// {
-			//   "Account": "rOfferOwner...",
-			//   "BookDirectory": "DIRECTORY_ID",
-			//   "BookNode": "0",
-			//   "Flags": 0,
-			//   "LedgerEntryType": "Offer",
-			//   "OwnerNode": "0", 
-			//   "PreviousTxnID": "TX_ID",
-			//   "PreviousTxnLgrSeq": 950,
-			//   "Sequence": 123,
-			//   "TakerGets": "1000000000", // or IOU object
-			//   "TakerPays": {
-			//     "currency": "USD",
-			//     "issuer": "rIssuer...",
-			//     "value": "100"
-			//   },
-			//   "index": "OFFER_ID",
-			//   "owner_funds": "5000000000", // Available balance
-			//   "quality": "0.0001"
-			// }
-		},
-		"validated": true,
+
+	// Check if ledger service is available
+	if Services == nil || Services.Ledger == nil {
+		return nil, RpcErrorInternal("Ledger service not available")
 	}
-	
+
+	// Parse taker_gets amount
+	takerGets, err := parseAmountFromJSON(request.TakerGets)
+	if err != nil {
+		return nil, RpcErrorInvalidParams("Invalid taker_gets: " + err.Error())
+	}
+
+	// Parse taker_pays amount
+	takerPays, err := parseAmountFromJSON(request.TakerPays)
+	if err != nil {
+		return nil, RpcErrorInvalidParams("Invalid taker_pays: " + err.Error())
+	}
+
+	// Determine ledger index to use
+	ledgerIndex := "current"
+	if request.LedgerIndex != "" {
+		ledgerIndex = request.LedgerIndex
+	}
+
+	// Get book offers from the ledger service
+	result, err := Services.Ledger.GetBookOffers(takerGets, takerPays, ledgerIndex, request.Limit)
+	if err != nil {
+		return nil, RpcErrorInternal("Failed to get book offers: " + err.Error())
+	}
+
+	// Build response
+	response := map[string]interface{}{
+		"ledger_hash":  formatLedgerHashUtil(result.LedgerHash),
+		"ledger_index": result.LedgerIndex,
+		"offers":       result.Offers,
+		"validated":    result.Validated,
+	}
+
 	return response, nil
+}
+
+// parseAmountFromJSON parses an amount from JSON (either XRP string or IOU object)
+func parseAmountFromJSON(data json.RawMessage) (Amount, error) {
+	// Try parsing as string first (XRP amount)
+	var xrpAmount string
+	if err := json.Unmarshal(data, &xrpAmount); err == nil {
+		return Amount{Value: xrpAmount}, nil
+	}
+
+	// Try parsing as IOU object
+	var iouAmount struct {
+		Currency string `json:"currency"`
+		Issuer   string `json:"issuer"`
+		Value    string `json:"value,omitempty"`
+	}
+	if err := json.Unmarshal(data, &iouAmount); err != nil {
+		return Amount{}, err
+	}
+
+	return Amount{
+		Currency: iouAmount.Currency,
+		Issuer:   iouAmount.Issuer,
+		Value:    iouAmount.Value,
+	}, nil
+}
+
+// formatLedgerHashUtil formats a 32-byte hash as uppercase hex string
+func formatLedgerHashUtil(hash [32]byte) string {
+	return hex.EncodeToString(hash[:])
 }
 
 func (m *BookOffersMethod) RequiredRole() Role {

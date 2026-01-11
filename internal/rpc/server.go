@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Server handles HTTP JSON-RPC 2.0 requests
+// Server handles HTTP JSON-RPC requests using XRPL format
 type Server struct {
 	registry *MethodRegistry
 	timeout  time.Duration
@@ -23,11 +23,31 @@ func NewServer(timeout time.Duration) *Server {
 		registry: NewMethodRegistry(),
 		timeout:  timeout,
 	}
-	
+
 	// Register all RPC methods
 	server.registerAllMethods()
-	
+
 	return server
+}
+
+// XrplRequest represents an XRPL JSON-RPC request
+// Format: {"method": "method_name", "params": [{...}]}
+type XrplRequest struct {
+	Method string            `json:"method"`
+	Params []json.RawMessage `json:"params,omitempty"`
+}
+
+// XrplResponse represents an XRPL JSON-RPC response
+// Format: {"result": {..., "status": "success"}}
+type XrplResponse struct {
+	Result interface{} `json:"result"`
+}
+
+// XrplResult is the result object inside the response
+type XrplResult struct {
+	Status  string      `json:"status"`
+	Error   string      `json:"error,omitempty"`
+	Request interface{} `json:"request,omitempty"`
 }
 
 // ServeHTTP implements http.Handler interface
@@ -37,26 +57,26 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 	w.Header().Set("Content-Type", "application/json")
-	
+
 	// Handle preflight requests
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	
+
 	// Only accept POST and GET methods
 	if r.Method != "POST" && r.Method != "GET" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	
+
 	// Handle GET request (for simple queries like server_info)
 	if r.Method == "GET" {
 		s.handleGetRequest(w, r)
 		return
 	}
-	
-	// Handle POST request (standard JSON-RPC)
+
+	// Handle POST request (standard XRPL JSON-RPC)
 	s.handlePostRequest(w, r)
 }
 
@@ -64,99 +84,95 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetRequest(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	method := query.Get("command")
-	
+
 	if method == "" {
 		// Default to server_info for GET requests without command
 		method = "server_info"
 	}
-	
+
 	// Create RPC context
 	ctx := &RpcContext{
 		Context:    r.Context(),
-		Role:       RoleGuest, // TODO: Implement proper role detection
+		Role:       RoleGuest,
 		ApiVersion: DefaultApiVersion,
-		IsAdmin:    false, // TODO: Implement admin detection
+		IsAdmin:    false,
 		ClientIP:   getClientIP(r),
 	}
-	
+
 	// Execute method
 	result, rpcErr := s.executeMethod(method, nil, ctx)
-	
-	// Send response
-	response := JsonRpcResponse{
-		JsonRpc: "2.0",
-		ID:      1,
-	}
-	
-	if rpcErr != nil {
-		response.Error = rpcErr
-	} else {
-		response.Result = result
-	}
-	
-	s.writeResponse(w, response)
+
+	// Build XRPL format response
+	s.writeXrplResponse(w, method, nil, result, rpcErr)
 }
 
-// handlePostRequest processes POST requests with JSON-RPC payload
+// handlePostRequest processes POST requests with XRPL JSON-RPC payload
 func (s *Server) handlePostRequest(w http.ResponseWriter, r *http.Request) {
 	// Read request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		s.writeError(w, RpcErrorInternal("Failed to read request body"), nil)
+		s.writeXrplError(w, "", nil, "internal", "Failed to read request body")
 		return
 	}
 	defer r.Body.Close()
-	
-	// Parse JSON-RPC request
-	var request JsonRpcRequest
+
+	// Parse XRPL request
+	var request XrplRequest
 	if err := json.Unmarshal(body, &request); err != nil {
-		s.writeError(w, NewRpcError(RpcPARSE_ERROR, "parseError", "parseError", "Invalid JSON"), nil)
+		s.writeXrplError(w, "", nil, "jsonInvalid", "Invalid JSON: "+err.Error())
 		return
 	}
-	
-	// Validate JSON-RPC version
-	if request.JsonRpc != "2.0" {
-		s.writeError(w, RpcErrorInvalidParams("Invalid jsonrpc version"), request.ID)
+
+	// Check for method
+	if request.Method == "" {
+		s.writeXrplError(w, "", nil, "missingCommand", "Missing method field")
 		return
 	}
-	
+
+	// Extract params - XRPL uses params as an array with one object
+	var params json.RawMessage
+	if len(request.Params) > 0 {
+		params = request.Params[0]
+	}
+
 	// Create RPC context
 	ctx := &RpcContext{
 		Context:    r.Context(),
-		Role:       RoleGuest, // TODO: Implement proper role detection
+		Role:       RoleGuest,
 		ApiVersion: DefaultApiVersion,
-		IsAdmin:    false, // TODO: Implement admin detection
+		IsAdmin:    false,
 		ClientIP:   getClientIP(r),
 	}
-	
+
 	// Parse API version from params if present
-	if request.Params != nil {
-		var params map[string]interface{}
-		if err := json.Unmarshal(request.Params, &params); err == nil {
-			if apiVer, ok := params["api_version"]; ok {
+	if params != nil {
+		var paramsMap map[string]interface{}
+		if err := json.Unmarshal(params, &paramsMap); err == nil {
+			if apiVer, ok := paramsMap["api_version"]; ok {
 				if ver, ok := apiVer.(float64); ok {
 					ctx.ApiVersion = int(ver)
 				}
 			}
 		}
 	}
-	
+
 	// Execute method
-	result, rpcErr := s.executeMethod(request.Method, request.Params, ctx)
-	
-	// Send response
-	response := JsonRpcResponse{
-		JsonRpc: "2.0",
-		ID:      request.ID,
-	}
-	
-	if rpcErr != nil {
-		response.Error = rpcErr
+	result, rpcErr := s.executeMethod(request.Method, params, ctx)
+
+	// Build request object for error responses
+	var requestObj interface{}
+	if params != nil {
+		var reqMap map[string]interface{}
+		if err := json.Unmarshal(params, &reqMap); err == nil {
+			reqMap["command"] = request.Method
+			requestObj = reqMap
+		}
 	} else {
-		response.Result = result
+		requestObj = map[string]interface{}{"command": request.Method}
 	}
-	
-	s.writeResponse(w, response)
+
+	// Build XRPL format response
+	s.writeXrplResponse(w, request.Method, requestObj, result, rpcErr)
 }
 
 // executeMethod executes an RPC method with the given parameters
@@ -166,13 +182,13 @@ func (s *Server) executeMethod(method string, params json.RawMessage, ctx *RpcCo
 	if !exists {
 		return nil, RpcErrorMethodNotFound(method)
 	}
-	
+
 	// Check role permissions
 	if ctx.Role < handler.RequiredRole() {
-		return nil, NewRpcError(RpcCOMMAND_UNTRUSTED, "commandUntrusted", "commandUntrusted", 
+		return nil, NewRpcError(RpcCOMMAND_UNTRUSTED, "commandUntrusted", "commandUntrusted",
 			fmt.Sprintf("Method '%s' requires higher privileges", method))
 	}
-	
+
 	// Check API version support
 	supportedVersions := handler.SupportedApiVersions()
 	if len(supportedVersions) > 0 {
@@ -187,32 +203,83 @@ func (s *Server) executeMethod(method string, params json.RawMessage, ctx *RpcCo
 			return nil, RpcErrorInvalidApiVersion(strconv.Itoa(ctx.ApiVersion))
 		}
 	}
-	
+
 	// Execute handler
 	return handler.Handle(ctx, params)
 }
 
-// writeResponse writes a JSON-RPC response
-func (s *Server) writeResponse(w http.ResponseWriter, response JsonRpcResponse) {
+// writeXrplResponse writes an XRPL format response
+func (s *Server) writeXrplResponse(w http.ResponseWriter, method string, request interface{}, result interface{}, rpcErr *RpcError) {
+	var response map[string]interface{}
+
+	if rpcErr != nil {
+		// Error response format - XRPL includes error, error_code, error_message
+		resultObj := map[string]interface{}{
+			"status":        "error",
+			"error":         rpcErr.ErrorString,
+			"error_code":    rpcErr.Code,
+			"error_message": rpcErr.Message,
+		}
+		if request != nil {
+			resultObj["request"] = request
+		}
+		response = map[string]interface{}{
+			"result": resultObj,
+		}
+	} else {
+		// Success response format
+		// If result is already a map, add status to it
+		if resultMap, ok := result.(map[string]interface{}); ok {
+			resultMap["status"] = "success"
+			response = map[string]interface{}{
+				"result": resultMap,
+			}
+		} else {
+			// Wrap non-map results
+			response = map[string]interface{}{
+				"result": map[string]interface{}{
+					"status": "success",
+					"data":   result,
+				},
+			}
+		}
+	}
+
 	responseData, err := json.Marshal(response)
 	if err != nil {
 		log.Printf("Failed to marshal response: %v", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
-	
+
 	w.WriteHeader(http.StatusOK)
 	w.Write(responseData)
 }
 
-// writeError writes an error response
-func (s *Server) writeError(w http.ResponseWriter, rpcErr *RpcError, id interface{}) {
-	response := JsonRpcResponse{
-		JsonRpc: "2.0",
-		Error:   rpcErr,
-		ID:      id,
+// writeXrplError writes an XRPL format error response
+func (s *Server) writeXrplError(w http.ResponseWriter, method string, request interface{}, errorCode string, message string) {
+	resultObj := map[string]interface{}{
+		"status":        "error",
+		"error":         errorCode,
+		"error_message": message,
 	}
-	s.writeResponse(w, response)
+	if request != nil {
+		resultObj["request"] = request
+	}
+
+	response := map[string]interface{}{
+		"result": resultObj,
+	}
+
+	responseData, err := json.Marshal(response)
+	if err != nil {
+		log.Printf("Failed to marshal error response: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write(responseData)
 }
 
 // getClientIP extracts the client IP from the request
@@ -222,17 +289,17 @@ func getClientIP(r *http.Request) string {
 		ips := strings.Split(xff, ",")
 		return strings.TrimSpace(ips[0])
 	}
-	
+
 	// Check X-Real-IP header
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
 		return xri
 	}
-	
+
 	// Fall back to RemoteAddr
 	ip := r.RemoteAddr
 	if idx := strings.LastIndex(ip, ":"); idx != -1 {
 		ip = ip[:idx]
 	}
-	
+
 	return ip
 }

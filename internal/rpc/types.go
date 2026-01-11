@@ -192,8 +192,8 @@ type Currency struct {
 	Issuer   string `json:"issuer,omitempty"`
 }
 
-// Amount can be drops (string) or IOU object
-type Amount json.RawMessage
+// RawAmount can be drops (string) or IOU object (used for JSON parsing)
+type RawAmount json.RawMessage
 
 // Path specification for path finding
 type Path []PathStep

@@ -1,0 +1,165 @@
+package tx
+
+import "errors"
+
+// SignerListSet sets or clears a list of signers for multi-signing.
+type SignerListSet struct {
+	BaseTx
+
+	// SignerQuorum is the target number of signer weights (required)
+	// Set to 0 to delete the signer list
+	SignerQuorum uint32 `json:"SignerQuorum"`
+
+	// SignerEntries is the list of signers (optional if deleting)
+	SignerEntries []SignerEntry `json:"SignerEntries,omitempty"`
+}
+
+// SignerEntry represents an entry in a signer list
+type SignerEntry struct {
+	SignerEntry SignerEntryData `json:"SignerEntry"`
+}
+
+// SignerEntryData contains the signer entry fields
+type SignerEntryData struct {
+	Account       string `json:"Account"`
+	SignerWeight  uint16 `json:"SignerWeight"`
+	WalletLocator string `json:"WalletLocator,omitempty"`
+}
+
+// NewSignerListSet creates a new SignerListSet transaction
+func NewSignerListSet(account string, quorum uint32) *SignerListSet {
+	return &SignerListSet{
+		BaseTx:       *NewBaseTx(TypeSignerListSet, account),
+		SignerQuorum: quorum,
+	}
+}
+
+// TxType returns the transaction type
+func (s *SignerListSet) TxType() Type {
+	return TypeSignerListSet
+}
+
+// Validate validates the SignerListSet transaction
+func (s *SignerListSet) Validate() error {
+	if err := s.BaseTx.Validate(); err != nil {
+		return err
+	}
+
+	// If deleting (quorum = 0), no entries allowed
+	if s.SignerQuorum == 0 {
+		if len(s.SignerEntries) > 0 {
+			return errors.New("cannot have SignerEntries when deleting signer list")
+		}
+		return nil
+	}
+
+	// Must have at least one signer
+	if len(s.SignerEntries) == 0 {
+		return errors.New("SignerEntries is required when setting signer list")
+	}
+
+	// Max 32 signers
+	if len(s.SignerEntries) > 32 {
+		return errors.New("cannot have more than 32 signers")
+	}
+
+	// Check that weights sum to at least quorum
+	var totalWeight uint32
+	seenAccounts := make(map[string]bool)
+
+	for _, entry := range s.SignerEntries {
+		// No duplicate accounts
+		if seenAccounts[entry.SignerEntry.Account] {
+			return errors.New("duplicate signer account")
+		}
+		seenAccounts[entry.SignerEntry.Account] = true
+
+		// Cannot include self
+		if entry.SignerEntry.Account == s.Account {
+			return errors.New("cannot include self in signer list")
+		}
+
+		// Weight must be non-zero
+		if entry.SignerEntry.SignerWeight == 0 {
+			return errors.New("signer weight must be non-zero")
+		}
+
+		totalWeight += uint32(entry.SignerEntry.SignerWeight)
+	}
+
+	// Total weight must be >= quorum
+	if totalWeight < s.SignerQuorum {
+		return errors.New("total signer weight is less than quorum")
+	}
+
+	return nil
+}
+
+// Flatten returns a flat map of all transaction fields
+func (s *SignerListSet) Flatten() (map[string]any, error) {
+	m := s.Common.ToMap()
+
+	m["SignerQuorum"] = s.SignerQuorum
+
+	if len(s.SignerEntries) > 0 {
+		m["SignerEntries"] = s.SignerEntries
+	}
+
+	return m, nil
+}
+
+// AddSigner adds a signer to the list
+func (s *SignerListSet) AddSigner(account string, weight uint16) {
+	s.SignerEntries = append(s.SignerEntries, SignerEntry{
+		SignerEntry: SignerEntryData{
+			Account:      account,
+			SignerWeight: weight,
+		},
+	})
+}
+
+// SetRegularKey sets or clears an account's regular key.
+type SetRegularKey struct {
+	BaseTx
+
+	// RegularKey is the regular key to set (optional, omit to clear)
+	RegularKey string `json:"RegularKey,omitempty"`
+}
+
+// NewSetRegularKey creates a new SetRegularKey transaction
+func NewSetRegularKey(account string) *SetRegularKey {
+	return &SetRegularKey{
+		BaseTx: *NewBaseTx(TypeRegularKeySet, account),
+	}
+}
+
+// TxType returns the transaction type
+func (s *SetRegularKey) TxType() Type {
+	return TypeRegularKeySet
+}
+
+// Validate validates the SetRegularKey transaction
+func (s *SetRegularKey) Validate() error {
+	return s.BaseTx.Validate()
+}
+
+// Flatten returns a flat map of all transaction fields
+func (s *SetRegularKey) Flatten() (map[string]any, error) {
+	m := s.Common.ToMap()
+
+	if s.RegularKey != "" {
+		m["RegularKey"] = s.RegularKey
+	}
+
+	return m, nil
+}
+
+// SetKey sets the regular key
+func (s *SetRegularKey) SetKey(key string) {
+	s.RegularKey = key
+}
+
+// ClearKey clears the regular key
+func (s *SetRegularKey) ClearKey() {
+	s.RegularKey = ""
+}

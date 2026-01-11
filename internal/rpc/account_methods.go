@@ -1,8 +1,14 @@
 package rpc
 
 import (
+	"encoding/hex"
 	"encoding/json"
 )
+
+// formatLedgerHash formats a 32-byte hash as uppercase hex string
+func formatLedgerHash(hash [32]byte) string {
+	return hex.EncodeToString(hash[:])
+}
 
 // AccountInfoMethod handles the account_info RPC method
 type AccountInfoMethod struct{}
@@ -12,68 +18,103 @@ func (m *AccountInfoMethod) Handle(ctx *RpcContext, params json.RawMessage) (int
 	var request struct {
 		AccountParam
 		LedgerSpecifier
-		Queue      bool `json:"queue,omitempty"`
+		Queue       bool `json:"queue,omitempty"`
 		SignerLists bool `json:"signer_lists,omitempty"`
-		Strict     bool `json:"strict,omitempty"`
+		Strict      bool `json:"strict,omitempty"`
 	}
-	
+	println("PARAMS:", params)
+
 	if params != nil {
 		if err := json.Unmarshal(params, &request); err != nil {
 			return nil, RpcErrorInvalidParams("Invalid parameters: " + err.Error())
 		}
 	}
-	
+	println("PARAMS:", params)
+
 	if request.Account == "" {
 		return nil, RpcErrorInvalidParams("Missing required parameter: account")
 	}
-	
-	// TODO: Implement account info retrieval
-	// 1. Validate account address format
-	// 2. Determine target ledger using LedgerSpecifier
-	// 3. Retrieve AccountRoot object from nodestore
-	// 4. Optionally retrieve signer lists if requested
-	// 5. Optionally retrieve queued transactions if requested and ledger is current
-	// 6. Calculate additional fields like reserve requirements
-	// 7. Format response according to API version
-	
-	response := map[string]interface{}{
-		"account_data": map[string]interface{}{
-			"Account":           request.Account,
-			"Balance":           "1000000000", // TODO: Get actual balance from AccountRoot
-			"Flags":             0,            // TODO: Get actual flags
-			"LedgerEntryType":   "AccountRoot",
-			"OwnerCount":        0,            // TODO: Calculate owned objects count
-			"PreviousTxnID":     "PLACEHOLDER_TXID", // TODO: Get from AccountRoot
-			"PreviousTxnLgrSeq": 1000,         // TODO: Get from AccountRoot
-			"Sequence":          1,            // TODO: Get actual sequence from AccountRoot
-			"index":             "PLACEHOLDER_ACCOUNT_INDEX", // TODO: Calculate AccountRoot index
-		},
-		"ledger_hash":       "PLACEHOLDER_LEDGER_HASH", // TODO: Get actual ledger hash
-		"ledger_index":      1000, // TODO: Get actual ledger index
-		"validated":         true, // TODO: Check if ledger is validated
+
+	// Check if ledger service is available
+	if Services == nil || Services.Ledger == nil {
+		return nil, RpcErrorInternal("Ledger service not available")
 	}
-	
+
+	// Determine ledger index to use
+	ledgerIndex := "current"
+	if request.LedgerIndex != "" {
+		ledgerIndex = request.LedgerIndex
+	} else if request.LedgerHash != "" {
+		// TODO: Support lookup by hash
+		ledgerIndex = "validated"
+	}
+
+	// Get account info from the ledger
+	info, err := Services.Ledger.GetAccountInfo(request.Account, ledgerIndex)
+	if err != nil {
+		// Check for specific error types
+		if err.Error() == "account not found" {
+			return nil, &RpcError{
+				Code:    19, // actNotFound
+				Message: "Account not found.",
+			}
+		}
+		return nil, RpcErrorInternal("Failed to get account info: " + err.Error())
+	}
+
+	// Build account_data response
+	accountData := map[string]interface{}{
+		"Account":         info.Account,
+		"Balance":         info.Balance,
+		"Flags":           info.Flags,
+		"LedgerEntryType": "AccountRoot",
+		"OwnerCount":      info.OwnerCount,
+		"Sequence":        info.Sequence,
+	}
+
+	// Add optional fields if present
+	if info.RegularKey != "" {
+		accountData["RegularKey"] = info.RegularKey
+	}
+	if info.Domain != "" {
+		accountData["Domain"] = info.Domain
+	}
+	if info.EmailHash != "" {
+		accountData["EmailHash"] = info.EmailHash
+	}
+	if info.TransferRate > 0 {
+		accountData["TransferRate"] = info.TransferRate
+	}
+	if info.TickSize > 0 {
+		accountData["TickSize"] = info.TickSize
+	}
+
+	response := map[string]interface{}{
+		"account_data": accountData,
+		"ledger_hash":  info.LedgerHash,
+		"ledger_index": info.LedgerIndex,
+		"validated":    info.Validated,
+	}
+
 	// Add queue data if requested and this is current ledger
-	if request.Queue {
+	if request.Queue && ledgerIndex == "current" {
 		response["queue_data"] = map[string]interface{}{
-			"auth_change_queued": false, // TODO: Check if auth change is queued
-			"highest_sequence":   1,     // TODO: Get highest sequence in queue
-			"lowest_sequence":    1,     // TODO: Get lowest sequence in queue
-			"max_spend_drops_total": "1000000000", // TODO: Calculate max spendable
-			"transactions": []interface{}{
-				// TODO: Load actual queued transactions
-			},
-			"txn_count": 0, // TODO: Count queued transactions
+			"auth_change_queued":    false,
+			"highest_sequence":      info.Sequence,
+			"lowest_sequence":       info.Sequence,
+			"max_spend_drops_total": info.Balance,
+			"transactions":          []interface{}{},
+			"txn_count":             0,
 		}
 	}
-	
+
 	// Add signer lists if requested
 	if request.SignerLists {
 		response["signer_lists"] = []interface{}{
-			// TODO: Load actual signer lists
+			// TODO: Load actual signer lists from ledger
 		}
 	}
-	
+
 	return response, nil
 }
 
@@ -95,17 +136,17 @@ func (m *AccountChannelsMethod) Handle(ctx *RpcContext, params json.RawMessage) 
 		DestinationAccount string `json:"destination_account,omitempty"`
 		PaginationParams
 	}
-	
+
 	if params != nil {
 		if err := json.Unmarshal(params, &request); err != nil {
 			return nil, RpcErrorInvalidParams("Invalid parameters: " + err.Error())
 		}
 	}
-	
+
 	if request.Account == "" {
 		return nil, RpcErrorInvalidParams("Missing required parameter: account")
 	}
-	
+
 	// TODO: Implement payment channel retrieval
 	// 1. Validate account address
 	// 2. Determine target ledger
@@ -113,10 +154,10 @@ func (m *AccountChannelsMethod) Handle(ctx *RpcContext, params json.RawMessage) 
 	// 4. Filter by destination_account if provided
 	// 5. Apply pagination using marker and limit
 	// 6. Return channel details including balances and expiration
-	
+
 	response := map[string]interface{}{
-		"account":      request.Account,
-		"channels":     []interface{}{
+		"account":  request.Account,
+		"channels": []interface{}{
 			// TODO: Load actual payment channels
 			// Each channel should have structure:
 			// {
@@ -135,7 +176,7 @@ func (m *AccountChannelsMethod) Handle(ctx *RpcContext, params json.RawMessage) 
 		"ledger_index": 1000,
 		"validated":    true,
 	}
-	
+
 	return response, nil
 }
 
@@ -156,17 +197,17 @@ func (m *AccountCurrenciesMethod) Handle(ctx *RpcContext, params json.RawMessage
 		LedgerSpecifier
 		Strict bool `json:"strict,omitempty"`
 	}
-	
+
 	if params != nil {
 		if err := json.Unmarshal(params, &request); err != nil {
 			return nil, RpcErrorInvalidParams("Invalid parameters: " + err.Error())
 		}
 	}
-	
+
 	if request.Account == "" {
 		return nil, RpcErrorInvalidParams("Missing required parameter: account")
 	}
-	
+
 	// TODO: Implement currency retrieval
 	// 1. Validate account address
 	// 2. Determine target ledger
@@ -174,21 +215,21 @@ func (m *AccountCurrenciesMethod) Handle(ctx *RpcContext, params json.RawMessage
 	// 4. Extract unique currencies that the account can send/receive
 	// 5. Separate into send_currencies and receive_currencies
 	// 6. Handle strict mode (only currencies with positive balance/trust)
-	
+
 	response := map[string]interface{}{
-		"ledger_hash":     "PLACEHOLDER_LEDGER_HASH",
-		"ledger_index":    1000,
+		"ledger_hash":        "PLACEHOLDER_LEDGER_HASH",
+		"ledger_index":       1000,
 		"receive_currencies": []string{
 			// TODO: Load actual receivable currencies
 			// Example: ["USD", "EUR", "BTC"]
 		},
 		"send_currencies": []string{
-			// TODO: Load actual sendable currencies  
+			// TODO: Load actual sendable currencies
 			// Example: ["USD", "EUR"]
 		},
 		"validated": true,
 	}
-	
+
 	return response, nil
 }
 
@@ -210,49 +251,53 @@ func (m *AccountLinesMethod) Handle(ctx *RpcContext, params json.RawMessage) (in
 		Peer string `json:"peer,omitempty"`
 		PaginationParams
 	}
-	
+
 	if params != nil {
 		if err := json.Unmarshal(params, &request); err != nil {
 			return nil, RpcErrorInvalidParams("Invalid parameters: " + err.Error())
 		}
 	}
-	
+
 	if request.Account == "" {
 		return nil, RpcErrorInvalidParams("Missing required parameter: account")
 	}
-	
-	// TODO: Implement trust line retrieval
-	// 1. Validate account address
-	// 2. Determine target ledger
-	// 3. Find all RippleState objects for the account
-	// 4. Filter by peer if provided
-	// 5. Apply pagination using marker and limit
-	// 6. Format trust line data including balances, limits, and flags
-	
-	response := map[string]interface{}{
-		"account":      request.Account,
-		"lines":        []interface{}{
-			// TODO: Load actual trust lines
-			// Each line should have structure:
-			// {
-			//   "account": "rPeer...",
-			//   "balance": "100.0",
-			//   "currency": "USD",
-			//   "limit": "1000",
-			//   "limit_peer": "0",
-			//   "no_ripple": false,
-			//   "no_ripple_peer": false,
-			//   "authorized": true,
-			//   "peer_authorized": true,
-			//   "freeze": false,
-			//   "freeze_peer": false
-			// }
-		},
-		"ledger_hash":  "PLACEHOLDER_LEDGER_HASH",
-		"ledger_index": 1000,
-		"validated":    true,
+
+	// Check if ledger service is available
+	if Services == nil || Services.Ledger == nil {
+		return nil, RpcErrorInternal("Ledger service not available")
 	}
-	
+
+	// Determine ledger index to use
+	ledgerIndex := "current"
+	if request.LedgerIndex != "" {
+		ledgerIndex = request.LedgerIndex
+	}
+
+	// Get account lines from the ledger service
+	result, err := Services.Ledger.GetAccountLines(request.Account, ledgerIndex, request.Peer, request.Limit)
+	if err != nil {
+		if err.Error() == "account not found" {
+			return nil, &RpcError{
+				Code:    19, // actNotFound
+				Message: "Account not found.",
+			}
+		}
+		return nil, RpcErrorInternal("Failed to get account lines: " + err.Error())
+	}
+
+	// Build response
+	response := map[string]interface{}{
+		"account":      result.Account,
+		"lines":        result.Lines,
+		"ledger_hash":  formatLedgerHash(result.LedgerHash),
+		"ledger_index": result.LedgerIndex,
+		"validated":    result.Validated,
+	}
+
+	if result.Marker != "" {
+		response["marker"] = result.Marker
+	}
+
 	return response, nil
 }
 
@@ -264,7 +309,7 @@ func (m *AccountLinesMethod) SupportedApiVersions() []int {
 	return []int{ApiVersion1, ApiVersion2, ApiVersion3}
 }
 
-// AccountNftsMethod handles the account_nfts RPC method  
+// AccountNftsMethod handles the account_nfts RPC method
 type AccountNftsMethod struct{}
 
 func (m *AccountNftsMethod) Handle(ctx *RpcContext, params json.RawMessage) (interface{}, *RpcError) {
@@ -273,17 +318,17 @@ func (m *AccountNftsMethod) Handle(ctx *RpcContext, params json.RawMessage) (int
 		LedgerSpecifier
 		PaginationParams
 	}
-	
+
 	if params != nil {
 		if err := json.Unmarshal(params, &request); err != nil {
 			return nil, RpcErrorInvalidParams("Invalid parameters: " + err.Error())
 		}
 	}
-	
+
 	if request.Account == "" {
 		return nil, RpcErrorInvalidParams("Missing required parameter: account")
 	}
-	
+
 	// TODO: Implement NFT retrieval
 	// 1. Validate account address
 	// 2. Determine target ledger
@@ -291,7 +336,7 @@ func (m *AccountNftsMethod) Handle(ctx *RpcContext, params json.RawMessage) (int
 	// 4. Extract individual NFTs from the pages
 	// 5. Apply pagination using marker and limit
 	// 6. Return NFT details including token ID, issuer, and metadata
-	
+
 	response := map[string]interface{}{
 		"account":      request.Account,
 		"account_nfts": []interface{}{
@@ -310,7 +355,7 @@ func (m *AccountNftsMethod) Handle(ctx *RpcContext, params json.RawMessage) (int
 		"ledger_index": 1000,
 		"validated":    true,
 	}
-	
+
 	return response, nil
 }
 
@@ -329,52 +374,66 @@ func (m *AccountObjectsMethod) Handle(ctx *RpcContext, params json.RawMessage) (
 	var request struct {
 		AccountParam
 		LedgerSpecifier
-		Type             string `json:"type,omitempty"`
-		DeletionBlockersOnly bool `json:"deletion_blockers_only,omitempty"`
+		Type                 string `json:"type,omitempty"`
+		DeletionBlockersOnly bool   `json:"deletion_blockers_only,omitempty"`
 		PaginationParams
 	}
-	
+
 	if params != nil {
 		if err := json.Unmarshal(params, &request); err != nil {
 			return nil, RpcErrorInvalidParams("Invalid parameters: " + err.Error())
 		}
 	}
-	
+
 	if request.Account == "" {
 		return nil, RpcErrorInvalidParams("Missing required parameter: account")
 	}
-	
-	// TODO: Implement account objects retrieval
-	// 1. Validate account address
-	// 2. Determine target ledger
-	// 3. Find all ledger objects owned by or associated with the account
-	// 4. Filter by object type if provided (check, deposit_preauth, escrow, nft_offer, nft_page, offer, payment_channel, signer_list, state, ticket)
-	// 5. Filter to only deletion blockers if requested (objects that prevent account deletion)
-	// 6. Apply pagination using marker and limit
-	// 7. Return object details in JSON format
-	
-	response := map[string]interface{}{
-		"account":         request.Account,
-		"account_objects": []interface{}{
-			// TODO: Load actual account objects
-			// Each object should be the full JSON representation
-			// Object types include:
-			// - Check objects
-			// - Escrow objects  
-			// - Offer objects
-			// - PayChannel objects
-			// - RippleState objects
-			// - SignerList objects
-			// - Ticket objects
-			// - NFTokenOffer objects
-			// - NFTokenPage objects
-			// - DepositPreauth objects
-		},
-		"ledger_hash":  "PLACEHOLDER_LEDGER_HASH",
-		"ledger_index": 1000,
-		"validated":    true,
+
+	// Check if ledger service is available
+	if Services == nil || Services.Ledger == nil {
+		return nil, RpcErrorInternal("Ledger service not available")
 	}
-	
+
+	// Determine ledger index to use
+	ledgerIndex := "current"
+	if request.LedgerIndex != "" {
+		ledgerIndex = request.LedgerIndex
+	}
+
+	// Get account objects from the ledger service
+	result, err := Services.Ledger.GetAccountObjects(request.Account, ledgerIndex, request.Type, request.Limit)
+	if err != nil {
+		if err.Error() == "account not found" {
+			return nil, &RpcError{
+				Code:    19, // actNotFound
+				Message: "Account not found.",
+			}
+		}
+		return nil, RpcErrorInternal("Failed to get account objects: " + err.Error())
+	}
+
+	// Build account_objects array
+	objects := make([]map[string]interface{}, len(result.AccountObjects))
+	for i, obj := range result.AccountObjects {
+		objects[i] = map[string]interface{}{
+			"index":           obj.Index,
+			"LedgerEntryType": obj.LedgerEntryType,
+			"data":            hex.EncodeToString(obj.Data),
+		}
+	}
+
+	response := map[string]interface{}{
+		"account":         result.Account,
+		"account_objects": objects,
+		"ledger_hash":     formatLedgerHash(result.LedgerHash),
+		"ledger_index":    result.LedgerIndex,
+		"validated":       result.Validated,
+	}
+
+	if result.Marker != "" {
+		response["marker"] = result.Marker
+	}
+
 	return response, nil
 }
 
@@ -396,46 +455,53 @@ func (m *AccountOffersMethod) Handle(ctx *RpcContext, params json.RawMessage) (i
 		Strict bool `json:"strict,omitempty"`
 		PaginationParams
 	}
-	
+
 	if params != nil {
 		if err := json.Unmarshal(params, &request); err != nil {
 			return nil, RpcErrorInvalidParams("Invalid parameters: " + err.Error())
 		}
 	}
-	
+
 	if request.Account == "" {
 		return nil, RpcErrorInvalidParams("Missing required parameter: account")
 	}
-	
-	// TODO: Implement offer retrieval
-	// 1. Validate account address
-	// 2. Determine target ledger
-	// 3. Find all Offer objects owned by the account
-	// 4. Apply pagination using marker and limit
-	// 5. Return offer details including amounts, rates, and flags
-	
-	response := map[string]interface{}{
-		"account":      request.Account,
-		"offers":       []interface{}{
-			// TODO: Load actual offers
-			// Each offer should have structure:
-			// {
-			//   "flags": 0,
-			//   "quality": "0.00001",
-			//   "seq": 123,
-			//   "taker_gets": "1000000000", // or IOU object
-			//   "taker_pays": {
-			//     "currency": "USD",
-			//     "issuer": "rIssuer...",
-			//     "value": "100"
-			//   }
-			// }
-		},
-		"ledger_hash":  "PLACEHOLDER_LEDGER_HASH",
-		"ledger_index": 1000,
-		"validated":    true,
+
+	// Check if ledger service is available
+	if Services == nil || Services.Ledger == nil {
+		return nil, RpcErrorInternal("Ledger service not available")
 	}
-	
+
+	// Determine ledger index to use
+	ledgerIndex := "current"
+	if request.LedgerIndex != "" {
+		ledgerIndex = request.LedgerIndex
+	}
+
+	// Get account offers from the ledger service
+	result, err := Services.Ledger.GetAccountOffers(request.Account, ledgerIndex, request.Limit)
+	if err != nil {
+		if err.Error() == "account not found" {
+			return nil, &RpcError{
+				Code:    19, // actNotFound
+				Message: "Account not found.",
+			}
+		}
+		return nil, RpcErrorInternal("Failed to get account offers: " + err.Error())
+	}
+
+	// Build response
+	response := map[string]interface{}{
+		"account":      result.Account,
+		"offers":       result.Offers,
+		"ledger_hash":  formatLedgerHash(result.LedgerHash),
+		"ledger_index": result.LedgerIndex,
+		"validated":    result.Validated,
+	}
+
+	if result.Marker != "" {
+		response["marker"] = result.Marker
+	}
+
 	return response, nil
 }
 
@@ -461,43 +527,95 @@ func (m *AccountTxMethod) Handle(ctx *RpcContext, params json.RawMessage) (inter
 		Forward        bool   `json:"forward,omitempty"`
 		PaginationParams
 	}
-	
+
 	if params != nil {
 		if err := json.Unmarshal(params, &request); err != nil {
 			return nil, RpcErrorInvalidParams("Invalid parameters: " + err.Error())
 		}
 	}
-	
+
 	if request.Account == "" {
 		return nil, RpcErrorInvalidParams("Missing required parameter: account")
 	}
-	
-	// TODO: Implement transaction history retrieval
-	// 1. Validate account address
-	// 2. Determine ledger range to search
-	// 3. Query transaction database for transactions involving the account
-	// 4. Apply pagination using marker and limit
-	// 5. Return transactions in chronological order (forward=true) or reverse (forward=false)
-	// 6. Include transaction metadata and affected ledger information
-	
-	response := map[string]interface{}{
-		"account":      request.Account,
-		"ledger_index_min": 1,    // TODO: Get actual min ledger searched
-		"ledger_index_max": 1000, // TODO: Get actual max ledger searched
-		"limit":        200,      // TODO: Use actual limit applied
-		"transactions": []interface{}{
-			// TODO: Load actual transaction history
-			// Each transaction should have structure:
-			// {
-			//   "ledger_index": 950,
-			//   "meta": { ... }, // Transaction metadata
-			//   "tx": { ... },   // Transaction object
-			//   "validated": true
-			// }
-		},
-		"validated": true,
+
+	// Check if ledger service is available
+	if Services == nil || Services.Ledger == nil {
+		return nil, RpcErrorInternal("Ledger service not available")
 	}
-	
+
+	// Parse marker if provided
+	var marker *AccountTxMarker
+	if request.Marker != nil {
+		if markerMap, ok := request.Marker.(map[string]interface{}); ok {
+			marker = &AccountTxMarker{}
+			if ledger, ok := markerMap["ledger"].(float64); ok {
+				marker.LedgerSeq = uint32(ledger)
+			}
+			if seq, ok := markerMap["seq"].(float64); ok {
+				marker.TxnSeq = uint32(seq)
+			}
+		}
+	}
+
+	// Get account transactions from the ledger service
+	result, err := Services.Ledger.GetAccountTransactions(
+		request.Account,
+		int64(request.LedgerIndexMin),
+		int64(request.LedgerIndexMax),
+		request.Limit,
+		marker,
+		request.Forward,
+	)
+	if err != nil {
+		if err.Error() == "transaction history not available (no database configured)" {
+			return nil, &RpcError{
+				Code:    73, // lgrNotFound
+				Message: "Transaction history not available. Database not configured.",
+			}
+		}
+		if err.Error() == "account not found" {
+			return nil, &RpcError{
+				Code:    19, // actNotFound
+				Message: "Account not found.",
+			}
+		}
+		return nil, RpcErrorInternal("Failed to get account transactions: " + err.Error())
+	}
+
+	// Build transactions array
+	transactions := make([]map[string]interface{}, len(result.Transactions))
+	for i, tx := range result.Transactions {
+		txEntry := map[string]interface{}{
+			"ledger_index": tx.LedgerIndex,
+			"validated":    true,
+		}
+		if request.Binary {
+			txEntry["tx_blob"] = hex.EncodeToString(tx.TxBlob)
+			txEntry["meta"] = hex.EncodeToString(tx.Meta)
+		} else {
+			// Parse tx_blob and meta as JSON if not binary
+			txEntry["tx_blob"] = hex.EncodeToString(tx.TxBlob)
+			txEntry["meta"] = hex.EncodeToString(tx.Meta)
+		}
+		transactions[i] = txEntry
+	}
+
+	response := map[string]interface{}{
+		"account":          result.Account,
+		"ledger_index_min": result.LedgerMin,
+		"ledger_index_max": result.LedgerMax,
+		"limit":            result.Limit,
+		"transactions":     transactions,
+		"validated":        result.Validated,
+	}
+
+	if result.Marker != nil {
+		response["marker"] = map[string]interface{}{
+			"ledger": result.Marker.LedgerSeq,
+			"seq":    result.Marker.TxnSeq,
+		}
+	}
+
 	return response, nil
 }
 
@@ -516,20 +634,20 @@ func (m *GatewayBalancesMethod) Handle(ctx *RpcContext, params json.RawMessage) 
 	var request struct {
 		AccountParam
 		LedgerSpecifier
-		Strict   bool     `json:"strict,omitempty"`
+		Strict    bool     `json:"strict,omitempty"`
 		HotWallet []string `json:"hotwallet,omitempty"`
 	}
-	
+
 	if params != nil {
 		if err := json.Unmarshal(params, &request); err != nil {
 			return nil, RpcErrorInvalidParams("Invalid parameters: " + err.Error())
 		}
 	}
-	
+
 	if request.Account == "" {
 		return nil, RpcErrorInvalidParams("Missing required parameter: account")
 	}
-	
+
 	// TODO: Implement gateway balance calculation
 	// 1. Validate account address (should be a gateway/issuer)
 	// 2. Determine target ledger
@@ -537,9 +655,9 @@ func (m *GatewayBalancesMethod) Handle(ctx *RpcContext, params json.RawMessage) 
 	// 4. Calculate total issued amounts by currency
 	// 5. Separate hot wallet balances if hot wallet addresses provided
 	// 6. Calculate net balances and obligations
-	
+
 	response := map[string]interface{}{
-		"account":    request.Account,
+		"account":     request.Account,
 		"obligations": map[string]interface{}{
 			// TODO: Calculate actual obligations by currency
 			// Example:
@@ -556,7 +674,7 @@ func (m *GatewayBalancesMethod) Handle(ctx *RpcContext, params json.RawMessage) 
 		"ledger_index": 1000,
 		"validated":    true,
 	}
-	
+
 	return response, nil
 }
 
@@ -575,21 +693,21 @@ func (m *NoRippleCheckMethod) Handle(ctx *RpcContext, params json.RawMessage) (i
 	var request struct {
 		AccountParam
 		LedgerSpecifier
-		Role  string   `json:"role,omitempty"` // "gateway" or "user"
-		Transactions bool `json:"transactions,omitempty"`
-		Limit uint32 `json:"limit,omitempty"`
+		Role         string `json:"role,omitempty"` // "gateway" or "user"
+		Transactions bool   `json:"transactions,omitempty"`
+		Limit        uint32 `json:"limit,omitempty"`
 	}
-	
+
 	if params != nil {
 		if err := json.Unmarshal(params, &request); err != nil {
 			return nil, RpcErrorInvalidParams("Invalid parameters: " + err.Error())
 		}
 	}
-	
+
 	if request.Account == "" {
 		return nil, RpcErrorInvalidParams("Missing required parameter: account")
 	}
-	
+
 	// TODO: Implement NoRipple flag checking
 	// 1. Validate account address and role (gateway or user)
 	// 2. Determine target ledger
@@ -597,10 +715,10 @@ func (m *NoRippleCheckMethod) Handle(ctx *RpcContext, params json.RawMessage) (i
 	// 4. Identify problematic trust lines that should have NoRipple set
 	// 5. Generate suggested transactions to fix NoRipple issues if requested
 	// 6. Return analysis results and recommendations
-	
+
 	response := map[string]interface{}{
-		"account":      request.Account,
-		"problems":     []string{
+		"account":  request.Account,
+		"problems": []string{
 			// TODO: List actual NoRipple problems found
 		},
 		"transactions": []interface{}{
@@ -610,7 +728,7 @@ func (m *NoRippleCheckMethod) Handle(ctx *RpcContext, params json.RawMessage) (i
 		"ledger_index": 1000,
 		"validated":    true,
 	}
-	
+
 	return response, nil
 }
 

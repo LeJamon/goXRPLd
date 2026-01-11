@@ -1,7 +1,9 @@
 package rpc
 
 import (
+	"encoding/hex"
 	"encoding/json"
+	"strconv"
 )
 
 // LedgerMethod handles the ledger RPC method
@@ -19,66 +21,113 @@ func (m *LedgerMethod) Handle(ctx *RpcContext, params json.RawMessage) (interfac
 		Binary       bool `json:"binary,omitempty"`
 		Queue        bool `json:"queue,omitempty"`
 	}
-	
+
 	if params != nil {
 		if err := json.Unmarshal(params, &request); err != nil {
 			return nil, RpcErrorInvalidParams("Invalid parameters: " + err.Error())
 		}
 	}
-	
-	// TODO: Implement ledger retrieval logic
-	// 1. Determine which ledger to retrieve based on LedgerSpecifier:
-	//    - If ledger_hash provided: lookup by hash from nodestore
-	//    - If ledger_index provided: parse ("validated", "current", "closed", or number)
-	//    - If neither provided: use validated ledger
-	// 2. Retrieve ledger header from nodestore
-	// 3. Optionally retrieve additional data based on flags:
-	//    - accounts: include account state data
-	//    - full: include all ledger objects
-	//    - transactions: include transaction data
-	//    - expand: expand transaction and metadata
-	//    - queue: include queued transactions (if current ledger)
-	// 4. Format response according to API version
-	
-	// Placeholder response structure
+
+	// Check if ledger service is available
+	if Services == nil || Services.Ledger == nil {
+		return nil, RpcErrorInternal("Ledger service not available")
+	}
+
+	// Determine which ledger to retrieve
+	var targetLedger LedgerReader
+	var validated bool
+	var err error
+
+	if request.LedgerHash != "" {
+		// Look up by hash
+		hashBytes, decErr := hex.DecodeString(request.LedgerHash)
+		if decErr != nil || len(hashBytes) != 32 {
+			return nil, RpcErrorInvalidParams("Invalid ledger_hash")
+		}
+		var hash [32]byte
+		copy(hash[:], hashBytes)
+		targetLedger, err = Services.Ledger.GetLedgerByHash(hash)
+		if err != nil {
+			return nil, &RpcError{Code: -1, ErrorString: "lgrNotFound", Message: "Ledger not found"}
+		}
+		validated = targetLedger.IsValidated()
+	} else {
+		// Look up by index
+		ledgerIndex := request.LedgerIndex
+		if ledgerIndex == "" {
+			ledgerIndex = "validated"
+		}
+
+		switch ledgerIndex {
+		case "validated":
+			seq := Services.Ledger.GetValidatedLedgerIndex()
+			if seq == 0 {
+				return nil, &RpcError{Code: -1, ErrorString: "lgrNotFound", Message: "No validated ledger"}
+			}
+			targetLedger, err = Services.Ledger.GetLedgerBySequence(seq)
+			validated = true
+		case "current":
+			seq := Services.Ledger.GetCurrentLedgerIndex()
+			targetLedger, err = Services.Ledger.GetLedgerBySequence(seq)
+			validated = false
+		case "closed":
+			seq := Services.Ledger.GetClosedLedgerIndex()
+			targetLedger, err = Services.Ledger.GetLedgerBySequence(seq)
+			validated = targetLedger != nil && targetLedger.IsValidated()
+		default:
+			// Parse as number
+			seq, parseErr := strconv.ParseUint(ledgerIndex, 10, 32)
+			if parseErr != nil {
+				return nil, RpcErrorInvalidParams("Invalid ledger_index")
+			}
+			targetLedger, err = Services.Ledger.GetLedgerBySequence(uint32(seq))
+			if err != nil {
+				return nil, &RpcError{Code: -1, ErrorString: "lgrNotFound", Message: "Ledger not found"}
+			}
+			validated = targetLedger.IsValidated()
+		}
+	}
+
+	if err != nil || targetLedger == nil {
+		return nil, &RpcError{Code: -1, ErrorString: "lgrNotFound", Message: "Ledger not found"}
+	}
+
+	// Build ledger info
+	hash := targetLedger.Hash()
+	parent := targetLedger.ParentHash()
+	ledgerHash := hex.EncodeToString(hash[:])
+	parentHash := hex.EncodeToString(parent[:])
+
+	ledgerInfo := map[string]interface{}{
+		"accepted":            true,
+		"close_flags":         0,
+		"closed":              targetLedger.IsClosed(),
+		"hash":                ledgerHash,
+		"ledger_hash":         ledgerHash,
+		"ledger_index":        strconv.FormatUint(uint64(targetLedger.Sequence()), 10),
+		"parent_hash":         parentHash,
+		"seqNum":              strconv.FormatUint(uint64(targetLedger.Sequence()), 10),
+		"totalCoins":          strconv.FormatUint(targetLedger.TotalDrops(), 10),
+		"total_coins":         strconv.FormatUint(targetLedger.TotalDrops(), 10),
+	}
+
 	response := map[string]interface{}{
-		"ledger": map[string]interface{}{
-			"accepted":        true,
-			"account_hash":    "PLACEHOLDER_ACCOUNT_HASH", // TODO: Get from ledger header
-			"close_flags":     0,  // TODO: Get from ledger header
-			"close_time":      12345678, // TODO: Get from ledger header
-			"close_time_human": "2024-01-01T00:00:00.000Z", // TODO: Format close time
-			"close_time_resolution": 10, // TODO: Get from ledger header
-			"closed":          true,
-			"hash":            "PLACEHOLDER_LEDGER_HASH", // TODO: Get actual ledger hash
-			"ledger_hash":     "PLACEHOLDER_LEDGER_HASH", // TODO: Same as hash
-			"ledger_index":    "1000", // TODO: Get actual ledger index as string
-			"parent_close_time": 12345678, // TODO: Get from previous ledger
-			"parent_hash":     "PLACEHOLDER_PARENT_HASH", // TODO: Get from ledger header
-			"seqNum":          1000, // TODO: Get actual sequence number
-			"totalCoins":      "99999999999999999", // TODO: Calculate total XRP
-			"transaction_hash": "PLACEHOLDER_TX_HASH", // TODO: Get from ledger header
-		},
-		"ledger_hash":  "PLACEHOLDER_LEDGER_HASH", // TODO: Get actual hash
-		"ledger_index": 1000, // TODO: Get actual index as number
-		"validated":    true, // TODO: Check if ledger is validated
+		"ledger":       ledgerInfo,
+		"ledger_hash":  ledgerHash,
+		"ledger_index": targetLedger.Sequence(),
+		"validated":    validated,
 	}
-	
-	// Add transactions if requested
+
+	// Add transactions if requested (placeholder - would need transaction iteration)
 	if request.Transactions {
-		response["transactions"] = []interface{}{} // TODO: Load actual transactions
+		response["ledger"].(map[string]interface{})["transactions"] = []interface{}{}
 	}
-	
-	// Add accounts if requested  
-	if request.Accounts {
-		response["accountState"] = []interface{}{} // TODO: Load account state objects
-	}
-	
+
 	// Add queue if requested and this is current ledger
 	if request.Queue {
-		response["queue_data"] = []interface{}{} // TODO: Load queued transactions
+		response["queue_data"] = []interface{}{}
 	}
-	
+
 	return response, nil
 }
 
@@ -94,16 +143,29 @@ func (m *LedgerMethod) SupportedApiVersions() []int {
 type LedgerClosedMethod struct{}
 
 func (m *LedgerClosedMethod) Handle(ctx *RpcContext, params json.RawMessage) (interface{}, *RpcError) {
-	// TODO: Implement closed ledger retrieval
-	// This method returns information about the most recently closed ledger
-	// that has not yet been validated by consensus
-	// Data should come from the ledger manager tracking closed/validated ledgers
-	
-	response := map[string]interface{}{
-		"ledger_hash":  "PLACEHOLDER_CLOSED_HASH", // TODO: Get actual closed ledger hash  
-		"ledger_index": 1001, // TODO: Get actual closed ledger index
+	// Check if ledger service is available
+	if Services == nil || Services.Ledger == nil {
+		return nil, RpcErrorInternal("Ledger service not available")
 	}
-	
+
+	// Get the closed ledger index
+	seq := Services.Ledger.GetClosedLedgerIndex()
+	if seq == 0 {
+		return nil, &RpcError{Code: -1, ErrorString: "lgrNotFound", Message: "No closed ledger"}
+	}
+
+	// Get the ledger to retrieve its hash
+	ledger, err := Services.Ledger.GetLedgerBySequence(seq)
+	if err != nil {
+		return nil, &RpcError{Code: -1, ErrorString: "lgrNotFound", Message: "Closed ledger not found"}
+	}
+
+	hash := ledger.Hash()
+	response := map[string]interface{}{
+		"ledger_hash":  hex.EncodeToString(hash[:]),
+		"ledger_index": seq,
+	}
+
 	return response, nil
 }
 
@@ -119,15 +181,21 @@ func (m *LedgerClosedMethod) SupportedApiVersions() []int {
 type LedgerCurrentMethod struct{}
 
 func (m *LedgerCurrentMethod) Handle(ctx *RpcContext, params json.RawMessage) (interface{}, *RpcError) {
-	// TODO: Implement current ledger retrieval
-	// This method returns information about the current working ledger
-	// (the ledger that new transactions are being applied to)
-	// Data should come from the consensus engine or ledger manager
-	
-	response := map[string]interface{}{
-		"ledger_current_index": 1002, // TODO: Get actual current ledger index
+	// Check if ledger service is available
+	if Services == nil || Services.Ledger == nil {
+		return nil, RpcErrorInternal("Ledger service not available")
 	}
-	
+
+	// Get the current (open) ledger index
+	seq := Services.Ledger.GetCurrentLedgerIndex()
+	if seq == 0 {
+		return nil, &RpcError{Code: -1, ErrorString: "lgrNotFound", Message: "No current ledger"}
+	}
+
+	response := map[string]interface{}{
+		"ledger_current_index": seq,
+	}
+
 	return response, nil
 }
 
@@ -139,7 +207,7 @@ func (m *LedgerCurrentMethod) SupportedApiVersions() []int {
 	return []int{ApiVersion1, ApiVersion2, ApiVersion3}
 }
 
-// LedgerDataMethod handles the ledger_data RPC method  
+// LedgerDataMethod handles the ledger_data RPC method
 type LedgerDataMethod struct{}
 
 func (m *LedgerDataMethod) Handle(ctx *RpcContext, params json.RawMessage) (interface{}, *RpcError) {
@@ -151,13 +219,18 @@ func (m *LedgerDataMethod) Handle(ctx *RpcContext, params json.RawMessage) (inte
 		Marker interface{} `json:"marker,omitempty"`
 		Type   string      `json:"type,omitempty"`
 	}
-	
+
 	if params != nil {
 		if err := json.Unmarshal(params, &request); err != nil {
 			return nil, RpcErrorInvalidParams("Invalid parameters: " + err.Error())
 		}
 	}
-	
+
+	// Check if ledger service is available
+	if Services == nil || Services.Ledger == nil {
+		return nil, RpcErrorInternal("Ledger service not available")
+	}
+
 	// Validate limit
 	if request.Limit > 2048 {
 		request.Limit = 2048
@@ -165,51 +238,47 @@ func (m *LedgerDataMethod) Handle(ctx *RpcContext, params json.RawMessage) (inte
 	if request.Limit == 0 {
 		request.Limit = 256 // Default limit
 	}
-	
-	// TODO: Implement ledger data retrieval
-	// 1. Determine target ledger using LedgerSpecifier
-	// 2. Retrieve all ledger objects (or filtered by type)
-	// 3. Support pagination using marker
-	// 4. Apply limit to number of objects returned
-	// 5. Return objects in binary or JSON format based on binary flag
-	// 6. Calculate next marker for pagination
-	// 
-	// Object types that can be filtered:
-	// - account: AccountRoot objects
-	// - amendments: Amendments object
-	// - check: Check objects  
-	// - deposit_preauth: DepositPreauth objects
-	// - directory: DirectoryNode objects
-	// - escrow: Escrow objects
-	// - fee: FeeSettings object
-	// - hashes: LedgerHashes objects
-	// - nft_offer: NFTokenOffer objects
-	// - nft_page: NFTokenPage objects  
-	// - offer: Offer objects
-	// - payment_channel: PayChannel objects
-	// - signer_list: SignerList objects
-	// - state: RippleState objects
-	// - ticket: Ticket objects
-	
-	response := map[string]interface{}{
-		"ledger_hash":  "PLACEHOLDER_LEDGER_HASH", // TODO: Get actual ledger hash
-		"ledger_index": 1000, // TODO: Get actual ledger index
-		"state": []interface{}{
-			// TODO: Return actual ledger objects
-			// Each object should have structure:
-			// {
-			//   "data": "hex_data", // if binary=true
-			//   "index": "object_hash",
-			//   // OR if binary=false:
-			//   "Account": "rAccount...",
-			//   "Balance": "1000000000",
-			//   // ... other object fields
-			// }
-		},
-		"validated": true, // TODO: Check if ledger is validated
-		// "marker": "next_page_marker", // TODO: Include if more data available
+
+	// Determine ledger index to use
+	ledgerIndex := "current"
+	if request.LedgerIndex != "" {
+		ledgerIndex = request.LedgerIndex
 	}
-	
+
+	// Parse marker as string
+	markerStr := ""
+	if request.Marker != nil {
+		if m, ok := request.Marker.(string); ok {
+			markerStr = m
+		}
+	}
+
+	// Get ledger data from the ledger service
+	result, err := Services.Ledger.GetLedgerData(ledgerIndex, request.Limit, markerStr)
+	if err != nil {
+		return nil, RpcErrorInternal("Failed to get ledger data: " + err.Error())
+	}
+
+	// Build state array
+	state := make([]map[string]interface{}, len(result.State))
+	for i, item := range result.State {
+		state[i] = map[string]interface{}{
+			"index": item.Index,
+			"data":  hex.EncodeToString(item.Data),
+		}
+	}
+
+	response := map[string]interface{}{
+		"ledger_hash":  hex.EncodeToString(result.LedgerHash[:]),
+		"ledger_index": result.LedgerIndex,
+		"state":        state,
+		"validated":    result.Validated,
+	}
+
+	if result.Marker != "" {
+		response["marker"] = result.Marker
+	}
+
 	return response, nil
 }
 
@@ -229,77 +298,134 @@ func (m *LedgerEntryMethod) Handle(ctx *RpcContext, params json.RawMessage) (int
 	var request struct {
 		LedgerSpecifier
 		// Object specification methods (mutually exclusive):
-		Index            string `json:"index,omitempty"`             // Direct object ID
-		AccountRoot      string `json:"account_root,omitempty"`      // Account address
-		Check            string `json:"check,omitempty"`             // Check object ID
-		DepositPreauth   struct {
+		Index       string `json:"index,omitempty"`        // Direct object ID
+		AccountRoot string `json:"account_root,omitempty"` // Account address
+		Check       string `json:"check,omitempty"`        // Check object ID
+		DepositPreauth struct {
 			Owner      string `json:"owner"`
 			Authorized string `json:"authorized"`
 		} `json:"deposit_preauth,omitempty"`
-		DirectoryNode    string `json:"directory,omitempty"`         // Directory ID
-		Escrow          struct {
-			Owner  string `json:"owner"`
-			Seq    uint32 `json:"seq"`
+		DirectoryNode  string `json:"directory,omitempty"`        // Directory ID
+		Escrow        struct {
+			Owner string `json:"owner"`
+			Seq   uint32 `json:"seq"`
 		} `json:"escrow,omitempty"`
-		Offer           struct {
+		Offer struct {
 			Account string `json:"account"`
 			Seq     uint32 `json:"seq"`
 		} `json:"offer,omitempty"`
-		PaymentChannel  string `json:"payment_channel,omitempty"`   // Channel ID
-		RippleState     struct {
-			Accounts  []string `json:"accounts"`
-			Currency  string   `json:"currency"`
+		PaymentChannel string `json:"payment_channel,omitempty"` // Channel ID
+		RippleState    struct {
+			Accounts []string `json:"accounts"`
+			Currency string   `json:"currency"`
 		} `json:"ripple_state,omitempty"`
-		SignerList      string `json:"signer_list,omitempty"`       // Account address
-		Ticket          struct {
-			Account string `json:"account"`
+		SignerList string `json:"signer_list,omitempty"` // Account address
+		Ticket     struct {
+			Account  string `json:"account"`
 			TicketID uint32 `json:"ticket_id"`
 		} `json:"ticket,omitempty"`
-		NFTPage         string `json:"nft_page,omitempty"`          // NFT page ID
-		
+		NFTPage string `json:"nft_page,omitempty"` // NFT page ID
+
 		Binary bool `json:"binary,omitempty"`
 	}
-	
+
 	if params != nil {
 		if err := json.Unmarshal(params, &request); err != nil {
 			return nil, RpcErrorInvalidParams("Invalid parameters: " + err.Error())
 		}
 	}
-	
-	// TODO: Implement ledger entry retrieval
-	// 1. Determine target ledger using LedgerSpecifier
-	// 2. Determine object ID based on specification method:
-	//    - If index provided: use directly
-	//    - If account_root provided: calculate AccountRoot object ID
-	//    - If other object type provided: calculate object ID using appropriate method
-	// 3. Retrieve object from nodestore using calculated ID
-	// 4. Return object in binary or JSON format based on binary flag
-	// 5. Include object metadata (index, ledger info)
-	//
-	// Object ID calculation methods:
-	// - AccountRoot: hash(0x61 + account_id)
-	// - Offer: hash(0x6F + account_id + sequence)
-	// - RippleState: hash(0x72 + account1 + account2 + currency)
-	// - SignerList: hash(0x53 + account_id)
-	// - Escrow: hash(0x45 + account_id + sequence)
-	// - PayChannel: use provided channel ID
-	// - DirectoryNode: use provided directory ID
-	// - Check: use provided check ID
-	// - DepositPreauth: hash(0x70 + owner + authorized)
-	// - Ticket: hash(0x54 + account_id + ticket_id)
-	// - NFTPage: use provided page ID
-	
-	response := map[string]interface{}{
-		"index":        "PLACEHOLDER_OBJECT_ID", // TODO: Get actual object ID
-		"ledger_hash":  "PLACEHOLDER_LEDGER_HASH", // TODO: Get ledger hash
-		"ledger_index": 1000, // TODO: Get ledger index
-		"validated":    true, // TODO: Check if ledger is validated
-		// Object data will be either:
-		// "node_binary": "hex_data" (if binary=true)
-		// OR the object fields directly (if binary=false)
-		// TODO: Load and deserialize actual object data
+
+	// Check if ledger service is available
+	if Services == nil || Services.Ledger == nil {
+		return nil, RpcErrorInternal("Ledger service not available")
 	}
-	
+
+	// Determine ledger index to use
+	ledgerIndex := "validated"
+	if request.LedgerIndex != "" {
+		ledgerIndex = request.LedgerIndex
+	}
+
+	// Determine the entry key
+	var entryKey [32]byte
+	var keySet bool
+
+	// Check for direct index specification
+	if request.Index != "" {
+		decoded, err := hex.DecodeString(request.Index)
+		if err != nil || len(decoded) != 32 {
+			return nil, RpcErrorInvalidParams("Invalid index: must be 64-character hex string")
+		}
+		copy(entryKey[:], decoded)
+		keySet = true
+	}
+
+	// Check for other object types
+	if !keySet && request.Check != "" {
+		decoded, err := hex.DecodeString(request.Check)
+		if err != nil || len(decoded) != 32 {
+			return nil, RpcErrorInvalidParams("Invalid check: must be 64-character hex string")
+		}
+		copy(entryKey[:], decoded)
+		keySet = true
+	}
+
+	if !keySet && request.PaymentChannel != "" {
+		decoded, err := hex.DecodeString(request.PaymentChannel)
+		if err != nil || len(decoded) != 32 {
+			return nil, RpcErrorInvalidParams("Invalid payment_channel: must be 64-character hex string")
+		}
+		copy(entryKey[:], decoded)
+		keySet = true
+	}
+
+	if !keySet && request.DirectoryNode != "" {
+		decoded, err := hex.DecodeString(request.DirectoryNode)
+		if err != nil || len(decoded) != 32 {
+			return nil, RpcErrorInvalidParams("Invalid directory: must be 64-character hex string")
+		}
+		copy(entryKey[:], decoded)
+		keySet = true
+	}
+
+	if !keySet && request.NFTPage != "" {
+		decoded, err := hex.DecodeString(request.NFTPage)
+		if err != nil || len(decoded) != 32 {
+			return nil, RpcErrorInvalidParams("Invalid nft_page: must be 64-character hex string")
+		}
+		copy(entryKey[:], decoded)
+		keySet = true
+	}
+
+	if !keySet {
+		return nil, RpcErrorInvalidParams("Must specify object by index, check, payment_channel, directory, or nft_page")
+	}
+
+	// Get ledger entry from the ledger service
+	result, err := Services.Ledger.GetLedgerEntry(entryKey, ledgerIndex)
+	if err != nil {
+		if err.Error() == "entry not found" {
+			return nil, &RpcError{
+				Code:    21, // entryNotFound
+				Message: "Requested ledger entry not found.",
+			}
+		}
+		return nil, RpcErrorInternal("Failed to get ledger entry: " + err.Error())
+	}
+
+	response := map[string]interface{}{
+		"index":        result.Index,
+		"ledger_hash":  hex.EncodeToString(result.LedgerHash[:]),
+		"ledger_index": result.LedgerIndex,
+		"validated":    result.Validated,
+	}
+
+	if request.Binary {
+		response["node_binary"] = result.NodeBinary
+	} else {
+		response["node"] = hex.EncodeToString(result.Node)
+	}
+
 	return response, nil
 }
 
@@ -320,44 +446,53 @@ func (m *LedgerRangeMethod) Handle(ctx *RpcContext, params json.RawMessage) (int
 		StartLedger uint32 `json:"start_ledger"`
 		StopLedger  uint32 `json:"stop_ledger"`
 	}
-	
+
 	if params != nil {
 		if err := json.Unmarshal(params, &request); err != nil {
 			return nil, RpcErrorInvalidParams("Invalid parameters: " + err.Error())
 		}
 	}
-	
+
 	// Validate range
 	if request.StartLedger == 0 || request.StopLedger == 0 {
 		return nil, RpcErrorInvalidParams("start_ledger and stop_ledger are required")
 	}
-	
+
 	if request.StartLedger > request.StopLedger {
 		return nil, RpcErrorInvalidParams("start_ledger cannot be greater than stop_ledger")
 	}
-	
+
 	// Limit range size to prevent abuse
-	if request.StopLedger - request.StartLedger > 1000 {
+	if request.StopLedger-request.StartLedger > 1000 {
 		return nil, RpcErrorInvalidParams("Ledger range too large (max 1000 ledgers)")
 	}
-	
-	// TODO: Implement ledger range retrieval
-	// 1. Validate that requested ledgers exist in nodestore
-	// 2. Retrieve ledger hashes for the specified range
-	// 3. Return list of ledger indices and their corresponding hashes
-	// This method is primarily used for debugging and administrative purposes
-	
-	response := map[string]interface{}{
-		"ledgers": []interface{}{
-			// TODO: Return actual ledger range data
-			// Each entry should have structure:
-			// {
-			//   "ledger_index": 1000,
-			//   "ledger_hash": "HASH_VALUE"
-			// }
-		},
+
+	// Check if ledger service is available
+	if Services == nil || Services.Ledger == nil {
+		return nil, RpcErrorInternal("Ledger service not available")
 	}
-	
+
+	// Get ledger range from the ledger service
+	result, err := Services.Ledger.GetLedgerRange(request.StartLedger, request.StopLedger)
+	if err != nil {
+		return nil, RpcErrorInternal("Failed to get ledger range: " + err.Error())
+	}
+
+	// Build ledgers array
+	ledgers := make([]map[string]interface{}, 0, len(result.Hashes))
+	for seq, hash := range result.Hashes {
+		ledgers = append(ledgers, map[string]interface{}{
+			"ledger_index": seq,
+			"ledger_hash":  hex.EncodeToString(hash[:]),
+		})
+	}
+
+	response := map[string]interface{}{
+		"ledger_first": result.LedgerFirst,
+		"ledger_last":  result.LedgerLast,
+		"ledgers":      ledgers,
+	}
+
 	return response, nil
 }
 
