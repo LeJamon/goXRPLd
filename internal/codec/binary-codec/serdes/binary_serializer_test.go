@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Peersyst/xrpl-go/binary-codec/definitions"
-	"github.com/Peersyst/xrpl-go/binary-codec/serdes/interfaces"
-	"github.com/Peersyst/xrpl-go/binary-codec/serdes/testutil"
+	"github.com/LeJamon/goXRPLd/internal/codec/binary-codec/definitions"
+	"github.com/LeJamon/goXRPLd/internal/codec/binary-codec/serdes/testutil"
+	"github.com/LeJamon/goXRPLd/internal/codec/serdes/interfaces"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 )

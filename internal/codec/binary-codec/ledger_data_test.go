@@ -4,7 +4,7 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"github.com/Peersyst/xrpl-go/binary-codec/serdes"
+	"github.com/LeJamon/goXRPLd/internal/codec/binary-codec/serdes"
 	"github.com/stretchr/testify/require"
 )
 

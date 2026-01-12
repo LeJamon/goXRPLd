@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/Peersyst/xrpl-go/address-codec/interfaces"
-	"github.com/Peersyst/xrpl-go/pkg/crypto"
+	"github.com/LeJamon/goXRPLd/internal/codec/address-codec/interfaces"
+	"github.com/LeJamon/goXRPLd/internal/crypto"
 	"github.com/stretchr/testify/require"
 )
 

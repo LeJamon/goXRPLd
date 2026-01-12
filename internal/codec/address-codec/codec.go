@@ -5,8 +5,9 @@ import (
 	"encoding/hex"
 	"errors"
 
-	"github.com/Peersyst/xrpl-go/address-codec/interfaces"
-	"github.com/Peersyst/xrpl-go/pkg/crypto"
+	"github.com/LeJamon/goXRPLd/internal/codec/address-codec/interfaces"
+	ed25519crypto "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/ed25519"
+	secp256k1crypto "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/secp256k1"
 )
 
 const (
@@ -117,10 +118,10 @@ func EncodeSeed(entropy []byte, encodingType interfaces.CryptoImplementation) (s
 		return "", &EncodeLengthError{Instance: "Entropy", Input: len(entropy), Expected: FamilySeedLength}
 	}
 
-	if encodingType == crypto.ED25519() {
+	if encodingType == ed25519crypto.ED25519() {
 		prefix := []byte{0x01, 0xe1, 0x4b}
 		return Encode(entropy, prefix, FamilySeedLength)
-	} else if secp256k1 := crypto.SECP256K1(); encodingType == secp256k1 {
+	} else if secp256k1 := secp256k1crypto.SECP256K1(); encodingType == secp256k1 {
 		prefix := []byte{secp256k1.FamilySeedPrefix()}
 		return Encode(entropy, prefix, FamilySeedLength)
 	}
@@ -139,10 +140,10 @@ func DecodeSeed(seed string) ([]byte, interfaces.CryptoImplementation, error) {
 	}
 
 	if bytes.Equal(decoded[:3], []byte{0x01, 0xe1, 0x4b}) {
-		return decoded[3:], crypto.ED25519(), nil
+		return decoded[3:], ed25519crypto.ED25519(), nil
 	}
 
-	return decoded[1:], crypto.SECP256K1(), nil
+	return decoded[1:], secp256k1crypto.SECP256K1(), nil
 
 }
 
