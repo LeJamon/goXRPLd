@@ -16,10 +16,10 @@ import (
 
 // Common errors for ledger operations
 var (
-	ErrLedgerImmutable  = errors.New("ledger is immutable")
-	ErrLedgerNotClosed  = errors.New("ledger is not closed")
-	ErrEntryNotFound    = errors.New("ledger entry not found")
-	ErrInvalidState     = errors.New("invalid ledger state")
+	ErrLedgerImmutable = errors.New("ledger is immutable")
+	ErrLedgerNotClosed = errors.New("ledger is not closed")
+	ErrEntryNotFound   = errors.New("ledger entry not found")
+	ErrInvalidState    = errors.New("invalid ledger state")
 )
 
 // State represents the current state of a ledger
@@ -166,6 +166,23 @@ func FromGenesis(
 		header:   hdr,
 		fees:     fees,
 		state:    StateValidated, // Genesis is immediately validated
+	}
+}
+
+// NewOpenWithHeader creates an open ledger with the exact header values provided.
+// This is useful for testing/replay scenarios where you want to control all header fields.
+func NewOpenWithHeader(
+	hdr header.LedgerHeader,
+	stateMap *shamap.SHAMap,
+	txMap *shamap.SHAMap,
+	fees XRPAmount.Fees,
+) *Ledger {
+	return &Ledger{
+		stateMap: stateMap,
+		txMap:    txMap,
+		header:   hdr,
+		fees:     fees,
+		state:    StateOpen,
 	}
 }
 
@@ -503,6 +520,9 @@ func (l *Ledger) SerializeHeader() []byte {
 	return data
 }
 
+// rippleEpochUnix is the Unix timestamp of January 1, 2000 00:00:00 UTC (XRPL epoch)
+const rippleEpochUnix int64 = 946684800
+
 // calculateLedgerHash computes the hash of a ledger header
 // This is duplicated from genesis package to avoid circular imports
 func calculateLedgerHash(h header.LedgerHeader) [32]byte {
@@ -522,12 +542,13 @@ func calculateLedgerHash(h header.LedgerHeader) [32]byte {
 	data = append(data, h.TxHash[:]...)
 	data = append(data, h.AccountHash[:]...)
 
+	// Times must be in Ripple epoch (seconds since 2000-01-01), not Unix epoch
 	parentCloseBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(parentCloseBytes, uint32(h.ParentCloseTime.Unix()))
+	binary.BigEndian.PutUint32(parentCloseBytes, uint32(h.ParentCloseTime.Unix()-rippleEpochUnix))
 	data = append(data, parentCloseBytes...)
 
 	closeTimeBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(closeTimeBytes, uint32(h.CloseTime.Unix()))
+	binary.BigEndian.PutUint32(closeTimeBytes, uint32(h.CloseTime.Unix()-rippleEpochUnix))
 	data = append(data, closeTimeBytes...)
 
 	data = append(data, byte(h.CloseTimeResolution))

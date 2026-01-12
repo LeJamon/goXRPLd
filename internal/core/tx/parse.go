@@ -1,8 +1,11 @@
 package tx
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+
+	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 )
 
 // ParseJSON parses a JSON transaction into the appropriate transaction type
@@ -189,4 +192,25 @@ func TypeFromString(s string) (Type, error) {
 		return 0, ErrInvalidTransactionType
 	}
 	return t, nil
+}
+
+// ParseFromBinary parses a binary transaction blob into a Transaction
+func ParseFromBinary(blob []byte) (Transaction, error) {
+	// Convert binary to hex string for the codec
+	hexStr := hex.EncodeToString(blob)
+
+	// Decode binary to JSON map
+	jsonMap, err := binarycodec.Decode(hexStr)
+	if err != nil {
+		return nil, errors.New("failed to decode binary transaction: " + err.Error())
+	}
+
+	// Convert map to JSON bytes
+	jsonBytes, err := json.Marshal(jsonMap)
+	if err != nil {
+		return nil, errors.New("failed to marshal decoded transaction: " + err.Error())
+	}
+
+	// Parse the JSON into a transaction
+	return ParseJSON(jsonBytes)
 }
