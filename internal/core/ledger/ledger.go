@@ -479,6 +479,18 @@ func (l *Ledger) ForEach(fn func(key [32]byte, data []byte) bool) error {
 	})
 }
 
+// ForEachTransaction iterates over all transactions in the ledger and calls fn for each.
+// If fn returns false, iteration stops early.
+// The callback receives the transaction hash and data.
+func (l *Ledger) ForEachTransaction(fn func(txHash [32]byte, txData []byte) bool) error {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	return l.txMap.ForEach(func(item *shamap.Item) bool {
+		return fn(item.Key(), item.Data())
+	})
+}
+
 // SerializeHeader returns the serialized ledger header bytes
 func (l *Ledger) SerializeHeader() []byte {
 	l.mu.RLock()

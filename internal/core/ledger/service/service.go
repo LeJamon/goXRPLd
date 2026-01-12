@@ -20,10 +20,10 @@ import (
 
 // Common errors
 var (
-	ErrNotStandalone    = errors.New("operation only valid in standalone mode")
-	ErrNoOpenLedger     = errors.New("no open ledger")
-	ErrNoClosedLedger   = errors.New("no closed ledger")
-	ErrLedgerNotFound   = errors.New("ledger not found")
+	ErrNotStandalone  = errors.New("operation only valid in standalone mode")
+	ErrNoOpenLedger   = errors.New("no open ledger")
+	ErrNoClosedLedger = errors.New("no closed ledger")
+	ErrLedgerNotFound = errors.New("ledger not found")
 )
 
 // Config holds configuration for the LedgerService
@@ -50,6 +50,42 @@ func DefaultConfig() Config {
 		RelationalDB:  nil,
 	}
 }
+
+// LedgerAcceptedEvent contains information about an accepted ledger and its transactions
+type LedgerAcceptedEvent struct {
+	// LedgerInfo contains the accepted ledger information
+	LedgerInfo *LedgerInfo
+
+	// TransactionResults contains the results of transactions in this ledger
+	TransactionResults []TransactionResultEvent
+}
+
+// TransactionResultEvent contains transaction details for event broadcasting
+type TransactionResultEvent struct {
+	// TxHash is the transaction hash
+	TxHash [32]byte
+
+	// TxData is the raw transaction data
+	TxData []byte
+
+	// MetaData is the transaction metadata (nil if not available)
+	MetaData []byte
+
+	// Validated indicates if the transaction is in a validated ledger
+	Validated bool
+
+	// LedgerIndex is the ledger sequence containing this transaction
+	LedgerIndex uint32
+
+	// LedgerHash is the hash of the ledger containing this transaction
+	LedgerHash [32]byte
+
+	// AffectedAccounts lists the accounts affected by this transaction
+	AffectedAccounts []string
+}
+
+// EventCallback is a function that receives ledger events
+type EventCallback func(event *LedgerAcceptedEvent)
 
 // Service manages the ledger lifecycle
 type Service struct {
@@ -83,6 +119,12 @@ type Service struct {
 
 	// Current fee settings
 	fees XRPAmount.Fees
+
+	// EventCallback is called when a ledger is accepted (optional)
+	eventCallback EventCallback
+
+	// hooks provides event callbacks for external subscribers
+	hooks *EventHooks
 }
 
 // New creates a new LedgerService
@@ -96,6 +138,28 @@ func New(cfg Config) (*Service, error) {
 	}
 
 	return s, nil
+}
+
+// SetEventCallback sets the callback function for ledger events
+func (s *Service) SetEventCallback(callback EventCallback) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.eventCallback = callback
+}
+
+// SetEventHooks sets the event hooks for ledger events
+// This provides a more structured callback mechanism than SetEventCallback
+func (s *Service) SetEventHooks(hooks *EventHooks) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hooks = hooks
+}
+
+// GetEventHooks returns the current event hooks (may be nil)
+func (s *Service) GetEventHooks() *EventHooks {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.hooks
 }
 
 // Start initializes the service with a genesis ledger
@@ -247,9 +311,16 @@ func (s *Service) AcceptLedger() (uint32, error) {
 
 	// Store the closed ledger in memory cache
 	closedSeq := s.openLedger.Sequence()
+	closedLedgerHash := s.openLedger.Hash()
 	s.closedLedger = s.openLedger
 	s.validatedLedger = s.openLedger
 	s.ledgerHistory[closedSeq] = s.openLedger
+
+	// Collect transaction results for event callbacks/hooks
+	var txResults []TransactionResultEvent
+	if s.eventCallback != nil || (s.hooks != nil && (s.hooks.OnLedgerClosed != nil || s.hooks.OnTransaction != nil)) {
+		txResults = s.collectTransactionResults(s.closedLedger, closedSeq, closedLedgerHash)
+	}
 
 	// Create new open ledger
 	newOpen, err := ledger.NewOpen(s.closedLedger, time.Now())
@@ -258,7 +329,128 @@ func (s *Service) AcceptLedger() (uint32, error) {
 	}
 	s.openLedger = newOpen
 
+	// Build ledger info for callbacks
+	ledgerInfo := &LedgerInfo{
+		Sequence:   closedSeq,
+		Hash:       closedLedgerHash,
+		ParentHash: s.closedLedger.ParentHash(),
+		CloseTime:  s.closedLedger.CloseTime(),
+		TotalDrops: s.closedLedger.TotalDrops(),
+		Validated:  s.closedLedger.IsValidated(),
+		Closed:     s.closedLedger.IsClosed(),
+	}
+
+	// Calculate validated ledgers range string
+	validatedLedgers := s.getValidatedLedgersRange()
+
+	// Fire event hooks after state is updated
+	if s.hooks != nil && s.hooks.OnLedgerClosed != nil {
+		txCount := len(txResults)
+		hooks := s.hooks
+		info := ledgerInfo
+		vl := validatedLedgers
+		go hooks.OnLedgerClosed(info, txCount, vl)
+	}
+
+	// Fire transaction hooks for each transaction
+	if s.hooks != nil && s.hooks.OnTransaction != nil {
+		hooks := s.hooks
+		closeTimeVal := closeTime
+		for _, txResult := range txResults {
+			txInfo := TransactionInfo{
+				Hash:             txResult.TxHash,
+				TxBlob:           txResult.TxData,
+				AffectedAccounts: txResult.AffectedAccounts,
+			}
+			result := TxResult{
+				Applied:  txResult.Validated,
+				Metadata: txResult.MetaData,
+				TxIndex:  0, // TODO: Track actual tx index
+			}
+			go hooks.OnTransaction(txInfo, result, closedSeq, closedLedgerHash, closeTimeVal)
+		}
+	}
+
+	// Fire legacy event callback for backward compatibility
+	if s.eventCallback != nil {
+		event := &LedgerAcceptedEvent{
+			LedgerInfo:         ledgerInfo,
+			TransactionResults: txResults,
+		}
+
+		// Call callback in a goroutine to not block ledger operations
+		callback := s.eventCallback
+		go callback(event)
+	}
+
 	return closedSeq, nil
+}
+
+// getValidatedLedgersRange returns a string representation of validated ledger range
+func (s *Service) getValidatedLedgersRange() string {
+	if len(s.ledgerHistory) == 0 {
+		return "empty"
+	}
+
+	minSeq := uint32(0xFFFFFFFF)
+	maxSeq := uint32(0)
+	for seq := range s.ledgerHistory {
+		if seq < minSeq {
+			minSeq = seq
+		}
+		if seq > maxSeq {
+			maxSeq = seq
+		}
+	}
+
+	if minSeq == maxSeq {
+		return strconv.FormatUint(uint64(minSeq), 10)
+	}
+	return strconv.FormatUint(uint64(minSeq), 10) + "-" + strconv.FormatUint(uint64(maxSeq), 10)
+}
+
+// collectTransactionResults gathers transaction data from the closed ledger
+func (s *Service) collectTransactionResults(l *ledger.Ledger, ledgerSeq uint32, ledgerHash [32]byte) []TransactionResultEvent {
+	var results []TransactionResultEvent
+
+	// Iterate through all transactions in the ledger
+	l.ForEachTransaction(func(txHash [32]byte, txData []byte) bool {
+		result := TransactionResultEvent{
+			TxHash:      txHash,
+			TxData:      txData,
+			Validated:   l.IsValidated(),
+			LedgerIndex: ledgerSeq,
+			LedgerHash:  ledgerHash,
+		}
+
+		// Try to extract affected accounts from transaction data
+		// This is a simplified extraction - a full implementation would
+		// properly parse the transaction to find all affected accounts
+		result.AffectedAccounts = extractAffectedAccounts(txData)
+
+		results = append(results, result)
+		return true // continue iteration
+	})
+
+	return results
+}
+
+// extractAffectedAccounts extracts account addresses affected by a transaction
+// This is a simplified implementation that extracts the Account field
+func extractAffectedAccounts(txData []byte) []string {
+	var accounts []string
+
+	//TODO IMPLEMENT FUNCTION
+	// In a full implementation, this would:
+	// 1. Parse the transaction blob
+	// 2. Extract Account (sender)
+	// 3. Extract Destination (for payments)
+	// 4. Extract accounts from metadata (AffectedNodes)
+	//
+	// For now, we return an empty list - the caller can enhance this
+	// based on their needs
+
+	return accounts
 }
 
 // IsStandalone returns true if running in standalone mode
@@ -278,7 +470,7 @@ func (s *Service) GetServerInfo() ServerInfo {
 	defer s.mu.RUnlock()
 
 	info := ServerInfo{
-		Standalone:     s.config.Standalone,
+		Standalone:      s.config.Standalone,
 		CompleteLedgers: "",
 	}
 
@@ -337,13 +529,13 @@ func (s *Service) GetLedgerInfo(seq uint32) (*LedgerInfo, error) {
 	}
 
 	return &LedgerInfo{
-		Sequence:    l.Sequence(),
-		Hash:        l.Hash(),
-		ParentHash:  l.ParentHash(),
-		CloseTime:   l.CloseTime(),
-		TotalDrops:  l.TotalDrops(),
-		Validated:   l.IsValidated(),
-		Closed:      l.IsClosed(),
+		Sequence:   l.Sequence(),
+		Hash:       l.Hash(),
+		ParentHash: l.ParentHash(),
+		CloseTime:  l.CloseTime(),
+		TotalDrops: l.TotalDrops(),
+		Validated:  l.IsValidated(),
+		Closed:     l.IsClosed(),
 	}, nil
 }
 
@@ -442,11 +634,11 @@ func (s *Service) GetCurrentFees() (baseFee, reserveBase, reserveIncrement uint6
 
 // TransactionResult contains a transaction and its metadata
 type TransactionResult struct {
-	TxData        []byte
-	LedgerIndex   uint32
-	LedgerHash    [32]byte
-	Validated     bool
-	TxIndex       uint32
+	TxData      []byte
+	LedgerIndex uint32
+	LedgerHash  [32]byte
+	Validated   bool
+	TxIndex     uint32
 }
 
 // GetTransaction retrieves a transaction by its hash
@@ -610,19 +802,19 @@ func (s *Service) GetAccountInfo(account string, ledgerIndex string) (*AccountIn
 
 // TrustLine represents a trust line from account_lines RPC
 type TrustLine struct {
-	Account        string  `json:"account"`
-	Balance        string  `json:"balance"`
-	Currency       string  `json:"currency"`
-	Limit          string  `json:"limit"`
-	LimitPeer      string  `json:"limit_peer"`
-	QualityIn      uint32  `json:"quality_in,omitempty"`
-	QualityOut     uint32  `json:"quality_out,omitempty"`
-	NoRipple       bool    `json:"no_ripple,omitempty"`
-	NoRipplePeer   bool    `json:"no_ripple_peer,omitempty"`
-	Authorized     bool    `json:"authorized,omitempty"`
-	PeerAuthorized bool    `json:"peer_authorized,omitempty"`
-	Freeze         bool    `json:"freeze,omitempty"`
-	FreezePeer     bool    `json:"freeze_peer,omitempty"`
+	Account        string `json:"account"`
+	Balance        string `json:"balance"`
+	Currency       string `json:"currency"`
+	Limit          string `json:"limit"`
+	LimitPeer      string `json:"limit_peer"`
+	QualityIn      uint32 `json:"quality_in,omitempty"`
+	QualityOut     uint32 `json:"quality_out,omitempty"`
+	NoRipple       bool   `json:"no_ripple,omitempty"`
+	NoRipplePeer   bool   `json:"no_ripple_peer,omitempty"`
+	Authorized     bool   `json:"authorized,omitempty"`
+	PeerAuthorized bool   `json:"peer_authorized,omitempty"`
+	Freeze         bool   `json:"freeze,omitempty"`
+	FreezePeer     bool   `json:"freeze_peer,omitempty"`
 }
 
 // AccountLinesResult contains the result of account_lines RPC
@@ -740,23 +932,23 @@ func (s *Service) GetAccountLines(account string, ledgerIndex string, peer strin
 			line.Balance = rs.Balance.Value.Neg(rs.Balance.Value).Text('f', -1)
 			line.Limit = rs.LowLimit.Value.Text('f', -1)
 			line.LimitPeer = rs.HighLimit.Value.Text('f', -1)
-			line.NoRipple = (rs.Flags & 0x00020000) != 0      // lsfLowNoRipple
-			line.NoRipplePeer = (rs.Flags & 0x00040000) != 0  // lsfHighNoRipple
-			line.Authorized = (rs.Flags & 0x00010000) != 0    // lsfLowAuth
+			line.NoRipple = (rs.Flags & 0x00020000) != 0       // lsfLowNoRipple
+			line.NoRipplePeer = (rs.Flags & 0x00040000) != 0   // lsfHighNoRipple
+			line.Authorized = (rs.Flags & 0x00010000) != 0     // lsfLowAuth
 			line.PeerAuthorized = (rs.Flags & 0x00080000) != 0 // lsfHighAuth
-			line.Freeze = (rs.Flags & 0x00400000) != 0        // lsfLowFreeze
-			line.FreezePeer = (rs.Flags & 0x00800000) != 0    // lsfHighFreeze
+			line.Freeze = (rs.Flags & 0x00400000) != 0         // lsfLowFreeze
+			line.FreezePeer = (rs.Flags & 0x00800000) != 0     // lsfHighFreeze
 		} else {
 			// We are high account
 			line.Balance = rs.Balance.Value.Text('f', -1)
 			line.Limit = rs.HighLimit.Value.Text('f', -1)
 			line.LimitPeer = rs.LowLimit.Value.Text('f', -1)
-			line.NoRipple = (rs.Flags & 0x00040000) != 0      // lsfHighNoRipple
-			line.NoRipplePeer = (rs.Flags & 0x00020000) != 0  // lsfLowNoRipple
-			line.Authorized = (rs.Flags & 0x00080000) != 0    // lsfHighAuth
+			line.NoRipple = (rs.Flags & 0x00040000) != 0       // lsfHighNoRipple
+			line.NoRipplePeer = (rs.Flags & 0x00020000) != 0   // lsfLowNoRipple
+			line.Authorized = (rs.Flags & 0x00080000) != 0     // lsfHighAuth
 			line.PeerAuthorized = (rs.Flags & 0x00010000) != 0 // lsfLowAuth
-			line.Freeze = (rs.Flags & 0x00800000) != 0        // lsfHighFreeze
-			line.FreezePeer = (rs.Flags & 0x00400000) != 0    // lsfLowFreeze
+			line.Freeze = (rs.Flags & 0x00800000) != 0         // lsfHighFreeze
+			line.FreezePeer = (rs.Flags & 0x00400000) != 0     // lsfLowFreeze
 		}
 
 		line.QualityIn = rs.LowQualityIn
@@ -904,20 +1096,20 @@ func (s *Service) GetAccountOffers(account string, ledgerIndex string, limit uin
 
 // BookOffer represents an offer in an order book
 type BookOffer struct {
-	Account           string      `json:"Account"`
-	BookDirectory     string      `json:"BookDirectory"`
-	BookNode          string      `json:"BookNode"`
-	Flags             uint32      `json:"Flags"`
-	LedgerEntryType   string      `json:"LedgerEntryType"`
-	OwnerNode         string      `json:"OwnerNode"`
-	Sequence          uint32      `json:"Sequence"`
-	TakerGets         interface{} `json:"TakerGets"`
-	TakerPays         interface{} `json:"TakerPays"`
-	Index             string      `json:"index"`
-	Quality           string      `json:"quality"`
-	OwnerFunds        string      `json:"owner_funds,omitempty"`
-	TakerGetsFunded   interface{} `json:"taker_gets_funded,omitempty"`
-	TakerPaysFunded   interface{} `json:"taker_pays_funded,omitempty"`
+	Account         string      `json:"Account"`
+	BookDirectory   string      `json:"BookDirectory"`
+	BookNode        string      `json:"BookNode"`
+	Flags           uint32      `json:"Flags"`
+	LedgerEntryType string      `json:"LedgerEntryType"`
+	OwnerNode       string      `json:"OwnerNode"`
+	Sequence        uint32      `json:"Sequence"`
+	TakerGets       interface{} `json:"TakerGets"`
+	TakerPays       interface{} `json:"TakerPays"`
+	Index           string      `json:"index"`
+	Quality         string      `json:"quality"`
+	OwnerFunds      string      `json:"owner_funds,omitempty"`
+	TakerGetsFunded interface{} `json:"taker_gets_funded,omitempty"`
+	TakerPaysFunded interface{} `json:"taker_pays_funded,omitempty"`
 }
 
 // BookOffersResult contains the result of book_offers RPC
@@ -1162,13 +1354,13 @@ func (s *Service) persistToRelationalDB(ctx context.Context, l *ledger.Ledger) e
 
 // AccountTxResult contains the result of account_tx query
 type AccountTxResult struct {
-	Account      string                       `json:"account"`
-	LedgerMin    uint32                       `json:"ledger_index_min"`
-	LedgerMax    uint32                       `json:"ledger_index_max"`
-	Limit        uint32                       `json:"limit"`
+	Account      string                        `json:"account"`
+	LedgerMin    uint32                        `json:"ledger_index_min"`
+	LedgerMax    uint32                        `json:"ledger_index_max"`
+	Limit        uint32                        `json:"limit"`
 	Marker       *relationaldb.AccountTxMarker `json:"marker,omitempty"`
-	Transactions []AccountTransaction         `json:"transactions"`
-	Validated    bool                         `json:"validated"`
+	Transactions []AccountTransaction          `json:"transactions"`
+	Validated    bool                          `json:"validated"`
 }
 
 // AccountTransaction contains transaction data for account_tx
@@ -1394,19 +1586,19 @@ type LedgerDataResult struct {
 
 // LedgerHeaderInfo contains complete ledger header data for responses
 type LedgerHeaderInfo struct {
-	AccountHash         [32]byte  `json:"account_hash"`
-	CloseFlags          uint8     `json:"close_flags"`
-	CloseTime           int64     `json:"close_time"`           // Seconds since Ripple epoch
-	CloseTimeHuman      string    `json:"close_time_human"`     // Human-readable format
-	CloseTimeISO        string    `json:"close_time_iso"`       // ISO 8601 format
-	CloseTimeResolution uint32    `json:"close_time_resolution"`
-	Closed              bool      `json:"closed"`
-	LedgerHash          [32]byte  `json:"ledger_hash"`
-	LedgerIndex         uint32    `json:"ledger_index"`
-	ParentCloseTime     int64     `json:"parent_close_time"`
-	ParentHash          [32]byte  `json:"parent_hash"`
-	TotalCoins          uint64    `json:"total_coins"`          // Total XRP drops
-	TransactionHash     [32]byte  `json:"transaction_hash"`
+	AccountHash         [32]byte `json:"account_hash"`
+	CloseFlags          uint8    `json:"close_flags"`
+	CloseTime           int64    `json:"close_time"`       // Seconds since Ripple epoch
+	CloseTimeHuman      string   `json:"close_time_human"` // Human-readable format
+	CloseTimeISO        string   `json:"close_time_iso"`   // ISO 8601 format
+	CloseTimeResolution uint32   `json:"close_time_resolution"`
+	Closed              bool     `json:"closed"`
+	LedgerHash          [32]byte `json:"ledger_hash"`
+	LedgerIndex         uint32   `json:"ledger_index"`
+	ParentCloseTime     int64    `json:"parent_close_time"`
+	ParentHash          [32]byte `json:"parent_hash"`
+	TotalCoins          uint64   `json:"total_coins"` // Total XRP drops
+	TransactionHash     [32]byte `json:"transaction_hash"`
 }
 
 // LedgerDataItem represents a single state entry
@@ -1523,12 +1715,12 @@ func (s *Service) GetLedgerData(ledgerIndex string, limit uint32, marker string)
 
 // AccountObjectsResult contains account objects
 type AccountObjectsResult struct {
-	Account            string             `json:"account"`
-	AccountObjects     []AccountObjectItem `json:"account_objects"`
-	LedgerIndex        uint32             `json:"ledger_index"`
-	LedgerHash         [32]byte           `json:"ledger_hash"`
-	Validated          bool               `json:"validated"`
-	Marker             string             `json:"marker,omitempty"`
+	Account        string              `json:"account"`
+	AccountObjects []AccountObjectItem `json:"account_objects"`
+	LedgerIndex    uint32              `json:"ledger_index"`
+	LedgerHash     [32]byte            `json:"ledger_hash"`
+	Validated      bool                `json:"validated"`
+	Marker         string              `json:"marker,omitempty"`
 }
 
 // AccountObjectItem represents an account object

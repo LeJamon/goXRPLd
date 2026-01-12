@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -195,6 +197,63 @@ func runServer(cmd *cobra.Command, args []string) {
 	// Create WebSocket server for real-time subscriptions
 	wsServer := rpc.NewWebSocketServer(30 * time.Second)
 	wsServer.RegisterAllMethods()
+
+	// Create Publisher for broadcasting events to WebSocket subscribers
+	publisher := rpc.NewPublisher(wsServer.GetSubscriptionManager())
+
+	// Wire up ledger service events to WebSocket broadcasts
+	ledgerService.SetEventCallback(func(event *service.LedgerAcceptedEvent) {
+		if event == nil || event.LedgerInfo == nil {
+			return
+		}
+
+		// Get fee information from the ledger service
+		baseFee, reserveBase, reserveInc := ledgerService.GetCurrentFees()
+
+		// Convert close time to Ripple epoch (seconds since Jan 1, 2000)
+		rippleEpoch := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+		ledgerTime := uint32(event.LedgerInfo.CloseTime.Unix() - rippleEpoch.Unix())
+
+		// Publish ledger closed event
+		ledgerCloseEvent := &rpc.LedgerCloseEvent{
+			Type:             "ledgerClosed",
+			LedgerIndex:      event.LedgerInfo.Sequence,
+			LedgerHash:       hex.EncodeToString(event.LedgerInfo.Hash[:]),
+			LedgerTime:       ledgerTime,
+			FeeBase:          baseFee,
+			FeeRef:           baseFee, // Reference fee equals base fee in current implementation
+			ReserveBase:      reserveBase,
+			ReserveInc:       reserveInc,
+			TxnCount:         len(event.TransactionResults),
+			ValidatedLedgers: "", // Will be set by publisher
+		}
+		publisher.PublishLedgerClosed(ledgerCloseEvent)
+
+		// Publish transaction events for each transaction in the ledger
+		for _, txResult := range event.TransactionResults {
+			// Create transaction event
+			txEvent := &rpc.TransactionEvent{
+				Type:              "transaction",
+				EngineResult:      "tesSUCCESS",
+				EngineResultCode:  0,
+				EngineResultMessage: "The transaction was applied. Only final in a validated ledger.",
+				LedgerIndex:      txResult.LedgerIndex,
+				LedgerHash:       hex.EncodeToString(txResult.LedgerHash[:]),
+				Transaction:      json.RawMessage(txResult.TxData),
+				Meta:             json.RawMessage(txResult.MetaData),
+				Hash:             hex.EncodeToString(txResult.TxHash[:]),
+				Validated:        txResult.Validated,
+			}
+
+			// Broadcast to transaction subscribers and affected account subscribers
+			publisher.PublishTransaction(txEvent, txResult.AffectedAccounts)
+		}
+
+		if !quiet {
+			log.Printf("Broadcasted ledger %d with %d transactions to WebSocket subscribers",
+				event.LedgerInfo.Sequence, len(event.TransactionResults))
+		}
+	})
 
 	// Register HTTP endpoints
 	http.Handle("/", httpServer)    // Main RPC endpoint

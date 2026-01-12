@@ -505,3 +505,8 @@ func (ws *WebSocketServer) RegisterAllMethods() {
 	server := &Server{registry: ws.methodRegistry}
 	server.registerAllMethods()
 }
+
+// GetSubscriptionManager returns the subscription manager for event publishing
+func (ws *WebSocketServer) GetSubscriptionManager() *SubscriptionManager {
+	return ws.subscriptionManager
+}
