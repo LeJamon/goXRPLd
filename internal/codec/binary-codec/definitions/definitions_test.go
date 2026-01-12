@@ -10,7 +10,7 @@ func TestLoadDefinitions(t *testing.T) {
 	loadDefinitions()
 	require.Equal(t, int32(-1), definitions.Types["Done"])
 	require.Equal(t, int32(4), definitions.Types["Hash128"])
-	require.Equal(t, int32(-3), definitions.LedgerEntryTypes["Any"])
+	require.Equal(t, int32(97), definitions.LedgerEntryTypes["AccountRoot"])
 	require.Equal(t, int32(-399), definitions.TransactionResults["telLOCAL_ERROR"])
 	require.Equal(t, int32(1), definitions.TransactionTypes["EscrowCreate"])
 	require.Equal(t, &FieldInfo{Nth: 0, IsVLEncoded: false, IsSerialized: false, IsSigningField: false, Type: "Unknown"}, definitions.Fields["Generic"].FieldInfo)
@@ -26,6 +26,8 @@ func TestLoadDefinitions(t *testing.T) {
 	require.Equal(t, "NFTokenSellOffer", definitions.FieldIDNameMap[FieldHeader{TypeCode: 5, FieldCode: 29}])
 	require.Equal(t, int32(131076), definitions.Fields["Sequence"].Ordinal)
 	require.Equal(t, int32(131097), definitions.Fields["OfferSequence"].Ordinal)
+	require.Equal(t, int32(65537), definitions.GranularPermissions["TrustlineAuthorize"])
+	require.Equal(t, int32(1), definitions.DelegatablePermissions["Payment"])
 }
 
 // Helper functions to create and test ordinals.

@@ -1,7 +1,13 @@
 package rpc
 
 import (
+	"encoding/hex"
 	"encoding/json"
+	"strings"
+
+	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
+	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
 )
 
 // TxMethod handles the tx RPC method
@@ -10,53 +16,93 @@ type TxMethod struct{}
 func (m *TxMethod) Handle(ctx *RpcContext, params json.RawMessage) (interface{}, *RpcError) {
 	var request struct {
 		TransactionParam
-		Binary      bool `json:"binary,omitempty"`
-		MinLedger   uint32 `json:"min_ledger,omitempty"`
-		MaxLedger   uint32 `json:"max_ledger,omitempty"`
+		Binary    bool   `json:"binary,omitempty"`
+		MinLedger uint32 `json:"min_ledger,omitempty"`
+		MaxLedger uint32 `json:"max_ledger,omitempty"`
 	}
-	
+
 	if params != nil {
 		if err := json.Unmarshal(params, &request); err != nil {
 			return nil, RpcErrorInvalidParams("Invalid parameters: " + err.Error())
 		}
 	}
-	
+
 	if request.Transaction == "" {
 		return nil, RpcErrorInvalidParams("Missing required parameter: transaction")
 	}
-	
-	// TODO: Implement transaction lookup
-	// 1. Parse transaction ID (hash) from request
-	// 2. Search transaction database within specified ledger range (if provided)
-	// 3. Retrieve transaction data and metadata
-	// 4. Return transaction in binary or JSON format based on binary flag
-	// 5. Include ledger information and validation status
-	
-	response := map[string]interface{}{
-		"Account":         "rAccount...", // TODO: Get from actual transaction
-		"Amount":          "1000000000", // TODO: Get from actual transaction
-		"Destination":     "rDest...",   // TODO: Get from actual transaction
-		"Fee":             "12",         // TODO: Get from actual transaction
-		"Flags":           0,            // TODO: Get from actual transaction
-		"LastLedgerSequence": 1005,     // TODO: Get from actual transaction
-		"Sequence":        1,            // TODO: Get from actual transaction
-		"SigningPubKey":   "PUBLIC_KEY", // TODO: Get from actual transaction
-		"TransactionType": "Payment",    // TODO: Get from actual transaction
-		"TxnSignature":    "SIGNATURE",  // TODO: Get from actual transaction
-		"hash":            request.Transaction,
-		"inLedger":        1000,         // TODO: Get actual ledger index
-		"ledger_index":    1000,         // TODO: Same as inLedger
-		"meta": map[string]interface{}{
-			"AffectedNodes": []interface{}{
-				// TODO: Load actual transaction metadata
-			},
-			"TransactionIndex": 0, // TODO: Get actual index in ledger
-			"TransactionResult": "tesSUCCESS", // TODO: Get actual result code
-		},
-		"validated": true, // TODO: Check if transaction is in validated ledger
+
+	// Check if ledger service is available
+	if Services == nil || Services.Ledger == nil {
+		return nil, RpcErrorInternal("Ledger service not available")
 	}
-	
+
+	// Parse the transaction hash
+	txHashBytes, err := hex.DecodeString(request.Transaction)
+	if err != nil || len(txHashBytes) != 32 {
+		return nil, RpcErrorInvalidParams("Invalid transaction hash")
+	}
+
+	var txHash [32]byte
+	copy(txHash[:], txHashBytes)
+
+	// Look up the transaction
+	txInfo, err := Services.Ledger.GetTransaction(txHash)
+	if err != nil {
+		return nil, &RpcError{
+			Code:        -1,
+			ErrorString: "txnNotFound",
+			Message:     "Transaction not found",
+		}
+	}
+
+	// Parse the stored transaction data
+	// The stored data includes both the transaction and its metadata
+	var storedTx StoredTransaction
+	if err := json.Unmarshal(txInfo.TxData, &storedTx); err != nil {
+		return nil, RpcErrorInternal("Failed to parse transaction data")
+	}
+
+	// Build the response
+	response := map[string]interface{}{}
+
+	// If binary mode, return binary encoded transaction
+	if request.Binary {
+		// Encode transaction to binary
+		txBlob, err := binarycodec.Encode(storedTx.TxJSON)
+		if err == nil {
+			response["tx_blob"] = txBlob
+		}
+		// Encode metadata to binary
+		if storedTx.Meta != nil {
+			metaBlob, err := binarycodec.Encode(storedTx.Meta)
+			if err == nil {
+				response["meta"] = metaBlob
+			}
+		}
+	} else {
+		// Return JSON format
+		for k, v := range storedTx.TxJSON {
+			response[k] = v
+		}
+		if storedTx.Meta != nil {
+			response["meta"] = storedTx.Meta
+		}
+	}
+
+	// Add ledger info
+	response["hash"] = request.Transaction
+	response["inLedger"] = txInfo.LedgerIndex
+	response["ledger_index"] = txInfo.LedgerIndex
+	response["ledger_hash"] = txInfo.LedgerHash
+	response["validated"] = txInfo.Validated
+
 	return response, nil
+}
+
+// StoredTransaction represents a transaction stored in the ledger
+type StoredTransaction struct {
+	TxJSON map[string]interface{} `json:"tx_json"`
+	Meta   map[string]interface{} `json:"meta"`
 }
 
 func (m *TxMethod) RequiredRole() Role {
@@ -74,35 +120,45 @@ func (m *TxHistoryMethod) Handle(ctx *RpcContext, params json.RawMessage) (inter
 	var request struct {
 		Start uint32 `json:"start,omitempty"`
 	}
-	
+
 	if params != nil {
 		if err := json.Unmarshal(params, &request); err != nil {
 			return nil, RpcErrorInvalidParams("Invalid parameters: " + err.Error())
 		}
 	}
-	
-	// TODO: Implement transaction history
-	// 1. Retrieve recent transactions from transaction database
-	// 2. Start from specified ledger index (or most recent if not specified)
-	// 3. Return transactions in reverse chronological order
-	// 4. Limit results to reasonable number (e.g., 20 transactions)
-	// 5. Include transaction details and ledger information
-	
-	response := map[string]interface{}{
-		"index":       request.Start, // Starting ledger index
-		"txs": map[string]interface{}{
-			// TODO: Load actual transaction history
-			// Structure should be map of ledger_index -> transaction_list
-			// "1000": [
-			//   {
-			//     "Account": "rAccount...",
-			//     "TransactionType": "Payment",
-			//     ... transaction fields
-			//   }
-			// ]
-		},
+
+	// Check if ledger service is available
+	if Services == nil || Services.Ledger == nil {
+		return nil, RpcErrorInternal("Ledger service not available")
 	}
-	
+
+	// Get transaction history from the ledger service
+	result, err := Services.Ledger.GetTransactionHistory(request.Start)
+	if err != nil {
+		if err.Error() == "transaction history not available (no database configured)" {
+			return nil, &RpcError{
+				Code:    73, // lgrNotFound
+				Message: "Transaction history not available. Database not configured.",
+			}
+		}
+		return nil, RpcErrorInternal("Failed to get transaction history: " + err.Error())
+	}
+
+	// Build transactions array
+	txs := make([]map[string]interface{}, len(result.Transactions))
+	for i, tx := range result.Transactions {
+		txs[i] = map[string]interface{}{
+			"hash":         hex.EncodeToString(tx.Hash[:]),
+			"ledger_index": tx.LedgerIndex,
+			"tx_blob":      hex.EncodeToString(tx.TxBlob),
+		}
+	}
+
+	response := map[string]interface{}{
+		"index": result.Index,
+		"txs":   txs,
+	}
+
 	return response, nil
 }
 
@@ -119,77 +175,125 @@ type SubmitMethod struct{}
 
 func (m *SubmitMethod) Handle(ctx *RpcContext, params json.RawMessage) (interface{}, *RpcError) {
 	var request struct {
-		TxBlob           string `json:"tx_blob,omitempty"`
-		TxJson           json.RawMessage `json:"tx_json,omitempty"`
-		Secret           string `json:"secret,omitempty"`
-		Seed             string `json:"seed,omitempty"`
-		SeedHex          string `json:"seed_hex,omitempty"`
-		Passphrase       string `json:"passphrase,omitempty"`
-		KeyType          string `json:"key_type,omitempty"`
-		FailHard         bool   `json:"fail_hard,omitempty"`
-		OfflineSign      bool   `json:"offline,omitempty"`
-		BuildPath        bool   `json:"build_path,omitempty"`
-		FeeMultMax       uint32 `json:"fee_mult_max,omitempty"`
-		FeeDivMax        uint32 `json:"fee_div_max,omitempty"`
+		TxBlob     string          `json:"tx_blob,omitempty"`
+		TxJson     json.RawMessage `json:"tx_json,omitempty"`
+		Secret     string          `json:"secret,omitempty"`
+		Seed       string          `json:"seed,omitempty"`
+		SeedHex    string          `json:"seed_hex,omitempty"`
+		Passphrase string          `json:"passphrase,omitempty"`
+		KeyType    string          `json:"key_type,omitempty"`
+		FailHard   bool            `json:"fail_hard,omitempty"`
+		Offline    bool            `json:"offline,omitempty"`
+		BuildPath  bool            `json:"build_path,omitempty"`
+		FeeMultMax uint32          `json:"fee_mult_max,omitempty"`
+		FeeDivMax  uint32          `json:"fee_div_max,omitempty"`
 	}
-	
+
 	if params != nil {
 		if err := json.Unmarshal(params, &request); err != nil {
 			return nil, RpcErrorInvalidParams("Invalid parameters: " + err.Error())
 		}
 	}
-	
-	// TODO: Implement transaction submission
-	// Two modes of operation:
-	// 1. Submit pre-signed transaction (tx_blob provided):
-	//    - Decode hex blob to transaction object
-	//    - Validate transaction format and signatures
-	//    - Apply transaction to current ledger state
-	//    - Add to transaction pool for consensus
-	//    - Return immediate result or preliminary result
-	//
-	// 2. Sign and submit transaction (tx_json + credentials provided):
-	//    - Parse transaction JSON
-	//    - Fill in missing fields (Fee, Sequence, LastLedgerSequence)
-	//    - Build payment paths if requested and transaction is Payment
-	//    - Sign transaction using provided credentials
-	//    - Submit signed transaction (same as mode 1)
-	//
-	// Security considerations:
-	// - Never log or persist signing credentials
-	// - Validate all transaction fields
-	// - Check account authorization and balances
-	// - Enforce fee limits and anti-spam measures
-	// - Handle rate limiting per client IP
-	
+
 	if request.TxBlob == "" && len(request.TxJson) == 0 {
 		return nil, RpcErrorInvalidParams("Either tx_blob or tx_json must be provided")
 	}
-	
-	response := map[string]interface{}{
-		"engine_result":         "tesSUCCESS", // TODO: Get actual submission result
-		"engine_result_code":    0,            // TODO: Get numeric result code
-		"engine_result_message": "The transaction was applied. Only final in a validated ledger.",
-		"tx_blob":               request.TxBlob, // Echo back the blob (or generated blob)
-		"tx_json": map[string]interface{}{
-			// TODO: Return the processed transaction JSON
-			"Account":         "rAccount...",
-			"TransactionType": "Payment",
-			"Sequence":        1,
-			"Fee":             "12",
-			"hash":            "TRANSACTION_HASH", // TODO: Calculate actual hash
-		},
-		"accepted":              true, // TODO: Determine if transaction was accepted
-		"account_sequence_available": 2, // TODO: Get next available sequence
-		"account_sequence_next":      2, // TODO: Get next sequence to use
-		"applied":                   true, // TODO: Check if transaction was applied
-		"broadcast":                 true, // TODO: Check if transaction was broadcast
-		"kept":                      true, // TODO: Check if transaction was kept in pool
-		"queued":                    false, // TODO: Check if transaction was queued
-		"open_ledger_cost":          "10", // TODO: Get current open ledger cost
-		"validated_ledger_index":    1000, // TODO: Get current validated ledger index
+
+	// Check if ledger service is available
+	if Services == nil || Services.Ledger == nil {
+		return nil, RpcErrorInternal("Ledger service not available")
 	}
-	
+
+	var txJSON []byte
+
+	if len(request.TxJson) > 0 {
+		// Submit using tx_json
+		txJSON = request.TxJson
+
+		// TODO: If signing credentials are provided, sign the transaction first
+		// For now, we assume the transaction is either pre-signed or we skip signature validation
+		if request.Secret != "" || request.Seed != "" || request.SeedHex != "" || request.Passphrase != "" {
+			// TODO: Implement signing
+			// For now, just use the tx_json as-is
+		}
+	} else {
+		// TODO: Submit using tx_blob - decode hex to transaction
+		// For now, return error since we only support tx_json
+		return nil, RpcErrorInvalidParams("tx_blob submission not yet implemented, use tx_json instead")
+	}
+
+	// Parse tx_json to include in response and calculate hash
+	var txJsonMap map[string]interface{}
+	if err := json.Unmarshal(txJSON, &txJsonMap); err != nil {
+		txJsonMap = map[string]interface{}{}
+	}
+
+	// Submit the transaction
+	result, err := Services.Ledger.SubmitTransaction(txJSON)
+	if err != nil {
+		return nil, RpcErrorInternal("Failed to submit transaction: " + err.Error())
+	}
+
+	// If transaction was applied, store it for later lookup
+	var txHashStr string
+	if result.Applied {
+		// Encode transaction to get binary for hash calculation
+		txBlob, encErr := binarycodec.Encode(txJsonMap)
+		if encErr == nil {
+			txHashStr = calculateTxHash(txBlob)
+
+			// Parse the hash back to bytes
+			if txHashBytes, err := hex.DecodeString(txHashStr); err == nil && len(txHashBytes) == 32 {
+				var txHash [32]byte
+				copy(txHash[:], txHashBytes)
+
+				// Store the transaction with metadata
+				storedTx := StoredTransaction{
+					TxJSON: txJsonMap,
+					Meta: map[string]interface{}{
+						"TransactionResult": result.EngineResult,
+						"TransactionIndex":  0,
+					},
+				}
+				storedData, _ := json.Marshal(storedTx)
+				_ = Services.Ledger.StoreTransaction(txHash, storedData)
+			}
+		}
+	}
+
+	// Get current fees for response
+	baseFee, _, _ := Services.Ledger.GetCurrentFees()
+
+	response := map[string]interface{}{
+		"engine_result":          result.EngineResult,
+		"engine_result_code":     result.EngineResultCode,
+		"engine_result_message":  result.EngineResultMessage,
+		"tx_json":                txJsonMap,
+		"accepted":               result.Applied,
+		"applied":                result.Applied,
+		"broadcast":              result.Applied, // In standalone mode, no broadcast
+		"kept":                   result.Applied,
+		"queued":                 false,
+		"open_ledger_cost":       baseFee,
+		"validated_ledger_index": result.ValidatedLedger,
+		"current_ledger_index":   result.CurrentLedger,
+	}
+
+	// Add hash if we calculated it
+	if txHashStr != "" {
+		response["tx_hash"] = txHashStr
+		txJsonMap["hash"] = txHashStr
+	}
+
+	// Include result-specific status based on engine result
+	if result.EngineResultCode == 0 { // tesSUCCESS
+		response["status"] = "success"
+	} else if result.EngineResultCode >= 100 && result.EngineResultCode < 200 { // tec codes
+		response["status"] = "success" // tec codes are still "successful" submissions
+	} else {
+		response["status"] = "error"
+	}
+
 	return response, nil
 }
 
@@ -274,52 +378,154 @@ func (m *SignMethod) Handle(ctx *RpcContext, params json.RawMessage) (interface{
 		FeeMultMax uint32          `json:"fee_mult_max,omitempty"`
 		FeeDivMax  uint32          `json:"fee_div_max,omitempty"`
 	}
-	
+
 	if params != nil {
 		if err := json.Unmarshal(params, &request); err != nil {
 			return nil, RpcErrorInvalidParams("Invalid parameters: " + err.Error())
 		}
 	}
-	
+
 	if len(request.TxJson) == 0 {
 		return nil, RpcErrorInvalidParams("Missing required parameter: tx_json")
 	}
-	
+
 	// Check for signing credentials
 	if request.Secret == "" && request.Seed == "" && request.SeedHex == "" && request.Passphrase == "" {
 		return nil, RpcErrorInvalidParams("Missing signing credentials")
 	}
-	
-	// TODO: Implement transaction signing
-	// 1. Parse transaction JSON
-	// 2. Fill in missing fields (Fee, Sequence, LastLedgerSequence) if not offline
-	// 3. Build payment paths if requested and transaction is Payment
-	// 4. Derive signing key from provided credentials
-	// 5. Sign transaction using appropriate algorithm (Ed25519 or secp256k1)
-	// 6. Return signed transaction as both JSON and hex blob
-	// 7. Do NOT submit transaction (sign-only operation)
-	//
-	// Security considerations:
-	// - Never log or persist signing credentials
-	// - Clear credentials from memory after use
-	// - Use secure random number generation
-	// - Validate key derivation parameters
-	
-	response := map[string]interface{}{
-		"tx_blob": "SIGNED_TRANSACTION_HEX", // TODO: Generate actual signed blob
-		"tx_json": map[string]interface{}{
-			// TODO: Return signed transaction JSON
-			"Account":        "rAccount...",
-			"TransactionType": "Payment",
-			"Sequence":       1,
-			"Fee":           "12",
-			"SigningPubKey": "PUBLIC_KEY", // TODO: Get actual public key
-			"TxnSignature":  "SIGNATURE",  // TODO: Generate actual signature
-			"hash":          "TX_HASH",    // TODO: Calculate transaction hash  
-		},
+
+	// Determine the seed to use
+	seed := request.Seed
+	if seed == "" {
+		seed = request.Secret // secret is an alias for seed
 	}
-	
+	if seed == "" && request.Passphrase != "" {
+		// TODO: Derive seed from passphrase
+		return nil, RpcErrorInvalidParams("Passphrase-based signing not yet implemented")
+	}
+	if seed == "" && request.SeedHex != "" {
+		// TODO: Handle hex-encoded seed
+		return nil, RpcErrorInvalidParams("Hex seed signing not yet implemented")
+	}
+
+	if seed == "" {
+		return nil, RpcErrorInvalidParams("No valid signing credential provided")
+	}
+
+	// Derive keypair from seed
+	privateKey, publicKey, err := tx.DeriveKeypairFromSeed(seed)
+	if err != nil {
+		return nil, RpcErrorInvalidParams("Failed to derive keypair: " + err.Error())
+	}
+
+	// Derive address from public key
+	address, err := tx.DeriveAddressFromPublicKey(publicKey)
+	if err != nil {
+		return nil, RpcErrorInternal("Failed to derive address: " + err.Error())
+	}
+
+	// Parse the transaction JSON
+	var txMap map[string]interface{}
+	if err := json.Unmarshal(request.TxJson, &txMap); err != nil {
+		return nil, RpcErrorInvalidParams("Invalid tx_json: " + err.Error())
+	}
+
+	// Verify the account matches the signing key
+	if txAccount, ok := txMap["Account"].(string); ok {
+		if txAccount != address {
+			return nil, RpcErrorInvalidParams("Account in tx_json does not match signing key")
+		}
+	} else {
+		// Set the account if not present
+		txMap["Account"] = address
+	}
+
+	// Fill in missing fields if not offline
+	if !request.Offline {
+		// Set Fee if not present
+		if _, ok := txMap["Fee"]; !ok {
+			baseFee, _, _ := Services.Ledger.GetCurrentFees()
+			txMap["Fee"] = string(rune(baseFee)) // Convert to string
+		}
+
+		// Set Sequence if not present
+		if _, ok := txMap["Sequence"]; !ok {
+			// Get account info to find current sequence
+			info, err := Services.Ledger.GetAccountInfo(address, "current")
+			if err != nil {
+				return nil, RpcErrorInternal("Failed to get account sequence: " + err.Error())
+			}
+			txMap["Sequence"] = info.Sequence
+		}
+
+		// Set LastLedgerSequence if not present (current + 4)
+		if _, ok := txMap["LastLedgerSequence"]; !ok {
+			currentLedger := Services.Ledger.GetCurrentLedgerIndex()
+			txMap["LastLedgerSequence"] = currentLedger + 4
+		}
+	}
+
+	// Add the signing public key
+	txMap["SigningPubKey"] = publicKey
+
+	// Parse the transaction to get a proper Transaction object
+	txBytes, err := json.Marshal(txMap)
+	if err != nil {
+		return nil, RpcErrorInternal("Failed to marshal transaction: " + err.Error())
+	}
+
+	transaction, err := tx.ParseJSON(txBytes)
+	if err != nil {
+		return nil, RpcErrorInvalidParams("Failed to parse transaction: " + err.Error())
+	}
+
+	// Update the common fields with signing key
+	common := transaction.GetCommon()
+	common.SigningPubKey = publicKey
+
+	// Sign the transaction
+	signature, err := tx.SignTransaction(transaction, privateKey)
+	if err != nil {
+		return nil, RpcErrorInternal("Failed to sign transaction: " + err.Error())
+	}
+
+	// Add signature to transaction
+	txMap["TxnSignature"] = signature
+
+	// Encode the transaction to binary
+	txBlob, err := binarycodec.Encode(txMap)
+	if err != nil {
+		return nil, RpcErrorInternal("Failed to encode transaction: " + err.Error())
+	}
+
+	// Calculate transaction hash
+	txHash := calculateTxHash(txBlob)
+
+	// Add hash to response
+	txMap["hash"] = txHash
+
+	response := map[string]interface{}{
+		"tx_blob": txBlob,
+		"tx_json": txMap,
+	}
+
 	return response, nil
+}
+
+// calculateTxHash calculates the hash of a signed transaction
+func calculateTxHash(txBlobHex string) string {
+	// The transaction hash is SHA512Half of prefix + transaction blob
+	// Prefix is "TXN\x00" = 0x54584E00
+	prefix := []byte{0x54, 0x58, 0x4E, 0x00}
+
+	txBytes, err := hex.DecodeString(txBlobHex)
+	if err != nil {
+		return ""
+	}
+
+	data := append(prefix, txBytes...)
+	hash := crypto.Sha512Half(data)
+	return strings.ToUpper(hex.EncodeToString(hash[:]))
 }
 
 func (m *SignMethod) RequiredRole() Role {

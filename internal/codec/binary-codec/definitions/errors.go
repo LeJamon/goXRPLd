@@ -6,7 +6,7 @@ import (
 )
 
 var (
-	// Static errors
+	// definitions
 
 	// ErrUnableToCastFieldInfo is returned when the field info cannot be cast.
 	ErrUnableToCastFieldInfo = errors.New("unable to cast to field info")

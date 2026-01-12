@@ -77,6 +77,10 @@ type Config struct {
 	WebsocketPingFrequency int                      `toml:"websocket_ping_frequency" mapstructure:"websocket_ping_frequency"`
 	ServerDomain           string                   `toml:"server_domain" mapstructure:"server_domain"`
 
+	// Genesis file path (JSON format)
+	// If empty, uses built-in default genesis configuration
+	GenesisFile string `toml:"genesis_file" mapstructure:"genesis_file"`
+
 	// Validators configuration (loaded from separate file)
 	Validators ValidatorsConfig `toml:"-" mapstructure:"-"`
 

@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 )
 
 // JSON-RPC 2.0 Request
@@ -94,21 +95,47 @@ type BaseResponse struct {
 	LedgerCurrent uint32 `json:"ledger_current_index,omitempty"`
 }
 
-// WebSocket specific structures
-type WebSocketCommand struct {
-	Command     string          `json:"command"`
-	ID          interface{}     `json:"id,omitempty"`
-	ApiVersion  *int           `json:"api_version,omitempty"`
-	Params      json.RawMessage `json:",inline,omitempty"`
+// API Warning IDs as defined in XRPL documentation
+const (
+	WarningUnsupportedAmendmentsMajority = 1001 // Unsupported amendments have reached majority
+	WarningAmendmentBlocked              = 1002 // This server is amendment blocked
+	WarningClioServer                    = 2001 // This is a clio server
+)
+
+// WarningObject represents an API warning in responses
+type WarningObject struct {
+	ID      int                    `json:"id"`                // Unique numeric code for this warning
+	Message string                 `json:"message"`           // Human-readable description
+	Details map[string]interface{} `json:"details,omitempty"` // Additional warning-specific information
 }
 
+// WebSocket specific structures
+type WebSocketCommand struct {
+	Command    string          `json:"command"`
+	ID         interface{}     `json:"id,omitempty"`
+	ApiVersion *int            `json:"api_version,omitempty"`
+	Params     json.RawMessage `json:",inline,omitempty"`
+}
+
+// WebSocketResponse represents an XRPL WebSocket API response
+// Fields follow the XRPL WebSocket response formatting specification
 type WebSocketResponse struct {
-	Type        string      `json:"type"`
-	ID          interface{} `json:"id,omitempty"`
-	Status      string      `json:"status,omitempty"`
-	Result      interface{} `json:"result,omitempty"`
-	Error       *RpcError   `json:"error,omitempty"`
-	ApiVersion  int         `json:"api_version,omitempty"`
+	// Required fields
+	Status string `json:"status"`           // "success" or "error" (required)
+	Type   string `json:"type"`             // "response" for API responses (required)
+	Result interface{} `json:"result,omitempty"` // The result of the query (required on success)
+
+	// Optional fields
+	ID         interface{}     `json:"id,omitempty"`         // Request ID for correlation (optional)
+	Warning    string          `json:"warning,omitempty"`    // "load" when approaching rate limit (optional)
+	Warnings   []WarningObject `json:"warnings,omitempty"`   // Array of warning objects (optional)
+	Forwarded  bool            `json:"forwarded,omitempty"`  // True if forwarded from Clio to P2P server (optional)
+	ApiVersion int             `json:"api_version,omitempty"` // API version used for this response (optional, implementation-specific)
+
+	// Error fields for error responses (flat at top level per XRPL spec)
+	Error        string `json:"error,omitempty"`
+	ErrorCode    int    `json:"error_code,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
 }
 
 // Subscription types for WebSocket streams
@@ -163,10 +190,39 @@ type StreamMessage struct {
 
 // Common parameter structures used across multiple methods
 
+// LedgerIndex is a custom type that can unmarshal from either a JSON number or string
+// This matches XRPL API behavior where ledger_index can be: 12345, "12345", "validated", "current", "closed"
+type LedgerIndex string
+
+// UnmarshalJSON implements custom unmarshaling for LedgerIndex
+func (li *LedgerIndex) UnmarshalJSON(data []byte) error {
+	// First try to unmarshal as a string (handles "validated", "current", "closed", "12345")
+	var strVal string
+	if err := json.Unmarshal(data, &strVal); err == nil {
+		*li = LedgerIndex(strVal)
+		return nil
+	}
+
+	// Try to unmarshal as a number
+	var numVal uint64
+	if err := json.Unmarshal(data, &numVal); err == nil {
+		*li = LedgerIndex(fmt.Sprintf("%d", numVal))
+		return nil
+	}
+
+	// If both fail, return an error
+	return fmt.Errorf("ledger_index must be a number or string, got: %s", string(data))
+}
+
+// String returns the string representation of the LedgerIndex
+func (li LedgerIndex) String() string {
+	return string(li)
+}
+
 // LedgerSpecifier - used to specify which ledger to query
 type LedgerSpecifier struct {
-	LedgerHash  string `json:"ledger_hash,omitempty"`
-	LedgerIndex string `json:"ledger_index,omitempty"` // can be number or "validated", "current", "closed"
+	LedgerHash  string      `json:"ledger_hash,omitempty"`
+	LedgerIndex LedgerIndex `json:"ledger_index,omitempty"` // can be number or "validated", "current", "closed"
 }
 
 // Account parameter
@@ -192,8 +248,8 @@ type Currency struct {
 	Issuer   string `json:"issuer,omitempty"`
 }
 
-// Amount can be drops (string) or IOU object
-type Amount json.RawMessage
+// RawAmount can be drops (string) or IOU object (used for JSON parsing)
+type RawAmount json.RawMessage
 
 // Path specification for path finding
 type Path []PathStep

@@ -159,25 +159,58 @@ func (ws *WebSocketServer) handleSend(wsConn *WebSocketConnection) {
 
 // handleMessage processes a single message from WebSocket
 func (ws *WebSocketServer) handleMessage(wsConn *WebSocketConnection, message []byte) {
-	// Parse WebSocket command
-	var cmd WebSocketCommand
-	if err := json.Unmarshal(message, &cmd); err != nil {
+	// Parse WebSocket command - XRPL format has command and params at top level
+	var cmdMap map[string]interface{}
+	if err := json.Unmarshal(message, &cmdMap); err != nil {
 		ws.sendError(wsConn, RpcErrorInvalidParams("Invalid JSON: "+err.Error()), nil)
 		return
+	}
+
+	// Extract command
+	command, ok := cmdMap["command"].(string)
+	if !ok || command == "" {
+		ws.sendError(wsConn, NewRpcError(RpcMISSING_COMMAND, "missingCommand", "missingCommand", "Missing command field"), nil)
+		return
+	}
+
+	// Extract ID (optional)
+	var id interface{}
+	if idVal, exists := cmdMap["id"]; exists {
+		id = idVal
+	}
+
+	// Build cmd struct
+	cmd := WebSocketCommand{
+		Command: command,
+		ID:      id,
+	}
+
+	// Remove command and id from params, pass the rest as params
+	delete(cmdMap, "command")
+	delete(cmdMap, "id")
+
+	// Handle api_version
+	var apiVersion int = DefaultApiVersion
+	if apiVer, exists := cmdMap["api_version"]; exists {
+		if ver, ok := apiVer.(float64); ok {
+			apiVersion = int(ver)
+		}
+		delete(cmdMap, "api_version")
+	}
+
+	// Convert remaining fields to params JSON
+	if len(cmdMap) > 0 {
+		paramsBytes, _ := json.Marshal(cmdMap)
+		cmd.Params = paramsBytes
 	}
 
 	// Create RPC context
 	rpcCtx := &RpcContext{
 		Context:    wsConn.ctx,
-		Role:       RoleGuest, // TODO: Implement proper role detection
-		ApiVersion: DefaultApiVersion,
-		IsAdmin:    false, // TODO: Implement admin detection
+		Role:       RoleGuest,
+		ApiVersion: apiVersion,
+		IsAdmin:    false,
 		ClientIP:   getWebSocketClientIP(wsConn.conn),
-	}
-
-	// Handle API version
-	if cmd.ApiVersion != nil {
-		rpcCtx.ApiVersion = *cmd.ApiVersion
 	}
 
 	// Handle subscription commands specially
@@ -283,15 +316,7 @@ func (ws *WebSocketServer) handlePathFind(wsConn *WebSocketConnection, ctx *RpcC
 	// This creates a persistent path-finding session that sends updates
 	// as market conditions change
 
-	response := WebSocketResponse{
-		Type:   "response",
-		ID:     cmd.ID,
-		Status: "error",
-		Error:  NewRpcError(RpcNOT_SUPPORTED, "notSupported", "notSupported", "path_find not yet implemented"),
-		ApiVersion: ctx.ApiVersion,
-	}
-
-	ws.sendResponse(wsConn, response)
+	ws.sendError(wsConn, NewRpcError(RpcNOT_SUPPORTED, "notSupported", "notSupported", "path_find not yet implemented"), cmd.ID)
 }
 
 // handleRPCMethod processes regular RPC method calls over WebSocket
@@ -328,8 +353,27 @@ func (ws *WebSocketServer) handleRPCMethod(wsConn *WebSocketConnection, ctx *Rpc
 	}
 }
 
+// WebSocketResponseOptions contains optional fields for WebSocket responses
+type WebSocketResponseOptions struct {
+	Warning   string          // "load" when approaching rate limit
+	Warnings  []WarningObject // Array of warning objects
+	Forwarded bool            // True if forwarded from Clio to P2P server
+}
+
 // sendResponse sends a WebSocket response
 func (ws *WebSocketServer) sendResponse(wsConn *WebSocketConnection, response WebSocketResponse) {
+	ws.sendResponseWithOptions(wsConn, response, nil)
+}
+
+// sendResponseWithOptions sends a WebSocket response with optional warning/forwarded fields
+func (ws *WebSocketServer) sendResponseWithOptions(wsConn *WebSocketConnection, response WebSocketResponse, opts *WebSocketResponseOptions) {
+	// Apply optional fields if provided
+	if opts != nil {
+		response.Warning = opts.Warning
+		response.Warnings = opts.Warnings
+		response.Forwarded = opts.Forwarded
+	}
+
 	data, err := json.Marshal(response)
 	if err != nil {
 		log.Printf("Failed to marshal WebSocket response: %v", err)
@@ -348,15 +392,46 @@ func (ws *WebSocketServer) sendResponse(wsConn *WebSocketConnection, response We
 	}
 }
 
-// sendError sends a WebSocket error response
+// sendError sends a WebSocket error response with flat error fields (XRPL format)
 func (ws *WebSocketServer) sendError(wsConn *WebSocketConnection, rpcErr *RpcError, id interface{}) {
+	ws.sendErrorWithOptions(wsConn, rpcErr, id, nil)
+}
+
+// sendErrorWithOptions sends a WebSocket error response with optional warning/forwarded fields
+// Per XRPL WebSocket spec, error fields are at top level (not nested in result)
+func (ws *WebSocketServer) sendErrorWithOptions(wsConn *WebSocketConnection, rpcErr *RpcError, id interface{}, opts *WebSocketResponseOptions) {
 	response := WebSocketResponse{
-		Type:   "response",
-		ID:     id,
-		Status: "error",
-		Error:  rpcErr,
+		Type:         "response",
+		Status:       "error",
+		ID:           id,
+		Error:        rpcErr.ErrorString,
+		ErrorCode:    rpcErr.Code,
+		ErrorMessage: rpcErr.Message,
 	}
-	ws.sendResponse(wsConn, response)
+
+	// Apply optional fields if provided
+	if opts != nil {
+		response.Warning = opts.Warning
+		response.Warnings = opts.Warnings
+		response.Forwarded = opts.Forwarded
+	}
+
+	data, err := json.Marshal(response)
+	if err != nil {
+		log.Printf("Failed to marshal WebSocket error response: %v", err)
+		return
+	}
+
+	select {
+	case wsConn.sendChannel <- data:
+		// Response sent
+	case <-wsConn.ctx.Done():
+		// Connection closed
+	default:
+		// Channel full, close connection
+		log.Printf("WebSocket send channel full, closing connection %s", wsConn.ID)
+		ws.closeConnection(wsConn)
+	}
 }
 
 // closeConnection closes a WebSocket connection
@@ -429,4 +504,9 @@ func (ws *WebSocketServer) RegisterAllMethods() {
 	// Use the same method registration as HTTP server
 	server := &Server{registry: ws.methodRegistry}
 	server.registerAllMethods()
+}
+
+// GetSubscriptionManager returns the subscription manager for event publishing
+func (ws *WebSocketServer) GetSubscriptionManager() *SubscriptionManager {
+	return ws.subscriptionManager
 }

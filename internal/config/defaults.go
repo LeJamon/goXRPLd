@@ -104,6 +104,9 @@ func setDefaults(v *viper.Viper) {
 	// Validators file default
 	v.SetDefault("validators_file", "validators.txt")
 
+	// Genesis file default (empty = use built-in defaults)
+	v.SetDefault("genesis_file", "")
+
 	// Port-specific defaults
 	setPortDefaults(v)
 }

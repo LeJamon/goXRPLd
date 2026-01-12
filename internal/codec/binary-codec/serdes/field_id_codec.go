@@ -25,7 +25,7 @@ func NewFieldIDCodec(definitions interfaces.Definitions) *FieldIDCodec {
 	return &FieldIDCodec{definitions: definitions}
 }
 
-// Returns the unique field ID for a given field name.
+// Encode returns the unique field ID for a given field name.
 // This field ID consists of the type code and field code, in 1 to 3 bytes
 // depending on whether those values are "common" (<16) or "uncommon" (>16).
 func (f *FieldIDCodec) Encode(fieldName string) ([]byte, error) {
@@ -46,8 +46,7 @@ func (f *FieldIDCodec) Encode(fieldName string) ([]byte, error) {
 	return append(b, 0, byte(fh.TypeCode), byte(fh.FieldCode)), nil
 }
 
-// Returns the field name represented by the given field ID in hex string form.
-// nolint
+// Decode returns the field name represented by the given field ID in hex string form.
 func (f *FieldIDCodec) Decode(h string) (string, error) {
 	b, err := hex.DecodeString(h)
 	if err != nil {

@@ -3,7 +3,7 @@ package binarycodec
 import (
 	"testing"
 
-	"github.com/LeJamon/goXRPLd/internal/types"
+	"github.com/Peersyst/xrpl-go/binary-codec/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -637,6 +637,113 @@ func TestEncodeForSigning(t *testing.T) {
 	for _, tc := range tt {
 		t.Run(tc.description, func(t *testing.T) {
 			got, err := EncodeForSigning(tc.input)
+
+			if tc.expectedErr != nil {
+				require.EqualError(t, err, tc.expectedErr.Error())
+				require.Empty(t, got)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, tc.output, got)
+			}
+		})
+	}
+}
+
+func TestEncodeForSigningBatch(t *testing.T) {
+	tt := []struct {
+		description string
+		input       map[string]any
+		output      string
+		expectedErr error
+	}{
+		{
+			description: "pass - encode batch with multiple txIDs",
+			input: map[string]any{
+				"flags": uint32(1),
+				"txIDs": []string{
+					"ABE4871E9083DF66727045D49DEEDD3A6F166EB7F8D1E92FE868F02E76B2C5CA",
+					"795AAC88B59E95C3497609749127E69F12958BC016C600C770AEEB1474C840B4",
+				},
+			},
+			output:      "424348000000000100000002ABE4871E9083DF66727045D49DEEDD3A6F166EB7F8D1E92FE868F02E76B2C5CA795AAC88B59E95C3497609749127E69F12958BC016C600C770AEEB1474C840B4",
+			expectedErr: nil,
+		},
+		{
+			description: "pass - encode batch with zero flags",
+			input: map[string]any{
+				"flags": uint32(0),
+				"txIDs": []string{
+					"1111111111111111111111111111111111111111111111111111111111111111",
+				},
+			},
+			output:      "4243480000000000000000011111111111111111111111111111111111111111111111111111111111111111",
+			expectedErr: nil,
+		},
+		{
+			description: "fail - batch missing flags field",
+			input: map[string]any{
+				"txIDs": []string{
+					"E3FE6EA3D48F0C2B639448020EA4F03D4F4F8FFDB243A852A0F59177921B4879",
+				},
+			},
+			output:      "",
+			expectedErr: ErrBatchFlagsFieldNotFound,
+		},
+		{
+			description: "fail - batch missing txIDs field",
+			input: map[string]any{
+				"flags": uint32(12345),
+			},
+			output:      "",
+			expectedErr: ErrBatchTxIDsFieldNotFound,
+		},
+		{
+			description: "fail - batch with invalid txIDs type",
+			input: map[string]any{
+				"flags": uint32(12345),
+				"txIDs": "not_an_array",
+			},
+			output:      "",
+			expectedErr: ErrBatchTxIDsNotArray,
+		},
+		{
+			description: "fail - batch with non-string txID",
+			input: map[string]any{
+				"flags": uint32(12345),
+				"txIDs": []int{
+					123, //
+				},
+			},
+			output:      "",
+			expectedErr: ErrBatchTxIDsNotArray,
+		},
+		{
+			description: "fail - batch with invalid flags type",
+			input: map[string]any{
+				"flags": "invalid_flags_type",
+				"txIDs": []string{
+					"ABE4871E9083DF66727045D49DEEDD3A6F166EB7F8D1E92FE868F02E76B2C5CA",
+				},
+			},
+			output:      "",
+			expectedErr: ErrBatchFlagsNotUInt32,
+		},
+		{
+			description: "fail - batch with flags as int instead of uint32",
+			input: map[string]any{
+				"flags": 123,
+				"txIDs": []string{
+					"ABE4871E9083DF66727045D49DEEDD3A6F166EB7F8D1E92FE868F02E76B2C5CA",
+				},
+			},
+			output:      "",
+			expectedErr: ErrBatchFlagsNotUInt32,
+		},
+	}
+
+	for _, tc := range tt {
+		t.Run(tc.description, func(t *testing.T) {
+			got, err := EncodeForSigningBatch(tc.input)
 
 			if tc.expectedErr != nil {
 				require.EqualError(t, err, tc.expectedErr.Error())

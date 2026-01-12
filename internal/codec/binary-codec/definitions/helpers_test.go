@@ -537,8 +537,8 @@ func TestGetLedgerEntryTypeCodeByLedgerEntryTypeName(t *testing.T) {
 	}{
 		{
 			description:   "correct LedgerEntryTypeCode",
-			input:         "Any",
-			expected:      -3,
+			input:         "AccountRoot",
+			expected:      97,
 			expectedError: nil,
 		},
 		{
@@ -576,8 +576,8 @@ func TestGetLedgerEntryTypeNameByLedgerEntryTypeCode(t *testing.T) {
 	}{
 		{
 			description:   "correct LedgerEntryTypeName",
-			input:         -3,
-			expected:      "Any",
+			input:         97,
+			expected:      "AccountRoot",
 			expectedError: nil,
 		},
 		{
@@ -594,6 +594,94 @@ func TestGetLedgerEntryTypeNameByLedgerEntryTypeCode(t *testing.T) {
 	for _, test := range tt {
 		t.Run(test.description, func(t *testing.T) {
 			got, err := definitions.GetLedgerEntryTypeNameByLedgerEntryTypeCode(test.input)
+			if test.expectedError != nil {
+				require.EqualError(t, err, test.expectedError.Error())
+				require.Zero(t, got)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, test.expected, got)
+			}
+		})
+	}
+}
+
+func TestGetDelegatablePermissionValueByName(t *testing.T) {
+	tt := []struct {
+		description   string
+		input         string
+		expected      int32
+		expectedError error
+	}{
+		{
+			description:   "pass - valid granular permission",
+			input:         "TrustlineAuthorize",
+			expected:      65537,
+			expectedError: nil,
+		},
+		{
+			description:   "pass - valid transaction type permission",
+			input:         "Payment",
+			expected:      1,
+			expectedError: nil,
+		},
+		{
+			description: "fail - invalid permission name",
+			input:       "InvalidPermission",
+			expected:    0,
+			expectedError: &NotFoundError{
+				Instance: "DelegatablePermissionName",
+				Input:    "InvalidPermission",
+			},
+		},
+	}
+
+	for _, test := range tt {
+		t.Run(test.description, func(t *testing.T) {
+			got, err := definitions.GetDelegatablePermissionValueByName(test.input)
+			if test.expectedError != nil {
+				require.EqualError(t, err, test.expectedError.Error())
+				require.Zero(t, got)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, test.expected, got)
+			}
+		})
+	}
+}
+
+func TestGetDelegatablePermissionNameByValue(t *testing.T) {
+	tt := []struct {
+		description   string
+		input         int32
+		expected      string
+		expectedError error
+	}{
+		{
+			description:   "valid granular permission value",
+			input:         65537,
+			expected:      "TrustlineAuthorize",
+			expectedError: nil,
+		},
+		{
+			description:   "valid transaction type permission value",
+			input:         1,
+			expected:      "Payment",
+			expectedError: nil,
+		},
+		{
+			description: "invalid permission value",
+			input:       99999,
+			expected:    "",
+			expectedError: &NotFoundErrorInt{
+				Instance: "DelegatablePermissionValue",
+				Input:    99999,
+			},
+		},
+	}
+
+	for _, test := range tt {
+		t.Run(test.description, func(t *testing.T) {
+			got, err := definitions.GetDelegatablePermissionNameByValue(test.input)
 			if test.expectedError != nil {
 				require.EqualError(t, err, test.expectedError.Error())
 				require.Zero(t, got)

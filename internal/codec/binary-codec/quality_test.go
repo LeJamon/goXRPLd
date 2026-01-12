@@ -22,7 +22,7 @@ func TestQualityCodec_Encode(t *testing.T) {
 		{
 			name:        "fail - invalid quality - invalid character",
 			input:       "invalid",
-			expectedErr: bigdecimal.ErrInvalidCharacter,
+			expectedErr: bigdecimal.ErrInvalidCharacter{Allowed: bigdecimal.AllowedCharacters},
 		},
 		{
 			name:        "fail - invalid quality - overflow",
@@ -75,7 +75,7 @@ func TestQualityCodec_Encode(t *testing.T) {
 			encoded, err := EncodeQuality(tc.input)
 			if tc.expectedErr != nil {
 				require.Error(t, err)
-				require.Equal(t, tc.expectedErr, err)
+				require.ErrorIs(t, err, tc.expectedErr)
 			} else {
 				require.NoError(t, err)
 				require.Equal(t, tc.expected, encoded)

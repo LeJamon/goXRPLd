@@ -1,3 +1,4 @@
+// Package definitions contains XRPL binary codec field and type definitions.
 package definitions
 
 import (
@@ -14,15 +15,19 @@ var (
 	definitions *Definitions
 )
 
+// Definitions holds the binary serialization definitions for the XRP Ledger, loaded from the RFC JSON document.
 type Definitions struct {
-	Types              map[string]int32
-	LedgerEntryTypes   map[string]int32
-	Fields             fieldInstanceMap
-	TransactionResults map[string]int32
-	TransactionTypes   map[string]int32
-	FieldIDNameMap     map[FieldHeader]string
+	Types                  map[string]int32
+	LedgerEntryTypes       map[string]int32
+	Fields                 fieldInstanceMap
+	TransactionResults     map[string]int32
+	TransactionTypes       map[string]int32
+	FieldIDNameMap         map[FieldHeader]string
+	GranularPermissions    map[string]int32
+	DelegatablePermissions map[string]int32
 }
 
+// Get returns the singleton instance of Definitions.
 func Get() *Definitions {
 	return definitions
 }
@@ -60,6 +65,7 @@ func loadDefinitions() {
 
 	addFieldHeadersAndOrdinals()
 	createFieldIDNameMap()
+	initializePermissions()
 }
 
 func convertToFieldInstanceMap(m [][]interface{}) map[string]*FieldInstance {
@@ -112,5 +118,33 @@ func createFieldIDNameMap() {
 		fh, _ := definitions.GetFieldHeaderByFieldName(k)
 
 		definitions.FieldIDNameMap[*fh] = k
+	}
+}
+
+// Initializes granular permissions and delegatable permissions mappings for account permission delegation.
+func initializePermissions() {
+	definitions.GranularPermissions = map[string]int32{
+		"TrustlineAuthorize":     65537,
+		"TrustlineFreeze":        65538,
+		"TrustlineUnfreeze":      65539,
+		"AccountDomainSet":       65540,
+		"AccountEmailHashSet":    65541,
+		"AccountMessageKeySet":   65542,
+		"AccountTransferRateSet": 65543,
+		"AccountTickSizeSet":     65544,
+		"PaymentMint":            65545,
+		"PaymentBurn":            65546,
+		"MPTokenIssuanceLock":    65547,
+		"MPTokenIssuanceUnlock":  65548,
+	}
+
+	definitions.DelegatablePermissions = make(map[string]int32)
+
+	for name, value := range definitions.GranularPermissions {
+		definitions.DelegatablePermissions[name] = value
+	}
+
+	for txType, value := range definitions.TransactionTypes {
+		definitions.DelegatablePermissions[txType] = value + 1
 	}
 }

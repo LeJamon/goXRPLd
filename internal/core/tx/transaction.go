@@ -1,0 +1,290 @@
+package tx
+
+import (
+	"encoding/json"
+	"errors"
+)
+
+// Common errors
+var (
+	ErrMissingRequiredField = errors.New("missing required field")
+	ErrInvalidTransactionType = errors.New("invalid transaction type")
+	ErrInvalidAmount        = errors.New("invalid amount")
+	ErrInvalidDestination   = errors.New("invalid destination")
+	ErrInvalidAccount       = errors.New("invalid account")
+	ErrInvalidFlags         = errors.New("invalid flags")
+	ErrInvalidSequence      = errors.New("invalid sequence")
+)
+
+// Transaction is the interface that all transaction types must implement
+type Transaction interface {
+	// TxType returns the transaction type
+	TxType() Type
+
+	// GetCommon returns the common transaction fields
+	GetCommon() *Common
+
+	// Validate checks if the transaction is valid
+	Validate() error
+
+	// Flatten returns a flat map of all transaction fields for serialization
+	Flatten() (map[string]any, error)
+}
+
+// Amount represents either XRP (as drops string) or an issued currency amount
+type Amount struct {
+	// For XRP amounts, only Value is set (as drops string)
+	Value string `json:"value,omitempty"`
+
+	// For issued currency amounts
+	Currency string `json:"currency,omitempty"`
+	Issuer   string `json:"issuer,omitempty"`
+
+	// Native indicates if this is XRP (true) or issued currency (false)
+	native bool
+}
+
+// NewXRPAmount creates an XRP amount in drops
+func NewXRPAmount(drops string) Amount {
+	return Amount{Value: drops, native: true}
+}
+
+// NewIssuedAmount creates an issued currency amount
+func NewIssuedAmount(value, currency, issuer string) Amount {
+	return Amount{
+		Value:    value,
+		Currency: currency,
+		Issuer:   issuer,
+		native:   false,
+	}
+}
+
+// IsNative returns true if this is an XRP amount
+func (a Amount) IsNative() bool {
+	return a.native || (a.Currency == "" && a.Issuer == "")
+}
+
+// MarshalJSON implements custom JSON marshaling
+func (a Amount) MarshalJSON() ([]byte, error) {
+	if a.IsNative() {
+		return json.Marshal(a.Value)
+	}
+	return json.Marshal(map[string]string{
+		"value":    a.Value,
+		"currency": a.Currency,
+		"issuer":   a.Issuer,
+	})
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling
+func (a *Amount) UnmarshalJSON(data []byte) error {
+	// Try as string first (XRP drops)
+	var strVal string
+	if err := json.Unmarshal(data, &strVal); err == nil {
+		a.Value = strVal
+		a.native = true
+		return nil
+	}
+
+	// Try as object (issued currency)
+	var objVal struct {
+		Value    string `json:"value"`
+		Currency string `json:"currency"`
+		Issuer   string `json:"issuer"`
+	}
+	if err := json.Unmarshal(data, &objVal); err != nil {
+		return err
+	}
+
+	a.Value = objVal.Value
+	a.Currency = objVal.Currency
+	a.Issuer = objVal.Issuer
+	a.native = false
+	return nil
+}
+
+// Memo represents a memo attached to a transaction
+type Memo struct {
+	MemoType   string `json:"MemoType,omitempty"`
+	MemoData   string `json:"MemoData,omitempty"`
+	MemoFormat string `json:"MemoFormat,omitempty"`
+}
+
+// MemoWrapper wraps a Memo for JSON serialization
+type MemoWrapper struct {
+	Memo Memo `json:"Memo"`
+}
+
+// Signer represents a signer in a multi-signed transaction
+type Signer struct {
+	Account       string `json:"Account"`
+	SigningPubKey string `json:"SigningPubKey"`
+	TxnSignature  string `json:"TxnSignature"`
+}
+
+// SignerWrapper wraps a Signer for JSON serialization
+type SignerWrapper struct {
+	Signer Signer `json:"Signer"`
+}
+
+// Common contains fields common to all transaction types
+type Common struct {
+	// Required fields
+	Account         string `json:"Account"`
+	TransactionType string `json:"TransactionType"`
+
+	// Fee in drops (required for signing, optional for submission)
+	Fee string `json:"Fee,omitempty"`
+
+	// Sequence number (required unless using TicketSequence)
+	Sequence *uint32 `json:"Sequence,omitempty"`
+
+	// Optional common fields
+	AccountTxnID       string          `json:"AccountTxnID,omitempty"`
+	Flags              *uint32         `json:"Flags,omitempty"`
+	LastLedgerSequence *uint32         `json:"LastLedgerSequence,omitempty"`
+	Memos              []MemoWrapper   `json:"Memos,omitempty"`
+	NetworkID          *uint32         `json:"NetworkID,omitempty"`
+	Signers            []SignerWrapper `json:"Signers,omitempty"`
+	SourceTag          *uint32         `json:"SourceTag,omitempty"`
+	SigningPubKey      string          `json:"SigningPubKey,omitempty"`
+	TicketSequence     *uint32         `json:"TicketSequence,omitempty"`
+	TxnSignature       string          `json:"TxnSignature,omitempty"`
+}
+
+// Validate validates the common fields
+func (c *Common) Validate() error {
+	if c.Account == "" {
+		return errors.New("Account is required")
+	}
+	if c.TransactionType == "" {
+		return errors.New("TransactionType is required")
+	}
+	return nil
+}
+
+// SetFlags sets the flags field
+func (c *Common) SetFlags(flags uint32) {
+	c.Flags = &flags
+}
+
+// GetFlags returns the flags value (0 if not set)
+func (c *Common) GetFlags() uint32 {
+	if c.Flags == nil {
+		return 0
+	}
+	return *c.Flags
+}
+
+// SetSequence sets the sequence number
+func (c *Common) SetSequence(seq uint32) {
+	c.Sequence = &seq
+}
+
+// GetSequence returns the sequence number (0 if not set)
+func (c *Common) GetSequence() uint32 {
+	if c.Sequence == nil {
+		return 0
+	}
+	return *c.Sequence
+}
+
+// SetLastLedgerSequence sets the last ledger sequence
+func (c *Common) SetLastLedgerSequence(seq uint32) {
+	c.LastLedgerSequence = &seq
+}
+
+// AddMemo adds a memo to the transaction
+func (c *Common) AddMemo(memoType, memoData, memoFormat string) {
+	c.Memos = append(c.Memos, MemoWrapper{
+		Memo: Memo{
+			MemoType:   memoType,
+			MemoData:   memoData,
+			MemoFormat: memoFormat,
+		},
+	})
+}
+
+// ToMap converts common fields to a map
+func (c *Common) ToMap() map[string]any {
+	m := map[string]any{
+		"Account":         c.Account,
+		"TransactionType": c.TransactionType,
+	}
+
+	if c.Fee != "" {
+		m["Fee"] = c.Fee
+	}
+	if c.Sequence != nil {
+		m["Sequence"] = *c.Sequence
+	}
+	if c.AccountTxnID != "" {
+		m["AccountTxnID"] = c.AccountTxnID
+	}
+	if c.Flags != nil && *c.Flags != 0 {
+		m["Flags"] = *c.Flags
+	}
+	if c.LastLedgerSequence != nil {
+		m["LastLedgerSequence"] = *c.LastLedgerSequence
+	}
+	if len(c.Memos) > 0 {
+		m["Memos"] = c.Memos
+	}
+	if c.NetworkID != nil {
+		m["NetworkID"] = *c.NetworkID
+	}
+	if len(c.Signers) > 0 {
+		m["Signers"] = c.Signers
+	}
+	if c.SourceTag != nil {
+		m["SourceTag"] = *c.SourceTag
+	}
+	if c.SigningPubKey != "" {
+		m["SigningPubKey"] = c.SigningPubKey
+	}
+	if c.TicketSequence != nil {
+		m["TicketSequence"] = *c.TicketSequence
+	}
+	if c.TxnSignature != "" {
+		m["TxnSignature"] = c.TxnSignature
+	}
+
+	return m
+}
+
+// BaseTx provides a base implementation for transactions
+type BaseTx struct {
+	Common
+	txType Type
+}
+
+// TxType returns the transaction type
+func (b *BaseTx) TxType() Type {
+	return b.txType
+}
+
+// GetCommon returns the common transaction fields
+func (b *BaseTx) GetCommon() *Common {
+	return &b.Common
+}
+
+// Validate validates the base transaction
+func (b *BaseTx) Validate() error {
+	return b.Common.Validate()
+}
+
+// Flatten returns a flat map of transaction fields
+func (b *BaseTx) Flatten() (map[string]any, error) {
+	return b.Common.ToMap(), nil
+}
+
+// NewBaseTx creates a new base transaction
+func NewBaseTx(txType Type, account string) *BaseTx {
+	return &BaseTx{
+		Common: Common{
+			Account:         account,
+			TransactionType: txType.String(),
+		},
+		txType: txType,
+	}
+}
