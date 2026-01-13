@@ -1,0 +1,302 @@
+{
+  "description": "STAmount encoding/decoding test vectors extracted from rippled",
+  "source": "rippled/src/test/protocol/STAmount_test.cpp",
+  "vectors": {
+    "native_currency": {
+      "description": "XRP (native currency) amount test cases",
+      "cases": [
+        {
+          "name": "zero_xrp",
+          "drops": 0,
+          "expected_text": "0",
+          "is_native": true,
+          "is_zero": true
+        },
+        {
+          "name": "one_drop",
+          "drops": 1,
+          "expected_text": "1",
+          "is_native": true,
+          "is_zero": false
+        },
+        {
+          "name": "hundred_drops",
+          "drops": 100,
+          "expected_text": "100",
+          "is_native": true,
+          "is_zero": false
+        },
+        {
+          "name": "31_drops",
+          "drops": 31,
+          "expected_text": "31",
+          "is_native": true
+        },
+        {
+          "name": "310_drops",
+          "drops": 310,
+          "expected_text": "310",
+          "is_native": true
+        }
+      ]
+    },
+    "xrp_valid_values": {
+      "description": "Valid XRP string values from testSetValue",
+      "cases": [
+        {"value": "1", "valid": true},
+        {"value": "22", "valid": true},
+        {"value": "333", "valid": true},
+        {"value": "4444", "valid": true},
+        {"value": "55555", "valid": true},
+        {"value": "666666", "valid": true},
+        {"value": "1000000", "valid": true, "comment": "1 XRP in drops"},
+        {"value": "10000000", "valid": true},
+        {"value": "100000000", "valid": true},
+        {"value": "1000000000", "valid": true},
+        {"value": "10000000000", "valid": true},
+        {"value": "100000000000", "valid": true},
+        {"value": "1000000000000", "valid": true},
+        {"value": "10000000000000", "valid": true},
+        {"value": "100000000000000", "valid": true},
+        {"value": "1000000000000000", "valid": true},
+        {"value": "10000000000000000", "valid": true},
+        {"value": "100000000000000000", "valid": true, "comment": "100 billion XRP in drops"}
+      ]
+    },
+    "xrp_invalid_values": {
+      "description": "Invalid XRP string values (should fail parsing)",
+      "cases": [
+        {"value": "1.1", "valid": false, "reason": "XRP cannot have fractional drops"},
+        {"value": "100000000000000001", "valid": false, "reason": "exceeds max XRP supply"},
+        {"value": "1000000000000000000", "valid": false, "reason": "exceeds max XRP supply"}
+      ]
+    },
+    "iou_currency": {
+      "description": "IOU (issued currency) amount test cases",
+      "test_currency": {
+        "currency_code": "USD",
+        "currency_hex": "0x5553440000000000",
+        "issuer_hex": "0x4985601"
+      },
+      "cases": [
+        {
+          "name": "iou_zero",
+          "mantissa": 0,
+          "exponent": 0,
+          "expected_text": "0",
+          "is_native": false
+        },
+        {
+          "name": "iou_one",
+          "mantissa": 1,
+          "exponent": 0,
+          "expected_text": "1",
+          "is_native": false
+        },
+        {
+          "name": "iou_hundred",
+          "mantissa": 100,
+          "exponent": 0,
+          "expected_text": "100",
+          "is_native": false
+        },
+        {
+          "name": "iou_31",
+          "mantissa": 31,
+          "exponent": 0,
+          "expected_text": "31",
+          "is_native": false
+        },
+        {
+          "name": "iou_310_via_exponent",
+          "mantissa": 31,
+          "exponent": 1,
+          "expected_text": "310",
+          "is_native": false
+        },
+        {
+          "name": "iou_3.1",
+          "mantissa": 31,
+          "exponent": -1,
+          "expected_text": "3.1",
+          "is_native": false
+        },
+        {
+          "name": "iou_0.31",
+          "mantissa": 31,
+          "exponent": -2,
+          "expected_text": "0.31",
+          "is_native": false
+        }
+      ]
+    },
+    "iou_valid_values": {
+      "description": "Valid IOU string values from testSetValue",
+      "currency": {"code": "USD", "hex": "0x5553440000000000"},
+      "cases": [
+        {"value": "1", "valid": true},
+        {"value": "10", "valid": true},
+        {"value": "100", "valid": true},
+        {"value": "1000", "valid": true},
+        {"value": "10000", "valid": true},
+        {"value": "100000", "valid": true},
+        {"value": "1000000", "valid": true},
+        {"value": "10000000", "valid": true},
+        {"value": "100000000", "valid": true},
+        {"value": "1000000000", "valid": true},
+        {"value": "10000000000", "valid": true},
+        {"value": "1234567.1", "valid": true},
+        {"value": "1234567.12", "valid": true},
+        {"value": "1234567.123", "valid": true},
+        {"value": "1234567.1234", "valid": true},
+        {"value": "1234567.12345", "valid": true},
+        {"value": "1234567.123456", "valid": true},
+        {"value": "1234567.1234567", "valid": true},
+        {"value": "1234567.12345678", "valid": true},
+        {"value": "1234567.123456789", "valid": true}
+      ]
+    },
+    "arithmetic": {
+      "description": "Arithmetic operation test vectors",
+      "multiplication": [
+        {
+          "name": "iou_multiply_20_times_3",
+          "operand1": {"mantissa": 20, "is_native": false},
+          "operand2": {"drops": 3, "is_native": true},
+          "expected_text": "60"
+        }
+      ],
+      "division": [
+        {
+          "name": "iou_divide_60_by_3",
+          "operand1": {"mantissa": 60, "is_native": false},
+          "operand2": {"drops": 3, "is_native": true},
+          "expected_text": "20"
+        }
+      ],
+      "rate_calculations": [
+        {
+          "name": "getRate_1_to_10",
+          "input1_drops": 1,
+          "input2_drops": 10,
+          "expected_rate": "5765760000000000000",
+          "expected_rate_formula": "((100 - 14) << 56) | 1000000000000000",
+          "comment": "Rate quality encoding"
+        },
+        {
+          "name": "getRate_10_to_1",
+          "input1_drops": 10,
+          "input2_drops": 1,
+          "expected_rate": "5548320000000000000",
+          "expected_rate_formula": "((100 - 16) << 56) | 1000000000000000",
+          "comment": "Rate quality encoding"
+        }
+      ],
+      "rounding_tests": [
+        {"n": 1, "d": 3, "m": 3, "comment": "(1/3) * 3 should round correctly"},
+        {"n": 2, "d": 3, "m": 9, "comment": "(2/3) * 9 should round correctly"},
+        {"n": 1, "d": 7, "m": 21, "comment": "(1/7) * 21 should round correctly"},
+        {"n": 1, "d": 2, "m": 4, "comment": "(1/2) * 4 should round correctly"},
+        {"n": 3, "d": 9, "m": 18, "comment": "(3/9) * 18 should round correctly"},
+        {"n": 7, "d": 11, "m": 44, "comment": "(7/11) * 44 should round correctly"}
+      ]
+    },
+    "currency_codes": {
+      "description": "Currency code encoding test cases",
+      "cases": [
+        {
+          "name": "xrp_currency",
+          "string": "XRP",
+          "is_native": true
+        },
+        {
+          "name": "usd_currency",
+          "string": "USD",
+          "hex": "5553440000000000000000000000000000000000",
+          "is_native": false
+        },
+        {
+          "name": "eur_currency",
+          "string": "EUR",
+          "currency_code_hex": "0x4555520000000000",
+          "is_native": false
+        },
+        {
+          "name": "custom_currency",
+          "string": "015841551A748AD2C1F76FF6ECB0CCCD00000000",
+          "is_custom": true,
+          "comment": "Non-standard 160-bit currency code"
+        }
+      ]
+    },
+    "constants": {
+      "description": "STAmount class constants from rippled",
+      "cMinValue": "1000000000000000",
+      "cMaxValue": "9999999999999999",
+      "cMaxNative": "9000000000000000000",
+      "cMaxNativeN": "100000000000000000",
+      "cMinOffset": -96,
+      "cMaxOffset": 80,
+      "comment": "These values define the valid ranges for STAmount"
+    },
+    "can_add_xrp": {
+      "description": "canAdd function test vectors for XRP",
+      "cases": [
+        {"amt1": 0, "amt2": 1000, "can_add": true, "comment": "Adding zero"},
+        {"amt1": 1000, "amt2": 0, "can_add": true, "comment": "Adding zero"},
+        {"amt1": 500, "amt2": 1500, "can_add": true, "comment": "Two positive"},
+        {"amt1": -500, "amt2": -1500, "can_add": true, "comment": "Two negative"},
+        {"amt1": 1000, "amt2": -1000, "can_add": true, "comment": "Positive and negative"},
+        {"amt1": "MAX_INT64", "amt2": 1, "can_add": false, "comment": "Overflow check"}
+      ]
+    },
+    "can_subtract_xrp": {
+      "description": "canSubtract function test vectors for XRP",
+      "cases": [
+        {"amt1": 1000, "amt2": 0, "can_subtract": true, "comment": "Subtracting zero"},
+        {"amt1": 0, "amt2": 1000, "can_subtract": false, "comment": "Would go negative"},
+        {"amt1": 1500, "amt2": 500, "can_subtract": true, "comment": "Two positive"},
+        {"amt1": -1500, "amt2": -500, "can_subtract": true, "comment": "Two negative"},
+        {"amt1": 1000, "amt2": -1000, "can_subtract": true, "comment": "Positive minus negative"}
+      ]
+    },
+    "xrp_conversion": {
+      "description": "STAmount to XRPAmount conversion test vectors",
+      "cases": [
+        {"drops": "100000000000000000", "valid": true},
+        {"drops": "10000000000000000", "valid": true},
+        {"drops": "1000000000000000", "valid": true},
+        {"drops": "100000000000000", "valid": true},
+        {"drops": "10000000000000", "valid": true},
+        {"drops": "1000000000000", "valid": true},
+        {"drops": "100000000000", "valid": true},
+        {"drops": "10000000000", "valid": true},
+        {"drops": "1000000000", "valid": true},
+        {"drops": "100000000", "valid": true},
+        {"drops": "10000000", "valid": true},
+        {"drops": "1000000", "valid": true},
+        {"drops": "100000", "valid": true},
+        {"drops": "10000", "valid": true},
+        {"drops": "1000", "valid": true},
+        {"drops": "100", "valid": true},
+        {"drops": "10", "valid": true}
+      ]
+    },
+    "iou_conversion": {
+      "description": "STAmount to IOUAmount conversion test vectors",
+      "currency": {"code": "USD", "hex": "0x5553440000000000"},
+      "cases": [
+        {"value": "10000000000", "valid": true},
+        {"value": "1000000000", "valid": true},
+        {"value": "100000000", "valid": true},
+        {"value": "10000000", "valid": true},
+        {"value": "1000000", "valid": true},
+        {"value": "100000", "valid": true},
+        {"value": "10000", "valid": true},
+        {"value": "1000", "valid": true},
+        {"value": "100", "valid": true},
+        {"value": "10", "valid": true}
+      ]
+    }
+  }
+}

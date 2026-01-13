@@ -1,6 +1,7 @@
 package binarycodec
 
 import (
+	"errors"
 	"testing"
 
 	bigdecimal "github.com/Peersyst/xrpl-go/pkg/big-decimal"
@@ -22,7 +23,7 @@ func TestQualityCodec_Encode(t *testing.T) {
 		{
 			name:        "fail - invalid quality - invalid character",
 			input:       "invalid",
-			expectedErr: bigdecimal.ErrInvalidCharacter{Allowed: bigdecimal.AllowedCharacters},
+			expectedErr: bigdecimal.ErrInvalidCharacter,
 		},
 		{
 			name:        "fail - invalid quality - overflow",
@@ -75,7 +76,12 @@ func TestQualityCodec_Encode(t *testing.T) {
 			encoded, err := EncodeQuality(tc.input)
 			if tc.expectedErr != nil {
 				require.Error(t, err)
-				require.ErrorIs(t, err, tc.expectedErr)
+				// Use errors.Is() for error comparison
+				if errors.Is(tc.expectedErr, bigdecimal.ErrInvalidCharacter) {
+					require.True(t, errors.Is(err, bigdecimal.ErrInvalidCharacter))
+				} else {
+					require.ErrorIs(t, err, tc.expectedErr)
+				}
 			} else {
 				require.NoError(t, err)
 				require.Equal(t, tc.expected, encoded)

@@ -23,6 +23,9 @@ const (
 	// NodePublicKeyLength is the length in bytes of a node/validation public key.
 	NodePublicKeyLength = 33
 
+	// PrivateKeyLength is the length in bytes of a private key (32 bytes).
+	PrivateKeyLength = 32
+
 	// AccountAddressPrefix is the classic address prefix (0x00).
 	AccountAddressPrefix = 0x00
 
@@ -34,6 +37,14 @@ const (
 
 	// NodePublicKeyPrefix is the prefix for node/validation public keys (0x1C).
 	NodePublicKeyPrefix = 0x1C
+
+	// AccountSecretKeyPrefix is the prefix for account secret/private keys (0x22).
+	// Encoded strings start with 'p'.
+	AccountSecretKeyPrefix = 0x22
+
+	// NodePrivateKeyPrefix is the prefix for node/validation private keys (0x20).
+	// Encoded strings start with 'p'.
+	NodePrivateKeyPrefix = 0x20
 )
 
 // Encode returns the Base58Check encoding of a byte slice with the given type prefix,
