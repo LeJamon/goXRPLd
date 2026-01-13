@@ -29,6 +29,13 @@ type Transaction interface {
 
 	// Flatten returns a flat map of all transaction fields for serialization
 	Flatten() (map[string]any, error)
+
+	// GetRawBytes returns the original serialized bytes (for hash computation)
+	// Returns nil if transaction was not parsed from bytes
+	GetRawBytes() []byte
+
+	// SetRawBytes stores the original serialized bytes
+	SetRawBytes([]byte)
 }
 
 // Amount represents either XRP (as drops string) or an issued currency amount
@@ -150,6 +157,9 @@ type Common struct {
 	SigningPubKey      string          `json:"SigningPubKey,omitempty"`
 	TicketSequence     *uint32         `json:"TicketSequence,omitempty"`
 	TxnSignature       string          `json:"TxnSignature,omitempty"`
+
+	// RawBytes stores the original serialized bytes for hash computation
+	RawBytes []byte `json:"-"`
 }
 
 // Validate validates the common fields
@@ -161,6 +171,16 @@ func (c *Common) Validate() error {
 		return errors.New("TransactionType is required")
 	}
 	return nil
+}
+
+// GetRawBytes returns the original serialized bytes
+func (c *Common) GetRawBytes() []byte {
+	return c.RawBytes
+}
+
+// SetRawBytes stores the original serialized bytes
+func (c *Common) SetRawBytes(data []byte) {
+	c.RawBytes = data
 }
 
 // SetFlags sets the flags field

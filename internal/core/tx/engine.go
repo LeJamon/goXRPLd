@@ -22,6 +22,10 @@ type Engine struct {
 
 	// Config holds engine configuration
 	config EngineConfig
+
+	// currentTxHash is the hash of the transaction currently being applied
+	// Used to set PreviousTxnID on modified ledger entries
+	currentTxHash [32]byte
 }
 
 // EngineConfig holds configuration for the transaction engine
@@ -114,6 +118,12 @@ type AffectedNode struct {
 	// LedgerIndex is the key of the entry
 	LedgerIndex string
 
+	// PreviousTxnLgrSeq is the ledger sequence of the previous transaction that modified this entry
+	PreviousTxnLgrSeq uint32
+
+	// PreviousTxnID is the hash of the previous transaction that modified this entry
+	PreviousTxnID string
+
 	// FinalFields contains the final state (for Modified/Deleted)
 	FinalFields map[string]any
 
@@ -130,6 +140,43 @@ func NewEngine(view LedgerView, config EngineConfig) *Engine {
 		view:   view,
 		config: config,
 	}
+}
+
+// computeTransactionHash computes the hash of a transaction
+// The hash is SHA512Half of the "TXN\x00" prefix + serialized transaction
+func computeTransactionHash(tx Transaction) ([32]byte, error) {
+	var hash [32]byte
+	var txBytes []byte
+
+	// Use raw bytes if available (from parsing), otherwise re-serialize
+	if rawBytes := tx.GetRawBytes(); len(rawBytes) > 0 {
+		txBytes = rawBytes
+	} else {
+		// Serialize the transaction using Flatten
+		txMap, err := tx.Flatten()
+		if err != nil {
+			return hash, err
+		}
+
+		// Encode to binary using the binary codec
+		hexStr, err := binarycodec.Encode(txMap)
+		if err != nil {
+			return hash, err
+		}
+
+		txBytes, err = hex.DecodeString(hexStr)
+		if err != nil {
+			return hash, err
+		}
+	}
+
+	// Prefix is "TXN\x00" = 0x54584E00
+	prefix := []byte{0x54, 0x58, 0x4E, 0x00}
+	data := append(prefix, txBytes...)
+
+	hash = crypto.Sha512Half(data)
+	fmt.Printf("DEBUG: Computed tx hash: %x\n", hash)
+	return hash, nil
 }
 
 // Apply processes a transaction and applies it to the ledger
@@ -157,14 +204,25 @@ func (e *Engine) Apply(tx Transaction) ApplyResult {
 	// Step 3: Calculate and apply fee
 	fee := e.calculateFee(tx)
 
-	// Step 4: Apply the transaction
+	// Step 4: Compute transaction hash
+	txHash, err := computeTransactionHash(tx)
+	if err != nil {
+		return ApplyResult{
+			Result:  TefINTERNAL,
+			Applied: false,
+			Fee:     fee,
+			Message: "failed to compute transaction hash: " + err.Error(),
+		}
+	}
+
+	// Step 5: Apply the transaction
 	metadata := &Metadata{
 		AffectedNodes:     make([]AffectedNode, 0),
 		TransactionResult: TesSUCCESS,
 	}
 
 	if result.IsSuccess() {
-		result = e.doApply(tx, metadata)
+		result = e.doApply(tx, metadata, txHash)
 	}
 
 	metadata.TransactionResult = result
@@ -295,7 +353,10 @@ func (e *Engine) preclaim(tx Transaction) Result {
 }
 
 // doApply applies the transaction to the ledger
-func (e *Engine) doApply(tx Transaction, metadata *Metadata) Result {
+func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Result {
+	// Store txHash for use by apply functions
+	e.currentTxHash = txHash
+
 	// Deduct fee from sender
 	common := tx.GetCommon()
 	accountID, _ := decodeAccountID(common.Account)
@@ -313,12 +374,19 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata) Result {
 
 	fee := e.calculateFee(tx)
 	previousBalance := account.Balance
+	previousSequence := account.Sequence
+	previousTxnID := account.PreviousTxnID
+	previousTxnLgrSeq := account.PreviousTxnLgrSeq
 
 	// Deduct fee and increment sequence
 	account.Balance -= fee
 	if common.Sequence != nil {
 		account.Sequence = *common.Sequence + 1
 	}
+
+	// Update PreviousTxnID and PreviousTxnLgrSeq (thread the account)
+	account.PreviousTxnID = txHash
+	account.PreviousTxnLgrSeq = e.config.LedgerSequence
 
 	// Type-specific application
 	var result Result
@@ -465,20 +533,29 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata) Result {
 	}
 
 	// Record account modification in metadata
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "AccountRoot",
-		LedgerIndex:     hex.EncodeToString(accountKey.Key[:]),
+	// Include all fields that rippled marks with sMD_Always (Flags, OwnerCount)
+	// and the previous transaction threading info
+	// IMPORTANT: Sender's node should be FIRST in the list (prepend)
+	senderNode := AffectedNode{
+		NodeType:          "ModifiedNode",
+		LedgerEntryType:   "AccountRoot",
+		LedgerIndex:       strings.ToUpper(hex.EncodeToString(accountKey.Key[:])),
+		PreviousTxnLgrSeq: previousTxnLgrSeq,
+		PreviousTxnID:     strings.ToUpper(hex.EncodeToString(previousTxnID[:])),
 		FinalFields: map[string]any{
-			"Account":  common.Account,
-			"Balance":  strconv.FormatUint(account.Balance, 10),
-			"Sequence": account.Sequence,
+			"Account":    common.Account,
+			"Balance":    strconv.FormatUint(account.Balance, 10),
+			"Flags":      account.Flags,
+			"OwnerCount": account.OwnerCount,
+			"Sequence":   account.Sequence,
 		},
 		PreviousFields: map[string]any{
 			"Balance":  strconv.FormatUint(previousBalance, 10),
-			"Sequence": account.Sequence - 1,
+			"Sequence": previousSequence,
 		},
-	})
+	}
+	// Prepend sender node (sender should be first in AffectedNodes, like rippled does)
+	metadata.AffectedNodes = append([]AffectedNode{senderNode}, metadata.AffectedNodes...)
 
 	return result
 }
@@ -497,17 +574,19 @@ func (e *Engine) calculateFee(tx Transaction) uint64 {
 
 // AccountRoot represents an account in the ledger
 type AccountRoot struct {
-	Account      string
-	Balance      uint64
-	Sequence     uint32
-	OwnerCount   uint32
-	Flags        uint32
-	RegularKey   string
-	Domain       string
-	EmailHash    string
-	MessageKey   string
-	TransferRate uint32
-	TickSize     uint8
+	Account           string
+	Balance           uint64
+	Sequence          uint32
+	OwnerCount        uint32
+	Flags             uint32
+	RegularKey        string
+	Domain            string
+	EmailHash         string
+	MessageKey        string
+	TransferRate      uint32
+	TickSize          uint8
+	PreviousTxnID     [32]byte
+	PreviousTxnLgrSeq uint32
 }
 
 // AccountRoot binary format field codes (from XRPL spec)
@@ -527,7 +606,7 @@ const (
 	fieldCodeLedgerEntryType = 1  // UInt16
 	fieldCodeFlags           = 2  // UInt32
 	fieldCodeSequence        = 4  // UInt32
-	fieldCodeOwnerCount      = 17 // UInt32
+	fieldCodeOwnerCount      = 13 // UInt32 (per rippled sfields.macro)
 	fieldCodeTransferRate    = 11 // UInt32
 	fieldCodeBalance         = 1  // Amount
 	fieldCodeRegularKey      = 8  // Account
@@ -538,6 +617,18 @@ const (
 
 	// Ledger entry type code for AccountRoot
 	ledgerEntryTypeAccountRoot = 0x0061
+)
+
+// AccountRoot ledger entry flags
+const (
+	// lsfDepositAuth indicates the account requires deposit authorization
+	// Payments to this account require preauthorization unless both the
+	// destination balance and payment amount are at or below the base reserve
+	lsfDepositAuth uint32 = 0x01000000
+
+	// lsfAMM indicates the account is an AMM (pseudo-account)
+	// AMM accounts cannot receive direct payments
+	lsfAMM uint32 = 0x02000000
 )
 
 // Helper functions
@@ -573,6 +664,7 @@ func parseAccountRoot(data []byte) (*AccountRoot, error) {
 	}
 
 	account := &AccountRoot{}
+	ledgerEntryTypeVerified := false // Track if we've verified the LedgerEntryType
 
 	// Parse the binary format
 	// XRPL uses a TLV-like format with field headers
@@ -617,11 +709,13 @@ func parseAccountRoot(data []byte) (*AccountRoot, error) {
 			}
 			value := binary.BigEndian.Uint16(data[offset : offset+2])
 			offset += 2
-			if fieldCode == fieldCodeLedgerEntryType {
+			// Only check LedgerEntryType once (first UInt16 with fieldCode 1)
+			if fieldCode == fieldCodeLedgerEntryType && !ledgerEntryTypeVerified {
 				// LedgerEntryType - verify it's AccountRoot
 				if value != ledgerEntryTypeAccountRoot {
 					return nil, errors.New("not an AccountRoot entry")
 				}
+				ledgerEntryTypeVerified = true
 			}
 
 		case fieldTypeUInt32:
@@ -635,6 +729,8 @@ func parseAccountRoot(data []byte) (*AccountRoot, error) {
 				account.Flags = value
 			case fieldCodeSequence:
 				account.Sequence = value
+			case 5: // PreviousTxnLgrSeq
+				account.PreviousTxnLgrSeq = value
 			case fieldCodeOwnerCount:
 				account.OwnerCount = value
 			case fieldCodeTransferRate:
@@ -717,10 +813,20 @@ func parseAccountRoot(data []byte) (*AccountRoot, error) {
 			}
 			offset += 16
 
+		case fieldTypeHash256:
+			// Hash256 fields (e.g., PreviousTxnID) are 32 bytes
+			if offset+32 > len(data) {
+				return account, nil
+			}
+			if fieldCode == 5 { // PreviousTxnID
+				copy(account.PreviousTxnID[:], data[offset:offset+32])
+			}
+			offset += 32
+
 		default:
-			// Unknown type - try to skip it
-			// This is a simplified skip, real implementation would need proper VL handling
-			break
+			// Unknown type - can't determine size, must stop parsing
+			// This shouldn't happen for valid AccountRoot entries
+			return account, nil
 		}
 	}
 
@@ -760,6 +866,17 @@ func serializeAccountRoot(account *AccountRoot) ([]byte, error) {
 	// Add EmailHash if set
 	if account.EmailHash != "" {
 		jsonObj["EmailHash"] = strings.ToUpper(account.EmailHash)
+	}
+
+	// Add PreviousTxnID if set (non-zero)
+	var zeroHash [32]byte
+	if account.PreviousTxnID != zeroHash {
+		jsonObj["PreviousTxnID"] = strings.ToUpper(hex.EncodeToString(account.PreviousTxnID[:]))
+	}
+
+	// Add PreviousTxnLgrSeq if set
+	if account.PreviousTxnLgrSeq > 0 {
+		jsonObj["PreviousTxnLgrSeq"] = account.PreviousTxnLgrSeq
 	}
 
 	// Encode using the binary codec
