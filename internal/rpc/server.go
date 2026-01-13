@@ -14,6 +14,20 @@ import (
 type Server struct {
 	registry *MethodRegistry
 	timeout  time.Duration
+
+	// services provides access to backend services for handlers
+	services *Services
+}
+
+// Services provides access to backend services needed by RPC handlers
+type Services struct {
+	// LedgerService provides access to ledger operations
+	LedgerService interface {
+		GetCurrentLedgerIndex() uint32
+		GetClosedLedgerIndex() uint32
+		GetValidatedLedgerIndex() uint32
+		AcceptLedger() (uint32, error)
+	}
 }
 
 // NewServer creates a new RPC server with the given timeout
@@ -27,6 +41,30 @@ func NewServer(timeout time.Duration) *Server {
 	server.registerAllMethods()
 
 	return server
+}
+
+// NewServerWithServices creates a new RPC server with the given timeout and services
+func NewServerWithServices(timeout time.Duration, services *Services) *Server {
+	server := &Server{
+		registry: NewMethodRegistry(),
+		timeout:  timeout,
+		services: services,
+	}
+
+	// Register all RPC methods
+	server.registerAllMethods()
+
+	return server
+}
+
+// SetServices sets the backend services for the server
+func (s *Server) SetServices(services *Services) {
+	s.services = services
+}
+
+// GetServices returns the backend services (may be nil)
+func (s *Server) GetServices() *Services {
+	return s.services
 }
 
 // XrplRequest represents an XRPL JSON-RPC request

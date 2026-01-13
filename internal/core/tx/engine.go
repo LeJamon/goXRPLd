@@ -12,6 +12,7 @@ import (
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/handler"
 	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
 )
 
@@ -26,6 +27,10 @@ type Engine struct {
 	// currentTxHash is the hash of the transaction currently being applied
 	// Used to set PreviousTxnID on modified ledger entries
 	currentTxHash [32]byte
+
+	// handlerRegistry provides access to transaction type handlers (optional)
+	// If set, handlers from the registry will be used before falling back to built-in handlers
+	handlerRegistry *handler.Registry
 }
 
 // EngineConfig holds configuration for the transaction engine
@@ -140,6 +145,25 @@ func NewEngine(view LedgerView, config EngineConfig) *Engine {
 		view:   view,
 		config: config,
 	}
+}
+
+// NewEngineWithRegistry creates a new transaction engine with a handler registry
+func NewEngineWithRegistry(view LedgerView, config EngineConfig, registry *handler.Registry) *Engine {
+	return &Engine{
+		view:            view,
+		config:          config,
+		handlerRegistry: registry,
+	}
+}
+
+// SetHandlerRegistry sets the handler registry for the engine
+func (e *Engine) SetHandlerRegistry(registry *handler.Registry) {
+	e.handlerRegistry = registry
+}
+
+// GetHandlerRegistry returns the handler registry (may be nil)
+func (e *Engine) GetHandlerRegistry() *handler.Registry {
+	return e.handlerRegistry
 }
 
 // computeTransactionHash computes the hash of a transaction
@@ -390,6 +414,17 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 
 	// Type-specific application
 	var result Result
+
+	// Try handler registry first (if configured)
+	if e.handlerRegistry != nil {
+		if h := e.handlerRegistry.Get(common.TransactionType); h != nil {
+			result = e.applyWithHandler(h, tx, account, metadata)
+			// Skip the switch if handler was used
+			goto updateAccount
+		}
+	}
+
+	// Fall back to built-in handlers
 	switch t := tx.(type) {
 	case *Payment:
 		result = e.applyPayment(t, account, metadata)
@@ -522,6 +557,7 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 		result = TesSUCCESS
 	}
 
+updateAccount:
 	// Update the source account
 	updatedData, err := serializeAccountRoot(account)
 	if err != nil {
@@ -570,6 +606,130 @@ func (e *Engine) calculateFee(tx Transaction) uint64 {
 		}
 	}
 	return e.config.BaseFee
+}
+
+// applyWithHandler applies a transaction using a handler from the registry
+func (e *Engine) applyWithHandler(h handler.Handler, tx Transaction, account *AccountRoot, metadata *Metadata) Result {
+	// Create handler context
+	ctx := &handler.Context{
+		View: &handlerViewAdapter{view: e.view},
+		Config: handler.Config{
+			BaseFee:                   e.config.BaseFee,
+			ReserveBase:               e.config.ReserveBase,
+			ReserveIncrement:          e.config.ReserveIncrement,
+			LedgerSequence:            e.config.LedgerSequence,
+			SkipSignatureVerification: e.config.SkipSignatureVerification,
+			Standalone:                e.config.Standalone,
+		},
+		Metadata: &handler.Metadata{
+			AffectedNodes:     make([]handler.AffectedNode, 0),
+			TransactionResult: handler.TesSUCCESS,
+		},
+	}
+
+	// Adapt transaction to handler interface
+	handlerTx := &handlerTxAdapter{tx: tx}
+
+	// Adapt account to handler interface
+	handlerAccount := &handler.AccountRoot{
+		Account:      account.Account,
+		Balance:      account.Balance,
+		Sequence:     account.Sequence,
+		Flags:        account.Flags,
+		OwnerCount:   account.OwnerCount,
+		RegularKey:   account.RegularKey,
+		Domain:       account.Domain,
+		EmailHash:    account.EmailHash,
+		MessageKey:   account.MessageKey,
+		TransferRate: account.TransferRate,
+		TickSize:     account.TickSize,
+	}
+
+	// Apply using the handler
+	result := h.Apply(handlerTx, handlerAccount, ctx)
+
+	// Copy back account changes
+	account.Balance = handlerAccount.Balance
+	account.Sequence = handlerAccount.Sequence
+	account.Flags = handlerAccount.Flags
+	account.OwnerCount = handlerAccount.OwnerCount
+
+	// Copy affected nodes to metadata
+	for _, node := range ctx.Metadata.AffectedNodes {
+		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
+			NodeType:        node.NodeType,
+			LedgerEntryType: node.LedgerEntryType,
+			LedgerIndex:     node.LedgerIndex,
+			FinalFields:     node.FinalFields,
+			PreviousFields:  node.PreviousFields,
+			NewFields:       node.NewFields,
+		})
+	}
+
+	// Copy delivered amount if set
+	if ctx.Metadata.DeliveredAmount != nil {
+		metadata.DeliveredAmount = &Amount{
+			Value:    ctx.Metadata.DeliveredAmount.Value,
+			Currency: ctx.Metadata.DeliveredAmount.Currency,
+			Issuer:   ctx.Metadata.DeliveredAmount.Issuer,
+		}
+	}
+
+	// Convert handler result to engine result
+	return Result(result)
+}
+
+// handlerViewAdapter adapts LedgerView to handler.LedgerView
+type handlerViewAdapter struct {
+	view LedgerView
+}
+
+func (a *handlerViewAdapter) Read(k keylet.Keylet) ([]byte, error) {
+	return a.view.Read(k)
+}
+
+func (a *handlerViewAdapter) Exists(k keylet.Keylet) (bool, error) {
+	return a.view.Exists(k)
+}
+
+func (a *handlerViewAdapter) Insert(k keylet.Keylet, data []byte) error {
+	return a.view.Insert(k, data)
+}
+
+func (a *handlerViewAdapter) Update(k keylet.Keylet, data []byte) error {
+	return a.view.Update(k, data)
+}
+
+func (a *handlerViewAdapter) Erase(k keylet.Keylet) error {
+	return a.view.Erase(k)
+}
+
+func (a *handlerViewAdapter) ForEach(fn func(key [32]byte, data []byte) bool) error {
+	return a.view.ForEach(fn)
+}
+
+// handlerTxAdapter adapts Transaction to handler.Transaction
+type handlerTxAdapter struct {
+	tx Transaction
+}
+
+func (a *handlerTxAdapter) GetCommon() *handler.CommonFields {
+	common := a.tx.GetCommon()
+	return &handler.CommonFields{
+		Account:            common.Account,
+		TransactionType:    common.TransactionType,
+		Fee:                common.Fee,
+		Sequence:           common.Sequence,
+		TicketSequence:     common.TicketSequence,
+		LastLedgerSequence: common.LastLedgerSequence,
+		SourceTag:          common.SourceTag,
+		SigningPubKey:      common.SigningPubKey,
+		TxnSignature:       common.TxnSignature,
+	}
+}
+
+func (a *handlerTxAdapter) Validate() error {
+	return a.tx.Validate()
 }
 
 // AccountRoot represents an account in the ledger

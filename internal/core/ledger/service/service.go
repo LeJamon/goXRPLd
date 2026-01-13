@@ -88,6 +88,8 @@ type TransactionResultEvent struct {
 type EventCallback func(event *LedgerAcceptedEvent)
 
 // Service manages the ledger lifecycle
+// It composes the focused managers for separation of concerns while
+// maintaining backward compatibility with the existing API.
 type Service struct {
 	mu sync.RWMutex
 
@@ -125,6 +127,19 @@ type Service struct {
 
 	// hooks provides event callbacks for external subscribers
 	hooks *EventHooks
+
+	// Focused managers (optional, for new code paths)
+	// These provide better separation of concerns while maintaining
+	// backward compatibility with the existing implementation above.
+
+	// feeManager handles fee calculations and settings
+	feeManager *FeeManager
+
+	// eventPublisher handles event callbacks and hooks
+	eventPublisher *EventPublisher
+
+	// queryService handles ledger data queries
+	queryService *QueryService
 }
 
 // New creates a new LedgerService
@@ -137,7 +152,27 @@ func New(cfg Config) (*Service, error) {
 		txIndex:       make(map[[32]byte]uint32),
 	}
 
+	// Initialize focused managers
+	s.feeManager = NewFeeManager()
+	s.eventPublisher = NewEventPublisher()
+
 	return s, nil
+}
+
+// GetFeeManager returns the fee manager for direct access
+func (s *Service) GetFeeManager() *FeeManager {
+	return s.feeManager
+}
+
+// GetEventPublisher returns the event publisher for direct access
+func (s *Service) GetEventPublisher() *EventPublisher {
+	return s.eventPublisher
+}
+
+// GetQueryService returns the query service for direct access
+// Note: QueryService is initialized lazily since it requires LedgerManager
+func (s *Service) GetQueryService() *QueryService {
+	return s.queryService
 }
 
 // SetEventCallback sets the callback function for ledger events

@@ -153,35 +153,48 @@ func (a Amount) IsNative() bool {
 // Result represents a transaction result code.
 type Result int
 
-// Result codes
+// Result codes - following XRPL result code ranges:
+// tes (0): success
+// tec (100-199): claimed, not applied
+// ter (-99 to -1): retry
+// tef (-199 to -100): failure
+// tem (-299 to -200): malformed
 const (
-	TesSUCCESS             Result = 0
-	TefINTERNAL            Result = -199
-	TefPAST_SEQ            Result = -198
-	TefMAX_LEDGER          Result = -197
-	TerPRE_SEQ             Result = -92
-	TerINSUF_FEE_B         Result = -91
-	TerNO_ACCOUNT          Result = -90
-	TemBAD_SRC_ACCOUNT     Result = -96
-	TemINVALID             Result = -95
-	TemBAD_FEE             Result = -94
-	TemBAD_SEQUENCE        Result = -93
-	TemBAD_SIGNATURE       Result = -92
-	TemBAD_AMOUNT          Result = -91
-	TemDST_NEEDED          Result = -90
-	TemDST_IS_SRC          Result = -89
-	TemBAD_ISSUER          Result = -88
-	TecNO_DST              Result = 124
-	TecNO_DST_INSUF_XRP    Result = 125
-	TecDST_TAG_NEEDED      Result = 143
-	TecUNFUNDED_PAYMENT    Result = 104
-	TecPATH_DRY            Result = 128
+	TesSUCCESS Result = 0
+
+	// tec codes (100-199): claimed cost only
 	TecPATH_PARTIAL        Result = 101
-	TecNO_ISSUER           Result = 133
-	TecNO_ALTERNATIVE_KEY  Result = 130
+	TecUNFUNDED_PAYMENT    Result = 104
 	TecINSUF_RESERVE_LINE  Result = 122
 	TecINSUF_RESERVE_OFFER Result = 123
+	TecNO_DST              Result = 124
+	TecNO_DST_INSUF_XRP    Result = 125
+	TecPATH_DRY            Result = 128
+	TecNO_ALTERNATIVE_KEY  Result = 130
+	TecNO_ISSUER           Result = 133
+	TecDST_TAG_NEEDED      Result = 143
 	TecKILLED              Result = 150
+
+	// ter codes (-99 to -1): retry
+	TerPRE_SEQ      Result = -92
+	TerINSUF_FEE_B  Result = -91
+	TerNO_ACCOUNT   Result = -90
+
+	// tef codes (-199 to -100): failure
+	TefINTERNAL   Result = -199
+	TefPAST_SEQ   Result = -198
+	TefMAX_LEDGER Result = -197
+
+	// tem codes (-299 to -200): malformed
+	TemBAD_SRC_ACCOUNT Result = -296
+	TemINVALID         Result = -295
+	TemBAD_FEE         Result = -294
+	TemBAD_SEQUENCE    Result = -293
+	TemBAD_SIGNATURE   Result = -292
+	TemBAD_AMOUNT      Result = -291
+	TemDST_NEEDED      Result = -290
+	TemDST_IS_SRC      Result = -289
+	TemBAD_ISSUER      Result = -288
 )
 
 // IsSuccess returns true if the result indicates success.
@@ -204,18 +217,44 @@ func (r Result) Message() string {
 	switch r {
 	case TesSUCCESS:
 		return "The transaction was applied."
-	case TefINTERNAL:
-		return "Internal error."
-	case TefPAST_SEQ:
-		return "The sequence number is in the past."
-	case TefMAX_LEDGER:
-		return "Ledger sequence too high."
+	// tec codes
+	case TecPATH_PARTIAL:
+		return "Path only partially found."
+	case TecUNFUNDED_PAYMENT:
+		return "Insufficient funds."
+	case TecINSUF_RESERVE_LINE:
+		return "Insufficient reserve for trust line."
+	case TecINSUF_RESERVE_OFFER:
+		return "Insufficient reserve for offer."
+	case TecNO_DST:
+		return "Destination does not exist."
+	case TecNO_DST_INSUF_XRP:
+		return "Insufficient XRP to create destination."
+	case TecPATH_DRY:
+		return "No path found."
+	case TecNO_ALTERNATIVE_KEY:
+		return "No alternative key."
+	case TecNO_ISSUER:
+		return "Issuer does not exist."
+	case TecDST_TAG_NEEDED:
+		return "Destination tag required."
+	case TecKILLED:
+		return "Offer killed."
+	// ter codes
 	case TerPRE_SEQ:
 		return "The sequence number is in the future."
 	case TerINSUF_FEE_B:
 		return "Insufficient balance to pay fee."
 	case TerNO_ACCOUNT:
 		return "The source account does not exist."
+	// tef codes
+	case TefINTERNAL:
+		return "Internal error."
+	case TefPAST_SEQ:
+		return "The sequence number is in the past."
+	case TefMAX_LEDGER:
+		return "Ledger sequence too high."
+	// tem codes
 	case TemBAD_SRC_ACCOUNT:
 		return "Invalid source account."
 	case TemINVALID:
@@ -230,18 +269,10 @@ func (r Result) Message() string {
 		return "Invalid amount."
 	case TemDST_NEEDED:
 		return "Destination required."
-	case TecNO_DST:
-		return "Destination does not exist."
-	case TecNO_DST_INSUF_XRP:
-		return "Insufficient XRP to create destination."
-	case TecDST_TAG_NEEDED:
-		return "Destination tag required."
-	case TecUNFUNDED_PAYMENT:
-		return "Insufficient funds."
-	case TecPATH_DRY:
-		return "No path found."
-	case TecPATH_PARTIAL:
-		return "Path only partially found."
+	case TemDST_IS_SRC:
+		return "Cannot send to self."
+	case TemBAD_ISSUER:
+		return "Invalid issuer."
 	default:
 		return "Unknown result."
 	}
