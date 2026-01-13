@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/Peersyst/xrpl-go/binary-codec/types/testutil"
+	"github.com/LeJamon/goXRPLd/internal/codec/binary-codec/types/testutil"
 	"github.com/golang/mock/gomock"
 )
 

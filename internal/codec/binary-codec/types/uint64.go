@@ -42,18 +42,14 @@ func (u *UInt64) FromJSON(value any) ([]byte, error) {
 // ToJSON takes a BinaryParser and optional parameters, and converts the serialized byte data
 // back into a JSON string value. This method assumes the parser contains data representing
 // a 64-bit unsigned integer. If the parsing fails, an error is returned.
-// The output is a lowercase hex string with leading zeros stripped (matching rippled behavior).
+// The output is an uppercase hex string zero-padded to 16 characters (matching rippled behavior).
 func (u *UInt64) ToJSON(p interfaces.BinaryParser, _ ...int) (any, error) {
 	b, err := p.ReadBytes(8)
 	if err != nil {
 		return nil, err
 	}
-	// Convert to hex and strip leading zeros (rippled outputs minimal hex representation)
-	hexStr := hex.EncodeToString(b)
-	hexStr = strings.TrimLeft(hexStr, "0")
-	if hexStr == "" {
-		hexStr = "0"
-	}
+	// Convert to uppercase hex with zero padding to 16 characters
+	hexStr := strings.ToUpper(hex.EncodeToString(b))
 	return hexStr, nil
 }
 

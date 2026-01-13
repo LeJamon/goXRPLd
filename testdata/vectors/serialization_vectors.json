@@ -1,0 +1,268 @@
+{
+  "description": "Binary serialization test vectors extracted from rippled",
+  "sources": [
+    "rippled/src/test/protocol/Serializer_test.cpp",
+    "rippled/src/test/protocol/STObject_test.cpp",
+    "rippled/src/test/protocol/SecretKey_test.cpp"
+  ],
+  "vectors": {
+    "int32_roundtrip": {
+      "description": "Serializer add32/geti32 roundtrip tests",
+      "expected_size": 4,
+      "cases": [
+        {
+          "name": "int32_min",
+          "value": -2147483648,
+          "hex_value": "0x80000000",
+          "comment": "std::numeric_limits<std::int32_t>::min()"
+        },
+        {
+          "name": "int32_negative_one",
+          "value": -1,
+          "hex_value": "0xFFFFFFFF"
+        },
+        {
+          "name": "int32_zero",
+          "value": 0,
+          "hex_value": "0x00000000"
+        },
+        {
+          "name": "int32_one",
+          "value": 1,
+          "hex_value": "0x00000001"
+        },
+        {
+          "name": "int32_max",
+          "value": 2147483647,
+          "hex_value": "0x7FFFFFFF",
+          "comment": "std::numeric_limits<std::int32_t>::max()"
+        }
+      ]
+    },
+    "int64_roundtrip": {
+      "description": "Serializer add64/geti64 roundtrip tests",
+      "expected_size": 8,
+      "cases": [
+        {
+          "name": "int64_min",
+          "value": "-9223372036854775808",
+          "hex_value": "0x8000000000000000",
+          "comment": "std::numeric_limits<std::int64_t>::min()"
+        },
+        {
+          "name": "int64_negative_one",
+          "value": "-1",
+          "hex_value": "0xFFFFFFFFFFFFFFFF"
+        },
+        {
+          "name": "int64_zero",
+          "value": "0",
+          "hex_value": "0x0000000000000000"
+        },
+        {
+          "name": "int64_one",
+          "value": "1",
+          "hex_value": "0x0000000000000001"
+        },
+        {
+          "name": "int64_max",
+          "value": "9223372036854775807",
+          "hex_value": "0x7FFFFFFFFFFFFFFF",
+          "comment": "std::numeric_limits<std::int64_t>::max()"
+        }
+      ]
+    },
+    "malformed_payloads": {
+      "description": "Malformed serialized data that should trigger errors",
+      "cases": [
+        {
+          "name": "duplicate_field_in_array",
+          "payload_hex": "e912abcd12fedc",
+          "payload_bytes": [233, 18, 171, 205, 18, 254, 220],
+          "expected_error": "Duplicate field detected",
+          "context": "STArray with duplicate fields"
+        },
+        {
+          "name": "duplicate_field_in_object",
+          "payload_hex": "e2e1e2",
+          "payload_bytes": [226, 225, 226],
+          "expected_error": "Duplicate field detected",
+          "context": "STObject with duplicate fields"
+        }
+      ]
+    },
+    "json_parsing": {
+      "description": "JSON to STObject parsing test vectors",
+      "valid_cases": [
+        {
+          "name": "array_with_modified_node",
+          "json": "{\"Template\":[{\"ModifiedNode\":{\"Sequence\":1}}]}",
+          "expected_output": "{\"Template\":[{\"ModifiedNode\":{\"Sequence\":1}}]}"
+        },
+        {
+          "name": "object_with_multiple_fields",
+          "json": "{\"CloseResolution\":19,\"Method\":250,\"TransactionResult\":\"tecFROZEN\"}",
+          "expected_output": "{\"CloseResolution\":19,\"Method\":250,\"TransactionResult\":\"tecFROZEN\"}"
+        },
+        {
+          "name": "method_as_string",
+          "json": "{\"CloseResolution\":19,\"Method\":\"250\",\"TransactionResult\":\"tecFROZEN\"}",
+          "expected_output": "{\"CloseResolution\":19,\"Method\":250,\"TransactionResult\":\"tecFROZEN\"}",
+          "comment": "String method value should be converted to int"
+        }
+      ],
+      "invalid_cases": [
+        {
+          "name": "invalid_array_children",
+          "json": "{\"Template\":[{\"ModifiedNode\":{\"Sequence\":1}, \"DeletedNode\":{\"Sequence\":1}}]}",
+          "expected_error": "First level children of `Template`",
+          "comment": "Array elements cannot have multiple top-level keys"
+        },
+        {
+          "name": "invalid_transaction_result",
+          "json": "{\"CloseResolution\":19,\"Method\":250,\"TransactionResult\":\"terQUEUED\"}",
+          "expected_error": "Field 'test.TransactionResult' is out of range.",
+          "comment": "terQUEUED is not a valid TransactionResult for parsing"
+        },
+        {
+          "name": "invalid_method_type",
+          "json": "{\"CloseResolution\":19,\"Method\":\"pony\",\"TransactionResult\":\"tesSUCCESS\"}",
+          "expected_error": "Field 'test.Method' has bad type."
+        },
+        {
+          "name": "method_out_of_range",
+          "json": "{\"CloseResolution\":19,\"Method\":3294967296,\"TransactionResult\":\"tesSUCCESS\"}",
+          "expected_error": "Field 'test.Method' is out of range."
+        },
+        {
+          "name": "negative_close_resolution",
+          "json": "{\"CloseResolution\":-10,\"Method\":42,\"TransactionResult\":\"tesSUCCESS\"}",
+          "expected_error": "Field 'test.CloseResolution' is out of range."
+        },
+        {
+          "name": "float_method",
+          "json": "{\"CloseResolution\":19,\"Method\":3.141592653,\"TransactionResult\":\"tesSUCCESS\"}",
+          "expected_error": "Field 'test.Method' has bad type."
+        }
+      ]
+    },
+    "field_type_ids": {
+      "description": "Serialized type IDs and field codes",
+      "invalid_field_lookups": [
+        {"type_id": "STI_VL", "field_value": 255, "expected": "sfInvalid"},
+        {"type_id": "STI_UINT256", "field_value": 255, "expected": "sfInvalid"},
+        {"type_id": "STI_UINT32", "field_value": 255, "expected": "sfInvalid"},
+        {"type_id": "STI_VECTOR256", "field_value": 255, "expected": "sfInvalid"},
+        {"type_id": "STI_OBJECT", "field_value": 255, "expected": "sfInvalid"}
+      ],
+      "comment": "Field lookups with invalid field values should return sfInvalid"
+    },
+    "canonicality": {
+      "description": "ECDSA signature canonicality test vectors from SecretKey_test.cpp",
+      "test_data": {
+        "digest": {
+          "hex": "34C19028C80D21F3F48C9354895F8D5BF0D5EE7FF457647CF655F5530A3022A7",
+          "bytes": [52, 193, 144, 40, 200, 13, 33, 243, 244, 140, 147, 84, 137, 95, 141, 91, 240, 213, 238, 127, 244, 87, 100, 124, 246, 85, 245, 83, 10, 48, 34, 167]
+        },
+        "public_key": {
+          "hex": "025096EB12D3E924234E7162369C11D8BF877EDA238778E7A31FF0AAC5D0DBCF37",
+          "bytes": [2, 80, 150, 235, 18, 211, 233, 36, 35, 78, 113, 98, 54, 156, 17, 216, 191, 135, 126, 218, 35, 135, 120, 231, 163, 31, 240, 170, 197, 208, 219, 207, 55]
+        },
+        "secret_key": {
+          "hex": "AA921417E7E5C299DA4EEC16D1CAA92F19B19F2A68511F68EC73BBB2F5236F3D",
+          "bytes": [170, 146, 20, 23, 231, 229, 194, 153, 218, 78, 236, 22, 209, 202, 169, 47, 25, 177, 159, 42, 104, 81, 31, 104, 236, 115, 187, 178, 245, 35, 111, 61]
+        },
+        "canonical_signature": {
+          "hex": "3045022100B49D07F0E934BA468C0EFC7811779140BD1FB8B63A6492AD395AC2F360F24660022050873ADB0A2EF81676E39F459C8BBB07A09C3E9F9BEB6962945D24D479D62740",
+          "bytes": [48, 69, 2, 33, 0, 180, 157, 7, 240, 233, 52, 186, 70, 140, 14, 252, 120, 17, 119, 145, 64, 141, 31, 184, 182, 58, 100, 146, 173, 57, 90, 194, 243, 96, 242, 70, 96, 2, 32, 80, 135, 57, 219, 10, 46, 248, 22, 118, 227, 159, 69, 156, 139, 187, 7, 160, 156, 62, 159, 155, 235, 105, 98, 148, 213, 36, 212, 121, 214, 39, 64],
+          "length": 71,
+          "is_fully_canonical": true
+        },
+        "non_canonical_signature": {
+          "hex": "3046022100B49D07F0E934BA468C0EFC7811779140BD1FB8B63A6492AD395AC2F360F246600221 00AF78C624F5D107E9891C60BA637444F71A129E47135D36D92AFD39B856601A01",
+          "bytes": [48, 70, 2, 33, 0, 180, 157, 7, 240, 233, 52, 186, 70, 140, 14, 252, 120, 17, 119, 145, 64, 141, 31, 184, 182, 58, 100, 146, 173, 57, 90, 194, 243, 96, 242, 70, 96, 2, 33, 0, 175, 120, 198, 36, 245, 209, 7, 233, 137, 28, 96, 186, 99, 116, 68, 247, 26, 18, 158, 71, 19, 93, 54, 217, 42, 253, 57, 184, 86, 96, 26, 1],
+          "length": 72,
+          "is_fully_canonical": false
+        }
+      }
+    },
+    "key_derivation_secp256k1": {
+      "description": "secp256k1 key derivation test vectors",
+      "cases": [
+        {
+          "seed_hex": "DEDCE9CE67B451D852FD4E846FCDE31C",
+          "seed_bytes": [222, 220, 233, 206, 103, 180, 81, 216, 82, 253, 78, 132, 111, 205, 227, 28],
+          "public_key_hex": "0330E7FC9D56BB25D6893BA3F317AE5BCF33B3291BD63DB32654A313222F7FD020",
+          "public_key_bytes": [3, 48, 231, 252, 157, 86, 187, 37, 214, 137, 59, 163, 243, 23, 174, 91, 207, 51, 179, 41, 27, 214, 61, 179, 38, 84, 163, 19, 34, 47, 127, 208, 32],
+          "secret_key_hex": "1ACAAEDECEA40B2A958212629E16F2EB46B153EEE94CDD350FDEFF527955E5B7",
+          "secret_key_bytes": [26, 202, 174, 222, 206, 64, 91, 42, 149, 130, 18, 98, 158, 22, 242, 235, 70, 177, 83, 238, 233, 76, 221, 53, 15, 222, 255, 82, 121, 85, 37, 183],
+          "account_address": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+          "comment": "Genesis account / masterpassphrase derived"
+        },
+        {
+          "seed_hex": "F75C48FEC46D4D64928B795F3FABBB0",
+          "seed_bytes": [247, 92, 72, 254, 196, 109, 77, 100, 146, 139, 121, 95, 63, 186, 187, 160],
+          "public_key_hex": "03AF53E8011E85B36664F17108905010C3E86FC2C6658C2EE83CA580DC997254181",
+          "public_key_bytes": [3, 175, 83, 232, 1, 30, 133, 179, 102, 100, 241, 113, 8, 144, 80, 28, 62, 134, 252, 44, 102, 88, 194, 238, 131, 202, 88, 13, 201, 151, 37, 65, 177],
+          "secret_key_hex": "5B8AB0E7CDAF48874D5D9934BF3E7B2CB06BC4C7EAAAF762682ED8D0A31E3C70",
+          "secret_key_bytes": [91, 138, 176, 231, 205, 175, 72, 135, 77, 93, 153, 52, 191, 62, 123, 44, 176, 107, 196, 199, 234, 170, 247, 98, 104, 46, 216, 208, 163, 30, 60, 112],
+          "account_address": "r9ZERztesFu3ZBs7zsWTeCvBg14GQ9zWF7"
+        },
+        {
+          "seed_hex": "7AEA88C148A8C4A89069F98A3733167B",
+          "seed_bytes": [122, 234, 136, 193, 72, 168, 196, 168, 144, 105, 249, 138, 55, 51, 22, 123],
+          "public_key_hex": "037AD930B31B0F81036D65A62D4E1131EF605F738E7D7F95465BBECBCBFFA7076E",
+          "public_key_bytes": [3, 122, 217, 48, 179, 27, 15, 129, 3, 109, 101, 166, 45, 78, 17, 49, 239, 96, 95, 115, 142, 125, 127, 149, 70, 91, 190, 203, 203, 255, 167, 7, 110],
+          "secret_key_hex": "3DDC5FE16378AE8503E974233017791CC07C1077653AB723C8F65B17B9980DA1",
+          "secret_key_bytes": [61, 220, 95, 225, 99, 120, 174, 133, 3, 233, 116, 35, 48, 23, 121, 28, 192, 124, 16, 119, 101, 58, 183, 35, 200, 246, 91, 23, 185, 152, 13, 161],
+          "account_address": "rfmZ1iAuSzB2gxjoJgBub6iJPCk92D7YfC"
+        }
+      ]
+    },
+    "base58_secrets": {
+      "description": "Base58 encoded secret key test vectors",
+      "cases": [
+        {
+          "passphrase": "masterpassphrase",
+          "key_type": "secp256k1",
+          "base58_encoded": "pnen77YEeUd4fFKG7iycBWcwKpTaeFRkW2WFostaATy1DSupwXe",
+          "token_type": "NodePrivate"
+        },
+        {
+          "passphrase": "masterpassphrase",
+          "key_type": "ed25519",
+          "base58_encoded": "paKv46LztLqK3GaKz1rG2nQGN6M4JLyRtxFBYFTw4wAVHtGys36",
+          "token_type": "NodePrivate"
+        }
+      ],
+      "invalid_cases": [
+        {"value": "", "reason": "empty string"},
+        {"value": " ", "reason": "whitespace only"},
+        {"value": "!35gty9mhju8nfjl", "reason": "malformed base58"}
+      ]
+    },
+    "variable_length_encoding": {
+      "description": "Variable length blob serialization tests",
+      "cases": [
+        {
+          "name": "blob_sizes_0_to_999",
+          "comment": "STObject setFieldVL with blobs from size 0 to 999 should roundtrip correctly"
+        }
+      ]
+    },
+    "vector256": {
+      "description": "Vector of 256-bit hashes serialization",
+      "test_case": {
+        "count": 5,
+        "values": [
+          "0000000000000000000000000000000000000000000000000000000000000000",
+          "0000000000000000000000000000000000000000000000000000000000000001",
+          "0000000000000000000000000000000000000000000000000000000000000002",
+          "0000000000000000000000000000000000000000000000000000000000000003",
+          "0000000000000000000000000000000000000000000000000000000000000004"
+        ],
+        "comment": "Vector of uint256 values from 0 to 4"
+      }
+    }
+  }
+}
