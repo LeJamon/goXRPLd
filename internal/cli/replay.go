@@ -79,9 +79,9 @@ type ExpectedFixture struct {
 
 // ExpectedTxEntry represents expected transaction result
 type ExpectedTxEntry struct {
-	Index int    `json:"index"`
-	Hash  string `json:"hash"`
-	Meta  string `json:"meta"` // Binary metadata as hex
+	Index    int    `json:"index"`
+	Hash     string `json:"hash"`
+	MetaBlob string `json:"meta_blob"` // Binary metadata as hex
 }
 
 // TxApplyInfo stores detailed transaction application info
@@ -406,6 +406,9 @@ func executeReplayVerbose(state *StateFixture, env *EnvFixture, txs *TxsFixture,
 			continue
 		}
 
+		// Store the raw bytes for hash computation
+		transaction.SetRawBytes(txBlob)
+
 		// Apply the transaction
 		applyResult := engine.Apply(transaction)
 		txInfo.Result = applyResult.Result.String()
@@ -442,7 +445,14 @@ func executeReplayVerbose(state *StateFixture, env *EnvFixture, txs *TxsFixture,
 			continue
 		}
 
-		if err := openLedger.AddTransaction(txHash, txBlob); err != nil {
+		// Create combined VL-encoded tx + VL-encoded metadata blob for transaction tree
+		txWithMetaBlob, err := tx.CreateTxWithMetaBlob(txBlob, applyResult.Metadata)
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("tx %d: failed to create tx+meta blob: %v", txEntry.Index, err))
+			continue
+		}
+
+		if err := openLedger.AddTransactionWithMeta(txHash, txWithMetaBlob); err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("tx %d: failed to add to ledger: %v", txEntry.Index, err))
 		}
 	}

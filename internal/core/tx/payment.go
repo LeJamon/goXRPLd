@@ -129,7 +129,7 @@ func flattenAmount(a Amount) any {
 	if a.IsNative() {
 		return a.Value
 	}
-	return map[string]string{
+	return map[string]any{
 		"value":    a.Value,
 		"currency": a.Currency,
 		"issuer":   a.Issuer,

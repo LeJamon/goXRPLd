@@ -361,6 +361,19 @@ func (l *Ledger) AddTransaction(txHash [32]byte, txData []byte) error {
 	return l.txMap.Put(txHash, txData)
 }
 
+// AddTransactionWithMeta adds a transaction with metadata to the transaction tree
+// This uses NodeTypeTransactionWithMeta for proper transaction tree hashing
+func (l *Ledger) AddTransactionWithMeta(txHash [32]byte, txWithMetaData []byte) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.state != StateOpen {
+		return ErrLedgerImmutable
+	}
+
+	return l.txMap.PutWithNodeType(txHash, txWithMetaData, shamap.NodeTypeTransactionWithMeta)
+}
+
 // GetTransaction retrieves a transaction by its hash
 func (l *Ledger) GetTransaction(txHash [32]byte) ([]byte, bool, error) {
 	l.mu.RLock()
@@ -520,7 +533,6 @@ func (l *Ledger) SerializeHeader() []byte {
 	return data
 }
 
-// rippleEpochUnix is the Unix timestamp of January 1, 2000 00:00:00 UTC (XRPL epoch)
 const rippleEpochUnix int64 = 946684800
 
 // calculateLedgerHash computes the hash of a ledger header
@@ -542,7 +554,6 @@ func calculateLedgerHash(h header.LedgerHeader) [32]byte {
 	data = append(data, h.TxHash[:]...)
 	data = append(data, h.AccountHash[:]...)
 
-	// Times must be in Ripple epoch (seconds since 2000-01-01), not Unix epoch
 	parentCloseBytes := make([]byte, 4)
 	binary.BigEndian.PutUint32(parentCloseBytes, uint32(h.ParentCloseTime.Unix()-rippleEpochUnix))
 	data = append(data, parentCloseBytes...)

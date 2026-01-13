@@ -305,6 +305,124 @@ func (sm *SHAMap) Put(key [32]byte, data []byte) error {
 	return sm.PutItem(item)
 }
 
+// PutWithNodeType adds an item with a specific node type (for transaction+metadata)
+func (sm *SHAMap) PutWithNodeType(key [32]byte, data []byte, nodeType NodeType) error {
+	item := NewItem(key, data)
+	return sm.PutItemWithNodeType(item, nodeType)
+}
+
+// PutItemWithNodeType adds an item with a specific node type
+func (sm *SHAMap) PutItemWithNodeType(item *Item, nodeType NodeType) error {
+	if item == nil {
+		return ErrNilItem
+	}
+
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if sm.state != StateModifying {
+		return ErrImmutable
+	}
+
+	return sm.putItemWithNodeTypeUnsafe(item, nodeType)
+}
+
+// putItemWithNodeTypeUnsafe adds an item with specific node type without locking
+func (sm *SHAMap) putItemWithNodeTypeUnsafe(item *Item, nodeType NodeType) error {
+	key := item.Key()
+	stack := NewNodeStack()
+
+	// Walk towards the key, building stack of inner nodes (excluding leaf)
+	node, err := sm.walkToKeyForDirty(key, stack)
+	if err != nil {
+		return fmt.Errorf("failed to walk to key: %w", err)
+	}
+
+	if node == nil {
+		// Empty slot - create new leaf with specified node type
+		newLeaf, err := sm.createTypedLeaf(nodeType, item)
+		if err != nil {
+			return fmt.Errorf("failed to create leaf: %w", err)
+		}
+
+		newRoot, err := sm.dirtyUp(stack, key, newLeaf)
+		if err != nil {
+			return fmt.Errorf("failed to dirty up: %w", err)
+		}
+
+		return sm.assignRoot(newRoot, key)
+	}
+
+	if !node.IsLeaf() {
+		return ErrInvalidType
+	}
+
+	leafNode, ok := node.(LeafNode)
+	if !ok {
+		return ErrInvalidType
+	}
+
+	existingItem := leafNode.Item()
+	existingKey := existingItem.Key()
+
+	// Case 1: Same key - update existing item
+	if bytes.Equal(key[:], existingKey[:]) {
+		newLeaf, err := CreateLeafNode(nodeType, item)
+		if err != nil {
+			return err
+		}
+
+		newRoot, err := sm.dirtyUp(stack, key, newLeaf)
+		if err != nil {
+			return fmt.Errorf("failed to dirty up: %w", err)
+		}
+
+		return sm.assignRoot(newRoot, key)
+	}
+
+	// Case 2: Different key - need to split
+	currentDepth := stack.Len()
+	splitDepth := findSplitDepth(key, existingKey, currentDepth)
+
+	// Create new leaf for the new item
+	newLeaf, err := sm.createTypedLeaf(nodeType, item)
+	if err != nil {
+		return err
+	}
+
+	// Create inner nodes from current depth down to split depth
+	innerNode := NewInnerNode()
+	deepestInner := innerNode
+
+	for d := currentDepth; d < splitDepth; d++ {
+		branch := getBranchAtDepth(key, d)
+		child := NewInnerNode()
+		if err := deepestInner.SetChild(branch, child); err != nil {
+			return err
+		}
+		deepestInner = child
+	}
+
+	// Place both leaves in the deepest inner node
+	newBranch := getBranchAtDepth(key, splitDepth)
+	existingBranch := getBranchAtDepth(existingKey, splitDepth)
+
+	if err := deepestInner.SetChild(newBranch, newLeaf); err != nil {
+		return err
+	}
+	if err := deepestInner.SetChild(existingBranch, leafNode); err != nil {
+		return err
+	}
+
+	// Dirty up from the top inner node
+	newRoot, err := sm.dirtyUp(stack, key, innerNode)
+	if err != nil {
+		return fmt.Errorf("failed to dirty up: %w", err)
+	}
+
+	return sm.assignRoot(newRoot, key)
+}
+
 // PutItem adds or updates an item in the SHAMap
 func (sm *SHAMap) PutItem(item *Item) error {
 	if item == nil {

@@ -2,8 +2,10 @@ package tx
 
 import (
 	"encoding/hex"
+	"fmt"
 	"math/big"
 	"strconv"
+	"strings"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 )
@@ -27,8 +29,25 @@ func (e *Engine) applyXRPPayment(payment *Payment, sender *AccountRoot, metadata
 		return TemBAD_AMOUNT
 	}
 
-	// Check sender has enough balance (including reserve)
-	requiredBalance := amountDrops + e.config.ReserveBase
+	// Parse the fee from the transaction
+	feeDrops, err := strconv.ParseUint(payment.Fee, 10, 64)
+	if err != nil {
+		feeDrops = e.config.BaseFee // fallback to base fee if not specified
+	}
+
+	// Calculate reserve as: ReserveBase + (ownerCount * ReserveIncrement)
+	// This matches rippled's accountReserve(ownerCount) calculation
+	reserve := e.config.ReserveBase + (uint64(sender.OwnerCount) * e.config.ReserveIncrement)
+
+	// Use max(reserve, fee) as the minimum balance that must remain
+	// This matches rippled's behavior: auto const mmm = std::max(reserve, ctx_.tx.getFieldAmount(sfFee).xrp())
+	minBalance := reserve
+	if feeDrops > minBalance {
+		minBalance = feeDrops
+	}
+
+	// Check sender has enough balance (amount + minBalance)
+	requiredBalance := amountDrops + minBalance
 	if sender.Balance < requiredBalance {
 		return TecUNFUNDED_PAYMENT
 	}
@@ -57,15 +76,66 @@ func (e *Engine) applyXRPPayment(payment *Payment, sender *AccountRoot, metadata
 			return TefINTERNAL
 		}
 
+		// Check for pseudo-account (AMM accounts cannot receive direct payments)
+		// See rippled Payment.cpp:636-637: if (isPseudoAccount(sleDst)) return tecNO_PERMISSION
+		if (destAccount.Flags & lsfAMM) != 0 {
+			return TecNO_PERMISSION
+		}
+
 		previousDestBalance := destAccount.Balance
+		previousDestTxnID := destAccount.PreviousTxnID
+		previousDestTxnLgrSeq := destAccount.PreviousTxnLgrSeq
 
 		// Check if destination requires a tag
 		if (destAccount.Flags&0x00020000) != 0 && payment.DestinationTag == nil {
 			return TecDST_TAG_NEEDED
 		}
 
+		// Check deposit authorization
+		// Reference: rippled Payment.cpp:641-677
+		// If destination has lsfDepositAuth flag set, payments require preauthorization
+		// EXCEPT: to prevent account "wedging", allow small payments if BOTH conditions are true:
+		//   1. Destination balance <= base reserve (account is at or below minimum)
+		//   2. Payment amount <= base reserve
+		if (destAccount.Flags & lsfDepositAuth) != 0 {
+			dstReserve := e.config.ReserveBase
+
+			// Check if the exception applies (prevents account wedging)
+			if amountDrops > dstReserve || destAccount.Balance > dstReserve {
+				// Must check for preauthorization
+				senderAccountID, err := decodeAccountID(sender.Account)
+				if err != nil {
+					return TefINTERNAL
+				}
+
+				// Look up the DepositPreauth ledger entry
+				depositPreauthKey := keylet.DepositPreauth(destAccountID, senderAccountID)
+				preauthExists, err := e.view.Exists(depositPreauthKey)
+				if err != nil {
+					return TefINTERNAL
+				}
+
+				if !preauthExists {
+					// Sender is not preauthorized to deposit to this account
+					return TecNO_PERMISSION
+				}
+			}
+			// If both conditions are true (small payment to low-balance account),
+			// payment is allowed without preauthorization
+		}
+
 		// Credit destination
 		destAccount.Balance += amountDrops
+
+		// Clear PasswordSpent flag if set (lsfPasswordSpent = 0x00010000)
+		// Per rippled Payment.cpp:686-687, receiving XRP clears this flag
+		if (destAccount.Flags & 0x00010000) != 0 {
+			destAccount.Flags &^= 0x00010000
+		}
+
+		// Update PreviousTxnID and PreviousTxnLgrSeq on destination (thread the account)
+		destAccount.PreviousTxnID = e.currentTxHash
+		destAccount.PreviousTxnLgrSeq = e.config.LedgerSequence
 
 		// Debit sender
 		sender.Balance -= amountDrops
@@ -81,13 +151,19 @@ func (e *Engine) applyXRPPayment(payment *Payment, sender *AccountRoot, metadata
 		}
 
 		// Record destination modification
+		// Include all fields that rippled marks with sMD_Always (Flags, OwnerCount, Sequence)
 		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "ModifiedNode",
-			LedgerEntryType: "AccountRoot",
-			LedgerIndex:     hex.EncodeToString(destKey.Key[:]),
+			NodeType:          "ModifiedNode",
+			LedgerEntryType:   "AccountRoot",
+			LedgerIndex:       strings.ToUpper(hex.EncodeToString(destKey.Key[:])),
+			PreviousTxnLgrSeq: previousDestTxnLgrSeq,
+			PreviousTxnID:     strings.ToUpper(hex.EncodeToString(previousDestTxnID[:])),
 			FinalFields: map[string]any{
-				"Account": payment.Destination,
-				"Balance": strconv.FormatUint(destAccount.Balance, 10),
+				"Account":    payment.Destination,
+				"Balance":    strconv.FormatUint(destAccount.Balance, 10),
+				"Flags":      destAccount.Flags,
+				"OwnerCount": destAccount.OwnerCount,
+				"Sequence":   destAccount.Sequence,
 			},
 			PreviousFields: map[string]any{
 				"Balance": strconv.FormatUint(previousDestBalance, 10),
@@ -108,11 +184,15 @@ func (e *Engine) applyXRPPayment(payment *Payment, sender *AccountRoot, metadata
 	}
 
 	// Create new account
+	// With featureDeletableAccounts enabled (mainnet), new accounts start with
+	// sequence equal to the current ledger sequence (see rippled Payment.cpp:409-411)
 	newAccount := &AccountRoot{
-		Account:  payment.Destination,
-		Balance:  amountDrops,
-		Sequence: 1,
-		Flags:    0,
+		Account:           payment.Destination,
+		Balance:           amountDrops,
+		Sequence:          e.config.LedgerSequence,
+		Flags:             0,
+		PreviousTxnID:     e.currentTxHash,
+		PreviousTxnLgrSeq: e.config.LedgerSequence,
 	}
 
 	// Debit sender
@@ -136,7 +216,7 @@ func (e *Engine) applyXRPPayment(payment *Payment, sender *AccountRoot, metadata
 		NewFields: map[string]any{
 			"Account":  payment.Destination,
 			"Balance":  strconv.FormatUint(amountDrops, 10),
-			"Sequence": uint32(1),
+			"Sequence": e.config.LedgerSequence,
 		},
 	})
 
@@ -260,19 +340,20 @@ func (e *Engine) applyIOUIssue(payment *Payment, sender *AccountRoot, dest *Acco
 	}
 
 	// Calculate new balance after adding the amount
-	// Balance is positive if low account owes high account
-	// Balance is negative if high account owes low account
+	// RippleState balance semantics:
+	// - Negative balance = LOW owes HIGH (HIGH holds tokens)
+	// - Positive balance = HIGH owes LOW (LOW holds tokens)
 	var newBalance IOUAmount
 	if destIsLow {
-		// Dest is low, sender (issuer) is high
-		// Issuing means low account gets positive balance (issuer owes them)
-		// So we need to make balance more negative (high owes low)
-		newBalance = rippleState.Balance.Sub(amount)
-	} else {
-		// Dest is high, sender (issuer) is low
-		// Issuing means high account gets positive balance
-		// So balance becomes more positive (low owes high)
+		// Dest is LOW, sender (issuer) is HIGH
+		// Issuing means issuer (HIGH) now owes dest (LOW) more
+		// Positive balance = HIGH owes LOW, so make MORE positive
 		newBalance = rippleState.Balance.Add(amount)
+	} else {
+		// Dest is HIGH, sender (issuer) is LOW
+		// Issuing means issuer (LOW) now owes dest (HIGH) more
+		// Negative balance = LOW owes HIGH, so make MORE negative
+		newBalance = rippleState.Balance.Sub(amount)
 	}
 
 	// Check if the new balance exceeds the trust limit
@@ -299,7 +380,14 @@ func (e *Engine) applyIOUIssue(payment *Payment, sender *AccountRoot, dest *Acco
 		return TefINTERNAL
 	}
 
-	// Record the modification
+	// Record the modification with all fields rippled includes
+	// Balance issuer in RippleState metadata is ACCOUNT_ONE (rrrrrrrrrrrrrrrrrrrrBZbvji)
+	previousBalanceStr := "0"
+	if rippleState.Balance.Value != nil {
+		// Calculate previous balance (before adding amount)
+		prevBal := rippleState.Balance.Sub(newBalance).Negate()
+		previousBalanceStr = prevBal.Value.Text('f', -1)
+	}
 	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
 		NodeType:        "ModifiedNode",
 		LedgerEntryType: "RippleState",
@@ -307,8 +395,26 @@ func (e *Engine) applyIOUIssue(payment *Payment, sender *AccountRoot, dest *Acco
 		FinalFields: map[string]any{
 			"Balance": map[string]any{
 				"currency": amount.Currency,
-				"issuer":   amount.Issuer,
-				"value":    newBalance.Value.Text('f', 15),
+				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
+				"value":    newBalance.Value.Text('f', -1),
+			},
+			"Flags": rippleState.Flags,
+			"HighLimit": map[string]any{
+				"currency": rippleState.HighLimit.Currency,
+				"issuer":   rippleState.HighLimit.Issuer,
+				"value":    rippleState.HighLimit.Value.Text('f', -1),
+			},
+			"LowLimit": map[string]any{
+				"currency": rippleState.LowLimit.Currency,
+				"issuer":   rippleState.LowLimit.Issuer,
+				"value":    rippleState.LowLimit.Value.Text('f', -1),
+			},
+		},
+		PreviousFields: map[string]any{
+			"Balance": map[string]any{
+				"currency": amount.Currency,
+				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
+				"value":    previousBalanceStr,
 			},
 		},
 	})
@@ -331,6 +437,7 @@ func (e *Engine) applyIOURedeem(payment *Payment, sender *AccountRoot, dest *Acc
 
 	if !trustLineExists {
 		// No trust line exists - sender doesn't hold this currency
+		fmt.Printf("[DEBUG] applyIOURedeem: trust line not found for currency %s\n", amount.Currency)
 		return TecPATH_DRY
 	}
 
@@ -348,32 +455,49 @@ func (e *Engine) applyIOURedeem(payment *Payment, sender *AccountRoot, dest *Acc
 	// Determine which side is low/high account
 	senderIsLow := compareAccountIDsForLine(senderID, destID) < 0
 
+	// Debug logging
+	fmt.Printf("[DEBUG] applyIOURedeem: senderIsLow=%v, rawBalance=%v\n", senderIsLow, rippleState.Balance.Value)
+
 	// Get sender's current balance (how much issuer owes them)
+	// RippleState balance semantics:
+	// - Negative balance = LOW owes HIGH (HIGH holds tokens)
+	// - Positive balance = HIGH owes LOW (LOW holds tokens)
 	var senderBalance IOUAmount
 	if senderIsLow {
-		// Sender is low, issuer (dest) is high
-		// Balance is positive if low owes high
-		// Sender's holding is the negative of the balance
-		senderBalance = rippleState.Balance.Negate()
-	} else {
-		// Sender is high, issuer (dest) is low
-		// Sender's holding is the balance itself
+		// Sender is LOW, issuer (dest) is HIGH
+		// Positive balance = sender holds tokens (HIGH owes LOW)
 		senderBalance = rippleState.Balance
+	} else {
+		// Sender is HIGH, issuer (dest) is LOW
+		// Negative balance = sender holds tokens (LOW owes HIGH)
+		// Negate to get positive holdings value
+		senderBalance = rippleState.Balance.Negate()
 	}
+
+	// Debug logging
+	fmt.Printf("[DEBUG] applyIOURedeem: senderBalance=%v, amount=%v, compare=%d\n",
+		senderBalance.Value, amount.Value, senderBalance.Compare(amount))
 
 	// Check sender has enough balance
 	if senderBalance.Compare(amount) < 0 {
+		fmt.Printf("[DEBUG] applyIOURedeem: FAIL - senderBalance < amount\n")
 		return TecPATH_PARTIAL
 	}
 
+	// Save previous balance for metadata
+	previousBalance := rippleState.Balance
+
 	// Update balance by reducing sender's holding
+	// When redeeming, the issuer owes less to the sender
 	var newBalance IOUAmount
 	if senderIsLow {
-		// Reduce the amount issuer owes sender (make balance less negative / more positive)
-		newBalance = rippleState.Balance.Add(amount)
-	} else {
-		// Reduce sender's claim on issuer (make balance less positive / more negative)
+		// Sender is LOW, issuer is HIGH
+		// Positive balance = sender holds. Reduce by subtracting.
 		newBalance = rippleState.Balance.Sub(amount)
+	} else {
+		// Sender is HIGH, issuer is LOW
+		// Negative balance = sender holds. Make less negative by adding.
+		newBalance = rippleState.Balance.Add(amount)
 	}
 
 	rippleState.Balance = newBalance
@@ -388,7 +512,8 @@ func (e *Engine) applyIOURedeem(payment *Payment, sender *AccountRoot, dest *Acc
 		return TefINTERNAL
 	}
 
-	// Record the modification
+	// Record the modification with all fields rippled includes
+	// Balance issuer in RippleState metadata is ACCOUNT_ONE (rrrrrrrrrrrrrrrrrrrrBZbvji)
 	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
 		NodeType:        "ModifiedNode",
 		LedgerEntryType: "RippleState",
@@ -396,8 +521,26 @@ func (e *Engine) applyIOURedeem(payment *Payment, sender *AccountRoot, dest *Acc
 		FinalFields: map[string]any{
 			"Balance": map[string]any{
 				"currency": amount.Currency,
-				"issuer":   amount.Issuer,
-				"value":    newBalance.Value.Text('f', 15),
+				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
+				"value":    newBalance.Value.Text('f', -1),
+			},
+			"Flags": rippleState.Flags,
+			"HighLimit": map[string]any{
+				"currency": rippleState.HighLimit.Currency,
+				"issuer":   rippleState.HighLimit.Issuer,
+				"value":    rippleState.HighLimit.Value.Text('f', -1),
+			},
+			"LowLimit": map[string]any{
+				"currency": rippleState.LowLimit.Currency,
+				"issuer":   rippleState.LowLimit.Issuer,
+				"value":    rippleState.LowLimit.Value.Text('f', -1),
+			},
+		},
+		PreviousFields: map[string]any{
+			"Balance": map[string]any{
+				"currency": amount.Currency,
+				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
+				"value":    previousBalance.Value.Text('f', -1),
 			},
 		},
 	})
@@ -454,12 +597,19 @@ func (e *Engine) applyIOUTransfer(payment *Payment, sender *AccountRoot, dest *A
 	}
 
 	// Calculate sender's balance with issuer
+	// RippleState balance semantics:
+	// - Negative balance = LOW owes HIGH (HIGH holds tokens)
+	// - Positive balance = HIGH owes LOW (LOW holds tokens)
 	senderIsLowWithIssuer := compareAccountIDsForLine(senderID, issuerID) < 0
 	var senderBalance IOUAmount
 	if senderIsLowWithIssuer {
-		senderBalance = senderRippleState.Balance.Negate()
-	} else {
+		// Sender is LOW, issuer is HIGH
+		// Positive balance = sender holds tokens (HIGH/issuer owes LOW/sender)
 		senderBalance = senderRippleState.Balance
+	} else {
+		// Sender is HIGH, issuer is LOW
+		// Negative balance = sender holds tokens (LOW/issuer owes HIGH/sender)
+		senderBalance = senderRippleState.Balance.Negate()
 	}
 
 	// Check sender has enough
@@ -471,10 +621,14 @@ func (e *Engine) applyIOUTransfer(payment *Payment, sender *AccountRoot, dest *A
 	destIsLowWithIssuer := compareAccountIDsForLine(destID, issuerID) < 0
 	var destBalance, destLimit IOUAmount
 	if destIsLowWithIssuer {
-		destBalance = destRippleState.Balance.Negate()
+		// Dest is LOW, issuer is HIGH
+		// Positive balance = dest holds tokens
+		destBalance = destRippleState.Balance
 		destLimit = destRippleState.LowLimit
 	} else {
-		destBalance = destRippleState.Balance
+		// Dest is HIGH, issuer is LOW
+		// Negative balance = dest holds tokens
+		destBalance = destRippleState.Balance.Negate()
 		destLimit = destRippleState.HighLimit
 	}
 
@@ -484,21 +638,25 @@ func (e *Engine) applyIOUTransfer(payment *Payment, sender *AccountRoot, dest *A
 		return TecPATH_PARTIAL
 	}
 
-	// Update sender's trust line (decrease balance)
+	// Update sender's trust line (decrease balance - sender loses tokens)
 	var newSenderRippleBalance IOUAmount
 	if senderIsLowWithIssuer {
-		newSenderRippleBalance = senderRippleState.Balance.Add(amount)
-	} else {
+		// Sender is LOW, positive balance = holdings. Decrease by subtracting.
 		newSenderRippleBalance = senderRippleState.Balance.Sub(amount)
+	} else {
+		// Sender is HIGH, negative balance = holdings. Make less negative by adding.
+		newSenderRippleBalance = senderRippleState.Balance.Add(amount)
 	}
 	senderRippleState.Balance = newSenderRippleBalance
 
-	// Update destination's trust line (increase balance)
+	// Update destination's trust line (increase balance - dest gains tokens)
 	var newDestRippleBalance IOUAmount
 	if destIsLowWithIssuer {
-		newDestRippleBalance = destRippleState.Balance.Sub(amount)
-	} else {
+		// Dest is LOW, positive balance = holdings. Increase by adding.
 		newDestRippleBalance = destRippleState.Balance.Add(amount)
+	} else {
+		// Dest is HIGH, negative balance = holdings. Make more negative by subtracting.
+		newDestRippleBalance = destRippleState.Balance.Sub(amount)
 	}
 	destRippleState.Balance = newDestRippleBalance
 
@@ -1432,6 +1590,9 @@ func (e *Engine) transferIOU(fromAccount, toAccount string, amount Amount, metad
 }
 
 // updateTrustLineBalance updates a trust line balance
+// RippleState balance semantics:
+// - Negative balance = LOW owes HIGH (HIGH holds tokens)
+// - Positive balance = HIGH owes LOW (LOW holds tokens)
 func (e *Engine) updateTrustLineBalance(key keylet.Keylet, accountID, issuerID [20]byte, amount IOUAmount, increase bool, metadata *Metadata) {
 	trustLineData, err := e.view.Read(key)
 	if err != nil {
@@ -1446,20 +1607,20 @@ func (e *Engine) updateTrustLineBalance(key keylet.Keylet, accountID, issuerID [
 	accountIsLow := compareAccountIDsForLine(accountID, issuerID) < 0
 
 	if accountIsLow {
-		// Account is low, issuer is high
-		// Positive balance = issuer owes account
+		// Account is LOW, issuer is HIGH
+		// Positive balance = account holds tokens (HIGH owes LOW)
 		if increase {
-			rs.Balance = rs.Balance.Sub(amount) // More negative = issuer owes more
+			rs.Balance = rs.Balance.Add(amount) // More positive = more holdings
 		} else {
-			rs.Balance = rs.Balance.Add(amount) // Less negative = issuer owes less
+			rs.Balance = rs.Balance.Sub(amount) // Less positive = less holdings
 		}
 	} else {
-		// Account is high, issuer is low
-		// Positive balance = account owes issuer (inverted)
+		// Account is HIGH, issuer is LOW
+		// Negative balance = account holds tokens (LOW owes HIGH)
 		if increase {
-			rs.Balance = rs.Balance.Add(amount)
+			rs.Balance = rs.Balance.Sub(amount) // More negative = more holdings
 		} else {
-			rs.Balance = rs.Balance.Sub(amount)
+			rs.Balance = rs.Balance.Add(amount) // Less negative = less holdings
 		}
 	}
 
