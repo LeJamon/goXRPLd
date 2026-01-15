@@ -417,6 +417,11 @@ func executeReplayVerbose(state *StateFixture, env *EnvFixture, txs *TxsFixture,
 		txInfo.Fee = applyResult.Fee
 		txInfo.Metadata = applyResult.Metadata
 
+		// Set the transaction index in the metadata
+		if txInfo.Metadata != nil {
+			txInfo.Metadata.TransactionIndex = uint32(txEntry.Index)
+		}
+
 		result.TxResults = append(result.TxResults, txInfo)
 
 		// Print transaction result

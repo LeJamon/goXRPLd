@@ -403,6 +403,13 @@ func parseEscrow(data []byte) (*EscrowData, error) {
 				offset += 20
 			}
 
+		case fieldTypeHash256:
+			// Hash256 fields are 32 bytes (e.g., PreviousTxnID)
+			if offset+32 > len(data) {
+				return escrow, nil
+			}
+			offset += 32
+
 		case fieldTypeBlob:
 			if offset >= len(data) {
 				return escrow, nil

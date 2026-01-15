@@ -367,8 +367,21 @@ func (e *Engine) applyIOUIssue(payment *Payment, sender *AccountRoot, dest *Acco
 		return TecPATH_PARTIAL
 	}
 
+	// Ensure the new balance has the correct currency and issuer
+	// (the parsed balance may have null bytes for currency if it was zero)
+	newBalance.Currency = amount.Currency
+	newBalance.Issuer = amount.Issuer
+
+	// Save old PreviousTxnID/LgrSeq for metadata (before updating)
+	oldPreviousTxnID := rippleState.PreviousTxnID
+	oldPreviousTxnLgrSeq := rippleState.PreviousTxnLgrSeq
+
 	// Update the trust line
 	rippleState.Balance = newBalance
+
+	// Update PreviousTxnID and PreviousTxnLgrSeq to this transaction
+	rippleState.PreviousTxnID = e.currentTxHash
+	rippleState.PreviousTxnLgrSeq = e.config.LedgerSequence
 
 	// Serialize and update
 	updatedTrustLine, err := serializeRippleState(rippleState)
@@ -386,29 +399,33 @@ func (e *Engine) applyIOUIssue(payment *Payment, sender *AccountRoot, dest *Acco
 	if rippleState.Balance.Value != nil {
 		// Calculate previous balance (before adding amount)
 		prevBal := rippleState.Balance.Sub(newBalance).Negate()
-		previousBalanceStr = prevBal.Value.Text('f', -1)
+		previousBalanceStr = formatIOUValue(prevBal.Value)
 	}
 	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "RippleState",
-		LedgerIndex:     hex.EncodeToString(trustLineKey.Key[:]),
+		NodeType:          "ModifiedNode",
+		LedgerEntryType:   "RippleState",
+		LedgerIndex:       strings.ToUpper(hex.EncodeToString(trustLineKey.Key[:])),
+		PreviousTxnLgrSeq: oldPreviousTxnLgrSeq,
+		PreviousTxnID:     strings.ToUpper(hex.EncodeToString(oldPreviousTxnID[:])),
 		FinalFields: map[string]any{
 			"Balance": map[string]any{
 				"currency": amount.Currency,
 				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
-				"value":    newBalance.Value.Text('f', -1),
+				"value":    formatIOUValue(newBalance.Value),
 			},
 			"Flags": rippleState.Flags,
 			"HighLimit": map[string]any{
-				"currency": rippleState.HighLimit.Currency,
+				"currency": amount.Currency,
 				"issuer":   rippleState.HighLimit.Issuer,
-				"value":    rippleState.HighLimit.Value.Text('f', -1),
+				"value":    formatIOUValue(rippleState.HighLimit.Value),
 			},
+			"HighNode": fmt.Sprintf("%x", rippleState.HighNode),
 			"LowLimit": map[string]any{
-				"currency": rippleState.LowLimit.Currency,
+				"currency": amount.Currency,
 				"issuer":   rippleState.LowLimit.Issuer,
-				"value":    rippleState.LowLimit.Value.Text('f', -1),
+				"value":    formatIOUValue(rippleState.LowLimit.Value),
 			},
+			"LowNode": fmt.Sprintf("%x", rippleState.LowNode),
 		},
 		PreviousFields: map[string]any{
 			"Balance": map[string]any{
@@ -437,7 +454,6 @@ func (e *Engine) applyIOURedeem(payment *Payment, sender *AccountRoot, dest *Acc
 
 	if !trustLineExists {
 		// No trust line exists - sender doesn't hold this currency
-		fmt.Printf("[DEBUG] applyIOURedeem: trust line not found for currency %s\n", amount.Currency)
 		return TecPATH_DRY
 	}
 
@@ -455,9 +471,6 @@ func (e *Engine) applyIOURedeem(payment *Payment, sender *AccountRoot, dest *Acc
 	// Determine which side is low/high account
 	senderIsLow := compareAccountIDsForLine(senderID, destID) < 0
 
-	// Debug logging
-	fmt.Printf("[DEBUG] applyIOURedeem: senderIsLow=%v, rawBalance=%v\n", senderIsLow, rippleState.Balance.Value)
-
 	// Get sender's current balance (how much issuer owes them)
 	// RippleState balance semantics:
 	// - Negative balance = LOW owes HIGH (HIGH holds tokens)
@@ -474,13 +487,8 @@ func (e *Engine) applyIOURedeem(payment *Payment, sender *AccountRoot, dest *Acc
 		senderBalance = rippleState.Balance.Negate()
 	}
 
-	// Debug logging
-	fmt.Printf("[DEBUG] applyIOURedeem: senderBalance=%v, amount=%v, compare=%d\n",
-		senderBalance.Value, amount.Value, senderBalance.Compare(amount))
-
 	// Check sender has enough balance
 	if senderBalance.Compare(amount) < 0 {
-		fmt.Printf("[DEBUG] applyIOURedeem: FAIL - senderBalance < amount\n")
 		return TecPATH_PARTIAL
 	}
 
@@ -500,7 +508,20 @@ func (e *Engine) applyIOURedeem(payment *Payment, sender *AccountRoot, dest *Acc
 		newBalance = rippleState.Balance.Add(amount)
 	}
 
+	// Ensure the new balance has the correct currency and issuer
+	// (the parsed balance may have null bytes for currency if it was zero)
+	newBalance.Currency = amount.Currency
+	newBalance.Issuer = amount.Issuer
+
+	// Save old PreviousTxnID/LgrSeq for metadata (before updating)
+	oldPreviousTxnID := rippleState.PreviousTxnID
+	oldPreviousTxnLgrSeq := rippleState.PreviousTxnLgrSeq
+
 	rippleState.Balance = newBalance
+
+	// Update PreviousTxnID and PreviousTxnLgrSeq to this transaction
+	rippleState.PreviousTxnID = e.currentTxHash
+	rippleState.PreviousTxnLgrSeq = e.config.LedgerSequence
 
 	// Serialize and update
 	updatedTrustLine, err := serializeRippleState(rippleState)
@@ -515,32 +536,36 @@ func (e *Engine) applyIOURedeem(payment *Payment, sender *AccountRoot, dest *Acc
 	// Record the modification with all fields rippled includes
 	// Balance issuer in RippleState metadata is ACCOUNT_ONE (rrrrrrrrrrrrrrrrrrrrBZbvji)
 	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "RippleState",
-		LedgerIndex:     hex.EncodeToString(trustLineKey.Key[:]),
+		NodeType:          "ModifiedNode",
+		LedgerEntryType:   "RippleState",
+		LedgerIndex:       strings.ToUpper(hex.EncodeToString(trustLineKey.Key[:])),
+		PreviousTxnLgrSeq: oldPreviousTxnLgrSeq,
+		PreviousTxnID:     strings.ToUpper(hex.EncodeToString(oldPreviousTxnID[:])),
 		FinalFields: map[string]any{
 			"Balance": map[string]any{
 				"currency": amount.Currency,
 				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
-				"value":    newBalance.Value.Text('f', -1),
+				"value":    formatIOUValue(newBalance.Value),
 			},
 			"Flags": rippleState.Flags,
 			"HighLimit": map[string]any{
-				"currency": rippleState.HighLimit.Currency,
+				"currency": amount.Currency,
 				"issuer":   rippleState.HighLimit.Issuer,
-				"value":    rippleState.HighLimit.Value.Text('f', -1),
+				"value":    formatIOUValue(rippleState.HighLimit.Value),
 			},
+			"HighNode": fmt.Sprintf("%x", rippleState.HighNode),
 			"LowLimit": map[string]any{
-				"currency": rippleState.LowLimit.Currency,
+				"currency": amount.Currency,
 				"issuer":   rippleState.LowLimit.Issuer,
-				"value":    rippleState.LowLimit.Value.Text('f', -1),
+				"value":    formatIOUValue(rippleState.LowLimit.Value),
 			},
+			"LowNode": fmt.Sprintf("%x", rippleState.LowNode),
 		},
 		PreviousFields: map[string]any{
 			"Balance": map[string]any{
 				"currency": amount.Currency,
 				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
-				"value":    previousBalance.Value.Text('f', -1),
+				"value":    formatIOUValue(previousBalance.Value),
 			},
 		},
 	})
@@ -596,6 +621,10 @@ func (e *Engine) applyIOUTransfer(payment *Payment, sender *AccountRoot, dest *A
 		return TefINTERNAL
 	}
 
+	// Save previous balances for metadata
+	senderPreviousBalance := senderRippleState.Balance
+	destPreviousBalance := destRippleState.Balance
+
 	// Calculate sender's balance with issuer
 	// RippleState balance semantics:
 	// - Negative balance = LOW owes HIGH (HIGH holds tokens)
@@ -647,6 +676,9 @@ func (e *Engine) applyIOUTransfer(payment *Payment, sender *AccountRoot, dest *A
 		// Sender is HIGH, negative balance = holdings. Make less negative by adding.
 		newSenderRippleBalance = senderRippleState.Balance.Add(amount)
 	}
+	// Ensure the new balance has the correct currency and issuer
+	newSenderRippleBalance.Currency = amount.Currency
+	newSenderRippleBalance.Issuer = amount.Issuer
 	senderRippleState.Balance = newSenderRippleBalance
 
 	// Update destination's trust line (increase balance - dest gains tokens)
@@ -658,6 +690,9 @@ func (e *Engine) applyIOUTransfer(payment *Payment, sender *AccountRoot, dest *A
 		// Dest is HIGH, negative balance = holdings. Make more negative by subtracting.
 		newDestRippleBalance = destRippleState.Balance.Sub(amount)
 	}
+	// Ensure the new balance has the correct currency and issuer
+	newDestRippleBalance.Currency = amount.Currency
+	newDestRippleBalance.Issuer = amount.Issuer
 	destRippleState.Balance = newDestRippleBalance
 
 	// Serialize and update sender's trust line
@@ -679,28 +714,73 @@ func (e *Engine) applyIOUTransfer(payment *Payment, sender *AccountRoot, dest *A
 	}
 
 	// Record the modifications
+	// Balance issuer in RippleState metadata is ACCOUNT_ONE (rrrrrrrrrrrrrrrrrrrrBZbvji)
 	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "RippleState",
-		LedgerIndex:     hex.EncodeToString(senderTrustLineKey.Key[:]),
+		NodeType:          "ModifiedNode",
+		LedgerEntryType:   "RippleState",
+		LedgerIndex:       strings.ToUpper(hex.EncodeToString(senderTrustLineKey.Key[:])),
+		PreviousTxnLgrSeq: senderRippleState.PreviousTxnLgrSeq,
+		PreviousTxnID:     strings.ToUpper(hex.EncodeToString(senderRippleState.PreviousTxnID[:])),
 		FinalFields: map[string]any{
 			"Balance": map[string]any{
 				"currency": amount.Currency,
-				"issuer":   amount.Issuer,
-				"value":    newSenderRippleBalance.Value.Text('f', 15),
+				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
+				"value":    formatIOUValue(newSenderRippleBalance.Value),
+			},
+			"Flags": senderRippleState.Flags,
+			"HighLimit": map[string]any{
+				"currency": amount.Currency,
+				"issuer":   senderRippleState.HighLimit.Issuer,
+				"value":    formatIOUValue(senderRippleState.HighLimit.Value),
+			},
+			"HighNode": fmt.Sprintf("%x", senderRippleState.HighNode),
+			"LowLimit": map[string]any{
+				"currency": amount.Currency,
+				"issuer":   senderRippleState.LowLimit.Issuer,
+				"value":    formatIOUValue(senderRippleState.LowLimit.Value),
+			},
+			"LowNode": fmt.Sprintf("%x", senderRippleState.LowNode),
+		},
+		PreviousFields: map[string]any{
+			"Balance": map[string]any{
+				"currency": amount.Currency,
+				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
+				"value":    formatIOUValue(senderPreviousBalance.Value),
 			},
 		},
 	})
 
 	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "RippleState",
-		LedgerIndex:     hex.EncodeToString(destTrustLineKey.Key[:]),
+		NodeType:          "ModifiedNode",
+		LedgerEntryType:   "RippleState",
+		LedgerIndex:       strings.ToUpper(hex.EncodeToString(destTrustLineKey.Key[:])),
+		PreviousTxnLgrSeq: destRippleState.PreviousTxnLgrSeq,
+		PreviousTxnID:     strings.ToUpper(hex.EncodeToString(destRippleState.PreviousTxnID[:])),
 		FinalFields: map[string]any{
 			"Balance": map[string]any{
 				"currency": amount.Currency,
-				"issuer":   amount.Issuer,
-				"value":    newDestRippleBalance.Value.Text('f', 15),
+				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
+				"value":    formatIOUValue(newDestRippleBalance.Value),
+			},
+			"Flags": destRippleState.Flags,
+			"HighLimit": map[string]any{
+				"currency": amount.Currency,
+				"issuer":   destRippleState.HighLimit.Issuer,
+				"value":    formatIOUValue(destRippleState.HighLimit.Value),
+			},
+			"HighNode": fmt.Sprintf("%x", destRippleState.HighNode),
+			"LowLimit": map[string]any{
+				"currency": amount.Currency,
+				"issuer":   destRippleState.LowLimit.Issuer,
+				"value":    formatIOUValue(destRippleState.LowLimit.Value),
+			},
+			"LowNode": fmt.Sprintf("%x", destRippleState.LowNode),
+		},
+		PreviousFields: map[string]any{
+			"Balance": map[string]any{
+				"currency": amount.Currency,
+				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
+				"value":    formatIOUValue(destPreviousBalance.Value),
 			},
 		},
 	})
@@ -902,12 +982,12 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 				"LowLimit": map[string]any{
 					"currency": trustSet.LimitAmount.Currency,
 					"issuer":   account.Account,
-					"value":    rs.LowLimit.Value.Text('f', 15),
+					"value":    formatIOUValue(rs.LowLimit.Value),
 				},
 				"HighLimit": map[string]any{
 					"currency": trustSet.LimitAmount.Currency,
 					"issuer":   trustSet.LimitAmount.Issuer,
-					"value":    rs.HighLimit.Value.Text('f', 15),
+					"value":    formatIOUValue(rs.HighLimit.Value),
 				},
 				"Flags": rs.Flags,
 			},
@@ -995,14 +1075,14 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 					limitField: map[string]any{
 						"currency": trustSet.LimitAmount.Currency,
 						"issuer":   account.Account,
-						"value":    limitAmount.Value.Text('f', 15),
+						"value":    formatIOUValue(limitAmount.Value),
 					},
 				},
 				PreviousFields: map[string]any{
 					limitField: map[string]any{
 						"currency": trustSet.LimitAmount.Currency,
 						"issuer":   account.Account,
-						"value":    previousLimit.Value.Text('f', 15),
+						"value":    formatIOUValue(previousLimit.Value),
 					},
 				},
 			})
@@ -1308,7 +1388,7 @@ func (e *Engine) matchOffers(offer *OfferCreate, account *AccountRoot, metadata 
 					ratio := float64(takeDrops) / float64(theirPaysDrops)
 					payValue := multiplyIOUByRatio(theirGetsIOU, ratio)
 					paidAmount = Amount{
-						Value:    payValue.Value.Text('f', 15),
+						Value:    formatIOUValue(payValue.Value),
 						Currency: theirGets.Currency,
 						Issuer:   theirGets.Issuer,
 					}
@@ -1325,7 +1405,7 @@ func (e *Engine) matchOffers(offer *OfferCreate, account *AccountRoot, metadata 
 			}
 
 			gotAmount = Amount{
-				Value:    takeIOU.Value.Text('f', 15),
+				Value:    formatIOUValue(takeIOU.Value),
 				Currency: theirPays.Currency,
 				Issuer:   theirPays.Issuer,
 			}
@@ -1344,7 +1424,7 @@ func (e *Engine) matchOffers(offer *OfferCreate, account *AccountRoot, metadata 
 					theirGetsIOU := NewIOUAmount(theirGets.Value, theirGets.Currency, theirGets.Issuer)
 					payValue := multiplyIOUByRatio(theirGetsIOU, ratio)
 					paidAmount = Amount{
-						Value:    payValue.Value.Text('f', 15),
+						Value:    formatIOUValue(payValue.Value),
 						Currency: theirGets.Currency,
 						Issuer:   theirGets.Issuer,
 					}
@@ -1484,7 +1564,7 @@ func addAmount(a, b Amount) Amount {
 	bIOU := NewIOUAmount(b.Value, b.Currency, b.Issuer)
 	result := aIOU.Add(bIOU)
 	return Amount{
-		Value:    result.Value.Text('f', 15),
+		Value:    formatIOUValue(result.Value),
 		Currency: a.Currency,
 		Issuer:   a.Issuer,
 	}
@@ -1606,23 +1686,28 @@ func (e *Engine) updateTrustLineBalance(key keylet.Keylet, accountID, issuerID [
 
 	accountIsLow := compareAccountIDsForLine(accountID, issuerID) < 0
 
+	var newBalance IOUAmount
 	if accountIsLow {
 		// Account is LOW, issuer is HIGH
 		// Positive balance = account holds tokens (HIGH owes LOW)
 		if increase {
-			rs.Balance = rs.Balance.Add(amount) // More positive = more holdings
+			newBalance = rs.Balance.Add(amount) // More positive = more holdings
 		} else {
-			rs.Balance = rs.Balance.Sub(amount) // Less positive = less holdings
+			newBalance = rs.Balance.Sub(amount) // Less positive = less holdings
 		}
 	} else {
 		// Account is HIGH, issuer is LOW
 		// Negative balance = account holds tokens (LOW owes HIGH)
 		if increase {
-			rs.Balance = rs.Balance.Sub(amount) // More negative = more holdings
+			newBalance = rs.Balance.Sub(amount) // More negative = more holdings
 		} else {
-			rs.Balance = rs.Balance.Add(amount) // Less negative = less holdings
+			newBalance = rs.Balance.Add(amount) // Less negative = less holdings
 		}
 	}
+	// Ensure the new balance has the correct currency and issuer
+	newBalance.Currency = amount.Currency
+	newBalance.Issuer = amount.Issuer
+	rs.Balance = newBalance
 
 	updatedData, err := serializeRippleState(rs)
 	if err != nil {
@@ -1638,7 +1723,7 @@ func (e *Engine) updateTrustLineBalance(key keylet.Keylet, accountID, issuerID [
 		FinalFields: map[string]any{
 			"Balance": map[string]any{
 				"currency": amount.Currency,
-				"value":    rs.Balance.Value.Text('f', 15),
+				"value":    formatIOUValue(rs.Balance.Value),
 			},
 		},
 	})
@@ -1662,7 +1747,7 @@ func subtractAmount(a, b Amount) Amount {
 		return Amount{Value: "0", Currency: a.Currency, Issuer: a.Issuer}
 	}
 	return Amount{
-		Value:    result.Value.Text('f', 15),
+		Value:    formatIOUValue(result.Value),
 		Currency: a.Currency,
 		Issuer:   a.Issuer,
 	}
