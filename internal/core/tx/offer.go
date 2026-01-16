@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 )
@@ -158,15 +159,17 @@ func (o *OfferCancel) Flatten() (map[string]any, error) {
 
 // LedgerOffer represents an offer stored in the ledger
 type LedgerOffer struct {
-	Account       string
-	Sequence      uint32
-	TakerPays     Amount // What the offer creator wants
-	TakerGets     Amount // What the offer creator is selling
-	BookDirectory [32]byte
-	BookNode      uint64
-	OwnerNode     uint64
-	Expiration    uint32
-	Flags         uint32
+	Account          string
+	Sequence         uint32
+	TakerPays        Amount // What the offer creator wants
+	TakerGets        Amount // What the offer creator is selling
+	BookDirectory    [32]byte
+	BookNode         uint64
+	OwnerNode        uint64
+	Expiration       uint32
+	Flags            uint32
+	PreviousTxnID    [32]byte
+	PreviousTxnLgrSeq uint32
 }
 
 // Ledger offer flags
@@ -192,14 +195,17 @@ func serializeLedgerOffer(offer *LedgerOffer) ([]byte, error) {
 	}
 
 	jsonObj := map[string]any{
-		"LedgerEntryType": "Offer",
-		"Account":         offer.Account,
-		"Flags":           offer.Flags,
-		"Sequence":        offer.Sequence,
-		"TakerPays":       amountToJSON(offer.TakerPays),
-		"TakerGets":       amountToJSON(offer.TakerGets),
-		"BookNode":        fmt.Sprintf("%x", offer.BookNode),
-		"OwnerNode":       fmt.Sprintf("%x", offer.OwnerNode),
+		"LedgerEntryType":   "Offer",
+		"Account":           offer.Account,
+		"Flags":             offer.Flags,
+		"Sequence":          offer.Sequence,
+		"TakerPays":         amountToJSON(offer.TakerPays),
+		"TakerGets":         amountToJSON(offer.TakerGets),
+		"BookDirectory":     strings.ToUpper(hex.EncodeToString(offer.BookDirectory[:])),
+		"BookNode":          fmt.Sprintf("%x", offer.BookNode),
+		"OwnerNode":         fmt.Sprintf("%x", offer.OwnerNode),
+		"PreviousTxnID":     strings.ToUpper(hex.EncodeToString(offer.PreviousTxnID[:])),
+		"PreviousTxnLgrSeq": offer.PreviousTxnLgrSeq,
 	}
 
 	hexStr, err := binarycodec.Encode(jsonObj)
