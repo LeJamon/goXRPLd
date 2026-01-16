@@ -367,6 +367,7 @@ func executeReplayVerbose(state *StateFixture, env *EnvFixture, txs *TxsFixture,
 	}
 
 	engine := tx.NewEngine(openLedger, engineConfig)
+	blockProcessor := tx.NewBlockProcessor(engine)
 
 	for _, txEntry := range txs.Transactions {
 		txInfo := TxApplyInfo{
@@ -395,8 +396,8 @@ func executeReplayVerbose(state *StateFixture, env *EnvFixture, txs *TxsFixture,
 			}
 		}
 
-		// Parse the transaction
-		transaction, err := tx.ParseFromBinary(txBlob)
+		// Parse and prepare the transaction
+		parsedTx, err := tx.ParseAndPrepare(txBlob)
 		if err != nil {
 			txInfo.Error = fmt.Sprintf("failed to parse: %v", err)
 			txInfo.Applied = false
@@ -406,22 +407,24 @@ func executeReplayVerbose(state *StateFixture, env *EnvFixture, txs *TxsFixture,
 			continue
 		}
 
-		// Store the raw bytes for hash computation
-		transaction.SetRawBytes(txBlob)
+		// Apply the transaction using the BlockProcessor
+		// This handles: applying, setting transaction index, creating tx+meta blob
+		blockTxResult, err := blockProcessor.ApplyTransaction(parsedTx.Transaction, parsedTx.RawBlob)
+		if err != nil {
+			txInfo.Error = fmt.Sprintf("failed to apply: %v", err)
+			txInfo.Applied = false
+			result.TxResults = append(result.TxResults, txInfo)
+			result.Errors = append(result.Errors, fmt.Sprintf("tx %d: %s", txEntry.Index, txInfo.Error))
+			result.Success = false
+			continue
+		}
 
-		// Apply the transaction
-		applyResult := engine.Apply(transaction)
+		applyResult := blockTxResult.ApplyResult
 		txInfo.Result = applyResult.Result.String()
 		txInfo.ResultCode = int(applyResult.Result)
 		txInfo.Applied = applyResult.Applied
 		txInfo.Fee = applyResult.Fee
 		txInfo.Metadata = applyResult.Metadata
-
-		// Set the transaction index in the metadata
-		//TODO have this done inside the engine
-		if txInfo.Metadata != nil {
-			txInfo.Metadata.TransactionIndex = uint32(txEntry.Index)
-		}
 
 		result.TxResults = append(result.TxResults, txInfo)
 
@@ -444,21 +447,8 @@ func executeReplayVerbose(state *StateFixture, env *EnvFixture, txs *TxsFixture,
 			}
 		}
 
-		// Add transaction to tx map
-		txHash, err := hexToHash32(txEntry.Hash)
-		if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("tx %d: invalid hash: %v", txEntry.Index, err))
-			continue
-		}
-
-		// Create combined VL-encoded tx + VL-encoded metadata blob for transaction tree
-		txWithMetaBlob, err := tx.CreateTxWithMetaBlob(txBlob, applyResult.Metadata)
-		if err != nil {
-			result.Errors = append(result.Errors, fmt.Sprintf("tx %d: failed to create tx+meta blob: %v", txEntry.Index, err))
-			continue
-		}
-
-		if err := openLedger.AddTransactionWithMeta(txHash, txWithMetaBlob); err != nil {
+		// Add transaction to ledger using the pre-computed hash and blob from BlockProcessor
+		if err := openLedger.AddTransactionWithMeta(blockTxResult.Hash, blockTxResult.TxWithMetaBlob); err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("tx %d: failed to add to ledger: %v", txEntry.Index, err))
 		}
 	}
