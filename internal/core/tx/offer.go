@@ -198,8 +198,8 @@ func serializeLedgerOffer(offer *LedgerOffer) ([]byte, error) {
 		"Sequence":        offer.Sequence,
 		"TakerPays":       amountToJSON(offer.TakerPays),
 		"TakerGets":       amountToJSON(offer.TakerGets),
-		"BookNode":        fmt.Sprintf("%d", offer.BookNode),
-		"OwnerNode":       fmt.Sprintf("%d", offer.OwnerNode),
+		"BookNode":        fmt.Sprintf("%x", offer.BookNode),
+		"OwnerNode":       fmt.Sprintf("%x", offer.OwnerNode),
 	}
 
 	hexStr, err := binarycodec.Encode(jsonObj)
@@ -315,7 +315,7 @@ func parseLedgerOffer(data []byte) (*LedgerOffer, error) {
 				iou, err := parseIOUAmount(data[offset : offset+48])
 				if err == nil {
 					amt := Amount{
-						Value:    iou.Value.Text('f', 15),
+						Value:    formatIOUValue(iou.Value),
 						Currency: iou.Currency,
 						Issuer:   iou.Issuer,
 					}

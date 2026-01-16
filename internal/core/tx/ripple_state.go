@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 )
@@ -37,6 +38,12 @@ type RippleState struct {
 	LowQualityOut  uint32
 	HighQualityIn  uint32
 	HighQualityOut uint32
+
+	// PreviousTxnID is the hash of the previous transaction that modified this entry
+	PreviousTxnID [32]byte
+
+	// PreviousTxnLgrSeq is the ledger sequence of the previous transaction
+	PreviousTxnLgrSeq uint32
 }
 
 // IOUAmount represents an issued currency amount with decimal precision
@@ -69,13 +76,15 @@ const (
 // Ledger entry type code for RippleState
 const ledgerEntryTypeRippleState = 0x0072
 
-// Field codes for RippleState
+// Field codes for RippleState (based on XRPL binary serialization format)
 const (
-	fieldCodeRSBalance   = 1 // Amount field
-	fieldCodeLowLimit    = 2 // Amount field (but using different encoding for limits)
-	fieldCodeHighLimit   = 3 // Amount field
-	fieldCodeLowNode     = 2 // UInt64
-	fieldCodeHighNode    = 3 // UInt64
+	fieldCodeRSBalance     = 2 // Amount field code for Balance
+	fieldCodeLowLimit      = 6 // Amount field code for LowLimit
+	fieldCodeHighLimit     = 7 // Amount field code for HighLimit
+	fieldCodeLowNode       = 7 // UInt64 field code for LowNode
+	fieldCodeHighNode      = 8 // UInt64 field code for HighNode
+	fieldCodePrevTxnID     = 5 // Hash256 field code for PreviousTxnID
+	fieldCodePrevTxnLgrSeq = 5 // UInt32 field code for PreviousTxnLgrSeq
 )
 
 // NewIOUAmount creates a new IOU amount
@@ -150,6 +159,27 @@ func (a IOUAmount) Compare(b IOUAmount) int {
 	return a.Value.Cmp(b.Value)
 }
 
+// formatIOUValue formats an IOU value for JSON output, matching rippled's format
+// XRPL IOU amounts can have up to 16 significant digits
+func formatIOUValue(value *big.Float) string {
+	if value == nil || value.Sign() == 0 {
+		return "0"
+	}
+
+	// Use 'g' format with enough precision to preserve all significant digits
+	// XRPL uses 54-bit mantissa which can represent up to ~16 decimal digits
+	str := value.Text('g', 16)
+
+	// Remove trailing zeros after decimal point, but keep at least one digit after decimal
+	// if there is a decimal point
+	if strings.Contains(str, ".") {
+		str = strings.TrimRight(str, "0")
+		str = strings.TrimRight(str, ".")
+	}
+
+	return str
+}
+
 // parseRippleState parses a RippleState from binary data
 func parseRippleState(data []byte) (*RippleState, error) {
 	if len(data) < 20 {
@@ -208,6 +238,8 @@ func parseRippleState(data []byte) (*RippleState, error) {
 			switch fieldCode {
 			case fieldCodeFlags:
 				rs.Flags = value
+			case fieldCodePrevTxnLgrSeq: // field code 5
+				rs.PreviousTxnLgrSeq = value
 			}
 
 		case fieldTypeUInt64:
@@ -222,6 +254,16 @@ func parseRippleState(data []byte) (*RippleState, error) {
 			case fieldCodeHighNode:
 				rs.HighNode = value
 			}
+
+		case fieldTypeHash256:
+			// Hash256 fields are 32 bytes
+			if offset+32 > len(data) {
+				return rs, nil
+			}
+			if fieldCode == fieldCodePrevTxnID {
+				copy(rs.PreviousTxnID[:], data[offset:offset+32])
+			}
+			offset += 32
 
 		case fieldTypeAmount:
 			// IOU amounts are 48 bytes
@@ -252,8 +294,8 @@ func parseRippleState(data []byte) (*RippleState, error) {
 			offset += 48
 
 		default:
-			// Unknown type - skip
-			break
+			// Unknown type - can't skip properly without knowing size, break loop
+			return rs, nil
 		}
 	}
 
@@ -305,15 +347,18 @@ func parseIOUAmount(data []byte) (IOUAmount, error) {
 	exponent := int((rawValue>>54)&0xFF) - 97
 	mantissa := rawValue & 0x003FFFFFFFFFFFFF
 
-	// Convert to big.Float
-	value := big.NewFloat(float64(mantissa))
+	// Convert mantissa to big.Int first to avoid float64 precision loss
+	mantissaBigInt := new(big.Int).SetUint64(mantissa)
+
+	// Convert to big.Float with high precision (128 bits)
+	value := new(big.Float).SetPrec(128).SetInt(mantissaBigInt)
 
 	// Apply exponent
 	if exponent > 0 {
-		multiplier := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exponent)), nil))
+		multiplier := new(big.Float).SetPrec(128).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exponent)), nil))
 		value.Mul(value, multiplier)
 	} else if exponent < 0 {
-		divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-exponent)), nil))
+		divisor := new(big.Float).SetPrec(128).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-exponent)), nil))
 		value.Quo(value, divisor)
 	}
 
@@ -328,29 +373,61 @@ func parseIOUAmount(data []byte) (IOUAmount, error) {
 	}, nil
 }
 
+// ACCOUNT_ONE is the special issuer address used for Balance in RippleState
+const accountOne = "rrrrrrrrrrrrrrrrrrrrBZbvji"
+
 // serializeRippleState serializes a RippleState to binary
 func serializeRippleState(rs *RippleState) ([]byte, error) {
-	// Helper function to convert IOUAmount to JSON map
-	iouToJSON := func(amount IOUAmount) map[string]any {
+	// Use Balance's currency for all amounts (LowLimit/HighLimit may have been parsed with null currency)
+	currency := rs.Balance.Currency
+	if currency == "" || currency == "\x00\x00\x00" {
+		// Fallback to LowLimit or HighLimit currency if Balance has null currency
+		if rs.LowLimit.Currency != "" && rs.LowLimit.Currency != "\x00\x00\x00" {
+			currency = rs.LowLimit.Currency
+		} else if rs.HighLimit.Currency != "" && rs.HighLimit.Currency != "\x00\x00\x00" {
+			currency = rs.HighLimit.Currency
+		}
+	}
+
+	// Helper to create amount with consistent currency
+	makeAmount := func(amount IOUAmount, useAccountOne bool) map[string]any {
 		valueStr := "0"
-		if amount.Value != nil {
-			valueStr = amount.Value.Text('f', -1)
+		if amount.Value != nil && amount.Value.Sign() != 0 {
+			valueStr = amount.Value.Text('g', 15)
+		}
+		curr := currency
+		if curr == "" {
+			curr = amount.Currency
+		}
+		issuer := amount.Issuer
+		if useAccountOne {
+			issuer = accountOne
 		}
 		return map[string]any{
 			"value":    valueStr,
-			"currency": amount.Currency,
-			"issuer":   amount.Issuer,
+			"currency": curr,
+			"issuer":   issuer,
 		}
 	}
 
 	jsonObj := map[string]any{
 		"LedgerEntryType": "RippleState",
 		"Flags":           rs.Flags,
-		"Balance":         iouToJSON(rs.Balance),
-		"LowLimit":        iouToJSON(rs.LowLimit),
-		"HighLimit":       iouToJSON(rs.HighLimit),
-		"LowNode":         fmt.Sprintf("%d", rs.LowNode),
-		"HighNode":        fmt.Sprintf("%d", rs.HighNode),
+		"Balance":         makeAmount(rs.Balance, true), // Balance always uses ACCOUNT_ONE
+		"LowLimit":        makeAmount(rs.LowLimit, false),
+		"HighLimit":       makeAmount(rs.HighLimit, false),
+		"LowNode":         fmt.Sprintf("%x", rs.LowNode),
+		"HighNode":        fmt.Sprintf("%x", rs.HighNode),
+	}
+
+	// Add PreviousTxnID if set
+	if rs.PreviousTxnID != [32]byte{} {
+		jsonObj["PreviousTxnID"] = strings.ToUpper(hex.EncodeToString(rs.PreviousTxnID[:]))
+	}
+
+	// Add PreviousTxnLgrSeq if set
+	if rs.PreviousTxnLgrSeq != 0 {
+		jsonObj["PreviousTxnLgrSeq"] = rs.PreviousTxnLgrSeq
 	}
 
 	hexStr, err := binarycodec.Encode(jsonObj)

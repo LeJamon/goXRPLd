@@ -3,6 +3,7 @@ package tx
 import (
 	"encoding/hex"
 	"errors"
+	"sort"
 
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 )
@@ -63,10 +64,17 @@ func MetadataToMap(meta *Metadata) map[string]any {
 	// TransactionIndex
 	result["TransactionIndex"] = meta.TransactionIndex
 
-	// AffectedNodes
+	// AffectedNodes - sort by LedgerIndex to match rippled's ordering
 	if len(meta.AffectedNodes) > 0 {
-		nodes := make([]map[string]any, len(meta.AffectedNodes))
-		for i, node := range meta.AffectedNodes {
+		// Sort nodes by LedgerIndex (ascending)
+		sortedNodes := make([]AffectedNode, len(meta.AffectedNodes))
+		copy(sortedNodes, meta.AffectedNodes)
+		sort.Slice(sortedNodes, func(i, j int) bool {
+			return sortedNodes[i].LedgerIndex < sortedNodes[j].LedgerIndex
+		})
+
+		nodes := make([]map[string]any, len(sortedNodes))
+		for i, node := range sortedNodes {
 			nodeMap := make(map[string]any)
 
 			// Create the inner node content

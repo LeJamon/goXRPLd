@@ -468,6 +468,13 @@ func parsePayChannel(data []byte) (*PayChannelData, error) {
 				offset += 20
 			}
 
+		case fieldTypeHash256:
+			// Hash256 fields are 32 bytes (e.g., PreviousTxnID)
+			if offset+32 > len(data) {
+				return channel, nil
+			}
+			offset += 32
+
 		case fieldTypeBlob:
 			if offset >= len(data) {
 				return channel, nil

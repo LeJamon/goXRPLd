@@ -2,7 +2,8 @@ package tx
 
 import (
 	"encoding/hex"
-	"fmt"
+	"encoding/json"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -131,6 +132,86 @@ type AffectedNode struct {
 	NewFields map[string]any
 }
 
+// MarshalJSON implements custom JSON marshaling for Metadata to match rippled format
+func (m Metadata) MarshalJSON() ([]byte, error) {
+	// Build the output structure matching rippled's format
+	output := make(map[string]any)
+
+	// Sort AffectedNodes by LedgerIndex (ascending) to match rippled's ordering
+	sortedNodes := make([]AffectedNode, len(m.AffectedNodes))
+	copy(sortedNodes, m.AffectedNodes)
+	sort.Slice(sortedNodes, func(i, j int) bool {
+		return sortedNodes[i].LedgerIndex < sortedNodes[j].LedgerIndex
+	})
+
+	// AffectedNodes with nested structure
+	affectedNodes := make([]map[string]any, 0, len(sortedNodes))
+	for _, node := range sortedNodes {
+		nodeJSON, err := node.toRippledFormat()
+		if err != nil {
+			return nil, err
+		}
+		affectedNodes = append(affectedNodes, nodeJSON)
+	}
+	output["AffectedNodes"] = affectedNodes
+
+	// TransactionIndex
+	output["TransactionIndex"] = m.TransactionIndex
+
+	// TransactionResult as string
+	output["TransactionResult"] = m.TransactionResult.String()
+
+	// delivered_amount (snake_case per rippled format)
+	// Use "unavailable" for legacy compatibility when not explicitly set
+	if m.DeliveredAmount != nil {
+		output["delivered_amount"] = m.DeliveredAmount
+	}
+
+	return json.Marshal(output)
+}
+
+// toRippledFormat converts an AffectedNode to rippled's nested format
+func (n AffectedNode) toRippledFormat() (map[string]any, error) {
+	// Build the inner node content
+	inner := make(map[string]any)
+
+	// FinalFields (for ModifiedNode and DeletedNode)
+	if n.FinalFields != nil {
+		inner["FinalFields"] = n.FinalFields
+	}
+
+	// LedgerEntryType
+	inner["LedgerEntryType"] = n.LedgerEntryType
+
+	// LedgerIndex
+	inner["LedgerIndex"] = n.LedgerIndex
+
+	// PreviousFields (for ModifiedNode only, omit if nil/empty)
+	if n.PreviousFields != nil && len(n.PreviousFields) > 0 {
+		inner["PreviousFields"] = n.PreviousFields
+	}
+
+	// PreviousTxnID (omit if empty)
+	if n.PreviousTxnID != "" {
+		inner["PreviousTxnID"] = n.PreviousTxnID
+	}
+
+	// PreviousTxnLgrSeq (omit if zero, which means not set)
+	if n.PreviousTxnLgrSeq != 0 {
+		inner["PreviousTxnLgrSeq"] = n.PreviousTxnLgrSeq
+	}
+
+	// NewFields (for CreatedNode only, omit if nil)
+	if n.NewFields != nil {
+		inner["NewFields"] = n.NewFields
+	}
+
+	// Wrap in NodeType (e.g., "ModifiedNode": {...})
+	return map[string]any{
+		n.NodeType: inner,
+	}, nil
+}
+
 // NewEngine creates a new transaction engine
 func NewEngine(view LedgerView, config EngineConfig) *Engine {
 	return &Engine{
@@ -172,7 +253,6 @@ func computeTransactionHash(tx Transaction) ([32]byte, error) {
 	data := append(prefix, txBytes...)
 
 	hash = crypto.Sha512Half(data)
-	fmt.Printf("DEBUG: Computed tx hash: %x\n", hash)
 	return hash, nil
 }
 
