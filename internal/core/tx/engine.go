@@ -452,6 +452,7 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 	fee := e.calculateFee(tx)
 	previousBalance := account.Balance
 	previousSequence := account.Sequence
+	previousOwnerCount := account.OwnerCount
 	previousTxnID := account.PreviousTxnID
 	previousTxnLgrSeq := account.PreviousTxnLgrSeq
 
@@ -613,6 +614,14 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 	// Include all fields that rippled marks with sMD_Always (Flags, OwnerCount)
 	// and the previous transaction threading info
 	// IMPORTANT: Sender's node should be FIRST in the list (prepend)
+	prevFields := map[string]any{
+		"Balance":  strconv.FormatUint(previousBalance, 10),
+		"Sequence": previousSequence,
+	}
+	// Only include OwnerCount in PreviousFields if it changed
+	if account.OwnerCount != previousOwnerCount {
+		prevFields["OwnerCount"] = previousOwnerCount
+	}
 	senderNode := AffectedNode{
 		NodeType:          "ModifiedNode",
 		LedgerEntryType:   "AccountRoot",
@@ -626,10 +635,7 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 			"OwnerCount": account.OwnerCount,
 			"Sequence":   account.Sequence,
 		},
-		PreviousFields: map[string]any{
-			"Balance":  strconv.FormatUint(previousBalance, 10),
-			"Sequence": previousSequence,
-		},
+		PreviousFields: prevFields,
 	}
 	// Prepend sender node (sender should be first in AffectedNodes, like rippled does)
 	metadata.AffectedNodes = append([]AffectedNode{senderNode}, metadata.AffectedNodes...)

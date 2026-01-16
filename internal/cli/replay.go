@@ -418,6 +418,7 @@ func executeReplayVerbose(state *StateFixture, env *EnvFixture, txs *TxsFixture,
 		txInfo.Metadata = applyResult.Metadata
 
 		// Set the transaction index in the metadata
+		//TODO have this done inside the engine
 		if txInfo.Metadata != nil {
 			txInfo.Metadata.TransactionIndex = uint32(txEntry.Index)
 		}

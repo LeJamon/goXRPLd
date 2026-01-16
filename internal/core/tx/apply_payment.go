@@ -1187,13 +1187,52 @@ func (e *Engine) applyOfferCreate(offer *OfferCreate, account *AccountRoot, meta
 		remainingTakerPays = subtractAmount(takerPays, takerPaidTotal)
 	}
 
-	// Create the ledger offer
+	// Calculate quality (exchange rate) for the book directory
+	quality := GetRate(remainingTakerPays, remainingTakerGets)
+
+	// Get currency and issuer bytes for the book directory
+	takerPaysCurrency := getCurrencyBytes(remainingTakerPays.Currency)
+	takerPaysIssuer := getIssuerBytes(remainingTakerPays.Issuer)
+	takerGetsCurrency := getCurrencyBytes(remainingTakerGets.Currency)
+	takerGetsIssuer := getIssuerBytes(remainingTakerGets.Issuer)
+
+	// Calculate the book directory key with quality
+	bookBase := keylet.BookDir(takerPaysCurrency, takerPaysIssuer, takerGetsCurrency, takerGetsIssuer)
+	bookDirKey := keylet.Quality(bookBase, quality)
+
+	// Add offer to owner directory
+	ownerDirKey := keylet.OwnerDir(accountID)
+	ownerDirResult, err := e.dirInsert(ownerDirKey, offerKey.Key, func(dir *DirectoryNode) {
+		dir.Owner = accountID
+	})
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	// Add offer to book directory
+	bookDirResult, err := e.dirInsert(bookDirKey, offerKey.Key, func(dir *DirectoryNode) {
+		dir.TakerPaysCurrency = takerPaysCurrency
+		dir.TakerPaysIssuer = takerPaysIssuer
+		dir.TakerGetsCurrency = takerGetsCurrency
+		dir.TakerGetsIssuer = takerGetsIssuer
+		dir.ExchangeRate = quality
+	})
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	// Create the ledger offer with directory info
 	ledgerOffer := &LedgerOffer{
-		Account:   account.Account,
-		Sequence:  offerSequence,
-		TakerPays: remainingTakerPays,
-		TakerGets: remainingTakerGets,
-		Flags:     0,
+		Account:           account.Account,
+		Sequence:          offerSequence,
+		TakerPays:         remainingTakerPays,
+		TakerGets:         remainingTakerGets,
+		BookDirectory:     bookDirKey.Key,
+		BookNode:          bookDirResult.Page,
+		OwnerNode:         ownerDirResult.Page,
+		Flags:             0,
+		PreviousTxnID:     e.currentTxHash,
+		PreviousTxnLgrSeq: e.config.LedgerSequence,
 	}
 
 	// Set offer flags
@@ -1217,15 +1256,56 @@ func (e *Engine) applyOfferCreate(offer *OfferCreate, account *AccountRoot, meta
 	// Increment owner count
 	account.OwnerCount++
 
+	// Add owner directory metadata
+	if ownerDirResult.Created {
+		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
+			NodeType:        "CreatedNode",
+			LedgerEntryType: "DirectoryNode",
+			LedgerIndex:     strings.ToUpper(hex.EncodeToString(ownerDirKey.Key[:])),
+			NewFields: map[string]any{
+				"Owner":     offer.Account,
+				"RootIndex": strings.ToUpper(hex.EncodeToString(ownerDirKey.Key[:])),
+			},
+		})
+	} else if ownerDirResult.Modified {
+		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
+			NodeType:        "ModifiedNode",
+			LedgerEntryType: "DirectoryNode",
+			LedgerIndex:     strings.ToUpper(hex.EncodeToString(ownerDirKey.Key[:])),
+			FinalFields: map[string]any{
+				"Flags":     uint32(0),
+				"Owner":     offer.Account,
+				"RootIndex": strings.ToUpper(hex.EncodeToString(ownerDirKey.Key[:])),
+			},
+		})
+	}
+
+	// Add book directory metadata
+	if bookDirResult.Created {
+		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
+			NodeType:        "CreatedNode",
+			LedgerEntryType: "DirectoryNode",
+			LedgerIndex:     strings.ToUpper(hex.EncodeToString(bookDirKey.Key[:])),
+			NewFields: map[string]any{
+				"ExchangeRate":      formatUint64Hex(quality),
+				"RootIndex":         strings.ToUpper(hex.EncodeToString(bookDirKey.Key[:])),
+				"TakerGetsCurrency": strings.ToUpper(hex.EncodeToString(takerGetsCurrency[:])),
+				"TakerGetsIssuer":   strings.ToUpper(hex.EncodeToString(takerGetsIssuer[:])),
+			},
+		})
+	}
+
+	// Add offer metadata with BookDirectory
 	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
 		NodeType:        "CreatedNode",
 		LedgerEntryType: "Offer",
-		LedgerIndex:     hex.EncodeToString(offerKey.Key[:]),
+		LedgerIndex:     strings.ToUpper(hex.EncodeToString(offerKey.Key[:])),
 		NewFields: map[string]any{
-			"Account":   offer.Account,
-			"Sequence":  offerSequence,
-			"TakerGets": remainingTakerGets,
-			"TakerPays": remainingTakerPays,
+			"Account":       offer.Account,
+			"BookDirectory": strings.ToUpper(hex.EncodeToString(bookDirKey.Key[:])),
+			"Sequence":      offerSequence,
+			"TakerGets":     flattenAmount(remainingTakerGets),
+			"TakerPays":     flattenAmount(remainingTakerPays),
 		},
 	})
 
@@ -1449,8 +1529,8 @@ func (e *Engine) matchOffers(offer *OfferCreate, account *AccountRoot, metadata 
 				LedgerIndex:     hex.EncodeToString(match.key[:]),
 				FinalFields: map[string]any{
 					"Account":   match.offer.Account,
-					"TakerGets": theirGets,
-					"TakerPays": theirPays,
+					"TakerGets": flattenAmount(theirGets),
+					"TakerPays": flattenAmount(theirPays),
 				},
 			})
 		} else {
@@ -1466,12 +1546,12 @@ func (e *Engine) matchOffers(offer *OfferCreate, account *AccountRoot, metadata 
 					LedgerIndex:     hex.EncodeToString(match.key[:]),
 					FinalFields: map[string]any{
 						"Account":   match.offer.Account,
-						"TakerGets": matchRemainingGets,
-						"TakerPays": matchRemainingPays,
+						"TakerGets": flattenAmount(matchRemainingGets),
+						"TakerPays": flattenAmount(matchRemainingPays),
 					},
 					PreviousFields: map[string]any{
-						"TakerGets": theirGets,
-						"TakerPays": theirPays,
+						"TakerGets": flattenAmount(theirGets),
+						"TakerPays": flattenAmount(theirPays),
 					},
 				})
 			}

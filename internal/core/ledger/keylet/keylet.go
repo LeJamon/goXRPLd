@@ -253,12 +253,31 @@ func hexNibble(c byte) byte {
 	}
 }
 
-// BookDir returns the keylet for an order book directory.
+// BookDir returns the keylet for an order book directory (base, without quality).
+// The hash order follows rippled: paysCurrency, getsCurrency, paysIssuer, getsIssuer
 func BookDir(takerPaysCurrency, takerPaysIssuer, takerGetsCurrency, takerGetsIssuer [20]byte) Keylet {
 	return Keylet{
 		Type: entry.TypeDirectoryNode,
-		Key:  indexHash(spaceBookDir, takerPaysCurrency[:], takerPaysIssuer[:], takerGetsCurrency[:], takerGetsIssuer[:]),
+		Key:  indexHash(spaceBookDir, takerPaysCurrency[:], takerGetsCurrency[:], takerPaysIssuer[:], takerGetsIssuer[:]),
 	}
+}
+
+// Quality returns a keylet with the quality (exchange rate) encoded in the last 8 bytes.
+// This is used for offer book directories where offers are sorted by quality.
+// The quality is stored in big-endian format in the rightmost 8 bytes.
+func Quality(k Keylet, quality uint64) Keylet {
+	result := Keylet{
+		Type: k.Type,
+		Key:  k.Key, // Copy the key
+	}
+	// Encode quality in the last 8 bytes (big-endian)
+	binary.BigEndian.PutUint64(result.Key[24:], quality)
+	return result
+}
+
+// GetQuality extracts the quality value from the last 8 bytes of a keylet.
+func GetQuality(k Keylet) uint64 {
+	return binary.BigEndian.Uint64(k.Key[24:])
 }
 
 // NFTokenPage returns the keylet for an NFToken page.
