@@ -304,6 +304,72 @@ func (e *Engine) applyAccountDelete(tx *AccountDelete, account *AccountRoot, met
 	return TesSUCCESS
 }
 
+// parseSignerList parses a SignerList ledger entry from binary data
+func parseSignerList(data []byte) (*SignerListInfo, error) {
+	// Decode the binary data to a map using the binary codec
+	hexStr := hex.EncodeToString(data)
+	decoded, err := binarycodec.Decode(hexStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode SignerList: %w", err)
+	}
+
+	signerList := &SignerListInfo{
+		SignerListID: 0, // Always 0 currently
+	}
+
+	// Parse SignerQuorum
+	if quorum, ok := decoded["SignerQuorum"]; ok {
+		switch v := quorum.(type) {
+		case float64:
+			signerList.SignerQuorum = uint32(v)
+		case int:
+			signerList.SignerQuorum = uint32(v)
+		case uint32:
+			signerList.SignerQuorum = v
+		}
+	}
+
+	// Parse SignerEntries
+	if entries, ok := decoded["SignerEntries"]; ok {
+		if entriesArray, ok := entries.([]interface{}); ok {
+			for _, entryWrapper := range entriesArray {
+				if entryMap, ok := entryWrapper.(map[string]interface{}); ok {
+					// Handle wrapped SignerEntry
+					var signerEntry map[string]interface{}
+					if se, ok := entryMap["SignerEntry"]; ok {
+						signerEntry, _ = se.(map[string]interface{})
+					} else {
+						signerEntry = entryMap
+					}
+
+					if signerEntry != nil {
+						entry := AccountSignerEntry{}
+						if account, ok := signerEntry["Account"].(string); ok {
+							entry.Account = account
+						}
+						if weight, ok := signerEntry["SignerWeight"]; ok {
+							switch v := weight.(type) {
+							case float64:
+								entry.SignerWeight = uint16(v)
+							case int:
+								entry.SignerWeight = uint16(v)
+							case uint16:
+								entry.SignerWeight = v
+							}
+						}
+						if walletLocator, ok := signerEntry["WalletLocator"].(string); ok {
+							entry.WalletLocator = walletLocator
+						}
+						signerList.SignerEntries = append(signerList.SignerEntries, entry)
+					}
+				}
+			}
+		}
+	}
+
+	return signerList, nil
+}
+
 // serializeSignerList serializes a SignerList ledger entry
 func serializeSignerList(tx *SignerListSet, ownerID [20]byte) ([]byte, error) {
 	// Convert owner ID to classic address

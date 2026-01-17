@@ -95,7 +95,7 @@ func TestPaymentValidation(t *testing.T) {
 				Destination: "rAlice",
 			},
 			expectError: true,
-			errorMsg:    "cannot send XRP to self",
+			errorMsg:    "temREDUNDANT: cannot send XRP to self without path",
 		},
 		{
 			name: "IOU payment to self is allowed (for cross-currency)",
@@ -983,4 +983,347 @@ func TestPaymentCrossCurrency(t *testing.T) {
 			t.Errorf("expected no error, got %v", err)
 		}
 	})
+}
+
+// TestDeliverMinValidation tests DeliverMin field validation.
+// These tests are based on rippled's DeliverMin_test.cpp
+func TestDeliverMinValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		payment     *Payment
+		expectError bool
+		errorMsg    string
+	}{
+		// DeliverMin requires tfPartialPayment flag
+		// Reference: rippled DeliverMin_test.cpp line 46-48
+		{
+			name: "DeliverMin without tfPartialPayment - temBAD_AMOUNT",
+			payment: func() *Payment {
+				p := &Payment{
+					BaseTx:      *NewBaseTx(TypePayment, "rAlice"),
+					Amount:      NewIssuedAmount("10", "USD", "rGateway"),
+					Destination: "rBob",
+				}
+				deliverMin := NewIssuedAmount("10", "USD", "rGateway")
+				p.DeliverMin = &deliverMin
+				// No tfPartialPayment flag set
+				return p
+			}(),
+			expectError: true,
+			errorMsg:    "temBAD_AMOUNT: DeliverMin requires tfPartialPayment flag",
+		},
+
+		// DeliverMin must be positive
+		// Reference: rippled DeliverMin_test.cpp line 49-52
+		{
+			name: "negative DeliverMin - temBAD_AMOUNT",
+			payment: func() *Payment {
+				p := &Payment{
+					BaseTx:      *NewBaseTx(TypePayment, "rAlice"),
+					Amount:      NewIssuedAmount("10", "USD", "rGateway"),
+					Destination: "rBob",
+				}
+				p.SetPartialPayment()
+				deliverMin := NewIssuedAmount("-5", "USD", "rGateway")
+				p.DeliverMin = &deliverMin
+				return p
+			}(),
+			expectError: true,
+			errorMsg:    "temBAD_AMOUNT: DeliverMin must be positive",
+		},
+
+		// DeliverMin currency must match Amount currency
+		// Reference: rippled DeliverMin_test.cpp line 53-56 (XRP vs USD)
+		{
+			name: "DeliverMin currency mismatch - XRP vs USD",
+			payment: func() *Payment {
+				p := &Payment{
+					BaseTx:      *NewBaseTx(TypePayment, "rAlice"),
+					Amount:      NewIssuedAmount("10", "USD", "rGateway"),
+					Destination: "rBob",
+				}
+				p.SetPartialPayment()
+				deliverMin := NewXRPAmount("5000000") // XRP instead of USD
+				p.DeliverMin = &deliverMin
+				return p
+			}(),
+			expectError: true,
+			errorMsg:    "temBAD_AMOUNT: DeliverMin currency must match Amount",
+		},
+
+		// DeliverMin issuer must match Amount issuer
+		// Reference: rippled DeliverMin_test.cpp line 57-60 (different issuer)
+		{
+			name: "DeliverMin issuer mismatch",
+			payment: func() *Payment {
+				p := &Payment{
+					BaseTx:      *NewBaseTx(TypePayment, "rAlice"),
+					Amount:      NewIssuedAmount("10", "USD", "rGateway"),
+					Destination: "rBob",
+				}
+				p.SetPartialPayment()
+				deliverMin := NewIssuedAmount("5", "USD", "rOtherGateway") // Different issuer
+				p.DeliverMin = &deliverMin
+				return p
+			}(),
+			expectError: true,
+			errorMsg:    "temBAD_AMOUNT: DeliverMin currency must match Amount",
+		},
+
+		// DeliverMin must not exceed Amount
+		// Reference: rippled DeliverMin_test.cpp line 61-64
+		{
+			name: "DeliverMin exceeds Amount - temBAD_AMOUNT",
+			payment: func() *Payment {
+				p := &Payment{
+					BaseTx:      *NewBaseTx(TypePayment, "rAlice"),
+					Amount:      NewIssuedAmount("10", "USD", "rGateway"),
+					Destination: "rBob",
+				}
+				p.SetPartialPayment()
+				deliverMin := NewIssuedAmount("15", "USD", "rGateway") // Exceeds Amount
+				p.DeliverMin = &deliverMin
+				return p
+			}(),
+			expectError: false, // This is validated in apply, not preflight
+		},
+
+		// Valid DeliverMin with tfPartialPayment
+		{
+			name: "valid DeliverMin with tfPartialPayment",
+			payment: func() *Payment {
+				p := &Payment{
+					BaseTx:      *NewBaseTx(TypePayment, "rAlice"),
+					Amount:      NewIssuedAmount("10", "USD", "rGateway"),
+					Destination: "rBob",
+				}
+				p.SetPartialPayment()
+				deliverMin := NewIssuedAmount("7", "USD", "rGateway")
+				p.DeliverMin = &deliverMin
+				return p
+			}(),
+			expectError: false,
+		},
+
+		// Valid DeliverMin at minimum (same as Amount)
+		{
+			name: "valid DeliverMin equal to Amount",
+			payment: func() *Payment {
+				p := &Payment{
+					BaseTx:      *NewBaseTx(TypePayment, "rAlice"),
+					Amount:      NewIssuedAmount("10", "USD", "rGateway"),
+					Destination: "rBob",
+				}
+				p.SetPartialPayment()
+				deliverMin := NewIssuedAmount("10", "USD", "rGateway")
+				p.DeliverMin = &deliverMin
+				return p
+			}(),
+			expectError: false,
+		},
+
+		// Zero DeliverMin - temBAD_AMOUNT
+		{
+			name: "zero DeliverMin - temBAD_AMOUNT",
+			payment: func() *Payment {
+				p := &Payment{
+					BaseTx:      *NewBaseTx(TypePayment, "rAlice"),
+					Amount:      NewIssuedAmount("10", "USD", "rGateway"),
+					Destination: "rBob",
+				}
+				p.SetPartialPayment()
+				deliverMin := NewIssuedAmount("0", "USD", "rGateway")
+				p.DeliverMin = &deliverMin
+				return p
+			}(),
+			expectError: true,
+			errorMsg:    "temBAD_AMOUNT: DeliverMin must be positive",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.payment.Validate()
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errorMsg)
+				} else if tt.errorMsg != "" && !containsString(err.Error(), tt.errorMsg) {
+					t.Errorf("expected error %q, got %q", tt.errorMsg, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("expected no error, got %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestPartialPaymentXRPRestriction tests that tfPartialPayment is invalid for XRP-to-XRP payments.
+// Reference: rippled Payment.cpp:182-188 (temBAD_SEND_XRP_PARTIAL)
+func TestPartialPaymentXRPRestriction(t *testing.T) {
+	tests := []struct {
+		name        string
+		payment     *Payment
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name: "tfPartialPayment with XRP-to-XRP - temBAD_SEND_XRP_PARTIAL",
+			payment: func() *Payment {
+				p := &Payment{
+					BaseTx:      *NewBaseTx(TypePayment, "rAlice"),
+					Amount:      NewXRPAmount("1000000"),
+					Destination: "rBob",
+				}
+				p.SetPartialPayment()
+				return p
+			}(),
+			expectError: true,
+			errorMsg:    "temBAD_SEND_XRP_PARTIAL",
+		},
+		{
+			name: "tfPartialPayment with XRP-to-XRP (with XRP SendMax) - temBAD_SEND_XRP_PARTIAL",
+			payment: func() *Payment {
+				p := &Payment{
+					BaseTx:      *NewBaseTx(TypePayment, "rAlice"),
+					Amount:      NewXRPAmount("1000000"),
+					Destination: "rBob",
+					SendMax:     ptrAmount(NewXRPAmount("1100000")),
+				}
+				p.SetPartialPayment()
+				return p
+			}(),
+			expectError: true,
+			errorMsg:    "temBAD_SEND_XRP_PARTIAL",
+		},
+		{
+			name: "tfPartialPayment with IOU - allowed",
+			payment: func() *Payment {
+				p := &Payment{
+					BaseTx:      *NewBaseTx(TypePayment, "rAlice"),
+					Amount:      NewIssuedAmount("100", "USD", "rGateway"),
+					Destination: "rBob",
+				}
+				p.SetPartialPayment()
+				return p
+			}(),
+			expectError: false,
+		},
+		{
+			name: "tfPartialPayment with cross-currency (XRP to IOU) - allowed",
+			payment: func() *Payment {
+				p := &Payment{
+					BaseTx:      *NewBaseTx(TypePayment, "rAlice"),
+					Amount:      NewIssuedAmount("100", "USD", "rGateway"),
+					Destination: "rBob",
+					SendMax:     ptrAmount(NewXRPAmount("1100000")), // XRP SendMax with IOU Amount
+				}
+				p.SetPartialPayment()
+				return p
+			}(),
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.payment.Validate()
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errorMsg)
+				} else if !containsString(err.Error(), tt.errorMsg) {
+					t.Errorf("expected error containing %q, got %q", tt.errorMsg, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("expected no error, got %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestPaymentPathLimits tests path array size limits.
+// Reference: rippled Payment.cpp:353-359 (MaxPathSize = 7, MaxPathLength = 8)
+func TestPaymentPathLimits(t *testing.T) {
+	tests := []struct {
+		name        string
+		numPaths    int
+		pathLength  int
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name:        "7 paths (max allowed)",
+			numPaths:    7,
+			pathLength:  1,
+			expectError: false,
+		},
+		{
+			name:        "8 paths (exceeds max) - temMALFORMED",
+			numPaths:    8,
+			pathLength:  1,
+			expectError: true,
+			errorMsg:    "temMALFORMED: Paths array exceeds maximum size of 7",
+		},
+		{
+			name:        "8 steps per path (max allowed)",
+			numPaths:    1,
+			pathLength:  8,
+			expectError: false,
+		},
+		{
+			name:        "9 steps per path (exceeds max) - temMALFORMED",
+			numPaths:    1,
+			pathLength:  9,
+			expectError: true,
+			errorMsg:    "temMALFORMED: Path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payment := &Payment{
+				BaseTx:      *NewBaseTx(TypePayment, "rAlice"),
+				Amount:      NewIssuedAmount("100", "EUR", "rGatewayEUR"),
+				Destination: "rBob",
+				SendMax:     ptrAmount(NewIssuedAmount("110", "USD", "rGatewayUSD")),
+			}
+
+			// Create paths array
+			paths := make([][]PathStep, tt.numPaths)
+			for i := 0; i < tt.numPaths; i++ {
+				path := make([]PathStep, tt.pathLength)
+				for j := 0; j < tt.pathLength; j++ {
+					path[j] = PathStep{Currency: "USD", Issuer: "rGateway"}
+				}
+				paths[i] = path
+			}
+			payment.Paths = paths
+
+			err := payment.Validate()
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errorMsg)
+				} else if !containsString(err.Error(), tt.errorMsg) {
+					t.Errorf("expected error containing %q, got %q", tt.errorMsg, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("expected no error, got %v", err)
+				}
+			}
+		})
+	}
+}
+
+// containsString is a helper to check if s contains substr
+func containsString(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

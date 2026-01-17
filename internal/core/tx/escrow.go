@@ -40,34 +40,53 @@ func (e *EscrowCreate) TxType() Type {
 }
 
 // Validate validates the EscrowCreate transaction
+// Reference: rippled Escrow.cpp EscrowCreate::preflight()
 func (e *EscrowCreate) Validate() error {
 	if err := e.BaseTx.Validate(); err != nil {
 		return err
 	}
 
 	if e.Destination == "" {
-		return errors.New("Destination is required")
+		return errors.New("temDST_NEEDED: Destination is required")
 	}
 
 	if e.Amount.Value == "" {
-		return errors.New("Amount is required")
+		return errors.New("temBAD_AMOUNT: Amount is required")
 	}
 
-	// Must be XRP
+	// Amount must be positive
+	// Reference: rippled Escrow.cpp:146-147
+	if len(e.Amount.Value) > 0 && e.Amount.Value[0] == '-' {
+		return errors.New("temBAD_AMOUNT: Amount must be positive")
+	}
+	if e.Amount.Value == "0" {
+		return errors.New("temBAD_AMOUNT: Amount must be positive")
+	}
+
+	// Must be XRP (unless featureTokenEscrow is enabled)
+	// Reference: rippled Escrow.cpp:131-148
 	if !e.Amount.IsNative() {
-		return errors.New("escrow can only hold XRP")
+		return errors.New("temBAD_AMOUNT: escrow can only hold XRP")
 	}
 
-	// Must have either CancelAfter, FinishAfter, or Condition
-	if e.CancelAfter == nil && e.FinishAfter == nil && e.Condition == "" {
-		return errors.New("must specify CancelAfter, FinishAfter, or Condition")
+	// Must have at least one timeout value
+	// Reference: rippled Escrow.cpp:151-152
+	if e.CancelAfter == nil && e.FinishAfter == nil {
+		return errors.New("temBAD_EXPIRATION: must specify CancelAfter or FinishAfter")
 	}
 
-	// If both times are specified, CancelAfter must be after FinishAfter
+	// If both times are specified, CancelAfter must be strictly after FinishAfter
+	// Reference: rippled Escrow.cpp:156-158
 	if e.CancelAfter != nil && e.FinishAfter != nil {
 		if *e.CancelAfter <= *e.FinishAfter {
-			return errors.New("CancelAfter must be after FinishAfter")
+			return errors.New("temBAD_EXPIRATION: CancelAfter must be after FinishAfter")
 		}
+	}
+
+	// With fix1571: In the absence of a FinishAfter, must have a Condition
+	// Reference: rippled Escrow.cpp:160-167
+	if e.FinishAfter == nil && e.Condition == "" {
+		return errors.New("temMALFORMED: must specify FinishAfter or Condition")
 	}
 
 	return nil
@@ -128,20 +147,22 @@ func (e *EscrowFinish) TxType() Type {
 }
 
 // Validate validates the EscrowFinish transaction
+// Reference: rippled Escrow.cpp EscrowFinish::preflight()
 func (e *EscrowFinish) Validate() error {
 	if err := e.BaseTx.Validate(); err != nil {
 		return err
 	}
 
 	if e.Owner == "" {
-		return errors.New("Owner is required")
+		return errors.New("temMALFORMED: Owner is required")
 	}
 
 	// Both Condition and Fulfillment must be present or absent together
+	// Reference: rippled Escrow.cpp:644-646
 	hasCondition := e.Condition != ""
 	hasFulfillment := e.Fulfillment != ""
 	if hasCondition != hasFulfillment {
-		return errors.New("Condition and Fulfillment must be provided together")
+		return errors.New("temMALFORMED: Condition and Fulfillment must be provided together")
 	}
 
 	return nil
@@ -190,13 +211,14 @@ func (e *EscrowCancel) TxType() Type {
 }
 
 // Validate validates the EscrowCancel transaction
+// Reference: rippled Escrow.cpp EscrowCancel::preflight()
 func (e *EscrowCancel) Validate() error {
 	if err := e.BaseTx.Validate(); err != nil {
 		return err
 	}
 
 	if e.Owner == "" {
-		return errors.New("Owner is required")
+		return errors.New("temMALFORMED: Owner is required")
 	}
 
 	return nil

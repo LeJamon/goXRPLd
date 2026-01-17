@@ -52,7 +52,7 @@ func TestOfferCreateValidation(t *testing.T) {
 				TakerPays: NewIssuedAmount("100", "USD", "rGateway"),
 			},
 			expectError: true,
-			errorMsg:    "TakerGets is required",
+			errorMsg:    "temBAD_OFFER: TakerGets is required",
 		},
 		{
 			name: "missing TakerPays - temBAD_OFFER equivalent",
@@ -62,7 +62,7 @@ func TestOfferCreateValidation(t *testing.T) {
 				TakerPays: Amount{},                                        // Empty
 			},
 			expectError: true,
-			errorMsg:    "TakerPays is required",
+			errorMsg:    "temBAD_OFFER: TakerPays is required",
 		},
 		{
 			name: "missing account",
@@ -83,7 +83,7 @@ func TestOfferCreateValidation(t *testing.T) {
 				TakerPays: NewXRPAmount("500000000"),
 			},
 			expectError: true,
-			errorMsg:    "cannot exchange XRP for XRP",
+			errorMsg:    "temBAD_OFFER: cannot exchange XRP for XRP",
 		},
 		// Valid offer with optional Expiration field
 		{
@@ -255,7 +255,7 @@ func TestOfferCreateFlags(t *testing.T) {
 				o.SetFillOrKill()
 			},
 			expectError: true,
-			errorMsg:    "cannot set both ImmediateOrCancel and FillOrKill",
+			errorMsg:    "temINVALID_FLAG: cannot set both ImmediateOrCancel and FillOrKill",
 		},
 	}
 
@@ -657,7 +657,7 @@ func TestOfferCreateAmountTypes(t *testing.T) {
 			takerGets:   NewXRPAmount("1000000"),
 			takerPays:   NewXRPAmount("500000"),
 			expectError: true,
-			errorMsg:    "cannot exchange XRP for XRP",
+			errorMsg:    "temBAD_OFFER: cannot exchange XRP for XRP",
 		},
 		{
 			name:        "large XRP amount",
@@ -705,5 +705,153 @@ func TestLedgerOfferFlags(t *testing.T) {
 	}
 	if lsfOfferSell != 0x00020000 {
 		t.Errorf("expected lsfOfferSell=0x00020000, got 0x%08X", lsfOfferSell)
+	}
+}
+
+// TestOfferCreateMalformedValidation tests validation of malformed offers.
+// Reference: rippled Offer_test.cpp::testMalformed
+func TestOfferCreateMalformedValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		offer       *OfferCreate
+		expectError bool
+		errorMsg    string
+	}{
+		// Negative amounts - temBAD_OFFER
+		{
+			name: "negative TakerGets - temBAD_OFFER",
+			offer: &OfferCreate{
+				BaseTx:    *NewBaseTx(TypeOfferCreate, "rAlice"),
+				TakerGets: NewIssuedAmount("-100", "USD", "rGateway"),
+				TakerPays: NewXRPAmount("1000000"),
+			},
+			expectError: true,
+			errorMsg:    "temBAD_OFFER: TakerGets cannot be negative",
+		},
+		{
+			name: "negative TakerPays - temBAD_OFFER",
+			offer: &OfferCreate{
+				BaseTx:    *NewBaseTx(TypeOfferCreate, "rAlice"),
+				TakerGets: NewXRPAmount("1000000"),
+				TakerPays: NewIssuedAmount("-100", "USD", "rGateway"),
+			},
+			expectError: true,
+			errorMsg:    "temBAD_OFFER: TakerPays cannot be negative",
+		},
+		// Zero amounts - temBAD_OFFER
+		{
+			name: "zero TakerGets - temBAD_OFFER",
+			offer: &OfferCreate{
+				BaseTx:    *NewBaseTx(TypeOfferCreate, "rAlice"),
+				TakerGets: NewXRPAmount("0"),
+				TakerPays: NewIssuedAmount("100", "USD", "rGateway"),
+			},
+			expectError: true,
+			errorMsg:    "temBAD_OFFER: TakerGets cannot be zero",
+		},
+		{
+			name: "zero TakerPays - temBAD_OFFER",
+			offer: &OfferCreate{
+				BaseTx:    *NewBaseTx(TypeOfferCreate, "rAlice"),
+				TakerGets: NewIssuedAmount("100", "USD", "rGateway"),
+				TakerPays: NewXRPAmount("0"),
+			},
+			expectError: true,
+			errorMsg:    "temBAD_OFFER: TakerPays cannot be zero",
+		},
+		// Expiration of 0 - temBAD_EXPIRATION
+		// Reference: rippled Offer_test.cpp:1122-1124
+		{
+			name: "expiration of 0 - temBAD_EXPIRATION",
+			offer: &OfferCreate{
+				BaseTx:     *NewBaseTx(TypeOfferCreate, "rAlice"),
+				TakerGets:  NewXRPAmount("1000000"),
+				TakerPays:  NewIssuedAmount("100", "USD", "rGateway"),
+				Expiration: ptrUint32(0),
+			},
+			expectError: true,
+			errorMsg:    "temBAD_EXPIRATION: expiration cannot be zero",
+		},
+		// OfferSequence of 0 - temBAD_SEQUENCE
+		// Reference: rippled Offer_test.cpp:1129-1132
+		{
+			name: "OfferSequence of 0 - temBAD_SEQUENCE",
+			offer: &OfferCreate{
+				BaseTx:        *NewBaseTx(TypeOfferCreate, "rAlice"),
+				TakerGets:     NewXRPAmount("1000000"),
+				TakerPays:     NewIssuedAmount("100", "USD", "rGateway"),
+				OfferSequence: ptrUint32(0),
+			},
+			expectError: true,
+			errorMsg:    "temBAD_SEQUENCE: OfferSequence cannot be zero",
+		},
+		// Valid offer with non-zero expiration
+		{
+			name: "valid expiration",
+			offer: &OfferCreate{
+				BaseTx:     *NewBaseTx(TypeOfferCreate, "rAlice"),
+				TakerGets:  NewXRPAmount("1000000"),
+				TakerPays:  NewIssuedAmount("100", "USD", "rGateway"),
+				Expiration: ptrUint32(700000000),
+			},
+			expectError: false,
+		},
+		// Valid offer with non-zero OfferSequence
+		{
+			name: "valid OfferSequence",
+			offer: &OfferCreate{
+				BaseTx:        *NewBaseTx(TypeOfferCreate, "rAlice"),
+				TakerGets:     NewXRPAmount("1000000"),
+				TakerPays:     NewIssuedAmount("100", "USD", "rGateway"),
+				OfferSequence: ptrUint32(12345),
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.offer.Validate()
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errorMsg)
+				} else if tt.errorMsg != "" && err.Error() != tt.errorMsg {
+					t.Errorf("expected error %q, got %q", tt.errorMsg, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("expected no error, got %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestOfferExpirationValidation tests offer expiration validation.
+// Reference: rippled Offer_test.cpp::testExpiration
+func TestOfferExpirationValidation(t *testing.T) {
+	// Test that tecEXPIRED result code exists
+	if TecEXPIRED != 148 {
+		t.Errorf("expected TecEXPIRED=148, got %d", TecEXPIRED)
+	}
+
+	// Verify expiration of 0 is rejected in preflight
+	offer := &OfferCreate{
+		BaseTx:     *NewBaseTx(TypeOfferCreate, "rAlice"),
+		TakerGets:  NewXRPAmount("1000000"),
+		TakerPays:  NewIssuedAmount("100", "USD", "rGateway"),
+		Expiration: ptrUint32(0),
+	}
+
+	err := offer.Validate()
+	if err == nil {
+		t.Error("expected error for expiration of 0")
+	}
+
+	// Verify valid expiration passes
+	offer.Expiration = ptrUint32(700000000)
+	err = offer.Validate()
+	if err != nil {
+		t.Errorf("expected no error for valid expiration, got %v", err)
 	}
 }

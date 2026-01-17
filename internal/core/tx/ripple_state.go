@@ -78,13 +78,17 @@ const ledgerEntryTypeRippleState = 0x0072
 
 // Field codes for RippleState (based on XRPL binary serialization format)
 const (
-	fieldCodeRSBalance     = 2 // Amount field code for Balance
-	fieldCodeLowLimit      = 6 // Amount field code for LowLimit
-	fieldCodeHighLimit     = 7 // Amount field code for HighLimit
-	fieldCodeLowNode       = 7 // UInt64 field code for LowNode
-	fieldCodeHighNode      = 8 // UInt64 field code for HighNode
-	fieldCodePrevTxnID     = 5 // Hash256 field code for PreviousTxnID
-	fieldCodePrevTxnLgrSeq = 5 // UInt32 field code for PreviousTxnLgrSeq
+	fieldCodeRSBalance     = 2  // Amount field code for Balance
+	fieldCodeLowLimit      = 6  // Amount field code for LowLimit
+	fieldCodeHighLimit     = 7  // Amount field code for HighLimit
+	fieldCodeLowNode       = 7  // UInt64 field code for LowNode
+	fieldCodeHighNode      = 8  // UInt64 field code for HighNode
+	fieldCodePrevTxnID     = 5  // Hash256 field code for PreviousTxnID
+	fieldCodePrevTxnLgrSeq = 5  // UInt32 field code for PreviousTxnLgrSeq
+	fieldCodeLowQualityIn  = 20 // UInt32 field code for LowQualityIn
+	fieldCodeLowQualityOut = 21 // UInt32 field code for LowQualityOut
+	fieldCodeHighQualityIn = 22 // UInt32 field code for HighQualityIn
+	fieldCodeHighQualityOut = 23 // UInt32 field code for HighQualityOut
 )
 
 // NewIOUAmount creates a new IOU amount
@@ -240,6 +244,14 @@ func parseRippleState(data []byte) (*RippleState, error) {
 				rs.Flags = value
 			case fieldCodePrevTxnLgrSeq: // field code 5
 				rs.PreviousTxnLgrSeq = value
+			case fieldCodeLowQualityIn:
+				rs.LowQualityIn = value
+			case fieldCodeLowQualityOut:
+				rs.LowQualityOut = value
+			case fieldCodeHighQualityIn:
+				rs.HighQualityIn = value
+			case fieldCodeHighQualityOut:
+				rs.HighQualityOut = value
 			}
 
 		case fieldTypeUInt64:
@@ -418,6 +430,20 @@ func serializeRippleState(rs *RippleState) ([]byte, error) {
 		"HighLimit":       makeAmount(rs.HighLimit, false),
 		"LowNode":         fmt.Sprintf("%x", rs.LowNode),
 		"HighNode":        fmt.Sprintf("%x", rs.HighNode),
+	}
+
+	// Add quality fields if set (non-zero values)
+	if rs.LowQualityIn != 0 {
+		jsonObj["LowQualityIn"] = rs.LowQualityIn
+	}
+	if rs.LowQualityOut != 0 {
+		jsonObj["LowQualityOut"] = rs.LowQualityOut
+	}
+	if rs.HighQualityIn != 0 {
+		jsonObj["HighQualityIn"] = rs.HighQualityIn
+	}
+	if rs.HighQualityOut != 0 {
+		jsonObj["HighQualityOut"] = rs.HighQualityOut
 	}
 
 	// Add PreviousTxnID if set

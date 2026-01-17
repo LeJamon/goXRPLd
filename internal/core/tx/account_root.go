@@ -24,6 +24,9 @@ type AccountRoot struct {
 	MessageKey        string
 	TransferRate      uint32
 	TickSize          uint8
+	NFTokenMinter     string   // Account allowed to mint NFTokens on behalf of this account
+	AccountTxnID      [32]byte // Hash of the last transaction this account submitted (when enabled)
+	WalletLocator     string   // Arbitrary hex data (deprecated)
 	PreviousTxnID     [32]byte
 	PreviousTxnLgrSeq uint32
 }
@@ -50,16 +53,45 @@ const (
 	fieldCodeBalance         = 1  // Amount
 	fieldCodeRegularKey      = 8  // Account
 	fieldCodeAccount         = 1  // Account (different context)
+	fieldCodeNFTokenMinter   = 9  // Account - authorized NFT minter
 	fieldCodeEmailHash       = 1  // Hash128
 	fieldCodeDomain          = 7  // Blob
 	fieldCodeTickSize        = 16 // UInt8 (stored as UInt16)
+	fieldCodeAccountTxnID    = 9  // Hash256 - last transaction ID
+	fieldCodeWalletLocator   = 7  // Hash256 - wallet locator (deprecated)
 
 	// Ledger entry type code for AccountRoot
 	ledgerEntryTypeAccountRoot = 0x0061
 )
 
-// AccountRoot ledger entry flags
+// AccountRoot ledger entry flags (lsf = Ledger State Flag)
 const (
+	// lsfPasswordSpent indicates the account has spent the free transaction
+	lsfPasswordSpent uint32 = 0x00010000
+
+	// lsfRequireDestTag indicates the account requires a destination tag
+	lsfRequireDestTag uint32 = 0x00020000
+
+	// lsfRequireAuth indicates the account requires authorization for trust lines
+	lsfRequireAuth uint32 = 0x00040000
+
+	// lsfDisallowXRP indicates the account does not want to receive XRP
+	// Per rippled, this flag means non-direct XRP payments are rejected
+	lsfDisallowXRP uint32 = 0x00080000
+
+	// lsfDisableMaster indicates the master key is disabled
+	lsfDisableMaster uint32 = 0x00100000
+
+	// lsfNoFreeze indicates the account has permanently given up the ability to freeze trust lines
+	// Once set, cannot be cleared
+	lsfNoFreeze uint32 = 0x00200000
+
+	// lsfGlobalFreeze indicates this account has globally frozen all trust lines
+	lsfGlobalFreeze uint32 = 0x00400000
+
+	// lsfDefaultRipple indicates rippling is enabled by default on trust lines
+	lsfDefaultRipple uint32 = 0x00800000
+
 	// lsfDepositAuth indicates the account requires deposit authorization
 	// Payments to this account require preauthorization unless both the
 	// destination balance and payment amount are at or below the base reserve
@@ -68,6 +100,22 @@ const (
 	// lsfAMM indicates the account is an AMM (pseudo-account)
 	// AMM accounts cannot receive direct payments
 	lsfAMM uint32 = 0x02000000
+
+	// lsfDisallowIncomingNFTokenOffer disallows incoming NFToken offers
+	lsfDisallowIncomingNFTokenOffer uint32 = 0x04000000
+
+	// lsfDisallowIncomingCheck disallows incoming checks
+	lsfDisallowIncomingCheck uint32 = 0x08000000
+
+	// lsfDisallowIncomingPayChan disallows incoming payment channels
+	lsfDisallowIncomingPayChan uint32 = 0x10000000
+
+	// lsfDisallowIncomingTrustline disallows incoming trust lines
+	lsfDisallowIncomingTrustline uint32 = 0x20000000
+
+	// lsfAllowTrustLineClawback allows clawback on issued currencies
+	// Once set, this flag CANNOT be cleared
+	lsfAllowTrustLineClawback uint32 = 0x80000000
 )
 
 // decodeAccountID decodes an XRPL address to a 20-byte account ID
@@ -213,6 +261,8 @@ func parseAccountRoot(data []byte) (*AccountRoot, error) {
 						account.Account = addr
 					} else if fieldCode == fieldCodeRegularKey {
 						account.RegularKey = addr
+					} else if fieldCode == fieldCodeNFTokenMinter {
+						account.NFTokenMinter = addr
 					}
 				}
 			}
@@ -253,12 +303,17 @@ func parseAccountRoot(data []byte) (*AccountRoot, error) {
 			offset += 16
 
 		case fieldTypeHash256:
-			// Hash256 fields (e.g., PreviousTxnID) are 32 bytes
+			// Hash256 fields (e.g., PreviousTxnID, AccountTxnID, WalletLocator) are 32 bytes
 			if offset+32 > len(data) {
 				return account, nil
 			}
-			if fieldCode == 5 { // PreviousTxnID
+			switch fieldCode {
+			case 5: // PreviousTxnID
 				copy(account.PreviousTxnID[:], data[offset:offset+32])
+			case fieldCodeAccountTxnID: // AccountTxnID
+				copy(account.AccountTxnID[:], data[offset:offset+32])
+			case fieldCodeWalletLocator: // WalletLocator
+				account.WalletLocator = hex.EncodeToString(data[offset : offset+32])
 			}
 			offset += 32
 
@@ -307,8 +362,23 @@ func serializeAccountRoot(account *AccountRoot) ([]byte, error) {
 		jsonObj["EmailHash"] = strings.ToUpper(account.EmailHash)
 	}
 
-	// Add PreviousTxnID if set (non-zero)
+	// Add NFTokenMinter if set
+	if account.NFTokenMinter != "" {
+		jsonObj["NFTokenMinter"] = account.NFTokenMinter
+	}
+
+	// Add AccountTxnID if set (non-zero)
 	var zeroHash [32]byte
+	if account.AccountTxnID != zeroHash {
+		jsonObj["AccountTxnID"] = strings.ToUpper(hex.EncodeToString(account.AccountTxnID[:]))
+	}
+
+	// Add WalletLocator if set
+	if account.WalletLocator != "" {
+		jsonObj["WalletLocator"] = strings.ToUpper(account.WalletLocator)
+	}
+
+	// Add PreviousTxnID if set (non-zero)
 	if account.PreviousTxnID != zeroHash {
 		jsonObj["PreviousTxnID"] = strings.ToUpper(hex.EncodeToString(account.PreviousTxnID[:]))
 	}

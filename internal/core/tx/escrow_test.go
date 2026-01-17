@@ -55,7 +55,7 @@ func TestEscrowCreateValidation(t *testing.T) {
 				FinishAfter: ptrUint32(700000000),
 			},
 			expectError: true,
-			errorMsg:    "Destination is required",
+			errorMsg:    "temDST_NEEDED: Destination is required",
 		},
 		{
 			name: "missing amount - temBAD_AMOUNT equivalent",
@@ -66,7 +66,7 @@ func TestEscrowCreateValidation(t *testing.T) {
 				FinishAfter: ptrUint32(700000000),
 			},
 			expectError: true,
-			errorMsg:    "Amount is required",
+			errorMsg:    "temBAD_AMOUNT: Amount is required",
 		},
 		{
 			name: "non-XRP amount - temBAD_AMOUNT equivalent",
@@ -77,18 +77,52 @@ func TestEscrowCreateValidation(t *testing.T) {
 				FinishAfter: ptrUint32(700000000),
 			},
 			expectError: true,
-			errorMsg:    "escrow can only hold XRP",
+			errorMsg:    "temBAD_AMOUNT: escrow can only hold XRP",
 		},
 		{
-			name: "missing both times and condition - temBAD_EXPIRATION equivalent",
+			name: "negative amount - temBAD_AMOUNT equivalent",
+			escrow: &EscrowCreate{
+				BaseTx:      *NewBaseTx(TypeEscrowCreate, "rAlice"),
+				Amount:      NewXRPAmount("-1000000000"),
+				Destination: "rBob",
+				FinishAfter: ptrUint32(700000000),
+			},
+			expectError: true,
+			errorMsg:    "temBAD_AMOUNT: Amount must be positive",
+		},
+		{
+			name: "zero amount - temBAD_AMOUNT equivalent",
+			escrow: &EscrowCreate{
+				BaseTx:      *NewBaseTx(TypeEscrowCreate, "rAlice"),
+				Amount:      NewXRPAmount("0"),
+				Destination: "rBob",
+				FinishAfter: ptrUint32(700000000),
+			},
+			expectError: true,
+			errorMsg:    "temBAD_AMOUNT: Amount must be positive",
+		},
+		{
+			name: "missing both times - temBAD_EXPIRATION equivalent",
 			escrow: &EscrowCreate{
 				BaseTx:      *NewBaseTx(TypeEscrowCreate, "rAlice"),
 				Amount:      NewXRPAmount("1000000000"),
 				Destination: "rBob",
-				// No CancelAfter, FinishAfter, or Condition
+				// No CancelAfter or FinishAfter
 			},
 			expectError: true,
-			errorMsg:    "must specify CancelAfter, FinishAfter, or Condition",
+			errorMsg:    "temBAD_EXPIRATION: must specify CancelAfter or FinishAfter",
+		},
+		{
+			name: "cancel only without condition (fix1571) - temMALFORMED equivalent",
+			escrow: &EscrowCreate{
+				BaseTx:      *NewBaseTx(TypeEscrowCreate, "rAlice"),
+				Amount:      NewXRPAmount("1000000000"),
+				Destination: "rBob",
+				CancelAfter: ptrUint32(700000100),
+				// No FinishAfter and no Condition
+			},
+			expectError: true,
+			errorMsg:    "temMALFORMED: must specify FinishAfter or Condition",
 		},
 		{
 			name: "cancel time equals finish time - temBAD_EXPIRATION equivalent",
@@ -100,7 +134,7 @@ func TestEscrowCreateValidation(t *testing.T) {
 				CancelAfter: ptrUint32(700000000), // Equal, should fail
 			},
 			expectError: true,
-			errorMsg:    "CancelAfter must be after FinishAfter",
+			errorMsg:    "temBAD_EXPIRATION: CancelAfter must be after FinishAfter",
 		},
 		{
 			name: "cancel time before finish time - temBAD_EXPIRATION equivalent",
@@ -112,7 +146,7 @@ func TestEscrowCreateValidation(t *testing.T) {
 				CancelAfter: ptrUint32(700000000), // Before, should fail
 			},
 			expectError: true,
-			errorMsg:    "CancelAfter must be after FinishAfter",
+			errorMsg:    "temBAD_EXPIRATION: CancelAfter must be after FinishAfter",
 		},
 		{
 			name: "valid escrow with only condition (fix1571 behavior)",
@@ -193,7 +227,7 @@ func TestEscrowFinishValidation(t *testing.T) {
 				OfferSequence: 12345,
 			},
 			expectError: true,
-			errorMsg:    "Owner is required",
+			errorMsg:    "temMALFORMED: Owner is required",
 		},
 		{
 			name: "condition without fulfillment - temMALFORMED equivalent",
@@ -205,7 +239,7 @@ func TestEscrowFinishValidation(t *testing.T) {
 				// Missing Fulfillment
 			},
 			expectError: true,
-			errorMsg:    "Condition and Fulfillment must be provided together",
+			errorMsg:    "temMALFORMED: Condition and Fulfillment must be provided together",
 		},
 		{
 			name: "fulfillment without condition - temMALFORMED equivalent",
@@ -217,7 +251,7 @@ func TestEscrowFinishValidation(t *testing.T) {
 				// Missing Condition
 			},
 			expectError: true,
-			errorMsg:    "Condition and Fulfillment must be provided together",
+			errorMsg:    "temMALFORMED: Condition and Fulfillment must be provided together",
 		},
 		{
 			name: "missing account",
@@ -292,7 +326,7 @@ func TestEscrowCancelValidation(t *testing.T) {
 				OfferSequence: 12345,
 			},
 			expectError: true,
-			errorMsg:    "Owner is required",
+			errorMsg:    "temMALFORMED: Owner is required",
 		},
 		{
 			name: "missing account",

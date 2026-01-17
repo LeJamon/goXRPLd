@@ -3,6 +3,7 @@ package tx
 import (
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"sort"
 	"strconv"
 	"strings"
@@ -11,6 +12,25 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
+)
+
+// Validation constants matching rippled
+const (
+	// MaxMemoSize is the maximum total serialized size of memos (in bytes)
+	MaxMemoSize = 1024
+
+	// MaxMemoTypeSize is the maximum size of MemoType field (in bytes)
+	MaxMemoTypeSize = 256
+
+	// MaxMemoDataSize is the maximum size of MemoData field (in bytes)
+	MaxMemoDataSize = 1024
+
+	// LegacyNetworkIDThreshold is the threshold for legacy network IDs
+	// Networks with ID <= this value are legacy networks
+	LegacyNetworkIDThreshold = 1024
+
+	// DefaultMaxFee is the default maximum fee (1 XRP = 1,000,000 drops)
+	DefaultMaxFee = 1000000
 )
 
 // Engine processes transactions against a ledger
@@ -24,6 +44,71 @@ type Engine struct {
 	// currentTxHash is the hash of the transaction currently being applied
 	// Used to set PreviousTxnID on modified ledger entries
 	currentTxHash [32]byte
+}
+
+// engineSignerListLookup implements SignerListLookup using the engine's ledger view
+type engineSignerListLookup struct {
+	view LedgerView
+}
+
+// GetSignerList returns the signer list for an account
+func (l *engineSignerListLookup) GetSignerList(account string) (*SignerListInfo, error) {
+	accountID, err := decodeAccountID(account)
+	if err != nil {
+		return nil, err
+	}
+
+	// Look up the signer list (SignerListID is always 0 currently)
+	signerListKey := keylet.SignerList(accountID)
+	exists, err := l.view.Exists(signerListKey)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, nil // No signer list
+	}
+
+	// Read and parse the signer list
+	signerListData, err := l.view.Read(signerListKey)
+	if err != nil {
+		return nil, err
+	}
+
+	signerList, err := parseSignerList(signerListData)
+	if err != nil {
+		return nil, err
+	}
+
+	return signerList, nil
+}
+
+// GetAccountInfo returns account information needed for signer validation
+func (l *engineSignerListLookup) GetAccountInfo(account string) (flags uint32, regularKey string, err error) {
+	accountID, err := decodeAccountID(account)
+	if err != nil {
+		return 0, "", err
+	}
+
+	accountKey := keylet.Account(accountID)
+	exists, err := l.view.Exists(accountKey)
+	if err != nil {
+		return 0, "", err
+	}
+	if !exists {
+		return 0, "", errors.New("account not found")
+	}
+
+	accountData, err := l.view.Read(accountKey)
+	if err != nil {
+		return 0, "", err
+	}
+
+	accountRoot, err := parseAccountRoot(accountData)
+	if err != nil {
+		return 0, "", err
+	}
+
+	return accountRoot.Flags, accountRoot.RegularKey, nil
 }
 
 // EngineConfig holds configuration for the transaction engine
@@ -45,6 +130,19 @@ type EngineConfig struct {
 
 	// Standalone indicates if running in standalone mode (relaxes some validation)
 	Standalone bool
+
+	// NetworkID is the network identifier for this node
+	// Networks with ID > 1024 require NetworkID in transactions
+	// Networks with ID <= 1024 are legacy networks and cannot have NetworkID in transactions
+	NetworkID uint32
+
+	// MaxFee is the maximum allowed fee in drops (default 1 XRP = 1000000 drops)
+	// Transactions with fees exceeding this will be rejected in preflight
+	MaxFee uint64
+
+	// ParentCloseTime is the close time of the parent ledger (in Ripple epoch seconds)
+	// This is used for checking offer/escrow expiration
+	ParentCloseTime uint32
 }
 
 // LedgerView provides read/write access to ledger state
@@ -333,12 +431,14 @@ func (e *Engine) preflight(tx Transaction) Result {
 		return TemINVALID
 	}
 
-	// Fee must be valid
-	if common.Fee != "" {
-		fee, err := strconv.ParseUint(common.Fee, 10, 64)
-		if err != nil || fee == 0 {
-			return TemBAD_FEE
-		}
+	// NetworkID validation (matching rippled's preflight0)
+	if result := e.validateNetworkID(common); result != TesSUCCESS {
+		return result
+	}
+
+	// Fee validation
+	if result := e.validateFee(common); result != TesSUCCESS {
+		return result
 	}
 
 	// Sequence must be present (unless using tickets)
@@ -346,20 +446,55 @@ func (e *Engine) preflight(tx Transaction) Result {
 		return TemBAD_SEQUENCE
 	}
 
+	// SourceTag validation - if present, it's already a uint32 via JSON parsing
+	// No additional validation needed as the type system ensures it's valid
+
+	// Memo validation
+	if result := e.validateMemos(common); result != TesSUCCESS {
+		return result
+	}
+
 	// Verify signature (unless skipped for testing)
 	if !e.config.SkipSignatureVerification {
-		if err := VerifySignature(tx); err != nil {
-			switch err {
-			case ErrMissingSignature:
-				return TemBAD_SIGNATURE
-			case ErrMissingPublicKey:
-				return TemBAD_SIGNATURE
-			case ErrInvalidSignature:
-				return TemBAD_SIGNATURE
-			case ErrPublicKeyMismatch:
-				return TemBAD_SRC_ACCOUNT
-			default:
-				return TemBAD_SIGNATURE
+		// Check if this is a multi-signed transaction
+		if IsMultiSigned(tx) {
+			// Multi-signed transactions require signer list lookup
+			lookup := &engineSignerListLookup{view: e.view}
+			if err := VerifyMultiSignature(tx, lookup); err != nil {
+				switch err {
+				case ErrNotMultiSigning:
+					return TefNOT_MULTI_SIGNING
+				case ErrBadQuorum:
+					return TefBAD_QUORUM
+				case ErrBadSignature:
+					return TefBAD_SIGNATURE
+				case ErrMasterDisabled:
+					return TefMASTER_DISABLED
+				case ErrNoSigners:
+					return TemBAD_SIGNATURE
+				case ErrDuplicateSigner:
+					return TemBAD_SIGNATURE
+				case ErrSignersNotSorted:
+					return TemBAD_SIGNATURE
+				default:
+					return TefBAD_SIGNATURE
+				}
+			}
+		} else {
+			// Single-signed transaction
+			if err := VerifySignature(tx); err != nil {
+				switch err {
+				case ErrMissingSignature:
+					return TemBAD_SIGNATURE
+				case ErrMissingPublicKey:
+					return TemBAD_SIGNATURE
+				case ErrInvalidSignature:
+					return TemBAD_SIGNATURE
+				case ErrPublicKeyMismatch:
+					return TemBAD_SRC_ACCOUNT
+				default:
+					return TemBAD_SIGNATURE
+				}
 			}
 		}
 	}
@@ -370,6 +505,162 @@ func (e *Engine) preflight(tx Transaction) Result {
 	}
 
 	return TesSUCCESS
+}
+
+// validateNetworkID validates the NetworkID field according to rippled rules
+// - Legacy networks (ID <= 1024) cannot have NetworkID in transactions
+// - New networks (ID > 1024) require NetworkID and it must match
+func (e *Engine) validateNetworkID(common *Common) Result {
+	nodeNetworkID := e.config.NetworkID
+	txNetworkID := common.NetworkID
+
+	if nodeNetworkID <= LegacyNetworkIDThreshold {
+		// Legacy networks cannot specify NetworkID in transactions
+		if txNetworkID != nil {
+			return TelNETWORK_ID_MAKES_TX_NON_CANONICAL
+		}
+	} else {
+		// New networks require NetworkID to be present and match
+		if txNetworkID == nil {
+			return TelREQUIRES_NETWORK_ID
+		}
+		if *txNetworkID != nodeNetworkID {
+			return TelWRONG_NETWORK
+		}
+	}
+
+	return TesSUCCESS
+}
+
+// validateFee validates the Fee field
+func (e *Engine) validateFee(common *Common) Result {
+	if common.Fee == "" {
+		return TesSUCCESS // Fee will be checked later if needed
+	}
+
+	// Parse fee as signed int first to detect negative values
+	feeInt, err := strconv.ParseInt(common.Fee, 10, 64)
+	if err != nil {
+		return TemBAD_FEE
+	}
+
+	// Fee cannot be negative
+	if feeInt < 0 {
+		return TemBAD_FEE
+	}
+
+	fee := uint64(feeInt)
+
+	// Fee cannot be zero (must pay something)
+	if fee == 0 {
+		return TemBAD_FEE
+	}
+
+	// Fee cannot exceed maximum allowed fee
+	maxFee := e.config.MaxFee
+	if maxFee == 0 {
+		maxFee = DefaultMaxFee
+	}
+	if fee > maxFee {
+		return TemBAD_FEE
+	}
+
+	return TesSUCCESS
+}
+
+// validateMemos validates the Memos array according to rippled rules
+func (e *Engine) validateMemos(common *Common) Result {
+	if len(common.Memos) == 0 {
+		return TesSUCCESS
+	}
+
+	// Calculate total serialized size of memos
+	totalSize := 0
+
+	for _, memoWrapper := range common.Memos {
+		memo := memoWrapper.Memo
+
+		// Validate MemoType if present
+		if memo.MemoType != "" {
+			// MemoType must be a valid hex string
+			memoTypeBytes, err := hex.DecodeString(memo.MemoType)
+			if err != nil {
+				return TemINVALID
+			}
+			// MemoType max size is 256 bytes (decoded)
+			if len(memoTypeBytes) > MaxMemoTypeSize {
+				return TemINVALID
+			}
+			totalSize += len(memoTypeBytes)
+
+			// MemoType characters (when decoded) must be valid URL characters per RFC 3986
+			if !isValidURLBytes(memoTypeBytes) {
+				return TemINVALID
+			}
+		}
+
+		// Validate MemoData if present
+		if memo.MemoData != "" {
+			// MemoData must be a valid hex string
+			memoDataBytes, err := hex.DecodeString(memo.MemoData)
+			if err != nil {
+				return TemINVALID
+			}
+			// MemoData max size is 1024 bytes (decoded)
+			if len(memoDataBytes) > MaxMemoDataSize {
+				return TemINVALID
+			}
+			totalSize += len(memoDataBytes)
+			// Note: MemoData can contain any data, no character restrictions
+		}
+
+		// Validate MemoFormat if present
+		if memo.MemoFormat != "" {
+			// MemoFormat must be a valid hex string
+			memoFormatBytes, err := hex.DecodeString(memo.MemoFormat)
+			if err != nil {
+				return TemINVALID
+			}
+			totalSize += len(memoFormatBytes)
+
+			// MemoFormat characters (when decoded) must be valid URL characters per RFC 3986
+			if !isValidURLBytes(memoFormatBytes) {
+				return TemINVALID
+			}
+		}
+	}
+
+	// Total memo size check
+	if totalSize > MaxMemoSize {
+		return TemINVALID
+	}
+
+	return TesSUCCESS
+}
+
+// isValidURLBytes checks if the bytes contain only characters allowed in URLs per RFC 3986
+// Allowed: alphanumerics and -._~:/?#[]@!$&'()*+,;=%
+func isValidURLBytes(data []byte) bool {
+	for _, b := range data {
+		if !isURLChar(b) {
+			return false
+		}
+	}
+	return true
+}
+
+// isURLChar returns true if the byte is a valid URL character per RFC 3986
+func isURLChar(c byte) bool {
+	// Alphanumerics
+	if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+		return true
+	}
+	// Special characters allowed in URLs: -._~:/?#[]@!$&'()*+,;=%
+	switch c {
+	case '-', '.', '_', '~', ':', '/', '?', '#', '[', ']', '@', '!', '$', '&', '\'', '(', ')', '*', '+', ',', ';', '=', '%':
+		return true
+	}
+	return false
 }
 
 // preclaim validates the transaction against the current ledger state
@@ -644,6 +935,7 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 }
 
 // calculateFee calculates the fee for a transaction
+// For multi-signed transactions, the minimum required fee is baseFee * (1 + numSigners)
 func (e *Engine) calculateFee(tx Transaction) uint64 {
 	common := tx.GetCommon()
 	if common.Fee != "" {
@@ -652,5 +944,64 @@ func (e *Engine) calculateFee(tx Transaction) uint64 {
 			return fee
 		}
 	}
-	return e.config.BaseFee
+	// If no fee specified, use base fee (adjusted for multi-sig if applicable)
+	baseFee := e.config.BaseFee
+	if IsMultiSigned(tx) {
+		numSigners := len(common.Signers)
+		return CalculateMultiSigFee(baseFee, numSigners)
+	}
+	return baseFee
+}
+
+// calculateMinimumFee calculates the minimum required fee for a transaction
+// This is used to validate that the provided fee meets the minimum threshold
+func (e *Engine) calculateMinimumFee(tx Transaction) uint64 {
+	baseFee := e.config.BaseFee
+	if IsMultiSigned(tx) {
+		common := tx.GetCommon()
+		numSigners := len(common.Signers)
+		return CalculateMultiSigFee(baseFee, numSigners)
+	}
+	return baseFee
+}
+
+// AccountReserve calculates the total reserve required for an account with the given owner count.
+// This matches rippled's accountReserve(ownerCount) calculation.
+// Reserve = ReserveBase + (ownerCount * ReserveIncrement)
+func (e *Engine) AccountReserve(ownerCount uint32) uint64 {
+	return e.config.ReserveBase + (uint64(ownerCount) * e.config.ReserveIncrement)
+}
+
+// ReserveForNewObject calculates the reserve required for creating a new ledger object.
+// This matches rippled's logic where the first 2 objects don't require extra reserve.
+// Reference: rippled SetTrust.cpp:405-407
+//
+//	XRPAmount const reserveCreate(
+//	    (uOwnerCount < 2) ? XRPAmount(beast::zero)
+//	                      : view().fees().accountReserve(uOwnerCount + 1));
+func (e *Engine) ReserveForNewObject(currentOwnerCount uint32) uint64 {
+	if currentOwnerCount < 2 {
+		// First 2 objects are free (no extra reserve needed)
+		return 0
+	}
+	// For 3rd object and beyond, require reserve for (ownerCount + 1) objects
+	return e.AccountReserve(currentOwnerCount + 1)
+}
+
+// CanCreateNewObject checks if an account has enough balance to create a new ledger object.
+// This should be used before creating trust lines, offers, tickets, etc.
+// It uses mPriorBalance (balance before fee deduction) to match rippled's behavior.
+// Reference: rippled SetTrust.cpp:681,710 - mPriorBalance < reserveCreate
+func (e *Engine) CanCreateNewObject(priorBalance uint64, currentOwnerCount uint32) bool {
+	reserveNeeded := e.ReserveForNewObject(currentOwnerCount)
+	return priorBalance >= reserveNeeded
+}
+
+// CheckReserveIncrease validates that an account can afford the reserve increase
+// for creating a new ledger object. Returns tecINSUFFICIENT_RESERVE if not enough funds.
+func (e *Engine) CheckReserveIncrease(priorBalance uint64, currentOwnerCount uint32) Result {
+	if !e.CanCreateNewObject(priorBalance, currentOwnerCount) {
+		return TecINSUFFICIENT_RESERVE
+	}
+	return TesSUCCESS
 }
