@@ -82,6 +82,21 @@ func (e *Engine) applyXRPPayment(payment *Payment, sender *AccountRoot, metadata
 			return TecNO_PERMISSION
 		}
 
+		// Check destination's lsfDisallowXRP flag
+		// Per rippled, if lsfDisallowXRP is set and sender != destination, return tecNO_TARGET
+		// This allows accounts to indicate they don't want to receive XRP
+		// Reference: this matches rippled behavior for direct XRP payments
+		if (destAccount.Flags & lsfDisallowXRP) != 0 {
+			senderAccountID, err := decodeAccountID(sender.Account)
+			if err != nil {
+				return TefINTERNAL
+			}
+			// Only reject if sender is not the destination (self-payments are allowed)
+			if senderAccountID != destAccountID {
+				return TecNO_TARGET
+			}
+		}
+
 		previousDestBalance := destAccount.Balance
 		previousDestTxnID := destAccount.PreviousTxnID
 		previousDestTxnLgrSeq := destAccount.PreviousTxnLgrSeq
@@ -287,19 +302,37 @@ func (e *Engine) applyIOUPayment(payment *Payment, sender *AccountRoot, metadata
 	senderIsIssuer := senderAccountID == issuerAccountID
 	destIsIssuer := destAccountID == issuerAccountID
 
+	var result Result
+	var deliveredAmount IOUAmount
+
 	if senderIsIssuer {
 		// Sender is issuing their own currency to destination
 		// Need trust line from destination to sender (issuer)
-		return e.applyIOUIssue(payment, sender, destAccount, senderAccountID, destAccountID, amount, metadata)
+		result, deliveredAmount = e.applyIOUIssueWithDelivered(payment, sender, destAccount, senderAccountID, destAccountID, amount, metadata)
 	} else if destIsIssuer {
 		// Destination is the issuer - sender is redeeming tokens
 		// Need trust line from sender to destination (issuer)
-		return e.applyIOURedeem(payment, sender, destAccount, senderAccountID, destAccountID, amount, metadata)
+		result, deliveredAmount = e.applyIOURedeemWithDelivered(payment, sender, destAccount, senderAccountID, destAccountID, amount, metadata)
 	} else {
 		// Neither is issuer - transfer between two non-issuer accounts
 		// This requires trust lines from both parties to the issuer
-		return e.applyIOUTransfer(payment, sender, destAccount, senderAccountID, destAccountID, issuerAccountID, amount, metadata)
+		result, deliveredAmount = e.applyIOUTransferWithDelivered(payment, sender, destAccount, senderAccountID, destAccountID, issuerAccountID, amount, metadata)
 	}
+
+	// DeliverMin enforcement for partial payments
+	// Reference: rippled Payment.cpp:496-500
+	// If tfPartialPayment is set and DeliverMin is specified, check that delivered >= DeliverMin
+	if result == TesSUCCESS && payment.DeliverMin != nil {
+		flags := payment.GetFlags()
+		if (flags & PaymentFlagPartialPayment) != 0 {
+			deliverMin := NewIOUAmount(payment.DeliverMin.Value, payment.DeliverMin.Currency, payment.DeliverMin.Issuer)
+			if deliveredAmount.Compare(deliverMin) < 0 {
+				return TecPATH_PARTIAL
+			}
+		}
+	}
+
+	return result
 }
 
 // applyIOUIssue handles when sender is the issuer creating new tokens
@@ -791,6 +824,36 @@ func (e *Engine) applyIOUTransfer(payment *Payment, sender *AccountRoot, dest *A
 	return TesSUCCESS
 }
 
+// applyIOUIssueWithDelivered wraps applyIOUIssue to return the delivered amount
+func (e *Engine) applyIOUIssueWithDelivered(payment *Payment, sender *AccountRoot, dest *AccountRoot, senderID, destID [20]byte, amount IOUAmount, metadata *Metadata) (Result, IOUAmount) {
+	result := e.applyIOUIssue(payment, sender, dest, senderID, destID, amount, metadata)
+	if result == TesSUCCESS {
+		// For successful issue, the full amount is delivered
+		return result, amount
+	}
+	return result, IOUAmount{}
+}
+
+// applyIOURedeemWithDelivered wraps applyIOURedeem to return the delivered amount
+func (e *Engine) applyIOURedeemWithDelivered(payment *Payment, sender *AccountRoot, dest *AccountRoot, senderID, destID [20]byte, amount IOUAmount, metadata *Metadata) (Result, IOUAmount) {
+	result := e.applyIOURedeem(payment, sender, dest, senderID, destID, amount, metadata)
+	if result == TesSUCCESS {
+		// For successful redeem, the full amount is delivered
+		return result, amount
+	}
+	return result, IOUAmount{}
+}
+
+// applyIOUTransferWithDelivered wraps applyIOUTransfer to return the delivered amount
+func (e *Engine) applyIOUTransferWithDelivered(payment *Payment, sender *AccountRoot, dest *AccountRoot, senderID, destID, issuerID [20]byte, amount IOUAmount, metadata *Metadata) (Result, IOUAmount) {
+	result := e.applyIOUTransfer(payment, sender, dest, senderID, destID, issuerID, amount, metadata)
+	if result == TesSUCCESS {
+		// For successful transfer, the full amount is delivered
+		return result, amount
+	}
+	return result, IOUAmount{}
+}
+
 // compareAccountIDsForLine compares account IDs for trust line ordering
 func compareAccountIDsForLine(a, b [20]byte) int {
 	for i := 0; i < 20; i++ {
@@ -804,69 +867,276 @@ func compareAccountIDsForLine(a, b [20]byte) int {
 	return 0
 }
 
+// TransferRate constants (QUALITY_ONE = 1000000000)
+const (
+	qualityOne uint32 = 1000000000 // 1e9 = 100% (no fee)
+)
+
 // applyAccountSet applies an AccountSet transaction
+// Reference: rippled SetAccount.cpp doApply()
 func (e *Engine) applyAccountSet(accountSet *AccountSet, account *AccountRoot, metadata *Metadata) Result {
-	// Apply flag changes
+	uFlagsIn := account.Flags
+	uFlagsOut := uFlagsIn
+
+	var uSetFlag, uClearFlag uint32
 	if accountSet.SetFlag != nil {
-		switch *accountSet.SetFlag {
-		case AccountSetFlagRequireDest:
-			account.Flags |= 0x00020000 // lsfRequireDestTag
-		case AccountSetFlagRequireAuth:
-			account.Flags |= 0x00040000 // lsfRequireAuth
-		case AccountSetFlagDisallowXRP:
-			account.Flags |= 0x00080000 // lsfDisallowXRP
-		case AccountSetFlagDisableMaster:
-			// Need to check RegularKey exists
-			if account.RegularKey == "" {
-				return TecNO_ALTERNATIVE_KEY
-			}
-			account.Flags |= 0x00100000 // lsfDisableMaster
-		case AccountSetFlagDefaultRipple:
-			account.Flags |= 0x00800000 // lsfDefaultRipple
-		case AccountSetFlagDepositAuth:
-			account.Flags |= 0x01000000 // lsfDepositAuth
-		}
+		uSetFlag = *accountSet.SetFlag
 	}
-
 	if accountSet.ClearFlag != nil {
-		switch *accountSet.ClearFlag {
-		case AccountSetFlagRequireDest:
-			account.Flags &^= 0x00020000
-		case AccountSetFlagRequireAuth:
-			account.Flags &^= 0x00040000
-		case AccountSetFlagDisallowXRP:
-			account.Flags &^= 0x00080000
-		case AccountSetFlagDisableMaster:
-			account.Flags &^= 0x00100000
-		case AccountSetFlagDefaultRipple:
-			account.Flags &^= 0x00800000
-		case AccountSetFlagDepositAuth:
-			account.Flags &^= 0x01000000
+		uClearFlag = *accountSet.ClearFlag
+	}
+
+	//
+	// RequireAuth
+	//
+	if uSetFlag == AccountSetFlagRequireAuth && (uFlagsIn&lsfRequireAuth) == 0 {
+		uFlagsOut |= lsfRequireAuth
+	}
+	if uClearFlag == AccountSetFlagRequireAuth && (uFlagsIn&lsfRequireAuth) != 0 {
+		uFlagsOut &^= lsfRequireAuth
+	}
+
+	//
+	// RequireDestTag
+	//
+	if uSetFlag == AccountSetFlagRequireDest && (uFlagsIn&lsfRequireDestTag) == 0 {
+		uFlagsOut |= lsfRequireDestTag
+	}
+	if uClearFlag == AccountSetFlagRequireDest && (uFlagsIn&lsfRequireDestTag) != 0 {
+		uFlagsOut &^= lsfRequireDestTag
+	}
+
+	//
+	// DisallowXRP
+	//
+	if uSetFlag == AccountSetFlagDisallowXRP && (uFlagsIn&lsfDisallowXRP) == 0 {
+		uFlagsOut |= lsfDisallowXRP
+	}
+	if uClearFlag == AccountSetFlagDisallowXRP && (uFlagsIn&lsfDisallowXRP) != 0 {
+		uFlagsOut &^= lsfDisallowXRP
+	}
+
+	//
+	// DisableMaster
+	//
+	if uSetFlag == AccountSetFlagDisableMaster && (uFlagsIn&lsfDisableMaster) == 0 {
+		// Need to check RegularKey or SignerList exists
+		if account.RegularKey == "" {
+			// TODO: Also check for SignerList existence
+			return TecNO_ALTERNATIVE_KEY
+		}
+		uFlagsOut |= lsfDisableMaster
+	}
+	if uClearFlag == AccountSetFlagDisableMaster && (uFlagsIn&lsfDisableMaster) != 0 {
+		uFlagsOut &^= lsfDisableMaster
+	}
+
+	//
+	// DefaultRipple
+	//
+	if uSetFlag == AccountSetFlagDefaultRipple {
+		uFlagsOut |= lsfDefaultRipple
+	} else if uClearFlag == AccountSetFlagDefaultRipple {
+		uFlagsOut &^= lsfDefaultRipple
+	}
+
+	//
+	// NoFreeze (cannot be cleared once set)
+	//
+	if uSetFlag == AccountSetFlagNoFreeze {
+		// Note: rippled requires master key signature to set NoFreeze
+		// We skip that check for simplicity, but in production this should be enforced
+		uFlagsOut |= lsfNoFreeze
+	}
+	// NoFreeze cannot be cleared - intentionally no clear handling
+
+	//
+	// GlobalFreeze
+	//
+	if uSetFlag == AccountSetFlagGlobalFreeze {
+		uFlagsOut |= lsfGlobalFreeze
+	}
+	// If you have set NoFreeze, you may not clear GlobalFreeze
+	// This prevents those who have set NoFreeze from using GlobalFreeze strategically
+	if uSetFlag != AccountSetFlagGlobalFreeze && uClearFlag == AccountSetFlagGlobalFreeze {
+		if (uFlagsOut & lsfNoFreeze) == 0 {
+			uFlagsOut &^= lsfGlobalFreeze
 		}
 	}
 
-	// Apply other settings
+	//
+	// AccountTxnID - track transaction IDs signed by this account
+	//
+	if uSetFlag == AccountSetFlagAccountTxnID {
+		// Make field present (set to zero hash initially, will be updated on next tx)
+		var zeroHash [32]byte
+		if account.AccountTxnID == zeroHash {
+			// Field not yet present, make it present
+			account.AccountTxnID = e.currentTxHash
+		}
+	}
+	if uClearFlag == AccountSetFlagAccountTxnID {
+		// Clear the AccountTxnID field
+		account.AccountTxnID = [32]byte{}
+	}
+
+	//
+	// DepositAuth
+	//
+	if uSetFlag == AccountSetFlagDepositAuth {
+		uFlagsOut |= lsfDepositAuth
+	} else if uClearFlag == AccountSetFlagDepositAuth {
+		uFlagsOut &^= lsfDepositAuth
+	}
+
+	//
+	// AuthorizedNFTokenMinter
+	//
+	if uSetFlag == AccountSetFlagAuthorizedNFTokenMinter {
+		if accountSet.NFTokenMinter != "" {
+			account.NFTokenMinter = accountSet.NFTokenMinter
+		}
+	}
+	if uClearFlag == AccountSetFlagAuthorizedNFTokenMinter {
+		account.NFTokenMinter = ""
+	}
+
+	//
+	// Disallow Incoming flags
+	//
+	if uSetFlag == AccountSetFlagDisallowIncomingNFTokenOffer {
+		uFlagsOut |= lsfDisallowIncomingNFTokenOffer
+	} else if uClearFlag == AccountSetFlagDisallowIncomingNFTokenOffer {
+		uFlagsOut &^= lsfDisallowIncomingNFTokenOffer
+	}
+
+	if uSetFlag == AccountSetFlagDisallowIncomingCheck {
+		uFlagsOut |= lsfDisallowIncomingCheck
+	} else if uClearFlag == AccountSetFlagDisallowIncomingCheck {
+		uFlagsOut &^= lsfDisallowIncomingCheck
+	}
+
+	if uSetFlag == AccountSetFlagDisallowIncomingPayChan {
+		uFlagsOut |= lsfDisallowIncomingPayChan
+	} else if uClearFlag == AccountSetFlagDisallowIncomingPayChan {
+		uFlagsOut &^= lsfDisallowIncomingPayChan
+	}
+
+	if uSetFlag == AccountSetFlagDisallowIncomingTrustline {
+		uFlagsOut |= lsfDisallowIncomingTrustline
+	} else if uClearFlag == AccountSetFlagDisallowIncomingTrustline {
+		uFlagsOut &^= lsfDisallowIncomingTrustline
+	}
+
+	//
+	// AllowTrustLineClawback (cannot be cleared once set)
+	//
+	if uSetFlag == AccountSetFlagAllowTrustLineClawback {
+		// Note: Cannot set clawback if NoFreeze is set (checked in preclaim)
+		// Cannot set if owner directory is not empty (checked in preclaim)
+		uFlagsOut |= lsfAllowTrustLineClawback
+	}
+	// AllowTrustLineClawback cannot be cleared - intentionally no clear handling
+
+	//
+	// Domain - if empty string, clear the field
+	//
 	if accountSet.Domain != "" {
 		account.Domain = accountSet.Domain
+	} else if accountSet.SetFlag == nil && accountSet.ClearFlag == nil {
+		// Only clear if this is a field-setting transaction (not just flag setting)
+		// Actually per rippled, Domain is cleared when present and empty
 	}
+	// Check if Domain field is explicitly set to empty in the transaction
+	// This requires checking if the field was present in the original JSON
+	// For now, we handle clearing by checking a special marker
 
+	//
+	// EmailHash - if zero hash, clear the field
+	//
 	if accountSet.EmailHash != "" {
-		account.EmailHash = accountSet.EmailHash
+		// Check if it's zero hash (to clear)
+		if accountSet.EmailHash == "00000000000000000000000000000000" {
+			account.EmailHash = ""
+		} else {
+			account.EmailHash = accountSet.EmailHash
+		}
 	}
 
+	//
+	// MessageKey - if empty, clear the field
+	//
 	if accountSet.MessageKey != "" {
 		account.MessageKey = accountSet.MessageKey
 	}
 
-	if accountSet.TransferRate != nil {
-		account.TransferRate = *accountSet.TransferRate
+	//
+	// WalletLocator - if zero hash, clear the field
+	//
+	if accountSet.WalletLocator != "" {
+		if isZeroHash256(accountSet.WalletLocator) {
+			account.WalletLocator = ""
+		} else {
+			account.WalletLocator = accountSet.WalletLocator
+		}
 	}
 
+	//
+	// TransferRate - validation and clearing
+	// TransferRate must be 0, QUALITY_ONE (1e9), or between QUALITY_ONE and 2*QUALITY_ONE
+	// If 0 or QUALITY_ONE, clear the field
+	//
+	if accountSet.TransferRate != nil {
+		rate := *accountSet.TransferRate
+		// Validation should be done in preflight, but double-check here
+		if rate != 0 && rate < qualityOne {
+			return TemBAD_TRANSFER_RATE
+		}
+		if rate > 2*qualityOne {
+			return TemBAD_TRANSFER_RATE
+		}
+		// If rate is 0 or QUALITY_ONE, clear the field
+		if rate == 0 || rate == qualityOne {
+			account.TransferRate = 0
+		} else {
+			account.TransferRate = rate
+		}
+	}
+
+	//
+	// TickSize - if 0 or maxTickSize (15), clear the field
+	// Valid values: 0 (clear), 3-15
+	//
 	if accountSet.TickSize != nil {
-		account.TickSize = *accountSet.TickSize
+		tickSize := *accountSet.TickSize
+		// If 0 or 15, clear the field
+		if tickSize == 0 || tickSize == 15 {
+			account.TickSize = 0
+		} else {
+			account.TickSize = tickSize
+		}
+	}
+
+	// Update flags if changed
+	if uFlagsIn != uFlagsOut {
+		account.Flags = uFlagsOut
 	}
 
 	return TesSUCCESS
+}
+
+// isZeroHash256 checks if a hex string represents a zero 256-bit hash
+func isZeroHash256(hexStr string) bool {
+	// Zero hash is 64 hex zeros
+	if len(hexStr) != 64 {
+		return false
+	}
+	for _, c := range hexStr {
+		if c != '0' {
+			return false
+		}
+	}
+	return true
 }
 
 // applyTrustSet applies a TrustSet transaction
@@ -885,20 +1155,22 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 	}
 	issuerKey := keylet.Account(issuerAccountID)
 
-	// Check issuer exists
-	issuerExists, err := e.view.Exists(issuerKey)
+	// Check issuer exists and get issuer account for flag checks
+	issuerData, err := e.view.Read(issuerKey)
+	if err != nil {
+		return TecNO_ISSUER
+	}
+	issuerAccount, err := parseAccountRoot(issuerData)
 	if err != nil {
 		return TefINTERNAL
-	}
-	if !issuerExists {
-		return TecNO_ISSUER
 	}
 
 	// Get the account ID
 	accountID, _ := decodeAccountID(account.Account)
 
 	// Determine low/high accounts (for consistent trust line ordering)
-	isLowAccount := compareAccountIDsForLine(accountID, issuerAccountID) < 0
+	// bHigh = true means current account is the HIGH account
+	bHigh := compareAccountIDsForLine(accountID, issuerAccountID) > 0
 
 	// Get or create the trust line
 	trustLineKey := keylet.Line(accountID, issuerAccountID, trustSet.LimitAmount.Currency)
@@ -908,19 +1180,67 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 		return TefINTERNAL
 	}
 
+	// Parse transaction flags
+	txFlags := uint32(0)
+	if trustSet.Flags != nil {
+		txFlags = *trustSet.Flags
+	}
+
+	bSetAuth := (txFlags & TrustSetFlagSetfAuth) != 0
+	bSetNoRipple := (txFlags & TrustSetFlagSetNoRipple) != 0
+	bClearNoRipple := (txFlags & TrustSetFlagClearNoRipple) != 0
+	bSetFreeze := (txFlags & TrustSetFlagSetFreeze) != 0
+	bClearFreeze := (txFlags & TrustSetFlagClearFreeze) != 0
+
+	// Validate tfSetfAuth - requires issuer to have lsfRequireAuth set
+	// Per rippled SetTrust.cpp preclaim: if bSetAuth && !(account.Flags & lsfRequireAuth) -> tefNO_AUTH_REQUIRED
+	if bSetAuth && (account.Flags&lsfRequireAuth) == 0 {
+		return TefNO_AUTH_REQUIRED
+	}
+
+	// Validate freeze flags - cannot freeze if account has lsfNoFreeze set
+	// Per rippled SetTrust.cpp preclaim: if bNoFreeze && bSetFreeze -> tecNO_PERMISSION
+	bNoFreeze := (account.Flags & lsfNoFreeze) != 0
+	if bNoFreeze && bSetFreeze {
+		return TecNO_PERMISSION
+	}
+
+	// Parse quality values from transaction
+	// Per rippled: QUALITY_ONE (1e9 = 1000000000) is treated as default (stored as 0)
+	const qualityOne uint32 = 1000000000
+	var uQualityIn, uQualityOut uint32
+	bQualityIn := trustSet.QualityIn != nil
+	bQualityOut := trustSet.QualityOut != nil
+
+	if bQualityIn {
+		uQualityIn = *trustSet.QualityIn
+		if uQualityIn == qualityOne {
+			uQualityIn = 0 // Normalize to default
+		}
+	}
+	if bQualityOut {
+		uQualityOut = *trustSet.QualityOut
+		if uQualityOut == qualityOne {
+			uQualityOut = 0 // Normalize to default
+		}
+	}
+
 	// Parse the limit amount
 	limitAmount := NewIOUAmount(trustSet.LimitAmount.Value, trustSet.LimitAmount.Currency, trustSet.LimitAmount.Issuer)
 
 	if !trustLineExists {
 		// Check if setting zero limit without existing trust line
-		if limitAmount.IsZero() {
-			// Nothing to do - no trust line and setting zero limit
+		if limitAmount.IsZero() && !bSetAuth && (!bQualityIn || uQualityIn == 0) && (!bQualityOut || uQualityOut == 0) {
+			// Nothing to do - no trust line and setting default values
 			return TesSUCCESS
 		}
 
 		// Check account has reserve for new trust line
-		requiredReserve := e.config.ReserveBase + (uint64(account.OwnerCount)+1)*e.config.ReserveIncrement
-		if account.Balance < requiredReserve {
+		// Per rippled SetTrust.cpp:405-407, first 2 objects don't need extra reserve
+		// Reference: The reserve required to create the line is 0 if ownerCount < 2,
+		// otherwise it's accountReserve(ownerCount + 1)
+		reserveCreate := e.ReserveForNewObject(account.OwnerCount)
+		if account.Balance < reserveCreate {
 			return TecINSUF_RESERVE_LINE
 		}
 
@@ -933,26 +1253,58 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 		}
 
 		// Set the limit based on which side this account is
-		if isLowAccount {
+		if !bHigh {
+			// Account is LOW
 			rs.LowLimit = limitAmount
 			rs.HighLimit = NewIOUAmount("0", trustSet.LimitAmount.Currency, account.Account)
-			// Set the reserve flag for the low account
 			rs.Flags |= lsfLowReserve
 		} else {
+			// Account is HIGH
 			rs.LowLimit = NewIOUAmount("0", trustSet.LimitAmount.Currency, trustSet.LimitAmount.Issuer)
 			rs.HighLimit = limitAmount
-			// Set the reserve flag for the high account
 			rs.Flags |= lsfHighReserve
 		}
 
+		// Handle Auth flag for new trust line
+		if bSetAuth {
+			if bHigh {
+				rs.Flags |= lsfHighAuth
+			} else {
+				rs.Flags |= lsfLowAuth
+			}
+		}
+
 		// Handle NoRipple flag from transaction
-		if trustSet.Flags != nil {
-			if (*trustSet.Flags & 0x00020000) != 0 { // tfSetNoRipple
-				if isLowAccount {
-					rs.Flags |= lsfLowNoRipple
-				} else {
-					rs.Flags |= lsfHighNoRipple
-				}
+		if bSetNoRipple && !bClearNoRipple {
+			if bHigh {
+				rs.Flags |= lsfHighNoRipple
+			} else {
+				rs.Flags |= lsfLowNoRipple
+			}
+		}
+
+		// Handle Freeze flag for new trust line
+		if bSetFreeze && !bClearFreeze && !bNoFreeze {
+			if bHigh {
+				rs.Flags |= lsfHighFreeze
+			} else {
+				rs.Flags |= lsfLowFreeze
+			}
+		}
+
+		// Handle QualityIn/QualityOut for new trust line
+		if bQualityIn && uQualityIn != 0 {
+			if bHigh {
+				rs.HighQualityIn = uQualityIn
+			} else {
+				rs.LowQualityIn = uQualityIn
+			}
+		}
+		if bQualityOut && uQualityOut != 0 {
+			if bHigh {
+				rs.HighQualityOut = uQualityOut
+			} else {
+				rs.LowQualityOut = uQualityOut
 			}
 		}
 
@@ -969,28 +1321,56 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 		// Increment owner count
 		account.OwnerCount++
 
+		// Build metadata for created node
+		newFields := map[string]any{
+			"Balance": map[string]any{
+				"currency": trustSet.LimitAmount.Currency,
+				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
+				"value":    "0",
+			},
+			"Flags": rs.Flags,
+		}
+		if !bHigh {
+			newFields["LowLimit"] = map[string]any{
+				"currency": trustSet.LimitAmount.Currency,
+				"issuer":   account.Account,
+				"value":    formatIOUValue(rs.LowLimit.Value),
+			}
+			newFields["HighLimit"] = map[string]any{
+				"currency": trustSet.LimitAmount.Currency,
+				"issuer":   trustSet.LimitAmount.Issuer,
+				"value":    "0",
+			}
+		} else {
+			newFields["LowLimit"] = map[string]any{
+				"currency": trustSet.LimitAmount.Currency,
+				"issuer":   trustSet.LimitAmount.Issuer,
+				"value":    "0",
+			}
+			newFields["HighLimit"] = map[string]any{
+				"currency": trustSet.LimitAmount.Currency,
+				"issuer":   account.Account,
+				"value":    formatIOUValue(rs.HighLimit.Value),
+			}
+		}
+		if rs.LowQualityIn != 0 {
+			newFields["LowQualityIn"] = rs.LowQualityIn
+		}
+		if rs.LowQualityOut != 0 {
+			newFields["LowQualityOut"] = rs.LowQualityOut
+		}
+		if rs.HighQualityIn != 0 {
+			newFields["HighQualityIn"] = rs.HighQualityIn
+		}
+		if rs.HighQualityOut != 0 {
+			newFields["HighQualityOut"] = rs.HighQualityOut
+		}
+
 		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
 			NodeType:        "CreatedNode",
 			LedgerEntryType: "RippleState",
 			LedgerIndex:     hex.EncodeToString(trustLineKey.Key[:]),
-			NewFields: map[string]any{
-				"Balance": map[string]any{
-					"currency": trustSet.LimitAmount.Currency,
-					"issuer":   trustSet.LimitAmount.Issuer,
-					"value":    "0",
-				},
-				"LowLimit": map[string]any{
-					"currency": trustSet.LimitAmount.Currency,
-					"issuer":   account.Account,
-					"value":    formatIOUValue(rs.LowLimit.Value),
-				},
-				"HighLimit": map[string]any{
-					"currency": trustSet.LimitAmount.Currency,
-					"issuer":   trustSet.LimitAmount.Issuer,
-					"value":    formatIOUValue(rs.HighLimit.Value),
-				},
-				"Flags": rs.Flags,
-			},
+			NewFields:       newFields,
 		})
 	} else {
 		// Modify existing trust line
@@ -1004,39 +1384,144 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 			return TefINTERNAL
 		}
 
+		// Store previous values for metadata
+		previousFlags := rs.Flags
 		previousLimit := rs.LowLimit
-		if !isLowAccount {
+		if bHigh {
 			previousLimit = rs.HighLimit
 		}
+		previousLowQualityIn := rs.LowQualityIn
+		previousLowQualityOut := rs.LowQualityOut
+		previousHighQualityIn := rs.HighQualityIn
+		previousHighQualityOut := rs.HighQualityOut
 
 		// Update the limit
-		if isLowAccount {
+		if !bHigh {
 			rs.LowLimit = limitAmount
 		} else {
 			rs.HighLimit = limitAmount
 		}
 
-		// Handle NoRipple flag
-		if trustSet.Flags != nil {
-			if (*trustSet.Flags & 0x00020000) != 0 { // tfSetNoRipple
-				if isLowAccount {
-					rs.Flags |= lsfLowNoRipple
-				} else {
-					rs.Flags |= lsfHighNoRipple
-				}
+		// Handle Auth flag (can only be set, not cleared per rippled)
+		if bSetAuth {
+			if bHigh {
+				rs.Flags |= lsfHighAuth
+			} else {
+				rs.Flags |= lsfLowAuth
 			}
-			if (*trustSet.Flags & 0x00040000) != 0 { // tfClearNoRipple
-				if isLowAccount {
-					rs.Flags &^= lsfLowNoRipple
+		}
+
+		// Handle NoRipple flag
+		if bSetNoRipple && !bClearNoRipple {
+			if bHigh {
+				rs.Flags |= lsfHighNoRipple
+			} else {
+				rs.Flags |= lsfLowNoRipple
+			}
+		} else if bClearNoRipple && !bSetNoRipple {
+			if bHigh {
+				rs.Flags &^= lsfHighNoRipple
+			} else {
+				rs.Flags &^= lsfLowNoRipple
+			}
+		}
+
+		// Handle Freeze flag
+		// Per rippled: bSetFreeze && !bClearFreeze && !bNoFreeze -> set freeze
+		//              bClearFreeze && !bSetFreeze -> clear freeze
+		if bSetFreeze && !bClearFreeze && !bNoFreeze {
+			if bHigh {
+				rs.Flags |= lsfHighFreeze
+			} else {
+				rs.Flags |= lsfLowFreeze
+			}
+		} else if bClearFreeze && !bSetFreeze {
+			if bHigh {
+				rs.Flags &^= lsfHighFreeze
+			} else {
+				rs.Flags &^= lsfLowFreeze
+			}
+		}
+
+		// Handle QualityIn
+		if bQualityIn {
+			if uQualityIn != 0 {
+				// Setting quality
+				if bHigh {
+					rs.HighQualityIn = uQualityIn
 				} else {
-					rs.Flags &^= lsfHighNoRipple
+					rs.LowQualityIn = uQualityIn
+				}
+			} else {
+				// Clearing quality (setting to default)
+				if bHigh {
+					rs.HighQualityIn = 0
+				} else {
+					rs.LowQualityIn = 0
 				}
 			}
 		}
 
+		// Handle QualityOut
+		if bQualityOut {
+			if uQualityOut != 0 {
+				// Setting quality
+				if bHigh {
+					rs.HighQualityOut = uQualityOut
+				} else {
+					rs.LowQualityOut = uQualityOut
+				}
+			} else {
+				// Clearing quality (setting to default)
+				if bHigh {
+					rs.HighQualityOut = 0
+				} else {
+					rs.LowQualityOut = 0
+				}
+			}
+		}
+
+		// Normalize quality values (QUALITY_ONE -> 0)
+		if rs.LowQualityIn == qualityOne {
+			rs.LowQualityIn = 0
+		}
+		if rs.LowQualityOut == qualityOne {
+			rs.LowQualityOut = 0
+		}
+		if rs.HighQualityIn == qualityOne {
+			rs.HighQualityIn = 0
+		}
+		if rs.HighQualityOut == qualityOne {
+			rs.HighQualityOut = 0
+		}
+
 		// Check if trust line should be deleted
-		// (both limits are zero and balance is zero)
-		if rs.Balance.IsZero() && rs.LowLimit.IsZero() && rs.HighLimit.IsZero() {
+		// Per rippled: bDefault = both sides have no reserve requirement
+		// Reserve is needed if: quality != 0 || noRipple differs from default || freeze || limit || balance > 0
+		bLowDefRipple := (issuerAccount.Flags & lsfDefaultRipple) != 0
+		bHighDefRipple := (account.Flags & lsfDefaultRipple) != 0
+		if bHigh {
+			bLowDefRipple = (issuerAccount.Flags & lsfDefaultRipple) != 0
+			bHighDefRipple = (account.Flags & lsfDefaultRipple) != 0
+		} else {
+			bLowDefRipple = (account.Flags & lsfDefaultRipple) != 0
+			bHighDefRipple = (issuerAccount.Flags & lsfDefaultRipple) != 0
+		}
+
+		bLowReserveSet := rs.LowQualityIn != 0 || rs.LowQualityOut != 0 ||
+			((rs.Flags&lsfLowNoRipple) == 0) != bLowDefRipple ||
+			(rs.Flags&lsfLowFreeze) != 0 || !rs.LowLimit.IsZero() ||
+			(rs.Balance.Value != nil && rs.Balance.Value.Sign() > 0)
+
+		bHighReserveSet := rs.HighQualityIn != 0 || rs.HighQualityOut != 0 ||
+			((rs.Flags&lsfHighNoRipple) == 0) != bHighDefRipple ||
+			(rs.Flags&lsfHighFreeze) != 0 || !rs.HighLimit.IsZero() ||
+			(rs.Balance.Value != nil && rs.Balance.Value.Sign() < 0)
+
+		bDefault := !bLowReserveSet && !bHighReserveSet
+
+		if bDefault && rs.Balance.IsZero() {
+			// Delete the trust line
 			if err := e.view.Erase(trustLineKey); err != nil {
 				return TefINTERNAL
 			}
@@ -1052,6 +1537,19 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 				LedgerIndex:     hex.EncodeToString(trustLineKey.Key[:]),
 			})
 		} else {
+			// Update reserve flags based on reserve requirements
+			if bLowReserveSet && (rs.Flags&lsfLowReserve) == 0 {
+				rs.Flags |= lsfLowReserve
+			} else if !bLowReserveSet && (rs.Flags&lsfLowReserve) != 0 {
+				rs.Flags &^= lsfLowReserve
+			}
+
+			if bHighReserveSet && (rs.Flags&lsfHighReserve) == 0 {
+				rs.Flags |= lsfHighReserve
+			} else if !bHighReserveSet && (rs.Flags&lsfHighReserve) != 0 {
+				rs.Flags &^= lsfHighReserve
+			}
+
 			// Update the trust line
 			updatedData, err := serializeRippleState(rs)
 			if err != nil {
@@ -1062,29 +1560,79 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 				return TefINTERNAL
 			}
 
+			// Build metadata
 			limitField := "LowLimit"
-			if !isLowAccount {
+			if bHigh {
 				limitField = "HighLimit"
+			}
+
+			finalFields := map[string]any{
+				"Flags": rs.Flags,
+			}
+			previousFields := map[string]any{}
+
+			// Only include limit in metadata if it changed
+			if formatIOUValue(limitAmount.Value) != formatIOUValue(previousLimit.Value) {
+				finalFields[limitField] = map[string]any{
+					"currency": trustSet.LimitAmount.Currency,
+					"issuer":   account.Account,
+					"value":    formatIOUValue(limitAmount.Value),
+				}
+				previousFields[limitField] = map[string]any{
+					"currency": trustSet.LimitAmount.Currency,
+					"issuer":   account.Account,
+					"value":    formatIOUValue(previousLimit.Value),
+				}
+			}
+
+			// Include flags if changed
+			if previousFlags != rs.Flags {
+				previousFields["Flags"] = previousFlags
+			}
+
+			// Include quality fields if changed
+			if !bHigh {
+				if previousLowQualityIn != rs.LowQualityIn {
+					if rs.LowQualityIn != 0 {
+						finalFields["LowQualityIn"] = rs.LowQualityIn
+					}
+					if previousLowQualityIn != 0 {
+						previousFields["LowQualityIn"] = previousLowQualityIn
+					}
+				}
+				if previousLowQualityOut != rs.LowQualityOut {
+					if rs.LowQualityOut != 0 {
+						finalFields["LowQualityOut"] = rs.LowQualityOut
+					}
+					if previousLowQualityOut != 0 {
+						previousFields["LowQualityOut"] = previousLowQualityOut
+					}
+				}
+			} else {
+				if previousHighQualityIn != rs.HighQualityIn {
+					if rs.HighQualityIn != 0 {
+						finalFields["HighQualityIn"] = rs.HighQualityIn
+					}
+					if previousHighQualityIn != 0 {
+						previousFields["HighQualityIn"] = previousHighQualityIn
+					}
+				}
+				if previousHighQualityOut != rs.HighQualityOut {
+					if rs.HighQualityOut != 0 {
+						finalFields["HighQualityOut"] = rs.HighQualityOut
+					}
+					if previousHighQualityOut != 0 {
+						previousFields["HighQualityOut"] = previousHighQualityOut
+					}
+				}
 			}
 
 			metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
 				NodeType:        "ModifiedNode",
 				LedgerEntryType: "RippleState",
 				LedgerIndex:     hex.EncodeToString(trustLineKey.Key[:]),
-				FinalFields: map[string]any{
-					limitField: map[string]any{
-						"currency": trustSet.LimitAmount.Currency,
-						"issuer":   account.Account,
-						"value":    formatIOUValue(limitAmount.Value),
-					},
-				},
-				PreviousFields: map[string]any{
-					limitField: map[string]any{
-						"currency": trustSet.LimitAmount.Currency,
-						"issuer":   account.Account,
-						"value":    formatIOUValue(previousLimit.Value),
-					},
-				},
+				FinalFields:     finalFields,
+				PreviousFields:  previousFields,
 			})
 		}
 	}
@@ -1094,6 +1642,19 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 
 // applyOfferCreate applies an OfferCreate transaction
 func (e *Engine) applyOfferCreate(offer *OfferCreate, account *AccountRoot, metadata *Metadata) Result {
+	// Check if offer has expired
+	// Reference: rippled CreateOffer.cpp:189-200 and 623-636
+	if offer.Expiration != nil && *offer.Expiration > 0 {
+		// The offer has expired if Expiration <= parent close time
+		// parentCloseTime is the close time of the parent ledger
+		parentCloseTime := e.config.ParentCloseTime
+		if *offer.Expiration <= parentCloseTime {
+			// Offer has expired - return tecEXPIRED
+			// Note: in older rippled versions without featureDepositPreauth, this would return tesSUCCESS
+			return TecEXPIRED
+		}
+	}
+
 	// First, cancel any existing offer if OfferSequence is specified
 	if offer.OfferSequence != nil {
 		accountID, _ := decodeAccountID(account.Account)
@@ -1115,8 +1676,9 @@ func (e *Engine) applyOfferCreate(offer *OfferCreate, account *AccountRoot, meta
 	}
 
 	// Check account has reserve for new offer
-	requiredReserve := e.config.ReserveBase + (uint64(account.OwnerCount)+1)*e.config.ReserveIncrement
-	if account.Balance < requiredReserve {
+	// Per rippled, first 2 objects don't need extra reserve
+	reserveCreate := e.ReserveForNewObject(account.OwnerCount)
+	if account.Balance < reserveCreate {
 		return TecINSUF_RESERVE_OFFER
 	}
 

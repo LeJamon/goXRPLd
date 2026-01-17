@@ -54,28 +54,60 @@ func (o *OfferCreate) TxType() Type {
 }
 
 // Validate validates the OfferCreate transaction
+// Reference: rippled CreateOffer.cpp preflight()
 func (o *OfferCreate) Validate() error {
 	if err := o.BaseTx.Validate(); err != nil {
 		return err
 	}
 
 	if o.TakerGets.Value == "" {
-		return errors.New("TakerGets is required")
+		return errors.New("temBAD_OFFER: TakerGets is required")
 	}
 
 	if o.TakerPays.Value == "" {
-		return errors.New("TakerPays is required")
+		return errors.New("temBAD_OFFER: TakerPays is required")
 	}
 
 	// Cannot have both XRP on both sides
+	// Reference: rippled CreateOffer.cpp:65-69
 	if o.TakerGets.IsNative() && o.TakerPays.IsNative() {
-		return errors.New("cannot exchange XRP for XRP")
+		return errors.New("temBAD_OFFER: cannot exchange XRP for XRP")
+	}
+
+	// Check for negative amounts
+	// Reference: rippled CreateOffer.cpp - temBAD_OFFER for negative amounts
+	if len(o.TakerGets.Value) > 0 && o.TakerGets.Value[0] == '-' {
+		return errors.New("temBAD_OFFER: TakerGets cannot be negative")
+	}
+	if len(o.TakerPays.Value) > 0 && o.TakerPays.Value[0] == '-' {
+		return errors.New("temBAD_OFFER: TakerPays cannot be negative")
+	}
+
+	// Check for zero amounts
+	if o.TakerGets.Value == "0" {
+		return errors.New("temBAD_OFFER: TakerGets cannot be zero")
+	}
+	if o.TakerPays.Value == "0" {
+		return errors.New("temBAD_OFFER: TakerPays cannot be zero")
 	}
 
 	// tfImmediateOrCancel and tfFillOrKill are mutually exclusive
+	// Reference: rippled CreateOffer.cpp:75-80
 	flags := o.GetFlags()
 	if (flags&OfferCreateFlagImmediateOrCancel != 0) && (flags&OfferCreateFlagFillOrKill != 0) {
-		return errors.New("cannot set both ImmediateOrCancel and FillOrKill")
+		return errors.New("temINVALID_FLAG: cannot set both ImmediateOrCancel and FillOrKill")
+	}
+
+	// Expiration of 0 is invalid
+	// Reference: rippled CreateOffer.cpp:82-88
+	if o.Expiration != nil && *o.Expiration == 0 {
+		return errors.New("temBAD_EXPIRATION: expiration cannot be zero")
+	}
+
+	// OfferSequence of 0 is invalid
+	// Reference: rippled CreateOffer.cpp:90-94
+	if o.OfferSequence != nil && *o.OfferSequence == 0 {
+		return errors.New("temBAD_SEQUENCE: OfferSequence cannot be zero")
 	}
 
 	return nil

@@ -1,5 +1,7 @@
 package tx
 
+import "errors"
+
 // AccountSet modifies the properties of an account in the XRP Ledger.
 type AccountSet struct {
 	BaseTx
@@ -34,6 +36,44 @@ type AccountSet struct {
 	// WalletSize is arbitrary data (deprecated)
 	WalletSize *uint32 `json:"WalletSize,omitempty"`
 }
+
+// Common transaction flags
+const (
+	// TxFlagFullyCanonicalSig indicates the signature is fully canonical
+	TxFlagFullyCanonicalSig uint32 = 0x80000000
+)
+
+// AccountSet transaction flags (legacy)
+// Reference: rippled SetAccount.cpp
+const (
+	// tfRequireDestTag requires destination tag
+	AccountSetTxFlagRequireDestTag uint32 = 0x00010000
+	// tfOptionalDestTag makes destination tag optional
+	AccountSetTxFlagOptionalDestTag uint32 = 0x00020000
+	// tfRequireAuth requires authorization
+	AccountSetTxFlagRequireAuth uint32 = 0x00040000
+	// tfOptionalAuth makes authorization optional
+	AccountSetTxFlagOptionalAuth uint32 = 0x00080000
+	// tfDisallowXRP disallows XRP payments
+	AccountSetTxFlagDisallowXRP uint32 = 0x00100000
+	// tfAllowXRP allows XRP payments
+	AccountSetTxFlagAllowXRP uint32 = 0x00200000
+
+	// tfAccountSetMask is the mask for valid AccountSet transaction flags
+	AccountSetTxFlagMask uint32 = ^(AccountSetTxFlagRequireDestTag |
+		AccountSetTxFlagOptionalDestTag |
+		AccountSetTxFlagRequireAuth |
+		AccountSetTxFlagOptionalAuth |
+		AccountSetTxFlagDisallowXRP |
+		AccountSetTxFlagAllowXRP |
+		TxFlagFullyCanonicalSig)
+)
+
+// Domain length limits
+const (
+	// MaxDomainLength is the maximum length of a domain in bytes
+	MaxDomainLength = 256
+)
 
 // AccountSet account flags (for SetFlag/ClearFlag)
 const (
@@ -82,24 +122,94 @@ func (a *AccountSet) TxType() Type {
 }
 
 // Validate validates the AccountSet transaction
+// Reference: rippled SetAccount.cpp preflight()
 func (a *AccountSet) Validate() error {
 	if err := a.BaseTx.Validate(); err != nil {
 		return err
 	}
 
-	// TickSize must be 0, 3-15
-	if a.TickSize != nil {
-		ts := *a.TickSize
-		if ts != 0 && (ts < 3 || ts > 15) {
-			return ErrInvalidFlags
+	txFlags := a.GetFlags()
+
+	// Check for invalid transaction flags
+	// Reference: rippled SetAccount.cpp:71-75
+	if txFlags&AccountSetTxFlagMask != 0 {
+		return errors.New("temINVALID_FLAG: invalid transaction flags")
+	}
+
+	// Cannot set and clear the same flag
+	// Reference: rippled SetAccount.cpp:80-84
+	if a.SetFlag != nil && a.ClearFlag != nil && *a.SetFlag == *a.ClearFlag {
+		return errors.New("temINVALID_FLAG: cannot set and clear the same flag")
+	}
+
+	// Check for contradictory RequireAuth flags
+	// Reference: rippled SetAccount.cpp:89-98
+	setRequireAuth := (txFlags&AccountSetTxFlagRequireAuth != 0) ||
+		(a.SetFlag != nil && *a.SetFlag == AccountSetFlagRequireAuth)
+	clearRequireAuth := (txFlags&AccountSetTxFlagOptionalAuth != 0) ||
+		(a.ClearFlag != nil && *a.ClearFlag == AccountSetFlagRequireAuth)
+	if setRequireAuth && clearRequireAuth {
+		return errors.New("temINVALID_FLAG: contradictory RequireAuth flags")
+	}
+
+	// Check for contradictory RequireDest flags
+	// Reference: rippled SetAccount.cpp:103-112
+	setRequireDest := (txFlags&AccountSetTxFlagRequireDestTag != 0) ||
+		(a.SetFlag != nil && *a.SetFlag == AccountSetFlagRequireDest)
+	clearRequireDest := (txFlags&AccountSetTxFlagOptionalDestTag != 0) ||
+		(a.ClearFlag != nil && *a.ClearFlag == AccountSetFlagRequireDest)
+	if setRequireDest && clearRequireDest {
+		return errors.New("temINVALID_FLAG: contradictory RequireDest flags")
+	}
+
+	// Check for contradictory DisallowXRP flags
+	// Reference: rippled SetAccount.cpp:117-126
+	setDisallowXRP := (txFlags&AccountSetTxFlagDisallowXRP != 0) ||
+		(a.SetFlag != nil && *a.SetFlag == AccountSetFlagDisallowXRP)
+	clearDisallowXRP := (txFlags&AccountSetTxFlagAllowXRP != 0) ||
+		(a.ClearFlag != nil && *a.ClearFlag == AccountSetFlagDisallowXRP)
+	if setDisallowXRP && clearDisallowXRP {
+		return errors.New("temINVALID_FLAG: contradictory DisallowXRP flags")
+	}
+
+	// TransferRate validation
+	// Reference: rippled SetAccount.cpp:129-146
+	if a.TransferRate != nil {
+		tr := *a.TransferRate
+		if tr != 0 && tr < 1000000000 {
+			return errors.New("temBAD_TRANSFER_RATE: transfer rate too small")
+		}
+		if tr > 2000000000 {
+			return errors.New("temBAD_TRANSFER_RATE: transfer rate too large")
 		}
 	}
 
-	// TransferRate must be 0 or 1e9-2e9
-	if a.TransferRate != nil {
-		tr := *a.TransferRate
-		if tr != 0 && (tr < 1000000000 || tr > 2000000000) {
-			return ErrInvalidFlags
+	// TickSize validation
+	// Reference: rippled SetAccount.cpp:149-159
+	if a.TickSize != nil {
+		ts := *a.TickSize
+		if ts != 0 && (ts < 3 || ts > 15) {
+			return errors.New("temBAD_TICK_SIZE: tick size must be 0 or 3-15")
+		}
+	}
+
+	// Domain length validation
+	// Reference: rippled SetAccount.cpp:170-175
+	// Domain is stored as hex, so max hex length is 2*256 = 512
+	if len(a.Domain) > MaxDomainLength*2 {
+		return errors.New("telBAD_DOMAIN: domain too long")
+	}
+
+	// NFTokenMinter validation
+	// Reference: rippled SetAccount.cpp:177-187
+	if a.SetFlag != nil && *a.SetFlag == AccountSetFlagAuthorizedNFTokenMinter {
+		if a.NFTokenMinter == "" {
+			return errors.New("temMALFORMED: NFTokenMinter required when setting asfAuthorizedNFTokenMinter")
+		}
+	}
+	if a.ClearFlag != nil && *a.ClearFlag == AccountSetFlagAuthorizedNFTokenMinter {
+		if a.NFTokenMinter != "" {
+			return errors.New("temMALFORMED: NFTokenMinter must be empty when clearing asfAuthorizedNFTokenMinter")
 		}
 	}
 

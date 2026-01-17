@@ -66,7 +66,7 @@ func TestTrustSetValidation(t *testing.T) {
 				LimitAmount: NewIssuedAmount("100", "", "rGateway"),
 			},
 			expectError: true,
-			errorMsg:    "currency is required",
+			errorMsg:    "temBAD_CURRENCY: currency is required",
 		},
 		{
 			name: "missing LimitAmount issuer - should fail",
@@ -75,7 +75,7 @@ func TestTrustSetValidation(t *testing.T) {
 				LimitAmount: NewIssuedAmount("100", "USD", ""),
 			},
 			expectError: true,
-			errorMsg:    "issuer is required",
+			errorMsg:    "temDST_NEEDED: issuer is required",
 		},
 		{
 			name: "XRP as LimitAmount - cannot create trust line for XRP",
@@ -84,7 +84,25 @@ func TestTrustSetValidation(t *testing.T) {
 				LimitAmount: NewXRPAmount("1000000"),
 			},
 			expectError: true,
-			errorMsg:    "cannot create trust line for XRP",
+			errorMsg:    "temBAD_LIMIT: cannot create trust line for XRP",
+		},
+		{
+			name: "XRP currency code - should fail",
+			trustSet: &TrustSet{
+				BaseTx:      *NewBaseTx(TypeTrustSet, "rAlice"),
+				LimitAmount: NewIssuedAmount("100", "XRP", "rGateway"),
+			},
+			expectError: true,
+			errorMsg:    "temBAD_CURRENCY: cannot use XRP as IOU currency",
+		},
+		{
+			name: "negative limit - should fail",
+			trustSet: &TrustSet{
+				BaseTx:      *NewBaseTx(TypeTrustSet, "rAlice"),
+				LimitAmount: NewIssuedAmount("-100", "USD", "rGateway"),
+			},
+			expectError: true,
+			errorMsg:    "temBAD_LIMIT: negative credit limit",
 		},
 
 		// === Trust Line to Self Tests ===
@@ -95,7 +113,7 @@ func TestTrustSetValidation(t *testing.T) {
 				LimitAmount: NewIssuedAmount("100", "USD", "rAlice"),
 			},
 			expectError: true,
-			errorMsg:    "cannot create trust line to self",
+			errorMsg:    "temDST_IS_SRC: cannot create trust line to self",
 		},
 
 		// === Missing Account Tests ===
@@ -331,7 +349,7 @@ func TestTrustSetConflictingFlags(t *testing.T) {
 			name:         "SetNoRipple + ClearNoRipple - CONFLICT",
 			flags:        TrustSetFlagSetNoRipple | TrustSetFlagClearNoRipple,
 			isConflict:   true,
-			conflictDesc: "cannot set and clear NoRipple in same transaction",
+			conflictDesc: "temINVALID_FLAG: cannot set and clear NoRipple",
 		},
 		{
 			name:         "SetFreeze alone - no conflict",
@@ -349,7 +367,7 @@ func TestTrustSetConflictingFlags(t *testing.T) {
 			name:         "SetFreeze + ClearFreeze - CONFLICT",
 			flags:        TrustSetFlagSetFreeze | TrustSetFlagClearFreeze,
 			isConflict:   true,
-			conflictDesc: "cannot set and clear Freeze in same transaction",
+			conflictDesc: "temINVALID_FLAG: cannot set and clear freeze in same transaction",
 		},
 		{
 			name:         "SetNoRipple + SetFreeze - no conflict (different flag families)",
@@ -643,14 +661,14 @@ func TestTrustSetIssuerValidation(t *testing.T) {
 			account:     "rAlice",
 			issuer:      "rAlice",
 			expectError: true,
-			errorMsg:    "cannot create trust line to self",
+			errorMsg:    "temDST_IS_SRC: cannot create trust line to self",
 		},
 		{
 			name:        "empty issuer - should fail",
 			account:     "rAlice",
 			issuer:      "",
 			expectError: true,
-			errorMsg:    "issuer is required",
+			errorMsg:    "temDST_NEEDED: issuer is required",
 		},
 	}
 
@@ -719,14 +737,12 @@ func TestTrustSetAmountValues(t *testing.T) {
 			expectError: false,
 			description: "small decimal credit limit",
 		},
-		// Note: Negative limits are rejected by rippled with temBAD_LIMIT
-		// but our validation doesn't check for negative values - this would
-		// be caught during transaction submission
+		// Negative limits are rejected with temBAD_LIMIT
 		{
-			name:        "negative limit (would fail on submission)",
+			name:        "negative limit - temBAD_LIMIT",
 			value:       "-1",
-			expectError: false, // Passes local validation
-			description: "negative limit - would fail with temBAD_LIMIT on rippled",
+			expectError: true,
+			description: "negative limit - temBAD_LIMIT",
 		},
 	}
 
@@ -886,6 +902,8 @@ func TestTrustSetFlagConstants(t *testing.T) {
 		{"tfClearNoRipple", TrustSetFlagClearNoRipple, 0x00040000},
 		{"tfSetFreeze", TrustSetFlagSetFreeze, 0x00100000},
 		{"tfClearFreeze", TrustSetFlagClearFreeze, 0x00200000},
+		{"tfSetDeepFreeze", TrustSetFlagSetDeepFreeze, 0x00400000},
+		{"tfClearDeepFreeze", TrustSetFlagClearDeepFreeze, 0x00800000},
 	}
 
 	for _, tt := range tests {
@@ -894,5 +912,79 @@ func TestTrustSetFlagConstants(t *testing.T) {
 				t.Errorf("expected %s = 0x%08X, got 0x%08X", tt.name, tt.expected, tt.flag)
 			}
 		})
+	}
+}
+
+// TestTrustSetDeepFreezeFlags tests deep freeze flag handling.
+// Reference: rippled SetTrust.cpp featureDeepFreeze
+func TestTrustSetDeepFreezeFlags(t *testing.T) {
+	t.Run("SetDeepFreeze flag", func(t *testing.T) {
+		ts := NewTrustSet("rGateway", NewIssuedAmount("0", "USD", "rAlice"))
+		ts.SetFlags(TrustSetFlagSetDeepFreeze)
+
+		if err := ts.Validate(); err != nil {
+			t.Errorf("SetDeepFreeze should be valid: %v", err)
+		}
+		if ts.GetFlags()&TrustSetFlagSetDeepFreeze == 0 {
+			t.Error("tfSetDeepFreeze flag should be set")
+		}
+	})
+
+	t.Run("ClearDeepFreeze flag", func(t *testing.T) {
+		ts := NewTrustSet("rGateway", NewIssuedAmount("0", "USD", "rAlice"))
+		ts.SetFlags(TrustSetFlagClearDeepFreeze)
+
+		if err := ts.Validate(); err != nil {
+			t.Errorf("ClearDeepFreeze should be valid: %v", err)
+		}
+		if ts.GetFlags()&TrustSetFlagClearDeepFreeze == 0 {
+			t.Error("tfClearDeepFreeze flag should be set")
+		}
+	})
+
+	t.Run("SetDeepFreeze + ClearDeepFreeze - CONFLICT", func(t *testing.T) {
+		ts := NewTrustSet("rGateway", NewIssuedAmount("0", "USD", "rAlice"))
+		ts.SetFlags(TrustSetFlagSetDeepFreeze | TrustSetFlagClearDeepFreeze)
+
+		err := ts.Validate()
+		if err == nil {
+			t.Error("expected error for conflicting deep freeze flags")
+		}
+	})
+
+	t.Run("SetFreeze + ClearDeepFreeze - CONFLICT", func(t *testing.T) {
+		ts := NewTrustSet("rGateway", NewIssuedAmount("0", "USD", "rAlice"))
+		ts.SetFlags(TrustSetFlagSetFreeze | TrustSetFlagClearDeepFreeze)
+
+		err := ts.Validate()
+		if err == nil {
+			t.Error("expected error for conflicting freeze/clear deep freeze flags")
+		}
+	})
+
+	t.Run("SetDeepFreeze + ClearFreeze - CONFLICT", func(t *testing.T) {
+		ts := NewTrustSet("rGateway", NewIssuedAmount("0", "USD", "rAlice"))
+		ts.SetFlags(TrustSetFlagSetDeepFreeze | TrustSetFlagClearFreeze)
+
+		err := ts.Validate()
+		if err == nil {
+			t.Error("expected error for conflicting deep freeze/clear freeze flags")
+		}
+	})
+
+	t.Run("SetFreeze + SetDeepFreeze - no conflict", func(t *testing.T) {
+		ts := NewTrustSet("rGateway", NewIssuedAmount("0", "USD", "rAlice"))
+		ts.SetFlags(TrustSetFlagSetFreeze | TrustSetFlagSetDeepFreeze)
+
+		if err := ts.Validate(); err != nil {
+			t.Errorf("SetFreeze + SetDeepFreeze should be valid: %v", err)
+		}
+	})
+}
+
+// TestTrustSetQualityOneConstant tests the QUALITY_ONE constant.
+func TestTrustSetQualityOneConstant(t *testing.T) {
+	if QualityOne != 1000000000 {
+		t.Errorf("expected QualityOne=1000000000, got %d", QualityOne)
 	}
 }

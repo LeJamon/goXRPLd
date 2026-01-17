@@ -42,12 +42,20 @@ type PathStep struct {
 
 // Payment flags
 const (
-	// tfNoDirectRipple prevents direct rippling
+	// tfNoDirectRipple prevents direct rippling (tfNoRippleDirect in rippled)
 	PaymentFlagNoDirectRipple uint32 = 0x00010000
 	// tfPartialPayment allows partial payments
 	PaymentFlagPartialPayment uint32 = 0x00020000
 	// tfLimitQuality limits quality of paths
 	PaymentFlagLimitQuality uint32 = 0x00040000
+)
+
+// Path constraints matching rippled
+const (
+	// MaxPathSize is the maximum number of paths in a payment (rippled: MaxPathSize = 7)
+	MaxPathSize = 7
+	// MaxPathLength is the maximum number of steps per path (rippled: MaxPathLength = 8)
+	MaxPathLength = 8
 )
 
 // NewPayment creates a new Payment transaction
@@ -78,9 +86,61 @@ func (p *Payment) Validate() error {
 		return errors.New("Amount is required")
 	}
 
-	// Cannot send XRP to self
-	if p.Account == p.Destination && p.Amount.IsNative() {
-		return errors.New("cannot send XRP to self")
+	// Determine if this is an XRP-to-XRP (direct) payment
+	xrpDirect := p.Amount.IsNative() && (p.SendMax == nil || p.SendMax.IsNative())
+
+	// Check flags based on payment type
+	flags := p.GetFlags()
+	partialPaymentAllowed := (flags & PaymentFlagPartialPayment) != 0
+
+	// tfPartialPayment flag is invalid for XRP-to-XRP payments (temBAD_SEND_XRP_PARTIAL)
+	// Reference: rippled Payment.cpp:182-188
+	if xrpDirect && partialPaymentAllowed {
+		return errors.New("temBAD_SEND_XRP_PARTIAL: Partial payment specified for XRP to XRP")
+	}
+
+	// DeliverMin can only be used with tfPartialPayment flag (temBAD_AMOUNT)
+	// Reference: rippled Payment.cpp:206-214
+	if p.DeliverMin != nil && !partialPaymentAllowed {
+		return errors.New("temBAD_AMOUNT: DeliverMin requires tfPartialPayment flag")
+	}
+
+	// Validate DeliverMin if present
+	// Reference: rippled Payment.cpp:216-238
+	if p.DeliverMin != nil {
+		// DeliverMin must be positive (not zero, not empty, not negative)
+		if p.DeliverMin.Value == "" || p.DeliverMin.Value == "0" {
+			return errors.New("temBAD_AMOUNT: DeliverMin must be positive")
+		}
+		// Check for negative values
+		if len(p.DeliverMin.Value) > 0 && p.DeliverMin.Value[0] == '-' {
+			return errors.New("temBAD_AMOUNT: DeliverMin must be positive")
+		}
+
+		// DeliverMin currency must match Amount currency
+		if p.DeliverMin.Currency != p.Amount.Currency || p.DeliverMin.Issuer != p.Amount.Issuer {
+			return errors.New("temBAD_AMOUNT: DeliverMin currency must match Amount")
+		}
+	}
+
+	// Paths array max length is 7 (temMALFORMED if exceeded)
+	// Reference: rippled Payment.cpp:353-359 (MaxPathSize)
+	if len(p.Paths) > MaxPathSize {
+		return errors.New("temMALFORMED: Paths array exceeds maximum size of 7")
+	}
+
+	// Each path can have max 8 steps (temMALFORMED if exceeded)
+	// Reference: rippled Payment.cpp:354-358 (MaxPathLength)
+	for i, path := range p.Paths {
+		if len(path) > MaxPathLength {
+			return errors.New("temMALFORMED: Path " + string(rune('0'+i)) + " exceeds maximum length of 8 steps")
+		}
+	}
+
+	// Cannot send XRP to self without paths (temREDUNDANT)
+	// Reference: rippled Payment.cpp:159-167
+	if p.Account == p.Destination && p.Amount.IsNative() && len(p.Paths) == 0 {
+		return errors.New("temREDUNDANT: cannot send XRP to self without path")
 	}
 
 	return nil

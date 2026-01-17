@@ -44,22 +44,28 @@ const (
 	TecDST_TAG_NEEDED            Result = 143
 	TecINTERNAL                  Result = 144
 	TecOVERSIZE                  Result = 145
-	TecCRYPTOCONDITION_ERROR     Result = 146
-	TecINVARIANT_FAILED          Result = 147
-	TecNO_SUITABLE_NFTOKEN_PAGE  Result = 148
-	TecNFTOKEN_BUY_SELL_MISMATCH Result = 149
-	TecNFTOKEN_OFFER_TYPE_MISMATCH Result = 150
-	TecCANT_ACCEPT_OWN_NFTOKEN_OFFER Result = 151
-	TecINSUFFICIENT_FUNDS        Result = 152
-	TecOBJECT_NOT_FOUND          Result = 153
-	TecINSUFFICIENT_PAYMENT      Result = 154
-	TecTOO_SOON                  Result = 155
-	TecMAX_SEQUENCE_REACHED      Result = 156
-	TecNO_SUITABLE_PAGE          Result = 157
-	TecDUPLICATE                 Result = 158
-	TecKILLED                    Result = 159
-	TecHAS_OBLIGATIONS           Result = 160
-	TecNO_PERMISSION_XCHAIN      Result = 161
+	TecCRYPTOCONDITION_ERROR         Result = 146
+	TecINVARIANT_FAILED              Result = 147
+	TecEXPIRED                       Result = 148 // Offer/escrow has expired
+	TecDUPLICATE                     Result = 149
+	TecKILLED                        Result = 150
+	TecHAS_OBLIGATIONS               Result = 151
+	TecTOO_SOON                      Result = 152
+	TecHOOK_REJECTED                 Result = 153 // Reserved for hooks
+	TecMAX_SEQUENCE_REACHED          Result = 154
+	TecNO_SUITABLE_NFTOKEN_PAGE      Result = 155
+	TecNFTOKEN_BUY_SELL_MISMATCH     Result = 156
+	TecNFTOKEN_OFFER_TYPE_MISMATCH   Result = 157
+	TecCANT_ACCEPT_OWN_NFTOKEN_OFFER Result = 158
+	TecINSUFFICIENT_FUNDS            Result = 159
+	TecOBJECT_NOT_FOUND              Result = 160
+	TecINSUFFICIENT_PAYMENT          Result = 161
+	TecUNFUNDED_AMM                  Result = 162
+	TecAMM_BALANCE                   Result = 163
+	TecAMM_FAILED                    Result = 164
+	TecAMM_INVALID_TOKENS            Result = 165
+	TecNO_SUITABLE_PAGE              Result = 166
+	TecNO_PERMISSION_XCHAIN          Result = 167
 
 	// tefFAILURE and related codes (-199 to -100)
 	// Transaction failed, fee claimed but tx not applied
