@@ -1,0 +1,233 @@
+package message
+
+import (
+	"bytes"
+	"testing"
+)
+
+func TestHeaderEncodeDecodeUncompressed(t *testing.T) {
+	tests := []struct {
+		name        string
+		payloadSize uint32
+		msgType     MessageType
+	}{
+		{"ping", 10, TypePing},
+		{"transaction", 1000, TypeTransaction},
+		{"validation", 500, TypeValidation},
+		{"max_size", MaxPayloadSize, TypeLedgerData},
+		{"zero_size", 0, TypeEndpoints},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := make([]byte, HeaderSizeUncompressed)
+			err := EncodeHeader(buf, tt.payloadSize, tt.msgType, AlgorithmNone, 0)
+			if err != nil {
+				t.Fatalf("EncodeHeader failed: %v", err)
+			}
+
+			header, err := DecodeHeader(buf)
+			if err != nil {
+				t.Fatalf("DecodeHeader failed: %v", err)
+			}
+
+			if header.PayloadSize != tt.payloadSize {
+				t.Errorf("PayloadSize = %d, want %d", header.PayloadSize, tt.payloadSize)
+			}
+			if header.MessageType != tt.msgType {
+				t.Errorf("MessageType = %d, want %d", header.MessageType, tt.msgType)
+			}
+			if header.Compressed {
+				t.Error("Compressed = true, want false")
+			}
+		})
+	}
+}
+
+func TestHeaderEncodeDecodeCompressed(t *testing.T) {
+	tests := []struct {
+		name             string
+		payloadSize      uint32
+		uncompressedSize uint32
+		msgType          MessageType
+	}{
+		{"small", 50, 100, TypeTransaction},
+		{"medium", 5000, 10000, TypeLedgerData},
+		{"large", 100000, 500000, TypeManifests},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := make([]byte, HeaderSizeCompressed)
+			err := EncodeHeader(buf, tt.payloadSize, tt.msgType, AlgorithmLZ4, tt.uncompressedSize)
+			if err != nil {
+				t.Fatalf("EncodeHeader failed: %v", err)
+			}
+
+			header, err := DecodeHeader(buf)
+			if err != nil {
+				t.Fatalf("DecodeHeader failed: %v", err)
+			}
+
+			if header.PayloadSize != tt.payloadSize {
+				t.Errorf("PayloadSize = %d, want %d", header.PayloadSize, tt.payloadSize)
+			}
+			if header.MessageType != tt.msgType {
+				t.Errorf("MessageType = %d, want %d", header.MessageType, tt.msgType)
+			}
+			if !header.Compressed {
+				t.Error("Compressed = false, want true")
+			}
+			if header.Algorithm != AlgorithmLZ4 {
+				t.Errorf("Algorithm = %d, want %d", header.Algorithm, AlgorithmLZ4)
+			}
+			if header.UncompressedSize != tt.uncompressedSize {
+				t.Errorf("UncompressedSize = %d, want %d", header.UncompressedSize, tt.uncompressedSize)
+			}
+		})
+	}
+}
+
+func TestHeaderTooLarge(t *testing.T) {
+	buf := make([]byte, HeaderSizeUncompressed)
+	err := EncodeHeader(buf, MaxPayloadSize+1, TypePing, AlgorithmNone, 0)
+	if err != ErrMessageTooLarge {
+		t.Errorf("Expected ErrMessageTooLarge, got %v", err)
+	}
+}
+
+func TestHeaderBufferTooSmall(t *testing.T) {
+	buf := make([]byte, 4) // Too small
+	err := EncodeHeader(buf, 100, TypePing, AlgorithmNone, 0)
+	if err == nil {
+		t.Error("Expected error for small buffer")
+	}
+}
+
+func TestDecodeHeaderTruncated(t *testing.T) {
+	// Too short buffer
+	_, err := DecodeHeader([]byte{0x00, 0x00, 0x00})
+	if err != ErrTruncatedMessage {
+		t.Errorf("Expected ErrTruncatedMessage, got %v", err)
+	}
+
+	// Compressed header but short buffer
+	compressed := make([]byte, HeaderSizeCompressed)
+	EncodeHeader(compressed, 100, TypePing, AlgorithmLZ4, 200)
+	_, err = DecodeHeader(compressed[:6])
+	if err != ErrTruncatedMessage {
+		t.Errorf("Expected ErrTruncatedMessage for truncated compressed header, got %v", err)
+	}
+}
+
+func TestReadWriteMessage(t *testing.T) {
+	tests := []struct {
+		name    string
+		msgType MessageType
+		payload []byte
+	}{
+		{"empty", TypePing, []byte{}},
+		{"small", TypeTransaction, []byte{1, 2, 3, 4, 5}},
+		{"medium", TypeValidation, bytes.Repeat([]byte{0xAB}, 1000)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+
+			// Write message
+			err := WriteMessage(&buf, tt.msgType, tt.payload)
+			if err != nil {
+				t.Fatalf("WriteMessage failed: %v", err)
+			}
+
+			// Read message
+			header, payload, err := ReadMessage(&buf)
+			if err != nil {
+				t.Fatalf("ReadMessage failed: %v", err)
+			}
+
+			if header.MessageType != tt.msgType {
+				t.Errorf("MessageType = %d, want %d", header.MessageType, tt.msgType)
+			}
+			if !bytes.Equal(payload, tt.payload) {
+				t.Errorf("Payload mismatch")
+			}
+		})
+	}
+}
+
+func TestReadWriteMessageCompressed(t *testing.T) {
+	var buf bytes.Buffer
+	payload := bytes.Repeat([]byte{0x42}, 100)
+	compressed := []byte{0x01, 0x02, 0x03} // Fake compressed data for test
+
+	err := WriteMessageCompressed(&buf, TypeTransaction, compressed, AlgorithmLZ4, uint32(len(payload)))
+	if err != nil {
+		t.Fatalf("WriteMessageCompressed failed: %v", err)
+	}
+
+	header, readPayload, err := ReadMessage(&buf)
+	if err != nil {
+		t.Fatalf("ReadMessage failed: %v", err)
+	}
+
+	if header.MessageType != TypeTransaction {
+		t.Errorf("MessageType = %d, want %d", header.MessageType, TypeTransaction)
+	}
+	if !header.Compressed {
+		t.Error("Compressed = false, want true")
+	}
+	if header.UncompressedSize != uint32(len(payload)) {
+		t.Errorf("UncompressedSize = %d, want %d", header.UncompressedSize, len(payload))
+	}
+	if !bytes.Equal(readPayload, compressed) {
+		t.Error("Compressed payload mismatch")
+	}
+}
+
+func TestHeaderSize(t *testing.T) {
+	uncompressed := &Header{Compressed: false}
+	if uncompressed.HeaderSize() != HeaderSizeUncompressed {
+		t.Errorf("Uncompressed HeaderSize = %d, want %d", uncompressed.HeaderSize(), HeaderSizeUncompressed)
+	}
+
+	compressed := &Header{Compressed: true}
+	if compressed.HeaderSize() != HeaderSizeCompressed {
+		t.Errorf("Compressed HeaderSize = %d, want %d", compressed.HeaderSize(), HeaderSizeCompressed)
+	}
+}
+
+func TestHeaderTotalSize(t *testing.T) {
+	header := &Header{
+		PayloadSize: 1000,
+		Compressed:  false,
+	}
+	expected := HeaderSizeUncompressed + 1000
+	if header.TotalSize() != expected {
+		t.Errorf("TotalSize = %d, want %d", header.TotalSize(), expected)
+	}
+}
+
+func TestMessageTypeString(t *testing.T) {
+	tests := []struct {
+		msgType MessageType
+		want    string
+	}{
+		{TypePing, "mtPING"},
+		{TypeManifests, "mtMANIFESTS"},
+		{TypeEndpoints, "mtENDPOINTS"},
+		{TypeTransaction, "mtTRANSACTION"},
+		{TypeValidation, "mtVALIDATION"},
+		{TypeUnknown, "mtUNKNOWN"},
+		{MessageType(9999), "mtUNKNOWN"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			if got := tt.msgType.String(); got != tt.want {
+				t.Errorf("String() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

@@ -16,8 +16,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/LeJamon/goXRPLd/internal/peermanagement/compression"
 	"github.com/LeJamon/goXRPLd/internal/peermanagement/handshake"
 	"github.com/LeJamon/goXRPLd/internal/peermanagement/identity"
+	"github.com/LeJamon/goXRPLd/internal/peermanagement/message"
 	"github.com/LeJamon/goXRPLd/internal/peermanagement/token"
 )
 
@@ -389,4 +391,156 @@ func (s State) String() string {
 	default:
 		return "unknown"
 	}
+}
+
+// SendMessage sends a protocol message to the peer.
+// The message is automatically compressed if beneficial.
+func (p *Peer) SendMessage(msg message.Message) error {
+	p.mu.RLock()
+	conn := p.conn
+	state := p.state
+	p.mu.RUnlock()
+
+	if state != StateConnected || conn == nil {
+		return ErrClosed
+	}
+
+	// Encode the message
+	payload, err := message.Encode(msg)
+	if err != nil {
+		return fmt.Errorf("failed to encode message: %w", err)
+	}
+
+	msgType := msg.Type()
+
+	// Try to compress the message
+	compressed, wasCompressed := compression.CompressIfWorthwhile(uint16(msgType), payload)
+
+	if wasCompressed {
+		return message.WriteMessageCompressed(
+			conn,
+			msgType,
+			compressed,
+			message.AlgorithmLZ4,
+			uint32(len(payload)),
+		)
+	}
+
+	return message.WriteMessage(conn, msgType, payload)
+}
+
+// SendRawMessage sends a raw message with the specified type.
+// The caller is responsible for encoding the payload.
+func (p *Peer) SendRawMessage(msgType message.MessageType, payload []byte) error {
+	p.mu.RLock()
+	conn := p.conn
+	state := p.state
+	p.mu.RUnlock()
+
+	if state != StateConnected || conn == nil {
+		return ErrClosed
+	}
+
+	// Try to compress the message
+	compressed, wasCompressed := compression.CompressIfWorthwhile(uint16(msgType), payload)
+
+	if wasCompressed {
+		return message.WriteMessageCompressed(
+			conn,
+			msgType,
+			compressed,
+			message.AlgorithmLZ4,
+			uint32(len(payload)),
+		)
+	}
+
+	return message.WriteMessage(conn, msgType, payload)
+}
+
+// ReadMessage reads a protocol message from the peer.
+// Compressed messages are automatically decompressed.
+func (p *Peer) ReadMessage() (*message.Header, []byte, error) {
+	p.mu.RLock()
+	conn := p.conn
+	state := p.state
+	p.mu.RUnlock()
+
+	if state != StateConnected || conn == nil {
+		return nil, nil, ErrClosed
+	}
+
+	header, payload, err := message.ReadMessage(conn)
+	if err != nil {
+		if err == io.EOF {
+			return nil, nil, ErrClosed
+		}
+		return nil, nil, fmt.Errorf("failed to read message: %w", err)
+	}
+
+	// Decompress if needed
+	if header.Compressed {
+		decompressed, err := compression.DecompressLZ4(payload, int(header.UncompressedSize))
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to decompress message: %w", err)
+		}
+		payload = decompressed
+	}
+
+	return header, payload, nil
+}
+
+// ReadAndDecodeMessage reads and decodes a protocol message from the peer.
+func (p *Peer) ReadAndDecodeMessage() (message.Message, error) {
+	header, payload, err := p.ReadMessage()
+	if err != nil {
+		return nil, err
+	}
+
+	msg, err := message.Decode(header.MessageType, payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode message type %s: %w", header.MessageType, err)
+	}
+
+	return msg, nil
+}
+
+// SendPing sends a ping message to the peer.
+func (p *Peer) SendPing(seq uint32) error {
+	ping := &message.Ping{
+		PType:    message.PingTypePing,
+		Seq:      seq,
+		PingTime: uint64(time.Now().UnixMilli()),
+	}
+	return p.SendMessage(ping)
+}
+
+// SendPong sends a pong response to the peer.
+func (p *Peer) SendPong(seq uint32, pingTime uint64) error {
+	pong := &message.Ping{
+		PType:    message.PingTypePong,
+		Seq:      seq,
+		PingTime: pingTime,
+		NetTime:  uint64(time.Now().UnixMilli()),
+	}
+	return p.SendMessage(pong)
+}
+
+// SendEndpoints sends peer endpoints for peer discovery.
+func (p *Peer) SendEndpoints(endpoints []message.Endpointv2) error {
+	msg := &message.Endpoints{
+		Version:     2,
+		EndpointsV2: endpoints,
+	}
+	return p.SendMessage(msg)
+}
+
+// SendStatusChange sends a status change message.
+func (p *Peer) SendStatusChange(status message.NodeStatus, event message.NodeEvent, ledgerSeq uint32, ledgerHash []byte) error {
+	msg := &message.StatusChange{
+		NewStatus:  status,
+		NewEvent:   event,
+		LedgerSeq:  ledgerSeq,
+		LedgerHash: ledgerHash,
+	}
+	return p.SendMessage(msg)
 }
