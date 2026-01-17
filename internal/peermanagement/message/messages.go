@@ -179,6 +179,7 @@ type GetLedger struct {
 	NodeIDs       [][]byte       `json:"node_ids,omitempty"`
 	RequestCookie uint64         `json:"request_cookie,omitempty"`
 	QueryDepth    uint32         `json:"query_depth,omitempty"`
+	QueryType     QueryType      `json:"query_type,omitempty"`
 }
 
 func (g *GetLedger) Type() MessageType { return TypeGetLedger }
@@ -258,3 +259,15 @@ type HaveTransactions struct {
 }
 
 func (h *HaveTransactions) Type() MessageType { return TypeHaveTransactions }
+
+// QueryType for GetLedger requests
+type QueryType int32
+
+const (
+	// QueryTypeLedgerHeader requests the ledger header.
+	QueryTypeLedgerHeader QueryType = 0
+	// QueryTypeAccountState requests account state nodes.
+	QueryTypeAccountState QueryType = 1
+	// QueryTypeTransactionData requests transaction nodes.
+	QueryTypeTransactionData QueryType = 2
+)
