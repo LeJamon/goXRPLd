@@ -96,6 +96,11 @@ const (
 
 	// Path finding errors
 	RpcNO_PATH               = 46
+
+	// Implementation status errors
+	RpcNOT_IMPL              = 47 // Feature not implemented
+	RpcNOT_VALIDATOR         = 48 // Server is not configured as a validator
+	RpcNOT_SYNCED            = 49 // Not synced to network
 )
 
 // Standard error constructors

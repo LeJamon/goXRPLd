@@ -87,4 +87,42 @@ func (s *Server) registerAllMethods() {
 	// Clio-specific Methods (if running in clio mode)
 	s.registry.Register("nft_info", &NftInfoMethod{})
 	s.registry.Register("ledger_index", &LedgerIndexMethod{})
+
+	// =========================================================================
+	// Additional Methods (added for rippled compatibility)
+	// =========================================================================
+
+	// Server/Network Methods
+	s.registry.Register("fetch_info", &FetchInfoMethod{})
+	s.registry.Register("connect", &ConnectMethod{})
+	s.registry.Register("print", &PrintMethod{})
+
+	// Ledger Methods
+	s.registry.Register("ledger_header", &LedgerHeaderMethod{})
+	s.registry.Register("ledger_request", &LedgerRequestMethod{})
+	s.registry.Register("ledger_cleaner", &LedgerCleanerMethod{})
+	s.registry.Register("ledger_diff", &LedgerDiffMethod{})
+
+	// Account Methods
+	s.registry.Register("owner_info", &OwnerInfoMethod{})
+
+	// Transaction Methods
+	s.registry.Register("simulate", &SimulateMethod{})
+	s.registry.Register("tx_reduce_relay", &TxReduceRelayMethod{})
+
+	// Validator Methods
+	s.registry.Register("validator_info", &ValidatorInfoMethod{})
+	s.registry.Register("unl_list", &UnlListMethod{})
+
+	// Admin/Operational Methods
+	s.registry.Register("can_delete", &CanDeleteMethod{})
+	s.registry.Register("get_counts", &GetCountsMethod{})
+	s.registry.Register("log_level", &LogLevelMethod{})
+	s.registry.Register("log_rotate", &LogRotateMethod{})
+	s.registry.Register("black_list", &BlackListMethod{})
+
+	// Feature-specific Methods (depend on unimplemented ledger entry types)
+	s.registry.Register("amm_info", &AMMInfoMethod{})
+	s.registry.Register("vault_info", &VaultInfoMethod{})
+	s.registry.Register("get_aggregate_price", &GetAggregatePriceMethod{})
 }

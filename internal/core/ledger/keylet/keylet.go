@@ -25,8 +25,10 @@ const (
 	spaceSignerList uint16 = 'S' // Signer list
 	spaceCheck      uint16 = 'C' // Check
 	spaceDepPreauth uint16 = 'p' // Deposit preauthorization
-	spaceNFTokenOff uint16 = 'q' // NFToken offer
-	spaceNFTokenPg  uint16 = 'P' // NFToken page
+	spaceNFTokenOff  uint16 = 'q' // NFToken offer
+	spaceNFTokenPg   uint16 = 'P' // NFToken page
+	spaceNFTBuyOffers  uint16 = 'h' // NFToken buy offers directory
+	spaceNFTSellOffers uint16 = 'i' // NFToken sell offers directory (note: same as Bridge but different context)
 	spaceAMM        uint16 = 'A' // AMM
 	spaceBridge     uint16 = 'i' // XChain bridge
 	spaceXCClaimID  uint16 = 'Q' // XChain claim ID
@@ -302,6 +304,22 @@ func NFTokenOffer(accountID [20]byte, sequence uint32) Keylet {
 	}
 }
 
+// NFTBuys returns the keylet for the buy offers directory of an NFToken.
+func NFTBuys(nftokenID [32]byte) Keylet {
+	return Keylet{
+		Type: entry.TypeDirectoryNode,
+		Key:  indexHash(spaceNFTBuyOffers, nftokenID[:]),
+	}
+}
+
+// NFTSells returns the keylet for the sell offers directory of an NFToken.
+func NFTSells(nftokenID [32]byte) Keylet {
+	return Keylet{
+		Type: entry.TypeDirectoryNode,
+		Key:  indexHash(spaceNFTSellOffers, nftokenID[:]),
+	}
+}
+
 // PayChannel returns the keylet for a payment channel.
 func PayChannel(srcAccountID, dstAccountID [20]byte, sequence uint32) Keylet {
 	seqBytes := make([]byte, 4)
@@ -310,4 +328,47 @@ func PayChannel(srcAccountID, dstAccountID [20]byte, sequence uint32) Keylet {
 		Type: entry.TypePayChannel,
 		Key:  indexHash(spaceEscrow, srcAccountID[:], dstAccountID[:], seqBytes),
 	}
+}
+
+// AMM returns the keylet for an AMM entry.
+// The keylet is computed from the sorted asset pair (issuer + currency).
+// Reference: rippled Indexes.cpp amm(Asset const& issue1, Asset const& issue2)
+func AMM(issue1Issuer, issue1Currency, issue2Issuer, issue2Currency [20]byte) Keylet {
+	// Sort the issues (compare issuer first, then currency)
+	var minIssuer, minCurrency, maxIssuer, maxCurrency [20]byte
+
+	cmp := compareAccountIDs(issue1Issuer, issue2Issuer)
+	if cmp < 0 || (cmp == 0 && compareCurrencies(issue1Currency, issue2Currency) < 0) {
+		minIssuer, minCurrency = issue1Issuer, issue1Currency
+		maxIssuer, maxCurrency = issue2Issuer, issue2Currency
+	} else {
+		minIssuer, minCurrency = issue2Issuer, issue2Currency
+		maxIssuer, maxCurrency = issue1Issuer, issue1Currency
+	}
+
+	return Keylet{
+		Type: entry.TypeAMM,
+		Key:  indexHash(spaceAMM, minIssuer[:], minCurrency[:], maxIssuer[:], maxCurrency[:]),
+	}
+}
+
+// AMMByID returns an AMM keylet for a known AMM ID.
+func AMMByID(ammID [32]byte) Keylet {
+	return Keylet{
+		Type: entry.TypeAMM,
+		Key:  ammID,
+	}
+}
+
+// compareCurrencies compares two currency codes lexicographically.
+func compareCurrencies(a, b [20]byte) int {
+	for i := 0; i < 20; i++ {
+		if a[i] < b[i] {
+			return -1
+		}
+		if a[i] > b[i] {
+			return 1
+		}
+	}
+	return 0
 }

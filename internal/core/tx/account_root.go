@@ -25,6 +25,8 @@ type AccountRoot struct {
 	TransferRate      uint32
 	TickSize          uint8
 	NFTokenMinter     string   // Account allowed to mint NFTokens on behalf of this account
+	MintedNFTokens    uint32   // Number of NFTokens minted by this account (issuer tracking)
+	BurnedNFTokens    uint32   // Number of NFTokens burned for this issuer
 	AccountTxnID      [32]byte // Hash of the last transaction this account submitted (when enabled)
 	WalletLocator     string   // Arbitrary hex data (deprecated)
 	PreviousTxnID     [32]byte
@@ -45,20 +47,22 @@ const (
 	fieldTypeAccountID = 8 // Same as Account, used in serialization
 
 	// Field codes for AccountRoot
-	fieldCodeLedgerEntryType = 1  // UInt16
-	fieldCodeFlags           = 2  // UInt32
-	fieldCodeSequence        = 4  // UInt32
-	fieldCodeOwnerCount      = 13 // UInt32 (per rippled sfields.macro)
-	fieldCodeTransferRate    = 11 // UInt32
-	fieldCodeBalance         = 1  // Amount
-	fieldCodeRegularKey      = 8  // Account
-	fieldCodeAccount         = 1  // Account (different context)
-	fieldCodeNFTokenMinter   = 9  // Account - authorized NFT minter
-	fieldCodeEmailHash       = 1  // Hash128
-	fieldCodeDomain          = 7  // Blob
-	fieldCodeTickSize        = 16 // UInt8 (stored as UInt16)
-	fieldCodeAccountTxnID    = 9  // Hash256 - last transaction ID
-	fieldCodeWalletLocator   = 7  // Hash256 - wallet locator (deprecated)
+	fieldCodeLedgerEntryType  = 1  // UInt16
+	fieldCodeFlags            = 2  // UInt32
+	fieldCodeSequence         = 4  // UInt32
+	fieldCodeOwnerCount       = 13 // UInt32 (per rippled sfields.macro)
+	fieldCodeTransferRate     = 11 // UInt32
+	fieldCodeMintedNFTokens   = 43 // UInt32 - number of NFTokens minted
+	fieldCodeBurnedNFTokens   = 44 // UInt32 - number of NFTokens burned
+	fieldCodeBalance          = 1  // Amount
+	fieldCodeRegularKey       = 8  // Account
+	fieldCodeAccount          = 1  // Account (different context)
+	fieldCodeNFTokenMinter    = 9  // Account - authorized NFT minter
+	fieldCodeEmailHash        = 1  // Hash128
+	fieldCodeDomain           = 7  // Blob
+	fieldCodeTickSize         = 16 // UInt8 (stored as UInt16)
+	fieldCodeAccountTxnID     = 9  // Hash256 - last transaction ID
+	fieldCodeWalletLocator    = 7  // Hash256 - wallet locator (deprecated)
 
 	// Ledger entry type code for AccountRoot
 	ledgerEntryTypeAccountRoot = 0x0061
@@ -222,6 +226,10 @@ func parseAccountRoot(data []byte) (*AccountRoot, error) {
 				account.OwnerCount = value
 			case fieldCodeTransferRate:
 				account.TransferRate = value
+			case fieldCodeMintedNFTokens:
+				account.MintedNFTokens = value
+			case fieldCodeBurnedNFTokens:
+				account.BurnedNFTokens = value
 			}
 
 		case fieldTypeAmount:
@@ -365,6 +373,16 @@ func serializeAccountRoot(account *AccountRoot) ([]byte, error) {
 	// Add NFTokenMinter if set
 	if account.NFTokenMinter != "" {
 		jsonObj["NFTokenMinter"] = account.NFTokenMinter
+	}
+
+	// Add MintedNFTokens if set (for NFToken issuer tracking)
+	if account.MintedNFTokens > 0 {
+		jsonObj["MintedNFTokens"] = account.MintedNFTokens
+	}
+
+	// Add BurnedNFTokens if set (for NFToken issuer tracking)
+	if account.BurnedNFTokens > 0 {
+		jsonObj["BurnedNFTokens"] = account.BurnedNFTokens
 	}
 
 	// Add AccountTxnID if set (non-zero)

@@ -2083,8 +2083,27 @@ func (e *Engine) matchOffers(offer *OfferCreate, account *AccountRoot, metadata 
 		matchKey.Type = 0x6F // Offer type
 
 		if isZeroAmount(matchRemainingGets) || isZeroAmount(matchRemainingPays) {
-			// Fully consumed - delete offer
+			// Fully consumed - delete offer and decrement maker's owner count
 			e.view.Erase(matchKey)
+
+			// Decrement maker's OwnerCount
+			// Reference: rippled offerDelete() adjusts owner count
+			makerID, err := decodeAccountID(match.offer.Account)
+			if err == nil {
+				makerAccountKey := keylet.Account(makerID)
+				makerAccountData, err := e.view.Read(makerAccountKey)
+				if err == nil {
+					makerAccount, err := parseAccountRoot(makerAccountData)
+					if err == nil && makerAccount.OwnerCount > 0 {
+						makerAccount.OwnerCount--
+						updatedMakerData, err := serializeAccountRoot(makerAccount)
+						if err == nil {
+							e.view.Update(makerAccountKey, updatedMakerData)
+						}
+					}
+				}
+			}
+
 			metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
 				NodeType:        "DeletedNode",
 				LedgerEntryType: "Offer",
@@ -2120,7 +2139,10 @@ func (e *Engine) matchOffers(offer *OfferCreate, account *AccountRoot, metadata 
 		}
 
 		// Transfer funds for this match
-		e.executeOfferTrade(account, match.offer, gotAmount, paidAmount, metadata)
+		// If trade fails (insufficient funds), skip this match and continue
+		if err := e.executeOfferTrade(account, match.offer, gotAmount, paidAmount, metadata); err != nil {
+			continue // Skip this match if trade can't be executed
+		}
 
 		// Accumulate totals
 		totalGot = addAmount(totalGot, gotAmount)
@@ -2226,63 +2248,88 @@ func isZeroAmount(a Amount) bool {
 }
 
 // executeOfferTrade executes the fund transfer for an offer trade
-func (e *Engine) executeOfferTrade(taker *AccountRoot, maker *LedgerOffer, takerGot, takerPaid Amount, metadata *Metadata) {
+// Reference: rippled's offer crossing via flowCross
+func (e *Engine) executeOfferTrade(taker *AccountRoot, maker *LedgerOffer, takerGot, takerPaid Amount, metadata *Metadata) error {
 	// Get maker account
 	makerAccountID, err := decodeAccountID(maker.Account)
 	if err != nil {
-		return
+		return err
 	}
 	makerKey := keylet.Account(makerAccountID)
 	makerData, err := e.view.Read(makerKey)
 	if err != nil {
-		return
+		return err
 	}
 	makerAccount, err := parseAccountRoot(makerData)
 	if err != nil {
-		return
+		return err
 	}
 
 	// Transfer takerGot from maker to taker
 	if takerGot.IsNative() {
 		drops, _ := parseDropsString(takerGot.Value)
+
+		// Verify maker has sufficient balance (including reserve)
+		// Reference: rippled accountFunds checks available balance
+		makerReserve := e.AccountReserve(makerAccount.OwnerCount)
+		if makerAccount.Balance < drops+makerReserve {
+			// Maker doesn't have sufficient funds
+			return fmt.Errorf("maker has insufficient balance")
+		}
+
 		makerAccount.Balance -= drops
 		taker.Balance += drops
 	} else {
 		// IOU transfer - update trust lines
-		e.transferIOU(maker.Account, taker.Account, takerGot, metadata)
+		if err := e.transferIOU(maker.Account, taker.Account, takerGot, metadata); err != nil {
+			return err
+		}
 	}
 
 	// Transfer takerPaid from taker to maker
 	if takerPaid.IsNative() {
 		drops, _ := parseDropsString(takerPaid.Value)
+
+		// Verify taker has sufficient balance (including reserve)
+		takerReserve := e.AccountReserve(taker.OwnerCount)
+		if taker.Balance < drops+takerReserve {
+			// Taker doesn't have sufficient funds
+			return fmt.Errorf("taker has insufficient balance")
+		}
+
 		taker.Balance -= drops
 		makerAccount.Balance += drops
 	} else {
 		// IOU transfer - update trust lines
-		e.transferIOU(taker.Account, maker.Account, takerPaid, metadata)
+		if err := e.transferIOU(taker.Account, maker.Account, takerPaid, metadata); err != nil {
+			return err
+		}
 	}
 
 	// Update maker account
 	updatedMakerData, err := serializeAccountRoot(makerAccount)
 	if err != nil {
-		return
+		return err
 	}
 	e.view.Update(makerKey, updatedMakerData)
+
+	return nil
 }
 
 // transferIOU transfers an IOU amount between accounts via trust lines
-func (e *Engine) transferIOU(fromAccount, toAccount string, amount Amount, metadata *Metadata) {
+// Reference: rippled's flow engine for IOU transfers
+func (e *Engine) transferIOU(fromAccount, toAccount string, amount Amount, metadata *Metadata) error {
 	fromID, err := decodeAccountID(fromAccount)
 	if err != nil {
-		return
+		return err
 	}
 	toID, err := decodeAccountID(toAccount)
 	if err != nil {
-		return
+		return err
 	}
 	issuerID, err := decodeAccountID(amount.Issuer)
 	if err != nil {
-		return
+		return err
 	}
 
 	iouAmount := NewIOUAmount(amount.Value, amount.Currency, amount.Issuer)
@@ -2294,36 +2341,46 @@ func (e *Engine) transferIOU(fromAccount, toAccount string, amount Amount, metad
 	if fromIsIssuer {
 		// Issuer is sending - increase to's trust line balance
 		trustLineKey := keylet.Line(toID, issuerID, amount.Currency)
-		e.updateTrustLineBalance(trustLineKey, toID, issuerID, iouAmount, true, metadata)
+		if err := e.updateTrustLineBalance(trustLineKey, toID, issuerID, iouAmount, true, metadata); err != nil {
+			return err
+		}
 	} else if toIsIssuer {
 		// Sending to issuer - decrease from's trust line balance
 		trustLineKey := keylet.Line(fromID, issuerID, amount.Currency)
-		e.updateTrustLineBalance(trustLineKey, fromID, issuerID, iouAmount, false, metadata)
+		if err := e.updateTrustLineBalance(trustLineKey, fromID, issuerID, iouAmount, false, metadata); err != nil {
+			return err
+		}
 	} else {
 		// Transfer between non-issuers
 		// Decrease from's balance with issuer
 		fromTrustKey := keylet.Line(fromID, issuerID, amount.Currency)
-		e.updateTrustLineBalance(fromTrustKey, fromID, issuerID, iouAmount, false, metadata)
+		if err := e.updateTrustLineBalance(fromTrustKey, fromID, issuerID, iouAmount, false, metadata); err != nil {
+			return err
+		}
 
 		// Increase to's balance with issuer
 		toTrustKey := keylet.Line(toID, issuerID, amount.Currency)
-		e.updateTrustLineBalance(toTrustKey, toID, issuerID, iouAmount, true, metadata)
+		if err := e.updateTrustLineBalance(toTrustKey, toID, issuerID, iouAmount, true, metadata); err != nil {
+			return err
+		}
 	}
+
+	return nil
 }
 
 // updateTrustLineBalance updates a trust line balance
 // RippleState balance semantics:
 // - Negative balance = LOW owes HIGH (HIGH holds tokens)
 // - Positive balance = HIGH owes LOW (LOW holds tokens)
-func (e *Engine) updateTrustLineBalance(key keylet.Keylet, accountID, issuerID [20]byte, amount IOUAmount, increase bool, metadata *Metadata) {
+func (e *Engine) updateTrustLineBalance(key keylet.Keylet, accountID, issuerID [20]byte, amount IOUAmount, increase bool, metadata *Metadata) error {
 	trustLineData, err := e.view.Read(key)
 	if err != nil {
-		return
+		return fmt.Errorf("trust line not found: %w", err)
 	}
 
 	rs, err := parseRippleState(trustLineData)
 	if err != nil {
-		return
+		return fmt.Errorf("failed to parse trust line: %w", err)
 	}
 
 	accountIsLow := compareAccountIDsForLine(accountID, issuerID) < 0
@@ -2353,10 +2410,12 @@ func (e *Engine) updateTrustLineBalance(key keylet.Keylet, accountID, issuerID [
 
 	updatedData, err := serializeRippleState(rs)
 	if err != nil {
-		return
+		return fmt.Errorf("failed to serialize trust line: %w", err)
 	}
 
-	e.view.Update(key, updatedData)
+	if err := e.view.Update(key, updatedData); err != nil {
+		return fmt.Errorf("failed to update trust line: %w", err)
+	}
 
 	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
 		NodeType:        "ModifiedNode",
@@ -2369,6 +2428,8 @@ func (e *Engine) updateTrustLineBalance(key keylet.Keylet, accountID, issuerID [
 			},
 		},
 	})
+
+	return nil
 }
 
 // subtractAmount subtracts b from a
