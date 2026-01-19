@@ -26,31 +26,73 @@ func (m *AccountNftsMethod) Handle(ctx *rpc_types.RpcContext, params json.RawMes
 		return nil, rpc_types.RpcErrorInvalidParams("Missing required parameter: account")
 	}
 
-	// TODO: Implement NFT retrieval
-	// 1. Validate account address
-	// 2. Determine target ledger
-	// 3. Find all NFTokenPage objects owned by the account
-	// 4. Extract individual NFTs from the pages
-	// 5. Apply pagination using marker and limit
-	// 6. Return NFT details including token ID, issuer, and metadata
+	// Check if ledger service is available
+	if rpc_types.Services == nil || rpc_types.Services.Ledger == nil {
+		return nil, rpc_types.RpcErrorInternal("Ledger service not available")
+	}
 
+	// Determine ledger index to use
+	ledgerIndex := "current"
+	if request.LedgerIndex != "" {
+		ledgerIndex = request.LedgerIndex.String()
+	}
+
+	// Get account NFTs from the ledger service
+	result, err := rpc_types.Services.Ledger.GetAccountNFTs(
+		request.Account,
+		ledgerIndex,
+		request.Limit,
+	)
+	if err != nil {
+		if err.Error() == "account not found" {
+			return nil, &rpc_types.RpcError{
+				Code:    rpc_types.RpcACT_NOT_FOUND,
+				Message: "Account not found.",
+			}
+		}
+		// Check for malformed account address
+		if len(err.Error()) > 24 && err.Error()[:24] == "invalid account address:" {
+			return nil, &rpc_types.RpcError{
+				Code:    rpc_types.RpcACT_NOT_FOUND,
+				Message: "Account malformed.",
+			}
+		}
+		return nil, rpc_types.RpcErrorInternal("Failed to get account NFTs: " + err.Error())
+	}
+
+	// Build NFTs array with proper field handling
+	nfts := make([]map[string]interface{}, len(result.AccountNFTs))
+	for i, nft := range result.AccountNFTs {
+		nftObj := map[string]interface{}{
+			"Flags":         nft.Flags,
+			"Issuer":        nft.Issuer,
+			"NFTokenID":     nft.NFTokenID,
+			"NFTokenTaxon":  nft.NFTokenTaxon,
+			"nft_serial":    nft.NFTSerial,
+		}
+
+		// Add optional fields only if they have values
+		if nft.URI != "" {
+			nftObj["URI"] = nft.URI
+		}
+		if nft.TransferFee > 0 {
+			nftObj["TransferFee"] = nft.TransferFee
+		}
+
+		nfts[i] = nftObj
+	}
+
+	// Build response
 	response := map[string]interface{}{
-		"account":      request.Account,
-		"account_nfts": []interface{}{
-			// TODO: Load actual NFTs
-			// Each NFT should have structure:
-			// {
-			//   "Flags": 0,
-			//   "Issuer": "rIssuer...",
-			//   "NFTokenID": "TOKEN_ID",
-			//   "NFTokenTaxon": 0,
-			//   "URI": "URI_HEX",
-			//   "nft_serial": 1
-			// }
-		},
-		"ledger_hash":  "PLACEHOLDER_LEDGER_HASH",
-		"ledger_index": 1000,
-		"validated":    true,
+		"account":      result.Account,
+		"account_nfts": nfts,
+		"ledger_hash":  FormatLedgerHash(result.LedgerHash),
+		"ledger_index": result.LedgerIndex,
+		"validated":    result.Validated,
+	}
+
+	if result.Marker != "" {
+		response["marker"] = result.Marker
 	}
 
 	return response, nil

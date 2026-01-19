@@ -1751,6 +1751,11 @@ func parseNFTokenPage(data []byte) (*NFTokenPageData, error) {
 	return page, nil
 }
 
+// ParseNFTokenPageFromBytes is an exported version of parseNFTokenPage for use by other packages
+func ParseNFTokenPageFromBytes(data []byte) (*NFTokenPageData, error) {
+	return parseNFTokenPage(data)
+}
+
 // serializeNFTokenOffer serializes an NFToken offer ledger entry
 func serializeNFTokenOffer(tx *NFTokenCreateOffer, ownerID [20]byte, tokenID [32]byte, amount uint64, sequence uint32) ([]byte, error) {
 	ownerAddress, err := addresscodec.EncodeAccountIDToClassicAddress(ownerID[:])

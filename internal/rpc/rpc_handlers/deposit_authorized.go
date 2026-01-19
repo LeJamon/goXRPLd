@@ -22,24 +22,78 @@ func (m *DepositAuthorizedMethod) Handle(ctx *rpc_types.RpcContext, params json.
 		}
 	}
 
-	if request.SourceAccount == "" || request.DestinationAccount == "" {
-		return nil, rpc_types.RpcErrorInvalidParams("source_account and destination_account are required")
+	if request.SourceAccount == "" {
+		return nil, rpc_types.RpcErrorInvalidParams("Missing field 'source_account'.")
 	}
 
-	// TODO: Implement deposit authorization checking
-	// 1. Determine target ledger
-	// 2. Check destination account's DepositAuth flag
-	// 3. If DepositAuth is set, check for DepositPreauth object
-	// 4. Verify if source account is authorized to send payments
-	// 5. Consider special cases (same account, XRP vs IOU, etc.)
+	if request.DestinationAccount == "" {
+		return nil, rpc_types.RpcErrorInvalidParams("Missing field 'destination_account'.")
+	}
 
+	// Check if service is available
+	if rpc_types.Services == nil || rpc_types.Services.Ledger == nil {
+		return nil, rpc_types.RpcErrorInternal("Ledger service not available")
+	}
+
+	// Determine ledger index to use
+	ledgerIndex := "validated"
+	if request.LedgerIndex != "" {
+		ledgerIndex = request.LedgerIndex.String()
+	}
+
+	// Call the service
+	result, err := rpc_types.Services.Ledger.GetDepositAuthorized(
+		request.SourceAccount,
+		request.DestinationAccount,
+		ledgerIndex,
+	)
+	if err != nil {
+		// Handle specific errors
+		errMsg := err.Error()
+
+		// Source account not found
+		if errMsg == "source account not found" {
+			return nil, &rpc_types.RpcError{
+				Code:    rpc_types.RpcSRC_ACT_NOT_FOUND,
+				Message: "Source account not found.",
+			}
+		}
+
+		// Destination account not found
+		if errMsg == "destination account not found" {
+			return nil, &rpc_types.RpcError{
+				Code:    rpc_types.RpcDST_ACT_NOT_FOUND,
+				Message: "Destination account not found.",
+			}
+		}
+
+		// Check for malformed source_account address
+		if len(errMsg) > 32 && errMsg[:32] == "invalid source_account address: " {
+			return nil, &rpc_types.RpcError{
+				Code:    rpc_types.RpcACT_MALFORMED,
+				Message: "Account malformed.",
+			}
+		}
+
+		// Check for malformed destination_account address
+		if len(errMsg) > 37 && errMsg[:37] == "invalid destination_account address: " {
+			return nil, &rpc_types.RpcError{
+				Code:    rpc_types.RpcACT_MALFORMED,
+				Message: "Account malformed.",
+			}
+		}
+
+		return nil, rpc_types.RpcErrorInternal(errMsg)
+	}
+
+	// Build response
 	response := map[string]interface{}{
-		"source_account":      request.SourceAccount,
-		"destination_account": request.DestinationAccount,
-		"deposit_authorized":  true, // TODO: Calculate actual authorization status
-		"ledger_hash":         "PLACEHOLDER_LEDGER_HASH",
-		"ledger_index":        1000,
-		"validated":           true,
+		"source_account":      result.SourceAccount,
+		"destination_account": result.DestinationAccount,
+		"deposit_authorized":  result.DepositAuthorized,
+		"ledger_hash":         FormatLedgerHash(result.LedgerHash),
+		"ledger_index":        result.LedgerIndex,
+		"validated":           result.Validated,
 	}
 
 	return response, nil

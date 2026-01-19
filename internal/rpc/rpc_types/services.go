@@ -81,6 +81,34 @@ type LedgerService interface {
 
 	// GetAccountObjects retrieves all objects owned by an account
 	GetAccountObjects(account string, ledgerIndex string, objType string, limit uint32) (*AccountObjectsResult, error)
+
+	// GetAccountChannels retrieves payment channels for an account
+	GetAccountChannels(account string, destinationAccount string, ledgerIndex string, limit uint32) (*AccountChannelsResult, error)
+
+	// GetAccountCurrencies retrieves currencies an account can send and receive
+	GetAccountCurrencies(account string, ledgerIndex string) (*AccountCurrenciesResult, error)
+
+	// GetAccountNFTs retrieves NFTs owned by an account
+	GetAccountNFTs(account string, ledgerIndex string, limit uint32) (*AccountNFTsResult, error)
+
+	// GetGatewayBalances retrieves obligations and balances for a gateway account
+	GetGatewayBalances(account string, hotWallets []string, ledgerIndex string) (*GatewayBalancesResult, error)
+
+	// GetNoRippleCheck checks trust lines for proper NoRipple flag settings
+	GetNoRippleCheck(account string, role string, ledgerIndex string, limit uint32, transactions bool) (*NoRippleCheckResult, error)
+
+	// GetDepositAuthorized checks if a source account is authorized to deposit to a destination account
+	GetDepositAuthorized(sourceAccount string, destinationAccount string, ledgerIndex string) (*DepositAuthorizedResult, error)
+}
+
+// DepositAuthorizedResult contains the result of deposit_authorized RPC
+type DepositAuthorizedResult struct {
+	SourceAccount      string   `json:"source_account"`
+	DestinationAccount string   `json:"destination_account"`
+	DepositAuthorized  bool     `json:"deposit_authorized"`
+	LedgerIndex        uint32   `json:"ledger_index"`
+	LedgerHash         [32]byte `json:"ledger_hash"`
+	Validated          bool     `json:"validated"`
 }
 
 // AccountInfo contains account information from the ledger
@@ -344,6 +372,111 @@ type AccountObjectsResult struct {
 	LedgerHash     [32]byte            `json:"ledger_hash"`
 	Validated      bool                `json:"validated"`
 	Marker         string              `json:"marker,omitempty"`
+}
+
+// AccountChannel represents a payment channel for account_channels RPC
+type AccountChannel struct {
+	ChannelID          string `json:"channel_id"`
+	Account            string `json:"account"`
+	DestinationAccount string `json:"destination_account"`
+	Amount             string `json:"amount"`
+	Balance            string `json:"balance"`
+	SettleDelay        uint32 `json:"settle_delay"`
+	PublicKey          string `json:"public_key,omitempty"`
+	PublicKeyHex       string `json:"public_key_hex,omitempty"`
+	Expiration         uint32 `json:"expiration,omitempty"`
+	CancelAfter        uint32 `json:"cancel_after,omitempty"`
+	SourceTag          uint32 `json:"source_tag,omitempty"`
+	DestinationTag     uint32 `json:"destination_tag,omitempty"`
+	HasSourceTag       bool   `json:"-"` // Internal flag, not serialized
+	HasDestTag         bool   `json:"-"` // Internal flag, not serialized
+}
+
+// AccountChannelsResult contains the result of account_channels RPC
+type AccountChannelsResult struct {
+	Account     string           `json:"account"`
+	Channels    []AccountChannel `json:"channels"`
+	LedgerIndex uint32           `json:"ledger_index"`
+	LedgerHash  [32]byte         `json:"ledger_hash"`
+	Validated   bool             `json:"validated"`
+	Marker      string           `json:"marker,omitempty"`
+	Limit       uint32           `json:"limit,omitempty"`
+}
+
+// AccountCurrenciesResult contains the result of account_currencies RPC
+type AccountCurrenciesResult struct {
+	ReceiveCurrencies []string `json:"receive_currencies"`
+	SendCurrencies    []string `json:"send_currencies"`
+	LedgerIndex       uint32   `json:"ledger_index"`
+	LedgerHash        [32]byte `json:"ledger_hash"`
+	Validated         bool     `json:"validated"`
+}
+
+// NFTInfo represents an individual NFT for account_nfts RPC
+type NFTInfo struct {
+	Flags         uint16 `json:"Flags"`
+	Issuer        string `json:"Issuer"`
+	NFTokenID     string `json:"NFTokenID"`
+	NFTokenTaxon  uint32 `json:"NFTokenTaxon"`
+	URI           string `json:"URI,omitempty"`
+	NFTSerial     uint32 `json:"nft_serial"`
+	TransferFee   uint16 `json:"transfer_fee,omitempty"`
+}
+
+// AccountNFTsResult contains the result of account_nfts RPC
+type AccountNFTsResult struct {
+	Account     string    `json:"account"`
+	AccountNFTs []NFTInfo `json:"account_nfts"`
+	LedgerIndex uint32    `json:"ledger_index"`
+	LedgerHash  [32]byte  `json:"ledger_hash"`
+	Validated   bool      `json:"validated"`
+	Marker      string    `json:"marker,omitempty"`
+}
+
+// CurrencyBalance represents a currency balance for gateway_balances
+type CurrencyBalance struct {
+	Currency string `json:"currency"`
+	Value    string `json:"value"`
+}
+
+// GatewayBalancesResult contains the result of gateway_balances RPC
+type GatewayBalancesResult struct {
+	Account        string                         `json:"account"`
+	Obligations    map[string]string              `json:"obligations,omitempty"`    // currency -> value
+	Balances       map[string][]CurrencyBalance   `json:"balances,omitempty"`       // account -> []balance
+	FrozenBalances map[string][]CurrencyBalance   `json:"frozen_balances,omitempty"` // account -> []balance
+	Assets         map[string][]CurrencyBalance   `json:"assets,omitempty"`         // account -> []balance
+	Locked         map[string]string              `json:"locked,omitempty"`         // currency -> value (escrows)
+	LedgerIndex    uint32                         `json:"ledger_index"`
+	LedgerHash     [32]byte                       `json:"ledger_hash"`
+	Validated      bool                           `json:"validated"`
+}
+
+// NoRippleProblem describes a trust line with incorrect NoRipple settings
+type NoRippleProblem struct {
+	Message  string `json:"message"`
+	Currency string `json:"currency"`
+	Peer     string `json:"peer"`
+}
+
+// SuggestedTransaction represents a suggested transaction to fix NoRipple issues
+type SuggestedTransaction struct {
+	TransactionType string                 `json:"TransactionType"`
+	Account         string                 `json:"Account"`
+	Fee             string                 `json:"Fee"`
+	Sequence        uint32                 `json:"Sequence"`
+	SetFlag         uint32                 `json:"SetFlag,omitempty"`
+	Flags           uint32                 `json:"Flags,omitempty"`
+	LimitAmount     map[string]interface{} `json:"LimitAmount,omitempty"`
+}
+
+// NoRippleCheckResult contains the result of noripple_check RPC
+type NoRippleCheckResult struct {
+	Problems     []string               `json:"problems"`
+	Transactions []SuggestedTransaction `json:"transactions,omitempty"`
+	LedgerIndex  uint32                 `json:"ledger_index"`
+	LedgerHash   [32]byte               `json:"ledger_hash"`
+	Validated    bool                   `json:"validated"`
 }
 
 // InitServices initializes the service container

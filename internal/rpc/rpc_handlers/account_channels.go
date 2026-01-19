@@ -27,34 +27,84 @@ func (m *AccountChannelsMethod) Handle(ctx *rpc_types.RpcContext, params json.Ra
 		return nil, rpc_types.RpcErrorInvalidParams("Missing required parameter: account")
 	}
 
-	// TODO: Implement payment channel retrieval
-	// 1. Validate account address
-	// 2. Determine target ledger
-	// 3. Find all PayChannel objects where account is source or destination
-	// 4. Filter by destination_account if provided
-	// 5. Apply pagination using marker and limit
-	// 6. Return channel details including balances and expiration
+	// Check if ledger service is available
+	if rpc_types.Services == nil || rpc_types.Services.Ledger == nil {
+		return nil, rpc_types.RpcErrorInternal("Ledger service not available")
+	}
 
+	// Determine ledger index to use
+	ledgerIndex := "current"
+	if request.LedgerIndex != "" {
+		ledgerIndex = request.LedgerIndex.String()
+	}
+
+	// Get account channels from the ledger service
+	result, err := rpc_types.Services.Ledger.GetAccountChannels(
+		request.Account,
+		request.DestinationAccount,
+		ledgerIndex,
+		request.Limit,
+	)
+	if err != nil {
+		if err.Error() == "account not found" {
+			return nil, &rpc_types.RpcError{
+				Code:    rpc_types.RpcACT_NOT_FOUND,
+				Message: "Account not found.",
+			}
+		}
+		// Handle malformed destination_account address
+		if len(err.Error()) > 32 && err.Error()[:32] == "invalid destination_account addr" {
+			return nil, rpc_types.RpcErrorInvalidParams("Destination account malformed.")
+		}
+		return nil, rpc_types.RpcErrorInternal("Failed to get account channels: " + err.Error())
+	}
+
+	// Build channels array with proper field handling
+	channels := make([]map[string]interface{}, len(result.Channels))
+	for i, ch := range result.Channels {
+		channel := map[string]interface{}{
+			"channel_id":          ch.ChannelID,
+			"account":             ch.Account,
+			"destination_account": ch.DestinationAccount,
+			"amount":              ch.Amount,
+			"balance":             ch.Balance,
+			"settle_delay":        ch.SettleDelay,
+		}
+
+		// Add optional fields only if they have values
+		if ch.PublicKey != "" {
+			channel["public_key"] = ch.PublicKey
+		}
+		if ch.PublicKeyHex != "" {
+			channel["public_key_hex"] = ch.PublicKeyHex
+		}
+		if ch.Expiration > 0 {
+			channel["expiration"] = ch.Expiration
+		}
+		if ch.CancelAfter > 0 {
+			channel["cancel_after"] = ch.CancelAfter
+		}
+		if ch.HasSourceTag {
+			channel["source_tag"] = ch.SourceTag
+		}
+		if ch.HasDestTag {
+			channel["destination_tag"] = ch.DestinationTag
+		}
+
+		channels[i] = channel
+	}
+
+	// Build response
 	response := map[string]interface{}{
-		"account":  request.Account,
-		"channels": []interface{}{
-			// TODO: Load actual payment channels
-			// Each channel should have structure:
-			// {
-			//   "account": "rSource...",
-			//   "amount": "1000000000",
-			//   "balance": "0",
-			//   "channel_id": "CHANNEL_ID",
-			//   "destination_account": "rDest...",
-			//   "expiration": 12345678,
-			//   "public_key": "PUBLIC_KEY",
-			//   "public_key_hex": "HEX_KEY",
-			//   "settle_delay": 3600
-			// }
-		},
-		"ledger_hash":  "PLACEHOLDER_LEDGER_HASH",
-		"ledger_index": 1000,
-		"validated":    true,
+		"account":      result.Account,
+		"channels":     channels,
+		"ledger_hash":  FormatLedgerHash(result.LedgerHash),
+		"ledger_index": result.LedgerIndex,
+		"validated":    result.Validated,
+	}
+
+	if result.Marker != "" {
+		response["marker"] = result.Marker
 	}
 
 	return response, nil

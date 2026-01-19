@@ -122,6 +122,15 @@ const (
 	lsfAllowTrustLineClawback uint32 = 0x80000000
 )
 
+// Exported account flags for external use
+const (
+	// LsfDefaultRipple indicates rippling is enabled by default on trust lines
+	LsfDefaultRipple uint32 = lsfDefaultRipple
+
+	// LsfDepositAuth indicates the account requires deposit authorization
+	LsfDepositAuth uint32 = lsfDepositAuth
+)
+
 // decodeAccountID decodes an XRPL address to a 20-byte account ID
 func decodeAccountID(address string) ([20]byte, error) {
 	var accountID [20]byte
