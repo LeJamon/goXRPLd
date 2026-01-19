@@ -99,6 +99,12 @@ type LedgerService interface {
 
 	// GetDepositAuthorized checks if a source account is authorized to deposit to a destination account
 	GetDepositAuthorized(sourceAccount string, destinationAccount string, ledgerIndex string) (*DepositAuthorizedResult, error)
+
+	// GetNFTBuyOffers retrieves buy offers for an NFToken
+	GetNFTBuyOffers(nftID [32]byte, ledgerIndex string, limit uint32, marker string) (*NFTOffersResult, error)
+
+	// GetNFTSellOffers retrieves sell offers for an NFToken
+	GetNFTSellOffers(nftID [32]byte, ledgerIndex string, limit uint32, marker string) (*NFTOffersResult, error)
 }
 
 // DepositAuthorizedResult contains the result of deposit_authorized RPC
@@ -477,6 +483,27 @@ type NoRippleCheckResult struct {
 	LedgerIndex  uint32                 `json:"ledger_index"`
 	LedgerHash   [32]byte               `json:"ledger_hash"`
 	Validated    bool                   `json:"validated"`
+}
+
+// NFTOfferInfo represents an individual NFToken offer for nft_buy_offers/nft_sell_offers RPC
+type NFTOfferInfo struct {
+	NFTOfferIndex string      `json:"nft_offer_index"`
+	Flags         uint32      `json:"flags"`
+	Owner         string      `json:"owner"`
+	Amount        interface{} `json:"amount"`               // Can be string (XRP drops) or object (IOU)
+	Destination   string      `json:"destination,omitempty"` // Optional
+	Expiration    uint32      `json:"expiration,omitempty"`  // Optional
+}
+
+// NFTOffersResult contains the result of nft_buy_offers/nft_sell_offers RPC
+type NFTOffersResult struct {
+	NFTID       string         `json:"nft_id"`
+	Offers      []NFTOfferInfo `json:"offers"`
+	LedgerIndex uint32         `json:"ledger_index"`
+	LedgerHash  [32]byte       `json:"ledger_hash"`
+	Validated   bool           `json:"validated"`
+	Limit       uint32         `json:"limit,omitempty"`  // Only present when paginating
+	Marker      string         `json:"marker,omitempty"` // Only present when more results available
 }
 
 // InitServices initializes the service container

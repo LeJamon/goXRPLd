@@ -111,6 +111,9 @@ const (
 	RpcCHANNEL_AMT_MALFORMED = 46 // Payment channel amount is malformed
 	RpcPUBLIC_MALFORMED     = 62 // Public key is malformed
 	RpcBAD_KEY_TYPE         = 76 // Bad key type
+
+	// Object errors - must match rippled exactly
+	RpcOBJECT_NOT_FOUND = 92 // Object not found
 )
 
 // Standard error constructors
@@ -178,4 +181,19 @@ func RpcErrorNotEnabled(feature string) *RpcError {
 
 func RpcErrorAmendmentBlocked(amendment string) *RpcError {
 	return NewRpcError(RpcAMENDMENT_BLOCKED, "amendmentBlocked", "amendmentBlocked", "Amendment blocked: "+amendment)
+}
+
+// RpcErrorObjectNotFound returns an error for object not found (matches rippled rpcOBJECT_NOT_FOUND)
+func RpcErrorObjectNotFound(message string) *RpcError {
+	return NewRpcError(RpcOBJECT_NOT_FOUND, "objectNotFound", "objectNotFound", message)
+}
+
+// RpcErrorMissingField returns an error for missing required field (matches rippled missing_field_error)
+func RpcErrorMissingField(field string) *RpcError {
+	return NewRpcError(RpcINVALID_PARAMS, "invalidParams", "invalidParams", "Missing field '"+field+"'.")
+}
+
+// RpcErrorInvalidField returns an error for invalid field value (matches rippled invalid_field_error)
+func RpcErrorInvalidField(field string) *RpcError {
+	return NewRpcError(RpcINVALID_PARAMS, "invalidParams", "invalidParams", "Invalid field '"+field+"'.")
 }

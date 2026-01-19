@@ -686,3 +686,65 @@ func (a *LedgerServiceAdapter) GetDepositAuthorized(sourceAccount string, destin
 		Validated:          result.Validated,
 	}, nil
 }
+
+// GetNFTBuyOffers retrieves buy offers for an NFToken
+func (a *LedgerServiceAdapter) GetNFTBuyOffers(nftID [32]byte, ledgerIndex string, limit uint32, marker string) (*rpc_types.NFTOffersResult, error) {
+	result, err := a.svc.GetNFTBuyOffers(nftID, ledgerIndex, limit, marker)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert service result to RPC result
+	offers := make([]rpc_types.NFTOfferInfo, len(result.Offers))
+	for i, offer := range result.Offers {
+		offers[i] = rpc_types.NFTOfferInfo{
+			NFTOfferIndex: offer.NFTOfferIndex,
+			Flags:         offer.Flags,
+			Owner:         offer.Owner,
+			Amount:        offer.Amount,
+			Destination:   offer.Destination,
+			Expiration:    offer.Expiration,
+		}
+	}
+
+	return &rpc_types.NFTOffersResult{
+		NFTID:       result.NFTID,
+		Offers:      offers,
+		LedgerIndex: result.LedgerIndex,
+		LedgerHash:  result.LedgerHash,
+		Validated:   result.Validated,
+		Limit:       result.Limit,
+		Marker:      result.Marker,
+	}, nil
+}
+
+// GetNFTSellOffers retrieves sell offers for an NFToken
+func (a *LedgerServiceAdapter) GetNFTSellOffers(nftID [32]byte, ledgerIndex string, limit uint32, marker string) (*rpc_types.NFTOffersResult, error) {
+	result, err := a.svc.GetNFTSellOffers(nftID, ledgerIndex, limit, marker)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert service result to RPC result
+	offers := make([]rpc_types.NFTOfferInfo, len(result.Offers))
+	for i, offer := range result.Offers {
+		offers[i] = rpc_types.NFTOfferInfo{
+			NFTOfferIndex: offer.NFTOfferIndex,
+			Flags:         offer.Flags,
+			Owner:         offer.Owner,
+			Amount:        offer.Amount,
+			Destination:   offer.Destination,
+			Expiration:    offer.Expiration,
+		}
+	}
+
+	return &rpc_types.NFTOffersResult{
+		NFTID:       result.NFTID,
+		Offers:      offers,
+		LedgerIndex: result.LedgerIndex,
+		LedgerHash:  result.LedgerHash,
+		Validated:   result.Validated,
+		Limit:       result.Limit,
+		Marker:      result.Marker,
+	}, nil
+}

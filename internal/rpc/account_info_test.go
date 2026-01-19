@@ -130,6 +130,12 @@ func (m *mockLedgerService) GetNoRippleCheck(account string, role string, ledger
 func (m *mockLedgerService) GetDepositAuthorized(sourceAccount string, destinationAccount string, ledgerIndex string) (*rpc_types.DepositAuthorizedResult, error) {
 	return nil, errors.New("not implemented")
 }
+func (m *mockLedgerService) GetNFTBuyOffers(nftID [32]byte, ledgerIndex string, limit uint32, marker string) (*rpc_types.NFTOffersResult, error) {
+	return nil, errors.New("not implemented")
+}
+func (m *mockLedgerService) GetNFTSellOffers(nftID [32]byte, ledgerIndex string, limit uint32, marker string) (*rpc_types.NFTOffersResult, error) {
+	return nil, errors.New("not implemented")
+}
 
 // setupTestServices initializes the Services singleton with a mock for testing
 func setupTestServices(mock *mockLedgerService) func() {
