@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_handlers"
+	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -42,8 +44,8 @@ func (m *mockLedgerServiceServerInfo) GetCurrentFees() (baseFee, reserveBase, re
 	return m.baseFee, m.reserveBase, m.reserveIncrement
 }
 
-func (m *mockLedgerServiceServerInfo) GetServerInfo() LedgerServerInfo {
-	return LedgerServerInfo{
+func (m *mockLedgerServiceServerInfo) GetServerInfo() rpc_types.LedgerServerInfo {
+	return rpc_types.LedgerServerInfo{
 		Standalone:          m.standalone,
 		OpenLedgerSeq:       m.currentLedgerIndex,
 		ClosedLedgerSeq:     m.closedLedgerIndex,
@@ -55,12 +57,12 @@ func (m *mockLedgerServiceServerInfo) GetServerInfo() LedgerServerInfo {
 
 // setupTestServicesServerInfo initializes the Services singleton with a server_info mock for testing
 func setupTestServicesServerInfo(mock *mockLedgerServiceServerInfo) func() {
-	oldServices := Services
-	Services = &ServiceContainer{
+	oldServices := rpc_types.Services
+	rpc_types.Services = &rpc_types.ServiceContainer{
 		Ledger: mock,
 	}
 	return func() {
-		Services = oldServices
+		rpc_types.Services = oldServices
 	}
 }
 
@@ -76,11 +78,11 @@ func TestServerInfoResponseFields(t *testing.T) {
 	cleanup := setupTestServicesServerInfo(mock)
 	defer cleanup()
 
-	method := &ServerInfoMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.ServerInfoMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	t.Run("info.build_version field present", func(t *testing.T) {
@@ -277,11 +279,11 @@ func TestServerInfoValidatedLedgerFields(t *testing.T) {
 	cleanup := setupTestServicesServerInfo(mock)
 	defer cleanup()
 
-	method := &ServerInfoMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.ServerInfoMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	t.Run("validated_ledger.age field present", func(t *testing.T) {
@@ -406,11 +408,11 @@ func TestServerInfoServerStates(t *testing.T) {
 	cleanup := setupTestServicesServerInfo(mock)
 	defer cleanup()
 
-	method := &ServerInfoMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.ServerInfoMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	// Valid server states per XRPL documentation
@@ -449,11 +451,11 @@ func TestServerInfoStandaloneMode(t *testing.T) {
 	cleanup := setupTestServicesServerInfo(mock)
 	defer cleanup()
 
-	method := &ServerInfoMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.ServerInfoMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	t.Run("Standalone mode returns correct server_state", func(t *testing.T) {
@@ -506,15 +508,15 @@ func TestServerInfoApiVersions(t *testing.T) {
 	cleanup := setupTestServicesServerInfo(mock)
 	defer cleanup()
 
-	method := &ServerInfoMethod{}
+	method := &rpc_handlers.ServerInfoMethod{}
 
-	apiVersions := []int{ApiVersion1, ApiVersion2, ApiVersion3}
+	apiVersions := []int{rpc_types.ApiVersion1, rpc_types.ApiVersion2, rpc_types.ApiVersion3}
 
 	for _, apiVersion := range apiVersions {
 		t.Run("API version "+string(rune('0'+apiVersion)), func(t *testing.T) {
-			ctx := &RpcContext{
+			ctx := &rpc_types.RpcContext{
 				Context:    context.Background(),
-				Role:       RoleGuest,
+				Role:       rpc_types.RoleGuest,
 				ApiVersion: apiVersion,
 			}
 
@@ -537,13 +539,13 @@ func TestServerInfoApiVersions(t *testing.T) {
 
 // TestServerInfoMethodSupportedApiVersions tests the method's API version support
 func TestServerInfoMethodSupportedApiVersions(t *testing.T) {
-	method := &ServerInfoMethod{}
+	method := &rpc_handlers.ServerInfoMethod{}
 
 	versions := method.SupportedApiVersions()
 
-	assert.Contains(t, versions, ApiVersion1, "Should support API version 1")
-	assert.Contains(t, versions, ApiVersion2, "Should support API version 2")
-	assert.Contains(t, versions, ApiVersion3, "Should support API version 3")
+	assert.Contains(t, versions, rpc_types.ApiVersion1, "Should support API version 1")
+	assert.Contains(t, versions, rpc_types.ApiVersion2, "Should support API version 2")
+	assert.Contains(t, versions, rpc_types.ApiVersion3, "Should support API version 3")
 }
 
 // =============================================================================
@@ -553,44 +555,44 @@ func TestServerInfoMethodSupportedApiVersions(t *testing.T) {
 // TestServerInfoServiceUnavailable tests behavior when ledger service is not available
 func TestServerInfoServiceUnavailable(t *testing.T) {
 	// Temporarily set Services to nil
-	oldServices := Services
-	Services = nil
-	defer func() { Services = oldServices }()
+	oldServices := rpc_types.Services
+	rpc_types.Services = nil
+	defer func() { rpc_types.Services = oldServices }()
 
-	method := &ServerInfoMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.ServerInfoMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	result, rpcErr := method.Handle(ctx, nil)
 
 	assert.Nil(t, result)
 	require.NotNil(t, rpcErr)
-	assert.Equal(t, RpcINTERNAL, rpcErr.Code)
+	assert.Equal(t, rpc_types.RpcINTERNAL, rpcErr.Code)
 	assert.Contains(t, rpcErr.Message, "Ledger service not available")
 }
 
 // TestServerInfoServiceNilLedger tests behavior when ledger service is nil
 func TestServerInfoServiceNilLedger(t *testing.T) {
 	// Set Services with nil Ledger
-	oldServices := Services
-	Services = &ServiceContainer{Ledger: nil}
-	defer func() { Services = oldServices }()
+	oldServices := rpc_types.Services
+	rpc_types.Services = &rpc_types.ServiceContainer{Ledger: nil}
+	defer func() { rpc_types.Services = oldServices }()
 
-	method := &ServerInfoMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.ServerInfoMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	result, rpcErr := method.Handle(ctx, nil)
 
 	assert.Nil(t, result)
 	require.NotNil(t, rpcErr)
-	assert.Equal(t, RpcINTERNAL, rpcErr.Code)
+	assert.Equal(t, rpc_types.RpcINTERNAL, rpcErr.Code)
 	assert.Contains(t, rpcErr.Message, "Ledger service not available")
 }
 
@@ -600,18 +602,18 @@ func TestServerInfoServiceNilLedger(t *testing.T) {
 
 // TestServerInfoMethodMetadata tests the method's metadata functions
 func TestServerInfoMethodMetadata(t *testing.T) {
-	method := &ServerInfoMethod{}
+	method := &rpc_handlers.ServerInfoMethod{}
 
 	t.Run("RequiredRole", func(t *testing.T) {
-		assert.Equal(t, RoleGuest, method.RequiredRole(),
+		assert.Equal(t, rpc_types.RoleGuest, method.RequiredRole(),
 			"server_info should be accessible to guests")
 	})
 
 	t.Run("SupportedApiVersions", func(t *testing.T) {
 		versions := method.SupportedApiVersions()
-		assert.Contains(t, versions, ApiVersion1)
-		assert.Contains(t, versions, ApiVersion2)
-		assert.Contains(t, versions, ApiVersion3)
+		assert.Contains(t, versions, rpc_types.ApiVersion1)
+		assert.Contains(t, versions, rpc_types.ApiVersion2)
+		assert.Contains(t, versions, rpc_types.ApiVersion3)
 	})
 }
 
@@ -625,11 +627,11 @@ func TestServerInfoCompleteLedgersFormat(t *testing.T) {
 	cleanup := setupTestServicesServerInfo(mock)
 	defer cleanup()
 
-	method := &ServerInfoMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.ServerInfoMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	tests := []struct {
@@ -687,11 +689,11 @@ func TestServerInfoStateAccounting(t *testing.T) {
 	cleanup := setupTestServicesServerInfo(mock)
 	defer cleanup()
 
-	method := &ServerInfoMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.ServerInfoMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	t.Run("state_accounting contains all states", func(t *testing.T) {
@@ -728,11 +730,11 @@ func TestServerInfoTimeField(t *testing.T) {
 	cleanup := setupTestServicesServerInfo(mock)
 	defer cleanup()
 
-	method := &ServerInfoMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.ServerInfoMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	t.Run("time field present and formatted", func(t *testing.T) {
@@ -763,11 +765,11 @@ func TestServerInfoFeeCalculations(t *testing.T) {
 	cleanup := setupTestServicesServerInfo(mock)
 	defer cleanup()
 
-	method := &ServerInfoMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.ServerInfoMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	tests := []struct {
@@ -844,11 +846,11 @@ func TestServerStateMethod(t *testing.T) {
 	cleanup := setupTestServicesServerInfo(mock)
 	defer cleanup()
 
-	method := &ServerStateMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.ServerStateMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	t.Run("server_state returns state wrapper", func(t *testing.T) {
@@ -895,39 +897,39 @@ func TestServerStateMethod(t *testing.T) {
 
 // TestServerStateMethodMetadata tests the server_state method's metadata functions
 func TestServerStateMethodMetadata(t *testing.T) {
-	method := &ServerStateMethod{}
+	method := &rpc_handlers.ServerStateMethod{}
 
 	t.Run("RequiredRole", func(t *testing.T) {
-		assert.Equal(t, RoleGuest, method.RequiredRole(),
+		assert.Equal(t, rpc_types.RoleGuest, method.RequiredRole(),
 			"server_state should be accessible to guests")
 	})
 
 	t.Run("SupportedApiVersions", func(t *testing.T) {
 		versions := method.SupportedApiVersions()
-		assert.Contains(t, versions, ApiVersion1)
-		assert.Contains(t, versions, ApiVersion2)
-		assert.Contains(t, versions, ApiVersion3)
+		assert.Contains(t, versions, rpc_types.ApiVersion1)
+		assert.Contains(t, versions, rpc_types.ApiVersion2)
+		assert.Contains(t, versions, rpc_types.ApiVersion3)
 	})
 }
 
 // TestServerStateServiceUnavailable tests behavior when ledger service is not available
 func TestServerStateServiceUnavailable(t *testing.T) {
-	oldServices := Services
-	Services = nil
-	defer func() { Services = oldServices }()
+	oldServices := rpc_types.Services
+	rpc_types.Services = nil
+	defer func() { rpc_types.Services = oldServices }()
 
-	method := &ServerStateMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.ServerStateMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	result, rpcErr := method.Handle(ctx, nil)
 
 	assert.Nil(t, result)
 	require.NotNil(t, rpcErr)
-	assert.Equal(t, RpcINTERNAL, rpcErr.Code)
+	assert.Equal(t, rpc_types.RpcINTERNAL, rpcErr.Code)
 	assert.Contains(t, rpcErr.Message, "Ledger service not available")
 }
 
@@ -941,11 +943,11 @@ func TestServerInfoWithDifferentLedgerStates(t *testing.T) {
 	cleanup := setupTestServicesServerInfo(mock)
 	defer cleanup()
 
-	method := &ServerInfoMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.ServerInfoMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	tests := []struct {
@@ -1014,11 +1016,11 @@ func TestServerInfoWithParams(t *testing.T) {
 	cleanup := setupTestServicesServerInfo(mock)
 	defer cleanup()
 
-	method := &ServerInfoMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.ServerInfoMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	// server_info takes no parameters, but should not error if params are passed

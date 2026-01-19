@@ -64,8 +64,9 @@ const (
 	TecAMM_BALANCE                   Result = 163
 	TecAMM_FAILED                    Result = 164
 	TecAMM_INVALID_TOKENS            Result = 165
-	TecNO_SUITABLE_PAGE              Result = 166
-	TecNO_PERMISSION_XCHAIN          Result = 167
+	TecAMM_NOT_EMPTY                 Result = 166
+	TecNO_SUITABLE_PAGE              Result = 167
+	TecNO_PERMISSION_XCHAIN          Result = 168
 
 	// tefFAILURE and related codes (-199 to -100)
 	// Transaction failed, fee claimed but tx not applied

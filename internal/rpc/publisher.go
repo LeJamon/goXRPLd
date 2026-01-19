@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"log"
 	"sync"
+
+	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_types"
 )
 
 // EventPublisher publishes events to WebSocket subscribers
@@ -36,22 +38,22 @@ type EventPublisher interface {
 	PublishProposedTransaction(event *ProposedTransactionEvent, accounts []string)
 
 	// PublishOrderBookChange publishes an order book change to book subscribers
-	PublishOrderBookChange(event *OrderBookChangeEvent, takerGets, takerPays CurrencySpec)
+	PublishOrderBookChange(event *OrderBookChangeEvent, takerGets, takerPays rpc_types.CurrencySpec)
 
 	// GetSubscriberCount returns the number of active subscribers for a stream type
-	GetSubscriberCount(streamType SubscriptionType) int
+	GetSubscriberCount(streamType rpc_types.SubscriptionType) int
 }
 
 // Note: CurrencySpec is defined in subscription_methods.go
 
 // Publisher implements EventPublisher using SubscriptionManager
 type Publisher struct {
-	manager *SubscriptionManager
+	manager *rpc_types.SubscriptionManager
 	mu      sync.RWMutex
 }
 
 // NewPublisher creates a new Publisher with the given subscription manager
-func NewPublisher(manager *SubscriptionManager) *Publisher {
+func NewPublisher(manager *rpc_types.SubscriptionManager) *Publisher {
 	return &Publisher{
 		manager: manager,
 	}
@@ -69,7 +71,7 @@ func (p *Publisher) PublishLedgerClosed(event *LedgerCloseEvent) {
 		return
 	}
 
-	p.manager.BroadcastToStream(SubLedger, data, nil)
+	p.manager.BroadcastToStream(rpc_types.SubLedger, data, nil)
 }
 
 // PublishTransaction broadcasts a transaction event to subscribers
@@ -85,7 +87,7 @@ func (p *Publisher) PublishTransaction(event *TransactionEvent, affectedAccounts
 	}
 
 	// Broadcast to transactions stream
-	p.manager.BroadcastToStream(SubTransactions, data, nil)
+	p.manager.BroadcastToStream(rpc_types.SubTransactions, data, nil)
 
 	// Also broadcast to affected account subscribers
 	if len(affectedAccounts) > 0 {
@@ -105,7 +107,7 @@ func (p *Publisher) PublishValidation(event *ValidationEvent) {
 		return
 	}
 
-	p.manager.BroadcastToStream(SubValidations, data, nil)
+	p.manager.BroadcastToStream(rpc_types.SubValidations, data, nil)
 }
 
 // PublishServerStatus broadcasts a server status event to server stream subscribers
@@ -120,9 +122,9 @@ func (p *Publisher) PublishServerStatus(event *ServerStatusEvent) {
 		return
 	}
 
-	// Server status goes to the "server" stream (we use SubPeerStatus as a proxy here)
+	// Server status goes to the "server" stream (we use rpc_types.SubPeerStatus as a proxy here)
 	// In a full implementation, there would be a separate SubServer type
-	p.manager.BroadcastToStream(SubPeerStatus, data, nil)
+	p.manager.BroadcastToStream(rpc_types.SubPeerStatus, data, nil)
 }
 
 // PublishConsensusPhase broadcasts a consensus phase change event
@@ -138,7 +140,7 @@ func (p *Publisher) PublishConsensusPhase(phase string) {
 		return
 	}
 
-	p.manager.BroadcastToStream(SubConsensus, data, nil)
+	p.manager.BroadcastToStream(rpc_types.SubConsensus, data, nil)
 }
 
 // PublishManifest broadcasts a manifest event to manifest stream subscribers
@@ -153,7 +155,7 @@ func (p *Publisher) PublishManifest(event *ManifestEvent) {
 		return
 	}
 
-	p.manager.BroadcastToStream(SubManifests, data, nil)
+	p.manager.BroadcastToStream(rpc_types.SubManifests, data, nil)
 }
 
 // PublishPeerStatus broadcasts a peer status event to peer_status stream subscribers
@@ -168,7 +170,7 @@ func (p *Publisher) PublishPeerStatus(event *PeerStatusEvent) {
 		return
 	}
 
-	p.manager.BroadcastToStream(SubPeerStatus, data, nil)
+	p.manager.BroadcastToStream(rpc_types.SubPeerStatus, data, nil)
 }
 
 // PublishProposedTransaction broadcasts a proposed transaction to accounts_proposed subscribers
@@ -188,7 +190,7 @@ func (p *Publisher) PublishProposedTransaction(event *ProposedTransactionEvent, 
 }
 
 // PublishOrderBookChange broadcasts an order book change to book subscribers
-func (p *Publisher) PublishOrderBookChange(event *OrderBookChangeEvent, takerGets, takerPays CurrencySpec) {
+func (p *Publisher) PublishOrderBookChange(event *OrderBookChangeEvent, takerGets, takerPays rpc_types.CurrencySpec) {
 	if event == nil || p.manager == nil {
 		return
 	}
@@ -204,7 +206,7 @@ func (p *Publisher) PublishOrderBookChange(event *OrderBookChangeEvent, takerGet
 }
 
 // GetSubscriberCount returns the number of active subscribers for a stream type
-func (p *Publisher) GetSubscriberCount(streamType SubscriptionType) int {
+func (p *Publisher) GetSubscriberCount(streamType rpc_types.SubscriptionType) int {
 	if p.manager == nil {
 		return 0
 	}
@@ -227,9 +229,9 @@ func (p *NoOpPublisher) PublishManifest(event *ManifestEvent)                   
 func (p *NoOpPublisher) PublishPeerStatus(event *PeerStatusEvent)                      {}
 func (p *NoOpPublisher) PublishProposedTransaction(event *ProposedTransactionEvent, accounts []string) {
 }
-func (p *NoOpPublisher) PublishOrderBookChange(event *OrderBookChangeEvent, takerGets, takerPays CurrencySpec) {
+func (p *NoOpPublisher) PublishOrderBookChange(event *OrderBookChangeEvent, takerGets, takerPays rpc_types.CurrencySpec) {
 }
-func (p *NoOpPublisher) GetSubscriberCount(streamType SubscriptionType) int { return 0 }
+func (p *NoOpPublisher) GetSubscriberCount(streamType rpc_types.SubscriptionType) int { return 0 }
 
 // Ensure implementations satisfy the interface
 var _ EventPublisher = (*Publisher)(nil)

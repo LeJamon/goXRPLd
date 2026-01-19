@@ -581,3 +581,240 @@ func TestNewEscrowConstructors(t *testing.T) {
 func ptrUint32(v uint32) *uint32 {
 	return &v
 }
+
+// TestCryptoConditionValidation tests the crypto-condition verification.
+// Reference: rippled Escrow_test.cpp condition/fulfillment tests
+func TestCryptoConditionValidation(t *testing.T) {
+	// Test vectors from rippled's Escrow_test.cpp
+	// These correspond to the test conditions in internal/testing/builders/conditions.go
+
+	tests := []struct {
+		name        string
+		condition   string // hex-encoded condition
+		fulfillment string // hex-encoded fulfillment
+		expectError bool
+	}{
+		{
+			// cb1/fb1: Empty preimage - SHA256("") produces E3B0C442...
+			name:        "empty preimage - valid",
+			condition:   "A0258020E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855810100",
+			fulfillment: "A0028000",
+			expectError: false,
+		},
+		{
+			// cb2/fb2: Preimage "aaa" - SHA256("aaa") produces 9834876D...
+			name:        "preimage aaa - valid",
+			condition:   "A02580209834876DCFB05CB167A5C24953EBA58C4AC89B1ADF57F28F2F9D09AF107EE8F0810103",
+			fulfillment: "A0058003616161", // A0=type, 05=length, 80=preimage tag, 03=preimage len, 616161="aaa"
+			expectError: false,
+		},
+		{
+			// cb3/fb3: Preimage "nikb" (0x6E696B62) from rippled - SHA256("nikb") produces 6E4C7145...
+			name:        "preimage nikb - valid",
+			condition:   "A02580206E4C714530C0A4268B3FA63B1B606F2D264A2D857BE8A09C1DFD570D15858BD4810104",
+			fulfillment: "A00680046E696B62", // A0=type, 06=length, 80=preimage tag, 04=preimage len, 6E696B62="nikb"
+			expectError: false,
+		},
+		{
+			// Wrong fulfillment for condition - "bbb" doesn't match "aaa" condition
+			name:        "wrong fulfillment - invalid",
+			condition:   "A02580209834876DCFB05CB167A5C24953EBA58C4AC89B1ADF57F28F2F9D09AF107EE8F0810103",
+			fulfillment: "A005800362626262", // "bbb" instead of "aaa"
+			expectError: true,
+		},
+		{
+			// Empty fulfillment
+			name:        "empty fulfillment - invalid",
+			condition:   "A0258020E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855810100",
+			fulfillment: "",
+			expectError: true,
+		},
+		{
+			// Malformed condition (too short)
+			name:        "malformed condition - invalid",
+			condition:   "A025",
+			fulfillment: "A0028000",
+			expectError: true,
+		},
+		{
+			// Malformed fulfillment (too short)
+			name:        "malformed fulfillment - invalid",
+			condition:   "A0258020E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855810100",
+			fulfillment: "A002",
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateCryptoCondition(tt.fulfillment, tt.condition)
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("expected no error, got %v", err)
+				}
+			}
+		})
+	}
+}
+
+// TestParseCondition tests parsing of crypto-conditions
+func TestParseCondition(t *testing.T) {
+	tests := []struct {
+		name          string
+		conditionHex  string
+		expectType    uint8
+		expectFPLen   int
+		expectError   bool
+	}{
+		{
+			name:          "PREIMAGE-SHA-256 condition (empty preimage)",
+			conditionHex:  "A0258020E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855810100",
+			expectType:    0, // PREIMAGE-SHA-256
+			expectFPLen:   32,
+			expectError:   false,
+		},
+		{
+			name:          "too short",
+			conditionHex:  "A025",
+			expectType:    0,
+			expectFPLen:   0,
+			expectError:   true,
+		},
+		{
+			// Invalid tag: 0x30 is universal constructed (SEQUENCE), not context-specific
+			name:          "invalid tag - universal constructed",
+			conditionHex:  "30258020E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855810100",
+			expectType:    0,
+			expectFPLen:   0,
+			expectError:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := decodeHex(tt.conditionHex)
+			if err != nil {
+				t.Fatalf("invalid test data: %v", err)
+			}
+
+			fp, condType, err := parseCondition(data)
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("expected no error, got %v", err)
+				}
+				if condType != tt.expectType {
+					t.Errorf("expected type %d, got %d", tt.expectType, condType)
+				}
+				if len(fp) != tt.expectFPLen {
+					t.Errorf("expected fingerprint length %d, got %d", tt.expectFPLen, len(fp))
+				}
+			}
+		})
+	}
+}
+
+// TestParseFulfillment tests parsing of crypto-fulfillments
+func TestParseFulfillment(t *testing.T) {
+	tests := []struct {
+		name           string
+		fulfillmentHex string
+		expectType     uint8
+		expectPreimage string // hex of expected preimage
+		expectError    bool
+	}{
+		{
+			name:           "empty preimage",
+			fulfillmentHex: "A0028000",
+			expectType:     0,
+			expectPreimage: "",
+			expectError:    false,
+		},
+		{
+			name:           "preimage aaa",
+			fulfillmentHex: "A005800361616161",
+			expectType:     0,
+			expectPreimage: "616161", // "aaa" in hex
+			expectError:    false,
+		},
+		{
+			name:           "preimage zzz",
+			fulfillmentHex: "A00580037A7A7A",
+			expectType:     0,
+			expectPreimage: "7A7A7A", // "zzz" in hex
+			expectError:    false,
+		},
+		{
+			name:           "too short",
+			fulfillmentHex: "A002",
+			expectType:     0,
+			expectPreimage: "",
+			expectError:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := decodeHex(tt.fulfillmentHex)
+			if err != nil {
+				t.Fatalf("invalid test data: %v", err)
+			}
+
+			preimage, fulfType, err := parseFulfillment(data)
+			if tt.expectError {
+				if err == nil {
+					t.Errorf("expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Errorf("expected no error, got %v", err)
+				}
+				if fulfType != tt.expectType {
+					t.Errorf("expected type %d, got %d", tt.expectType, fulfType)
+				}
+				expectedPreimage, _ := decodeHex(tt.expectPreimage)
+				if len(preimage) != len(expectedPreimage) {
+					t.Errorf("expected preimage length %d, got %d", len(expectedPreimage), len(preimage))
+				}
+				for i := range expectedPreimage {
+					if preimage[i] != expectedPreimage[i] {
+						t.Errorf("preimage mismatch at %d: expected %02x, got %02x", i, expectedPreimage[i], preimage[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+// decodeHex is a test helper that decodes hex strings
+func decodeHex(s string) ([]byte, error) {
+	if s == "" {
+		return []byte{}, nil
+	}
+	result := make([]byte, len(s)/2)
+	for i := 0; i < len(s)/2; i++ {
+		b := hexDigit(s[i*2])<<4 | hexDigit(s[i*2+1])
+		result[i] = b
+	}
+	return result, nil
+}
+
+func hexDigit(c byte) byte {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0'
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10
+	default:
+		return 0
+	}
+}

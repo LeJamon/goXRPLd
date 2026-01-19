@@ -7,7 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/LeJamon/goXRPLd/internal/rpc"
+	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_handlers"
+	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_types"
 	"github.com/spf13/cobra"
 )
 
@@ -23,89 +24,89 @@ func init() {
 }
 
 // methodRegistry holds all available RPC methods
-var methodRegistry *rpc.MethodRegistry
+var methodRegistry *rpc_types.MethodRegistry
 
 // initMethodRegistry initializes the method registry with all available methods
-func initMethodRegistry() *rpc.MethodRegistry {
+func initMethodRegistry() *rpc_types.MethodRegistry {
 	if methodRegistry != nil {
 		return methodRegistry
 	}
 	
-	registry := rpc.NewMethodRegistry()
+	registry := rpc_types.NewMethodRegistry()
 	
 	// Server methods
-	registry.Register("ping", &rpc.PingMethod{})
-	registry.Register("server_info", &rpc.ServerInfoMethod{})
-	registry.Register("server_state", &rpc.ServerStateMethod{})
-	registry.Register("random", &rpc.RandomMethod{})
-	registry.Register("server_definitions", &rpc.ServerDefinitionsMethod{})
-	registry.Register("feature", &rpc.FeatureMethod{})
-	registry.Register("fee", &rpc.FeeMethod{})
+	registry.Register("ping", &rpc_handlers.PingMethod{})
+	registry.Register("server_info", &rpc_handlers.ServerInfoMethod{})
+	registry.Register("server_state", &rpc_handlers.ServerStateMethod{})
+	registry.Register("random", &rpc_handlers.RandomMethod{})
+	registry.Register("server_definitions", &rpc_handlers.ServerDefinitionsMethod{})
+	registry.Register("feature", &rpc_handlers.FeatureMethod{})
+	registry.Register("fee", &rpc_handlers.FeeMethod{})
 	
 	// Account methods
-	registry.Register("account_info", &rpc.AccountInfoMethod{})
-	registry.Register("account_channels", &rpc.AccountChannelsMethod{})
-	registry.Register("account_currencies", &rpc.AccountCurrenciesMethod{})
-	registry.Register("account_lines", &rpc.AccountLinesMethod{})
-	registry.Register("account_nfts", &rpc.AccountNftsMethod{})
-	registry.Register("account_objects", &rpc.AccountObjectsMethod{})
-	registry.Register("account_offers", &rpc.AccountOffersMethod{})
-	registry.Register("account_tx", &rpc.AccountTxMethod{})
-	registry.Register("gateway_balances", &rpc.GatewayBalancesMethod{})
-	registry.Register("noripple_check", &rpc.NoRippleCheckMethod{})
+	registry.Register("account_info", &rpc_handlers.AccountInfoMethod{})
+	registry.Register("account_channels", &rpc_handlers.AccountChannelsMethod{})
+	registry.Register("account_currencies", &rpc_handlers.AccountCurrenciesMethod{})
+	registry.Register("account_lines", &rpc_handlers.AccountLinesMethod{})
+	registry.Register("account_nfts", &rpc_handlers.AccountNftsMethod{})
+	registry.Register("account_objects", &rpc_handlers.AccountObjectsMethod{})
+	registry.Register("account_offers", &rpc_handlers.AccountOffersMethod{})
+	registry.Register("account_tx", &rpc_handlers.AccountTxMethod{})
+	registry.Register("gateway_balances", &rpc_handlers.GatewayBalancesMethod{})
+	registry.Register("noripple_check", &rpc_handlers.NoRippleCheckMethod{})
 	
 	// Ledger methods
-	registry.Register("ledger", &rpc.LedgerMethod{})
-	registry.Register("ledger_closed", &rpc.LedgerClosedMethod{})
-	registry.Register("ledger_current", &rpc.LedgerCurrentMethod{})
-	registry.Register("ledger_data", &rpc.LedgerDataMethod{})
-	registry.Register("ledger_entry", &rpc.LedgerEntryMethod{})
-	registry.Register("ledger_range", &rpc.LedgerRangeMethod{})
+	registry.Register("ledger", &rpc_handlers.LedgerMethod{})
+	registry.Register("ledger_closed", &rpc_handlers.LedgerClosedMethod{})
+	registry.Register("ledger_current", &rpc_handlers.LedgerCurrentMethod{})
+	registry.Register("ledger_data", &rpc_handlers.LedgerDataMethod{})
+	registry.Register("ledger_entry", &rpc_handlers.LedgerEntryMethod{})
+	registry.Register("ledger_range", &rpc_handlers.LedgerRangeMethod{})
 	
 	// Transaction methods
-	registry.Register("tx", &rpc.TxMethod{})
-	registry.Register("tx_history", &rpc.TxHistoryMethod{})
-	registry.Register("submit", &rpc.SubmitMethod{})
-	registry.Register("submit_multisigned", &rpc.SubmitMultisignedMethod{})
-	registry.Register("sign", &rpc.SignMethod{})
-	registry.Register("sign_for", &rpc.SignForMethod{})
-	registry.Register("transaction_entry", &rpc.TransactionEntryMethod{})
+	registry.Register("tx", &rpc_handlers.TxMethod{})
+	registry.Register("tx_history", &rpc_handlers.TxHistoryMethod{})
+	registry.Register("submit", &rpc_handlers.SubmitMethod{})
+	registry.Register("submit_multisigned", &rpc_handlers.SubmitMultisignedMethod{})
+	registry.Register("sign", &rpc_handlers.SignMethod{})
+	registry.Register("sign_for", &rpc_handlers.SignForMethod{})
+	registry.Register("transaction_entry", &rpc_handlers.TransactionEntryMethod{})
 	
 	// Utility methods
-	registry.Register("book_offers", &rpc.BookOffersMethod{})
-	registry.Register("path_find", &rpc.PathFindMethod{})
-	registry.Register("ripple_path_find", &rpc.RipplePathFindMethod{})
-	registry.Register("wallet_propose", &rpc.WalletProposeMethod{})
-	registry.Register("deposit_authorized", &rpc.DepositAuthorizedMethod{})
-	registry.Register("channel_authorize", &rpc.ChannelAuthorizeMethod{})
-	registry.Register("channel_verify", &rpc.ChannelVerifyMethod{})
-	registry.Register("json", &rpc.JsonMethod{})
+	registry.Register("book_offers", &rpc_handlers.BookOffersMethod{})
+	registry.Register("path_find", &rpc_handlers.PathFindMethod{})
+	registry.Register("ripple_path_find", &rpc_handlers.RipplePathFindMethod{})
+	registry.Register("wallet_propose", &rpc_handlers.WalletProposeMethod{})
+	registry.Register("deposit_authorized", &rpc_handlers.DepositAuthorizedMethod{})
+	registry.Register("channel_authorize", &rpc_handlers.ChannelAuthorizeMethod{})
+	registry.Register("channel_verify", &rpc_handlers.ChannelVerifyMethod{})
+	registry.Register("json", &rpc_handlers.JsonMethod{})
 	
 	// NFT methods
-	registry.Register("nft_buy_offers", &rpc.NftBuyOffersMethod{})
-	registry.Register("nft_sell_offers", &rpc.NftSellOffersMethod{})
-	registry.Register("nft_history", &rpc.NftHistoryMethod{})
-	registry.Register("nfts_by_issuer", &rpc.NftsByIssuerMethod{})
-	registry.Register("nft_info", &rpc.NftInfoMethod{})
+	registry.Register("nft_buy_offers", &rpc_handlers.NftBuyOffersMethod{})
+	registry.Register("nft_sell_offers", &rpc_handlers.NftSellOffersMethod{})
+	registry.Register("nft_history", &rpc_handlers.NftHistoryMethod{})
+	registry.Register("nfts_by_issuer", &rpc_handlers.NftsByIssuerMethod{})
+	registry.Register("nft_info", &rpc_handlers.NftInfoMethod{})
 	
 	// Admin methods (require admin role)
-	registry.Register("stop", &rpc.StopMethod{})
-	registry.Register("validation_create", &rpc.ValidationCreateMethod{})
-	registry.Register("manifest", &rpc.ManifestMethod{})
-	registry.Register("peer_reservations_add", &rpc.PeerReservationsAddMethod{})
-	registry.Register("peer_reservations_del", &rpc.PeerReservationsDelMethod{})
-	registry.Register("peer_reservations_list", &rpc.PeerReservationsListMethod{})
-	registry.Register("peers", &rpc.PeersMethod{})
-	registry.Register("consensus_info", &rpc.ConsensusInfoMethod{})
-	registry.Register("validators", &rpc.ValidatorsMethod{})
-	registry.Register("validator_list_sites", &rpc.ValidatorListSitesMethod{})
-	registry.Register("download_shard", &rpc.DownloadShardMethod{})
-	registry.Register("crawl_shards", &rpc.CrawlShardsMethod{})
-	registry.Register("ledger_index", &rpc.LedgerIndexMethod{})
+	registry.Register("stop", &rpc_handlers.StopMethod{})
+	registry.Register("validation_create", &rpc_handlers.ValidationCreateMethod{})
+	registry.Register("manifest", &rpc_handlers.ManifestMethod{})
+	registry.Register("peer_reservations_add", &rpc_handlers.PeerReservationsAddMethod{})
+	registry.Register("peer_reservations_del", &rpc_handlers.PeerReservationsDelMethod{})
+	registry.Register("peer_reservations_list", &rpc_handlers.PeerReservationsListMethod{})
+	registry.Register("peers", &rpc_handlers.PeersMethod{})
+	registry.Register("consensus_info", &rpc_handlers.ConsensusInfoMethod{})
+	registry.Register("validators", &rpc_handlers.ValidatorsMethod{})
+	registry.Register("validator_list_sites", &rpc_handlers.ValidatorListSitesMethod{})
+	registry.Register("download_shard", &rpc_handlers.DownloadShardMethod{})
+	registry.Register("crawl_shards", &rpc_handlers.CrawlShardsMethod{})
+	registry.Register("ledger_index", &rpc_handlers.LedgerIndexMethod{})
 	
 	// Subscription methods (for WebSocket)
-	registry.Register("subscribe", &rpc.SubscribeMethod{})
-	registry.Register("unsubscribe", &rpc.UnsubscribeMethod{})
+	registry.Register("subscribe", &rpc_handlers.SubscribeMethod{})
+	registry.Register("unsubscribe", &rpc_handlers.UnsubscribeMethod{})
 	
 	methodRegistry = registry
 	return registry
@@ -121,10 +122,10 @@ func executeMethod(method string, params interface{}) error {
 	}
 	
 	// Create RPC context (CLI runs as admin role)
-	rpcCtx := &rpc.RpcContext{
+	rpcCtx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       rpc.RoleAdmin,
-		ApiVersion: rpc.DefaultApiVersion,
+		Role:       rpc_types.RoleAdmin,
+		ApiVersion: rpc_types.DefaultApiVersion,
 		IsAdmin:    true,
 		ClientIP:   "127.0.0.1", // Local CLI
 	}
