@@ -1,4 +1,4 @@
-package rpc
+package rpc_types
 
 // Services provides access to core services from RPC handlers
 // This is a singleton that holds references to the services

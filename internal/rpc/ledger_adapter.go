@@ -7,6 +7,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/ledger"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/service"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_types"
 	"github.com/LeJamon/goXRPLd/internal/storage/relationaldb"
 )
 
@@ -46,9 +47,9 @@ func (a *LedgerServiceAdapter) IsStandalone() bool {
 }
 
 // GetServerInfo returns server status information
-func (a *LedgerServiceAdapter) GetServerInfo() LedgerServerInfo {
+func (a *LedgerServiceAdapter) GetServerInfo() rpc_types.LedgerServerInfo {
 	info := a.svc.GetServerInfo()
-	return LedgerServerInfo{
+	return rpc_types.LedgerServerInfo{
 		Standalone:          info.Standalone,
 		OpenLedgerSeq:       info.OpenLedgerSeq,
 		ClosedLedgerSeq:     info.ClosedLedgerSeq,
@@ -60,7 +61,7 @@ func (a *LedgerServiceAdapter) GetServerInfo() LedgerServerInfo {
 }
 
 // GetLedgerBySequence returns a ledger by its sequence number
-func (a *LedgerServiceAdapter) GetLedgerBySequence(seq uint32) (LedgerReader, error) {
+func (a *LedgerServiceAdapter) GetLedgerBySequence(seq uint32) (rpc_types.LedgerReader, error) {
 	l, err := a.svc.GetLedgerBySequence(seq)
 	if err != nil {
 		return nil, err
@@ -69,7 +70,7 @@ func (a *LedgerServiceAdapter) GetLedgerBySequence(seq uint32) (LedgerReader, er
 }
 
 // GetLedgerByHash returns a ledger by its hash
-func (a *LedgerServiceAdapter) GetLedgerByHash(hash [32]byte) (LedgerReader, error) {
+func (a *LedgerServiceAdapter) GetLedgerByHash(hash [32]byte) (rpc_types.LedgerReader, error) {
 	l, err := a.svc.GetLedgerByHash(hash)
 	if err != nil {
 		return nil, err
@@ -82,7 +83,7 @@ func (a *LedgerServiceAdapter) GetGenesisAccount() (string, error) {
 	return a.svc.GetGenesisAccount()
 }
 
-// ledgerReaderAdapter adapts ledger.Ledger to LedgerReader interface
+// ledgerReaderAdapter adapts ledger.Ledger to rpc_types.LedgerReader interface
 type ledgerReaderAdapter struct {
 	l *ledger.Ledger
 }
@@ -112,11 +113,11 @@ func (a *ledgerReaderAdapter) TotalDrops() uint64 {
 }
 
 // SubmitTransaction submits a transaction to the open ledger
-func (a *LedgerServiceAdapter) SubmitTransaction(txJSON []byte) (*SubmitResult, error) {
+func (a *LedgerServiceAdapter) SubmitTransaction(txJSON []byte) (*rpc_types.SubmitResult, error) {
 	// Parse the transaction from JSON
 	transaction, err := tx.ParseJSON(txJSON)
 	if err != nil {
-		return &SubmitResult{
+		return &rpc_types.SubmitResult{
 			EngineResult:        "temMALFORMED",
 			EngineResultCode:    -299,
 			EngineResultMessage: "Transaction is malformed: " + err.Error(),
@@ -127,7 +128,7 @@ func (a *LedgerServiceAdapter) SubmitTransaction(txJSON []byte) (*SubmitResult, 
 	// Submit to the service
 	result, err := a.svc.SubmitTransaction(transaction)
 	if err != nil {
-		return &SubmitResult{
+		return &rpc_types.SubmitResult{
 			EngineResult:        "tefINTERNAL",
 			EngineResultCode:    -199,
 			EngineResultMessage: "Internal error: " + err.Error(),
@@ -135,7 +136,7 @@ func (a *LedgerServiceAdapter) SubmitTransaction(txJSON []byte) (*SubmitResult, 
 		}, nil
 	}
 
-	return &SubmitResult{
+	return &rpc_types.SubmitResult{
 		EngineResult:        result.Result.String(),
 		EngineResultCode:    int(result.Result),
 		EngineResultMessage: result.Message,
@@ -152,13 +153,13 @@ func (a *LedgerServiceAdapter) GetCurrentFees() (baseFee, reserveBase, reserveIn
 }
 
 // GetAccountInfo retrieves account information from the ledger
-func (a *LedgerServiceAdapter) GetAccountInfo(account string, ledgerIndex string) (*AccountInfo, error) {
+func (a *LedgerServiceAdapter) GetAccountInfo(account string, ledgerIndex string) (*rpc_types.AccountInfo, error) {
 	result, err := a.svc.GetAccountInfo(account, ledgerIndex)
 	if err != nil {
 		return nil, err
 	}
 
-	return &AccountInfo{
+	return &rpc_types.AccountInfo{
 		Account:      result.Account,
 		Balance:      strconv.FormatUint(result.Balance, 10),
 		Flags:        result.Flags,
@@ -176,13 +177,13 @@ func (a *LedgerServiceAdapter) GetAccountInfo(account string, ledgerIndex string
 }
 
 // GetTransaction retrieves a transaction by its hash
-func (a *LedgerServiceAdapter) GetTransaction(txHash [32]byte) (*TransactionInfo, error) {
+func (a *LedgerServiceAdapter) GetTransaction(txHash [32]byte) (*rpc_types.TransactionInfo, error) {
 	result, err := a.svc.GetTransaction(txHash)
 	if err != nil {
 		return nil, err
 	}
 
-	return &TransactionInfo{
+	return &rpc_types.TransactionInfo{
 		TxData:      result.TxData,
 		LedgerIndex: result.LedgerIndex,
 		LedgerHash:  hex.EncodeToString(result.LedgerHash[:]),
@@ -197,16 +198,16 @@ func (a *LedgerServiceAdapter) StoreTransaction(txHash [32]byte, txData []byte) 
 }
 
 // GetAccountLines retrieves trust lines for an account
-func (a *LedgerServiceAdapter) GetAccountLines(account string, ledgerIndex string, peer string, limit uint32) (*AccountLinesResult, error) {
+func (a *LedgerServiceAdapter) GetAccountLines(account string, ledgerIndex string, peer string, limit uint32) (*rpc_types.AccountLinesResult, error) {
 	result, err := a.svc.GetAccountLines(account, ledgerIndex, peer, limit)
 	if err != nil {
 		return nil, err
 	}
 
 	// Convert service types to RPC types
-	lines := make([]TrustLine, len(result.Lines))
+	lines := make([]rpc_types.TrustLine, len(result.Lines))
 	for i, line := range result.Lines {
-		lines[i] = TrustLine{
+		lines[i] = rpc_types.TrustLine{
 			Account:        line.Account,
 			Balance:        line.Balance,
 			Currency:       line.Currency,
@@ -223,7 +224,7 @@ func (a *LedgerServiceAdapter) GetAccountLines(account string, ledgerIndex strin
 		}
 	}
 
-	return &AccountLinesResult{
+	return &rpc_types.AccountLinesResult{
 		Account:     result.Account,
 		Lines:       lines,
 		LedgerIndex: result.LedgerIndex,
@@ -234,16 +235,16 @@ func (a *LedgerServiceAdapter) GetAccountLines(account string, ledgerIndex strin
 }
 
 // GetAccountOffers retrieves offers for an account
-func (a *LedgerServiceAdapter) GetAccountOffers(account string, ledgerIndex string, limit uint32) (*AccountOffersResult, error) {
+func (a *LedgerServiceAdapter) GetAccountOffers(account string, ledgerIndex string, limit uint32) (*rpc_types.AccountOffersResult, error) {
 	result, err := a.svc.GetAccountOffers(account, ledgerIndex, limit)
 	if err != nil {
 		return nil, err
 	}
 
 	// Convert service types to RPC types
-	offers := make([]AccountOffer, len(result.Offers))
+	offers := make([]rpc_types.AccountOffer, len(result.Offers))
 	for i, offer := range result.Offers {
-		offers[i] = AccountOffer{
+		offers[i] = rpc_types.AccountOffer{
 			Flags:      offer.Flags,
 			Seq:        offer.Seq,
 			TakerGets:  offer.TakerGets,
@@ -253,7 +254,7 @@ func (a *LedgerServiceAdapter) GetAccountOffers(account string, ledgerIndex stri
 		}
 	}
 
-	return &AccountOffersResult{
+	return &rpc_types.AccountOffersResult{
 		Account:     result.Account,
 		Offers:      offers,
 		LedgerIndex: result.LedgerIndex,
@@ -264,8 +265,8 @@ func (a *LedgerServiceAdapter) GetAccountOffers(account string, ledgerIndex stri
 }
 
 // GetBookOffers retrieves offers from an order book
-func (a *LedgerServiceAdapter) GetBookOffers(takerGets, takerPays Amount, ledgerIndex string, limit uint32) (*BookOffersResult, error) {
-	// Convert RPC Amount to tx.Amount
+func (a *LedgerServiceAdapter) GetBookOffers(takerGets, takerPays rpc_types.Amount, ledgerIndex string, limit uint32) (*rpc_types.BookOffersResult, error) {
+	// Convert RPC rpc_types.Amount to tx.Amount
 	txTakerGets := tx.Amount{
 		Value:    takerGets.Value,
 		Currency: takerGets.Currency,
@@ -283,9 +284,9 @@ func (a *LedgerServiceAdapter) GetBookOffers(takerGets, takerPays Amount, ledger
 	}
 
 	// Convert service types to RPC types
-	offers := make([]BookOffer, len(result.Offers))
+	offers := make([]rpc_types.BookOffer, len(result.Offers))
 	for i, offer := range result.Offers {
-		offers[i] = BookOffer{
+		offers[i] = rpc_types.BookOffer{
 			Account:         offer.Account,
 			BookDirectory:   offer.BookDirectory,
 			BookNode:        offer.BookNode,
@@ -303,7 +304,7 @@ func (a *LedgerServiceAdapter) GetBookOffers(takerGets, takerPays Amount, ledger
 		}
 	}
 
-	return &BookOffersResult{
+	return &rpc_types.BookOffersResult{
 		LedgerIndex: result.LedgerIndex,
 		LedgerHash:  result.LedgerHash,
 		Offers:      offers,
@@ -312,7 +313,7 @@ func (a *LedgerServiceAdapter) GetBookOffers(takerGets, takerPays Amount, ledger
 }
 
 // GetAccountTransactions retrieves transaction history for an account
-func (a *LedgerServiceAdapter) GetAccountTransactions(account string, ledgerMin, ledgerMax int64, limit uint32, marker *AccountTxMarker, forward bool) (*AccountTxResult, error) {
+func (a *LedgerServiceAdapter) GetAccountTransactions(account string, ledgerMin, ledgerMax int64, limit uint32, marker *rpc_types.AccountTxMarker, forward bool) (*rpc_types.AccountTxResult, error) {
 	// Convert RPC marker to service marker
 	var svcMarker *relationaldb.AccountTxMarker
 	if marker != nil {
@@ -328,9 +329,9 @@ func (a *LedgerServiceAdapter) GetAccountTransactions(account string, ledgerMin,
 	}
 
 	// Convert service result to RPC result
-	txs := make([]AccountTransaction, len(result.Transactions))
+	txs := make([]rpc_types.AccountTransaction, len(result.Transactions))
 	for i, tx := range result.Transactions {
-		txs[i] = AccountTransaction{
+		txs[i] = rpc_types.AccountTransaction{
 			Hash:        tx.Hash,
 			LedgerIndex: tx.LedgerIndex,
 			TxBlob:      tx.TxBlob,
@@ -338,15 +339,15 @@ func (a *LedgerServiceAdapter) GetAccountTransactions(account string, ledgerMin,
 		}
 	}
 
-	var rpcMarker *AccountTxMarker
+	var rpcMarker *rpc_types.AccountTxMarker
 	if result.Marker != nil {
-		rpcMarker = &AccountTxMarker{
+		rpcMarker = &rpc_types.AccountTxMarker{
 			LedgerSeq: uint32(result.Marker.LedgerSeq),
 			TxnSeq:    result.Marker.TxnSeq,
 		}
 	}
 
-	return &AccountTxResult{
+	return &rpc_types.AccountTxResult{
 		Account:      result.Account,
 		LedgerMin:    result.LedgerMin,
 		LedgerMax:    result.LedgerMax,
@@ -358,16 +359,16 @@ func (a *LedgerServiceAdapter) GetAccountTransactions(account string, ledgerMin,
 }
 
 // GetTransactionHistory retrieves recent transactions
-func (a *LedgerServiceAdapter) GetTransactionHistory(startIndex uint32) (*TxHistoryResult, error) {
+func (a *LedgerServiceAdapter) GetTransactionHistory(startIndex uint32) (*rpc_types.TxHistoryResult, error) {
 	result, err := a.svc.GetTransactionHistory(startIndex)
 	if err != nil {
 		return nil, err
 	}
 
 	// Convert service result to RPC result
-	txs := make([]AccountTransaction, len(result.Transactions))
+	txs := make([]rpc_types.AccountTransaction, len(result.Transactions))
 	for i, tx := range result.Transactions {
-		txs[i] = AccountTransaction{
+		txs[i] = rpc_types.AccountTransaction{
 			Hash:        tx.Hash,
 			LedgerIndex: tx.LedgerIndex,
 			TxBlob:      tx.TxBlob,
@@ -375,20 +376,20 @@ func (a *LedgerServiceAdapter) GetTransactionHistory(startIndex uint32) (*TxHist
 		}
 	}
 
-	return &TxHistoryResult{
+	return &rpc_types.TxHistoryResult{
 		Index:        result.Index,
 		Transactions: txs,
 	}, nil
 }
 
 // GetLedgerRange retrieves ledger hashes for a range of sequences
-func (a *LedgerServiceAdapter) GetLedgerRange(minSeq, maxSeq uint32) (*LedgerRangeResult, error) {
+func (a *LedgerServiceAdapter) GetLedgerRange(minSeq, maxSeq uint32) (*rpc_types.LedgerRangeResult, error) {
 	result, err := a.svc.GetLedgerRange(minSeq, maxSeq)
 	if err != nil {
 		return nil, err
 	}
 
-	return &LedgerRangeResult{
+	return &rpc_types.LedgerRangeResult{
 		LedgerFirst: result.LedgerFirst,
 		LedgerLast:  result.LedgerLast,
 		Hashes:      result.Hashes,
@@ -396,13 +397,13 @@ func (a *LedgerServiceAdapter) GetLedgerRange(minSeq, maxSeq uint32) (*LedgerRan
 }
 
 // GetLedgerEntry retrieves a specific ledger entry by its index/key
-func (a *LedgerServiceAdapter) GetLedgerEntry(entryKey [32]byte, ledgerIndex string) (*LedgerEntryResult, error) {
+func (a *LedgerServiceAdapter) GetLedgerEntry(entryKey [32]byte, ledgerIndex string) (*rpc_types.LedgerEntryResult, error) {
 	result, err := a.svc.GetLedgerEntry(entryKey, ledgerIndex)
 	if err != nil {
 		return nil, err
 	}
 
-	return &LedgerEntryResult{
+	return &rpc_types.LedgerEntryResult{
 		Index:       result.Index,
 		LedgerIndex: result.LedgerIndex,
 		LedgerHash:  result.LedgerHash,
@@ -413,22 +414,22 @@ func (a *LedgerServiceAdapter) GetLedgerEntry(entryKey [32]byte, ledgerIndex str
 }
 
 // GetLedgerData retrieves all ledger state entries with pagination
-func (a *LedgerServiceAdapter) GetLedgerData(ledgerIndex string, limit uint32, marker string) (*LedgerDataResult, error) {
+func (a *LedgerServiceAdapter) GetLedgerData(ledgerIndex string, limit uint32, marker string) (*rpc_types.LedgerDataResult, error) {
 	result, err := a.svc.GetLedgerData(ledgerIndex, limit, marker)
 	if err != nil {
 		return nil, err
 	}
 
 	// Convert service result to RPC result
-	state := make([]LedgerDataItem, len(result.State))
+	state := make([]rpc_types.LedgerDataItem, len(result.State))
 	for i, item := range result.State {
-		state[i] = LedgerDataItem{
+		state[i] = rpc_types.LedgerDataItem{
 			Index: item.Index,
 			Data:  item.Data,
 		}
 	}
 
-	rpcResult := &LedgerDataResult{
+	rpcResult := &rpc_types.LedgerDataResult{
 		LedgerIndex: result.LedgerIndex,
 		LedgerHash:  result.LedgerHash,
 		State:       state,
@@ -438,7 +439,7 @@ func (a *LedgerServiceAdapter) GetLedgerData(ledgerIndex string, limit uint32, m
 
 	// Convert ledger header info if present
 	if result.LedgerHeader != nil {
-		rpcResult.LedgerHeader = &LedgerHeaderInfo{
+		rpcResult.LedgerHeader = &rpc_types.LedgerHeaderInfo{
 			AccountHash:         result.LedgerHeader.AccountHash,
 			CloseFlags:          result.LedgerHeader.CloseFlags,
 			CloseTime:           result.LedgerHeader.CloseTime,
@@ -459,23 +460,23 @@ func (a *LedgerServiceAdapter) GetLedgerData(ledgerIndex string, limit uint32, m
 }
 
 // GetAccountObjects retrieves all objects owned by an account
-func (a *LedgerServiceAdapter) GetAccountObjects(account string, ledgerIndex string, objType string, limit uint32) (*AccountObjectsResult, error) {
+func (a *LedgerServiceAdapter) GetAccountObjects(account string, ledgerIndex string, objType string, limit uint32) (*rpc_types.AccountObjectsResult, error) {
 	result, err := a.svc.GetAccountObjects(account, ledgerIndex, objType, limit)
 	if err != nil {
 		return nil, err
 	}
 
 	// Convert service result to RPC result
-	objects := make([]AccountObjectItem, len(result.AccountObjects))
+	objects := make([]rpc_types.AccountObjectItem, len(result.AccountObjects))
 	for i, obj := range result.AccountObjects {
-		objects[i] = AccountObjectItem{
+		objects[i] = rpc_types.AccountObjectItem{
 			Index:           obj.Index,
 			LedgerEntryType: obj.LedgerEntryType,
 			Data:            obj.Data,
 		}
 	}
 
-	return &AccountObjectsResult{
+	return &rpc_types.AccountObjectsResult{
 		Account:        result.Account,
 		AccountObjects: objects,
 		LedgerIndex:    result.LedgerIndex,

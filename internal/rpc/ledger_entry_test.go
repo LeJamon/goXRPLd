@@ -7,6 +7,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_handlers"
+	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,7 +16,7 @@ import (
 // mockLedgerEntryService implements LedgerService for ledger_entry testing
 type mockLedgerEntryService struct {
 	mockLedgerService
-	ledgerEntryResult *LedgerEntryResult
+	ledgerEntryResult *rpc_types.LedgerEntryResult
 	ledgerEntryErr    error
 }
 
@@ -25,7 +27,7 @@ func newMockLedgerEntryService() *mockLedgerEntryService {
 			closedLedgerIndex:    2,
 			validatedLedgerIndex: 2,
 			standalone:           true,
-			serverInfo: LedgerServerInfo{
+			serverInfo: rpc_types.LedgerServerInfo{
 				Standalone:         true,
 				OpenLedgerSeq:      3,
 				ClosedLedgerSeq:    2,
@@ -36,7 +38,7 @@ func newMockLedgerEntryService() *mockLedgerEntryService {
 	}
 }
 
-func (m *mockLedgerEntryService) GetLedgerEntry(entryKey [32]byte, ledgerIndex string) (*LedgerEntryResult, error) {
+func (m *mockLedgerEntryService) GetLedgerEntry(entryKey [32]byte, ledgerIndex string) (*rpc_types.LedgerEntryResult, error) {
 	if m.ledgerEntryErr != nil {
 		return nil, m.ledgerEntryErr
 	}
@@ -44,7 +46,7 @@ func (m *mockLedgerEntryService) GetLedgerEntry(entryKey [32]byte, ledgerIndex s
 		return m.ledgerEntryResult, nil
 	}
 	// Default result
-	return &LedgerEntryResult{
+	return &rpc_types.LedgerEntryResult{
 		Index:       hex.EncodeToString(entryKey[:]),
 		LedgerIndex: m.validatedLedgerIndex,
 		LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B, 0x0D, 0x85, 0x15, 0xD3, 0xEA, 0xAE, 0x1E, 0x74, 0xB2, 0x9A, 0x95, 0x80, 0x43, 0x46, 0xC4, 0x91, 0xEE, 0x1A, 0x95, 0xBF, 0x25, 0xE4, 0xAA, 0xB8, 0x54, 0xA6, 0xA6, 0x52},
@@ -55,12 +57,12 @@ func (m *mockLedgerEntryService) GetLedgerEntry(entryKey [32]byte, ledgerIndex s
 
 // setupLedgerEntryTestServices initializes the Services singleton with a mock for ledger_entry testing
 func setupLedgerEntryTestServices(mock *mockLedgerEntryService) func() {
-	oldServices := Services
-	Services = &ServiceContainer{
+	oldServices := rpc_types.Services
+	rpc_types.Services = &rpc_types.ServiceContainer{
 		Ledger: mock,
 	}
 	return func() {
-		Services = oldServices
+		rpc_types.Services = oldServices
 	}
 }
 
@@ -75,11 +77,11 @@ func TestLedgerEntryDirectIndexLookup(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	validIndex := "A33EC6BB85FB5674074C4A3A43373BB17645308F3EAE1933E3E35252162B217D"
@@ -99,7 +101,7 @@ func TestLedgerEntryDirectIndexLookup(t *testing.T) {
 				"ledger_index": "validated",
 			},
 			setupMock: func() {
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       validIndex,
 					LedgerIndex: 2,
 					LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -126,7 +128,7 @@ func TestLedgerEntryDirectIndexLookup(t *testing.T) {
 			},
 			setupMock: func() {
 				nodeBinary := "1100612200800000240000000425000000032D00000000559CE54C3B934E473A995B477E92EC229F99CED5B62BF4D2ACE4DC42719103AE2F6240000002540BE4008114AE123A8556F3CF91154711376AFB0F894F832B3D"
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       validIndex,
 					LedgerIndex: 2,
 					LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -220,11 +222,11 @@ func TestLedgerEntryCheck(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	checkIndex := "A33EC6BB85FB5674074C4A3A43373BB17645308F3EAE1933E3E35252162B217D"
@@ -244,7 +246,7 @@ func TestLedgerEntryCheck(t *testing.T) {
 				"ledger_index": "validated",
 			},
 			setupMock: func() {
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       checkIndex,
 					LedgerIndex: 2,
 					LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -328,11 +330,11 @@ func TestLedgerEntryPaymentChannel(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	payChanIndex := "A33EC6BB85FB5674074C4A3A43373BB17645308F3EAE1933E3E35252162B217D"
@@ -352,7 +354,7 @@ func TestLedgerEntryPaymentChannel(t *testing.T) {
 				"ledger_index":    "validated",
 			},
 			setupMock: func() {
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       payChanIndex,
 					LedgerIndex: 2,
 					LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -437,11 +439,11 @@ func TestLedgerEntryDirectory(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	dirRootIndex := "A33EC6BB85FB5674074C4A3A43373BB17645308F3EAE1933E3E35252162B217D"
@@ -461,7 +463,7 @@ func TestLedgerEntryDirectory(t *testing.T) {
 				"ledger_index": "validated",
 			},
 			setupMock: func() {
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       dirRootIndex,
 					LedgerIndex: 2,
 					LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -544,11 +546,11 @@ func TestLedgerEntryNFTPage(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	nftPageIndex := "A33EC6BB85FB5674074C4A3A43373BB17645308F3EAE1933E3E35252162B217D"
@@ -568,7 +570,7 @@ func TestLedgerEntryNFTPage(t *testing.T) {
 				"ledger_index": "validated",
 			},
 			setupMock: func() {
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       nftPageIndex,
 					LedgerIndex: 2,
 					LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -651,11 +653,11 @@ func TestLedgerEntryMissingEntryType(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	tests := []struct {
@@ -687,7 +689,7 @@ func TestLedgerEntryMissingEntryType(t *testing.T) {
 			assert.Nil(t, result, "Expected nil result for error case")
 			require.NotNil(t, rpcErr, "Expected RPC error")
 			assert.Contains(t, rpcErr.Message, tc.expectedError)
-			assert.Equal(t, RpcINVALID_PARAMS, rpcErr.Code)
+			assert.Equal(t, rpc_types.RpcINVALID_PARAMS, rpcErr.Code)
 		})
 	}
 }
@@ -703,11 +705,11 @@ func TestLedgerEntryLedgerSpecification(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	validIndex := "A33EC6BB85FB5674074C4A3A43373BB17645308F3EAE1933E3E35252162B217D"
@@ -726,7 +728,7 @@ func TestLedgerEntryLedgerSpecification(t *testing.T) {
 				"ledger_index": "validated",
 			},
 			setupMock: func() {
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       validIndex,
 					LedgerIndex: 2,
 					LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -747,7 +749,7 @@ func TestLedgerEntryLedgerSpecification(t *testing.T) {
 				"ledger_index": "current",
 			},
 			setupMock: func() {
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       validIndex,
 					LedgerIndex: 3,
 					LedgerHash:  [32]byte{0x5B, 0xC5, 0x0C, 0x9B},
@@ -768,7 +770,7 @@ func TestLedgerEntryLedgerSpecification(t *testing.T) {
 				"ledger_index": "closed",
 			},
 			setupMock: func() {
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       validIndex,
 					LedgerIndex: 2,
 					LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -786,7 +788,7 @@ func TestLedgerEntryLedgerSpecification(t *testing.T) {
 				"ledger_index": 2,
 			},
 			setupMock: func() {
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       validIndex,
 					LedgerIndex: 2,
 					LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -815,7 +817,7 @@ func TestLedgerEntryLedgerSpecification(t *testing.T) {
 				"ledger_hash": "4BC50C9B0D8515D3EAAE1E74B29A95804346C491EE1A95BF25E4AAB854A6A652",
 			},
 			setupMock: func() {
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       validIndex,
 					LedgerIndex: 2,
 					LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B, 0x0D, 0x85, 0x15, 0xD3, 0xEA, 0xAE, 0x1E, 0x74, 0xB2, 0x9A, 0x95, 0x80, 0x43, 0x46, 0xC4, 0x91, 0xEE, 0x1A, 0x95, 0xBF, 0x25, 0xE4, 0xAA, 0xB8, 0x54, 0xA6, 0xA6, 0x52},
@@ -835,7 +837,7 @@ func TestLedgerEntryLedgerSpecification(t *testing.T) {
 				"index": validIndex,
 			},
 			setupMock: func() {
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       validIndex,
 					LedgerIndex: 2,
 					LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -894,17 +896,17 @@ func TestLedgerEntryResponseFields(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	validIndex := "A33EC6BB85FB5674074C4A3A43373BB17645308F3EAE1933E3E35252162B217D"
 
 	t.Run("Response contains required fields", func(t *testing.T) {
-		mock.ledgerEntryResult = &LedgerEntryResult{
+		mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 			Index:       validIndex,
 			LedgerIndex: 2,
 			LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B, 0x0D, 0x85, 0x15, 0xD3, 0xEA, 0xAE, 0x1E, 0x74, 0xB2, 0x9A, 0x95, 0x80, 0x43, 0x46, 0xC4, 0x91, 0xEE, 0x1A, 0x95, 0xBF, 0x25, 0xE4, 0xAA, 0xB8, 0x54, 0xA6, 0xA6, 0x52},
@@ -940,7 +942,7 @@ func TestLedgerEntryResponseFields(t *testing.T) {
 
 	t.Run("Binary format includes node_binary", func(t *testing.T) {
 		nodeBinary := "1100612200800000240000000425000000032D00000000559CE54C3B934E473A995B477E92EC229F99CED5B62BF4D2ACE4DC42719103AE2F6240000002540BE4008114AE123A8556F3CF91154711376AFB0F894F832B3D"
-		mock.ledgerEntryResult = &LedgerEntryResult{
+		mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 			Index:       validIndex,
 			LedgerIndex: 2,
 			LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -980,17 +982,17 @@ func TestLedgerEntryResponseFields(t *testing.T) {
 
 // TestLedgerEntryServiceUnavailable tests behavior when ledger service is not available
 func TestLedgerEntryServiceUnavailable(t *testing.T) {
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	t.Run("Services is nil", func(t *testing.T) {
-		oldServices := Services
-		Services = nil
-		defer func() { Services = oldServices }()
+		oldServices := rpc_types.Services
+		rpc_types.Services = nil
+		defer func() { rpc_types.Services = oldServices }()
 
 		params := map[string]interface{}{
 			"index": "A33EC6BB85FB5674074C4A3A43373BB17645308F3EAE1933E3E35252162B217D",
@@ -1002,14 +1004,14 @@ func TestLedgerEntryServiceUnavailable(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcINTERNAL, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcINTERNAL, rpcErr.Code)
 		assert.Contains(t, rpcErr.Message, "Ledger service not available")
 	})
 
 	t.Run("Services.Ledger is nil", func(t *testing.T) {
-		oldServices := Services
-		Services = &ServiceContainer{Ledger: nil}
-		defer func() { Services = oldServices }()
+		oldServices := rpc_types.Services
+		rpc_types.Services = &rpc_types.ServiceContainer{Ledger: nil}
+		defer func() { rpc_types.Services = oldServices }()
 
 		params := map[string]interface{}{
 			"index": "A33EC6BB85FB5674074C4A3A43373BB17645308F3EAE1933E3E35252162B217D",
@@ -1021,7 +1023,7 @@ func TestLedgerEntryServiceUnavailable(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcINTERNAL, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcINTERNAL, rpcErr.Code)
 		assert.Contains(t, rpcErr.Message, "Ledger service not available")
 	})
 }
@@ -1032,18 +1034,18 @@ func TestLedgerEntryServiceUnavailable(t *testing.T) {
 
 // TestLedgerEntryMethodMetadata tests the method's metadata functions
 func TestLedgerEntryMethodMetadata(t *testing.T) {
-	method := &LedgerEntryMethod{}
+	method := &rpc_handlers.LedgerEntryMethod{}
 
 	t.Run("RequiredRole should be Guest", func(t *testing.T) {
-		assert.Equal(t, RoleGuest, method.RequiredRole(),
+		assert.Equal(t, rpc_types.RoleGuest, method.RequiredRole(),
 			"ledger_entry should be accessible to guests")
 	})
 
 	t.Run("SupportedApiVersions includes all versions", func(t *testing.T) {
 		versions := method.SupportedApiVersions()
-		assert.Contains(t, versions, ApiVersion1)
-		assert.Contains(t, versions, ApiVersion2)
-		assert.Contains(t, versions, ApiVersion3)
+		assert.Contains(t, versions, rpc_types.ApiVersion1)
+		assert.Contains(t, versions, rpc_types.ApiVersion2)
+		assert.Contains(t, versions, rpc_types.ApiVersion3)
 	})
 }
 
@@ -1057,18 +1059,18 @@ func TestLedgerEntryTypePriority(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	indexValue := "A33EC6BB85FB5674074C4A3A43373BB17645308F3EAE1933E3E35252162B217D"
 	checkValue := "B33EC6BB85FB5674074C4A3A43373BB17645308F3EAE1933E3E35252162B217D"
 
 	t.Run("Index takes priority over check", func(t *testing.T) {
-		mock.ledgerEntryResult = &LedgerEntryResult{
+		mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 			Index:       indexValue,
 			LedgerIndex: 2,
 			LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -1111,11 +1113,11 @@ func TestLedgerEntryNotImplementedTypes(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	// These entry types have struct definitions but keylet computation is not implemented
@@ -1125,7 +1127,7 @@ func TestLedgerEntryNotImplementedTypes(t *testing.T) {
 		// account_root expects a string (address) but current implementation
 		// doesn't compute the account root keylet from the address
 		params := map[string]interface{}{
-			"account_root":  "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+			"account_root": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
 			"ledger_index": "validated",
 		}
 		paramsJSON, err := json.Marshal(params)
@@ -1245,11 +1247,11 @@ func TestLedgerEntryInvalidParameters(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	tests := []struct {
@@ -1326,11 +1328,11 @@ func TestLedgerEntryNotFoundErrorCode(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	mock.ledgerEntryErr = errors.New("entry not found")
@@ -1361,11 +1363,11 @@ func TestLedgerEntryAccountRoot(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	accountRootIndex := "9CE54C3B934E473A995B477E92EC229F99CED5B62BF4D2ACE4DC42719103AE2F"
@@ -1385,7 +1387,7 @@ func TestLedgerEntryAccountRoot(t *testing.T) {
 				"ledger_index": "validated",
 			},
 			setupMock: func() {
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       accountRootIndex,
 					LedgerIndex: 3,
 					LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -1410,7 +1412,7 @@ func TestLedgerEntryAccountRoot(t *testing.T) {
 			},
 			setupMock: func() {
 				nodeBinary := "1100612200800000240000000425000000032D00000000559CE54C3B934E473A995B477E92EC229F99CED5B62BF4D2ACE4DC42719103AE2F6240000002540BE4008114AE123A8556F3CF91154711376AFB0F894F832B3D"
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       accountRootIndex,
 					LedgerIndex: 3,
 					LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -1485,11 +1487,11 @@ func TestLedgerEntryEscrow(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	escrowIndex := "DC5F3851D8A1AB622F957761E5963BC5BD439D5C24AC6AD7AC4523F0640A0BF5"
@@ -1509,7 +1511,7 @@ func TestLedgerEntryEscrow(t *testing.T) {
 				"ledger_index": "validated",
 			},
 			setupMock: func() {
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       escrowIndex,
 					LedgerIndex: 4,
 					LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -1585,11 +1587,11 @@ func TestLedgerEntryOffer(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	offerIndex := "E7D0EC33B0C2A0F2C9E16CCCA8E12F88F4F9CEFEC3D82C1E68F5B4CC4B3DEEEF"
@@ -1609,7 +1611,7 @@ func TestLedgerEntryOffer(t *testing.T) {
 				"ledger_index": "validated",
 			},
 			setupMock: func() {
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       offerIndex,
 					LedgerIndex: 4,
 					LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -1685,11 +1687,11 @@ func TestLedgerEntryRippleState(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	rippleStateIndex := "B7F9C5E1A8D4F2C3E6B9A8D7C5E4F3A2B1C9D8E7F6A5B4C3D2E1F0A9B8C7D6E5"
@@ -1709,7 +1711,7 @@ func TestLedgerEntryRippleState(t *testing.T) {
 				"ledger_index": "validated",
 			},
 			setupMock: func() {
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       rippleStateIndex,
 					LedgerIndex: 5,
 					LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -1785,11 +1787,11 @@ func TestLedgerEntryTicket(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	ticketIndex := "C8D2A5E4B7F1C3D6E9A8B7C5D4E3F2A1B9C8D7E6F5A4B3C2D1E0F9A8B7C6D5E4"
@@ -1809,7 +1811,7 @@ func TestLedgerEntryTicket(t *testing.T) {
 				"ledger_index": "validated",
 			},
 			setupMock: func() {
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       ticketIndex,
 					LedgerIndex: 4,
 					LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -1885,11 +1887,11 @@ func TestLedgerEntryDepositPreauth(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	depositPreauthIndex := "F1E2D3C4B5A6978869504132B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2C3"
@@ -1909,7 +1911,7 @@ func TestLedgerEntryDepositPreauth(t *testing.T) {
 				"ledger_index": "validated",
 			},
 			setupMock: func() {
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       depositPreauthIndex,
 					LedgerIndex: 4,
 					LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -1985,11 +1987,11 @@ func TestLedgerEntryAMM(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	ammIndex := "A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B0C1D2E3F4A5B6C7D8E9F0A1B2"
@@ -2009,7 +2011,7 @@ func TestLedgerEntryAMM(t *testing.T) {
 				"ledger_index": "validated",
 			},
 			setupMock: func() {
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       ammIndex,
 					LedgerIndex: 5,
 					LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -2085,11 +2087,11 @@ func TestLedgerEntryInvalidLedgerSpecification(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	validIndex := "A33EC6BB85FB5674074C4A3A43373BB17645308F3EAE1933E3E35252162B217D"
@@ -2164,11 +2166,11 @@ func TestLedgerEntryUnexpectedType(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	// Test requesting an entry using the wrong type
@@ -2178,7 +2180,7 @@ func TestLedgerEntryUnexpectedType(t *testing.T) {
 		// regardless of what type was expected
 		accountRootIndex := "9CE54C3B934E473A995B477E92EC229F99CED5B62BF4D2ACE4DC42719103AE2F"
 
-		mock.ledgerEntryResult = &LedgerEntryResult{
+		mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 			Index:       accountRootIndex,
 			LedgerIndex: 3,
 			LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -2213,17 +2215,17 @@ func TestLedgerEntryMultipleTypes(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	index1 := "A33EC6BB85FB5674074C4A3A43373BB17645308F3EAE1933E3E35252162B217D"
 	index2 := "B33EC6BB85FB5674074C4A3A43373BB17645308F3EAE1933E3E35252162B217D"
 
-	mock.ledgerEntryResult = &LedgerEntryResult{
+	mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 		Index:       index1,
 		LedgerIndex: 2,
 		LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -2268,11 +2270,11 @@ func TestLedgerEntryMalformedRequests(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	tests := []struct {
@@ -2348,11 +2350,11 @@ func TestLedgerEntryAPIVersions(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
+	method := &rpc_handlers.LedgerEntryMethod{}
 
 	validIndex := "A33EC6BB85FB5674074C4A3A43373BB17645308F3EAE1933E3E35252162B217D"
 
-	mock.ledgerEntryResult = &LedgerEntryResult{
+	mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 		Index:       validIndex,
 		LedgerIndex: 2,
 		LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -2361,13 +2363,13 @@ func TestLedgerEntryAPIVersions(t *testing.T) {
 	}
 	mock.ledgerEntryErr = nil
 
-	versions := []int{ApiVersion1, ApiVersion2, ApiVersion3}
+	versions := []int{rpc_types.ApiVersion1, rpc_types.ApiVersion2, rpc_types.ApiVersion3}
 
 	for _, version := range versions {
 		t.Run("API Version "+string(rune('0'+version)), func(t *testing.T) {
-			ctx := &RpcContext{
+			ctx := &rpc_types.RpcContext{
 				Context:    context.Background(),
-				Role:       RoleGuest,
+				Role:       rpc_types.RoleGuest,
 				ApiVersion: version,
 			}
 
@@ -2396,11 +2398,11 @@ func TestLedgerEntryHexValidation(t *testing.T) {
 	cleanup := setupLedgerEntryTestServices(mock)
 	defer cleanup()
 
-	method := &LedgerEntryMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.LedgerEntryMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	tests := []struct {
@@ -2525,7 +2527,7 @@ func TestLedgerEntryHexValidation(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			if !tc.expectError {
-				mock.ledgerEntryResult = &LedgerEntryResult{
+				mock.ledgerEntryResult = &rpc_types.LedgerEntryResult{
 					Index:       tc.paramValue,
 					LedgerIndex: 2,
 					LedgerHash:  [32]byte{0x4B, 0xC5, 0x0C, 0x9B},
@@ -2536,7 +2538,7 @@ func TestLedgerEntryHexValidation(t *testing.T) {
 			}
 
 			params := map[string]interface{}{
-				tc.paramName:  tc.paramValue,
+				tc.paramName:   tc.paramValue,
 				"ledger_index": "validated",
 			}
 			paramsJSON, err := json.Marshal(params)

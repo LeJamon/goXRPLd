@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_handlers"
+	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,12 +28,12 @@ func newMockLedgerServiceMissingMethods() *mockLedgerServiceMissingMethods {
 
 // setupTestServicesMissingMethods initializes Services for testing
 func setupTestServicesMissingMethods(mock *mockLedgerServiceMissingMethods) func() {
-	oldServices := Services
-	Services = &ServiceContainer{
+	oldServices := rpc_types.Services
+	rpc_types.Services = &rpc_types.ServiceContainer{
 		Ledger: mock,
 	}
 	return func() {
-		Services = oldServices
+		rpc_types.Services = oldServices
 	}
 }
 
@@ -45,13 +47,13 @@ func TestFetchInfoMethod(t *testing.T) {
 	cleanup := setupTestServicesMissingMethods(mock)
 	defer cleanup()
 
-	method := &FetchInfoMethod{}
+	method := &rpc_handlers.FetchInfoMethod{}
 
 	t.Run("Returns response with clear flag", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleAdmin,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleAdmin,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{"clear": true}`)
@@ -65,10 +67,10 @@ func TestFetchInfoMethod(t *testing.T) {
 	})
 
 	t.Run("Returns response without clear flag", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleAdmin,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleAdmin,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		result, rpcErr := method.Handle(ctx, nil)
@@ -78,14 +80,14 @@ func TestFetchInfoMethod(t *testing.T) {
 	})
 
 	t.Run("RequiredRole is Admin", func(t *testing.T) {
-		assert.Equal(t, RoleAdmin, method.RequiredRole())
+		assert.Equal(t, rpc_types.RoleAdmin, method.RequiredRole())
 	})
 
 	t.Run("Supports all API versions", func(t *testing.T) {
 		versions := method.SupportedApiVersions()
-		assert.Contains(t, versions, ApiVersion1)
-		assert.Contains(t, versions, ApiVersion2)
-		assert.Contains(t, versions, ApiVersion3)
+		assert.Contains(t, versions, rpc_types.ApiVersion1)
+		assert.Contains(t, versions, rpc_types.ApiVersion2)
+		assert.Contains(t, versions, rpc_types.ApiVersion3)
 	})
 }
 
@@ -99,27 +101,27 @@ func TestOwnerInfoMethod(t *testing.T) {
 	cleanup := setupTestServicesMissingMethods(mock)
 	defer cleanup()
 
-	method := &OwnerInfoMethod{}
+	method := &rpc_handlers.OwnerInfoMethod{}
 
 	t.Run("Missing account parameter returns error", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleGuest,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleGuest,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		result, rpcErr := method.Handle(ctx, nil)
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcINVALID_PARAMS, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcINVALID_PARAMS, rpcErr.Code)
 	})
 
 	t.Run("Empty account returns error", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleGuest,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleGuest,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{"account": ""}`)
@@ -127,14 +129,14 @@ func TestOwnerInfoMethod(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcINVALID_PARAMS, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcINVALID_PARAMS, rpcErr.Code)
 	})
 
 	t.Run("Valid account returns response", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleGuest,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleGuest,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{"account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"}`)
@@ -145,7 +147,7 @@ func TestOwnerInfoMethod(t *testing.T) {
 	})
 
 	t.Run("RequiredRole is Guest", func(t *testing.T) {
-		assert.Equal(t, RoleGuest, method.RequiredRole())
+		assert.Equal(t, rpc_types.RoleGuest, method.RequiredRole())
 	})
 }
 
@@ -159,13 +161,13 @@ func TestLedgerHeaderMethod(t *testing.T) {
 	cleanup := setupTestServicesMissingMethods(mock)
 	defer cleanup()
 
-	method := &LedgerHeaderMethod{}
+	method := &rpc_handlers.LedgerHeaderMethod{}
 
 	t.Run("Current ledger returns unclosed ledger", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleGuest,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleGuest,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{"ledger_index": "current"}`)
@@ -179,10 +181,10 @@ func TestLedgerHeaderMethod(t *testing.T) {
 	})
 
 	t.Run("Validated ledger returns validated info", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleGuest,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleGuest,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{"ledger_index": "validated"}`)
@@ -198,27 +200,27 @@ func TestLedgerHeaderMethod(t *testing.T) {
 	t.Run("API version 2 returns unknownCmd per XRPL spec", func(t *testing.T) {
 		// Based on LedgerHeader_test.cpp::testCommandRetired
 		// ledger_header is retired in API v2
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleGuest,
-			ApiVersion: ApiVersion2,
+			Role:       rpc_types.RoleGuest,
+			ApiVersion: rpc_types.ApiVersion2,
 		}
 
 		result, rpcErr := method.Handle(ctx, nil)
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcMETHOD_NOT_FOUND, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcMETHOD_NOT_FOUND, rpcErr.Code)
 		assert.Equal(t, "unknownCmd", rpcErr.ErrorString)
 	})
 
 	t.Run("RequiredRole is Guest", func(t *testing.T) {
-		assert.Equal(t, RoleGuest, method.RequiredRole())
+		assert.Equal(t, rpc_types.RoleGuest, method.RequiredRole())
 	})
 
 	t.Run("Only supports API version 1", func(t *testing.T) {
 		versions := method.SupportedApiVersions()
-		assert.Contains(t, versions, ApiVersion1)
+		assert.Contains(t, versions, rpc_types.ApiVersion1)
 		// Should NOT support v2 per rippled
 	})
 }
@@ -233,13 +235,13 @@ func TestLedgerRequestMethod(t *testing.T) {
 	cleanup := setupTestServicesMissingMethods(mock)
 	defer cleanup()
 
-	method := &LedgerRequestMethod{}
+	method := &rpc_handlers.LedgerRequestMethod{}
 
 	t.Run("Returns ledger acquiring status", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleAdmin,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleAdmin,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{"ledger_index": 100}`)
@@ -256,7 +258,7 @@ func TestLedgerRequestMethod(t *testing.T) {
 	})
 
 	t.Run("RequiredRole is Admin", func(t *testing.T) {
-		assert.Equal(t, RoleAdmin, method.RequiredRole())
+		assert.Equal(t, rpc_types.RoleAdmin, method.RequiredRole())
 	})
 }
 
@@ -269,13 +271,13 @@ func TestLedgerCleanerMethod(t *testing.T) {
 	cleanup := setupTestServicesMissingMethods(mock)
 	defer cleanup()
 
-	method := &LedgerCleanerMethod{}
+	method := &rpc_handlers.LedgerCleanerMethod{}
 
 	t.Run("Returns success message", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleAdmin,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleAdmin,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		result, rpcErr := method.Handle(ctx, nil)
@@ -288,7 +290,7 @@ func TestLedgerCleanerMethod(t *testing.T) {
 	})
 
 	t.Run("RequiredRole is Admin", func(t *testing.T) {
-		assert.Equal(t, RoleAdmin, method.RequiredRole())
+		assert.Equal(t, rpc_types.RoleAdmin, method.RequiredRole())
 	})
 }
 
@@ -301,13 +303,13 @@ func TestLedgerDiffMethod(t *testing.T) {
 	cleanup := setupTestServicesMissingMethods(mock)
 	defer cleanup()
 
-	method := &LedgerDiffMethod{}
+	method := &rpc_handlers.LedgerDiffMethod{}
 
 	t.Run("Returns gRPC only error", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleAdmin,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleAdmin,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		result, rpcErr := method.Handle(ctx, nil)
@@ -319,7 +321,7 @@ func TestLedgerDiffMethod(t *testing.T) {
 	})
 
 	t.Run("RequiredRole is Admin", func(t *testing.T) {
-		assert.Equal(t, RoleAdmin, method.RequiredRole())
+		assert.Equal(t, rpc_types.RoleAdmin, method.RequiredRole())
 	})
 }
 
@@ -333,14 +335,14 @@ func TestSimulateMethod(t *testing.T) {
 	cleanup := setupTestServicesMissingMethods(mock)
 	defer cleanup()
 
-	method := &SimulateMethod{}
+	method := &rpc_handlers.SimulateMethod{}
 
 	t.Run("Missing tx_json and tx_blob returns error", func(t *testing.T) {
 		// Based on Simulate_test.cpp::testParamErrors - "No params"
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleGuest,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleGuest,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{}`)
@@ -348,15 +350,15 @@ func TestSimulateMethod(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcINVALID_PARAMS, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcINVALID_PARAMS, rpcErr.Code)
 	})
 
 	t.Run("Both tx_json and tx_blob returns error", func(t *testing.T) {
 		// Based on Simulate_test.cpp::testParamErrors - "Providing both"
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleGuest,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleGuest,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{"tx_json": {}, "tx_blob": "1200"}`)
@@ -364,18 +366,18 @@ func TestSimulateMethod(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcINVALID_PARAMS, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcINVALID_PARAMS, rpcErr.Code)
 	})
 
 	t.Run("RequiredRole is Guest", func(t *testing.T) {
-		assert.Equal(t, RoleGuest, method.RequiredRole())
+		assert.Equal(t, rpc_types.RoleGuest, method.RequiredRole())
 	})
 
 	t.Run("Supports all API versions", func(t *testing.T) {
 		versions := method.SupportedApiVersions()
-		assert.Contains(t, versions, ApiVersion1)
-		assert.Contains(t, versions, ApiVersion2)
-		assert.Contains(t, versions, ApiVersion3)
+		assert.Contains(t, versions, rpc_types.ApiVersion1)
+		assert.Contains(t, versions, rpc_types.ApiVersion2)
+		assert.Contains(t, versions, rpc_types.ApiVersion3)
 	})
 }
 
@@ -388,13 +390,13 @@ func TestTxReduceRelayMethod(t *testing.T) {
 	cleanup := setupTestServicesMissingMethods(mock)
 	defer cleanup()
 
-	method := &TxReduceRelayMethod{}
+	method := &rpc_handlers.TxReduceRelayMethod{}
 
 	t.Run("Returns current state", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleAdmin,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleAdmin,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		result, rpcErr := method.Handle(ctx, nil)
@@ -407,7 +409,7 @@ func TestTxReduceRelayMethod(t *testing.T) {
 	})
 
 	t.Run("RequiredRole is Admin", func(t *testing.T) {
-		assert.Equal(t, RoleAdmin, method.RequiredRole())
+		assert.Equal(t, rpc_types.RoleAdmin, method.RequiredRole())
 	})
 }
 
@@ -422,14 +424,14 @@ func TestConnectMethod(t *testing.T) {
 	cleanup := setupTestServicesMissingMethods(mock)
 	defer cleanup()
 
-	method := &ConnectMethod{}
+	method := &rpc_handlers.ConnectMethod{}
 
 	t.Run("Standalone mode returns notSynced error", func(t *testing.T) {
 		// Based on Connect_test.cpp::testErrors
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleAdmin,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleAdmin,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{"ip": "127.0.0.1", "port": 51235}`)
@@ -437,15 +439,15 @@ func TestConnectMethod(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcNOT_SYNCED, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcNOT_SYNCED, rpcErr.Code)
 		assert.Equal(t, "notSynced", rpcErr.ErrorString)
 	})
 
 	t.Run("Missing ip parameter returns error", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleAdmin,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleAdmin,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{}`)
@@ -453,11 +455,11 @@ func TestConnectMethod(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcINVALID_PARAMS, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcINVALID_PARAMS, rpcErr.Code)
 	})
 
 	t.Run("RequiredRole is Admin", func(t *testing.T) {
-		assert.Equal(t, RoleAdmin, method.RequiredRole())
+		assert.Equal(t, rpc_types.RoleAdmin, method.RequiredRole())
 	})
 }
 
@@ -470,13 +472,13 @@ func TestPrintMethod(t *testing.T) {
 	cleanup := setupTestServicesMissingMethods(mock)
 	defer cleanup()
 
-	method := &PrintMethod{}
+	method := &rpc_handlers.PrintMethod{}
 
 	t.Run("Returns server info", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleAdmin,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleAdmin,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		result, rpcErr := method.Handle(ctx, nil)
@@ -489,7 +491,7 @@ func TestPrintMethod(t *testing.T) {
 	})
 
 	t.Run("RequiredRole is Admin", func(t *testing.T) {
-		assert.Equal(t, RoleAdmin, method.RequiredRole())
+		assert.Equal(t, rpc_types.RoleAdmin, method.RequiredRole())
 	})
 }
 
@@ -503,26 +505,26 @@ func TestValidatorInfoMethod(t *testing.T) {
 	cleanup := setupTestServicesMissingMethods(mock)
 	defer cleanup()
 
-	method := &ValidatorInfoMethod{}
+	method := &rpc_handlers.ValidatorInfoMethod{}
 
 	t.Run("Non-validator returns error", func(t *testing.T) {
 		// Based on ValidatorInfo_test.cpp::testErrors
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleAdmin,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleAdmin,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		result, rpcErr := method.Handle(ctx, nil)
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcNOT_VALIDATOR, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcNOT_VALIDATOR, rpcErr.Code)
 		assert.Contains(t, rpcErr.Message, "not a validator")
 	})
 
 	t.Run("RequiredRole is Admin", func(t *testing.T) {
-		assert.Equal(t, RoleAdmin, method.RequiredRole())
+		assert.Equal(t, rpc_types.RoleAdmin, method.RequiredRole())
 	})
 }
 
@@ -535,13 +537,13 @@ func TestCanDeleteMethod(t *testing.T) {
 	cleanup := setupTestServicesMissingMethods(mock)
 	defer cleanup()
 
-	method := &CanDeleteMethod{}
+	method := &rpc_handlers.CanDeleteMethod{}
 
 	t.Run("Returns can_delete ledger sequence", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleAdmin,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleAdmin,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		result, rpcErr := method.Handle(ctx, nil)
@@ -554,7 +556,7 @@ func TestCanDeleteMethod(t *testing.T) {
 	})
 
 	t.Run("RequiredRole is Admin", func(t *testing.T) {
-		assert.Equal(t, RoleAdmin, method.RequiredRole())
+		assert.Equal(t, rpc_types.RoleAdmin, method.RequiredRole())
 	})
 }
 
@@ -568,13 +570,13 @@ func TestGetAggregatePriceMethod(t *testing.T) {
 	cleanup := setupTestServicesMissingMethods(mock)
 	defer cleanup()
 
-	method := &GetAggregatePriceMethod{}
+	method := &rpc_handlers.GetAggregatePriceMethod{}
 
 	t.Run("Missing oracles parameter returns error", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleGuest,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleGuest,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{"base_asset": "XRP", "quote_asset": "USD"}`)
@@ -582,14 +584,14 @@ func TestGetAggregatePriceMethod(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcINVALID_PARAMS, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcINVALID_PARAMS, rpcErr.Code)
 	})
 
 	t.Run("Missing base_asset returns error", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleGuest,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleGuest,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{"quote_asset": "USD", "oracles": []}`)
@@ -597,14 +599,14 @@ func TestGetAggregatePriceMethod(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcINVALID_PARAMS, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcINVALID_PARAMS, rpcErr.Code)
 	})
 
 	t.Run("Missing quote_asset returns error", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleGuest,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleGuest,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{"base_asset": "XRP", "oracles": []}`)
@@ -612,11 +614,11 @@ func TestGetAggregatePriceMethod(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcINVALID_PARAMS, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcINVALID_PARAMS, rpcErr.Code)
 	})
 
 	t.Run("RequiredRole is Guest", func(t *testing.T) {
-		assert.Equal(t, RoleGuest, method.RequiredRole())
+		assert.Equal(t, rpc_types.RoleGuest, method.RequiredRole())
 	})
 }
 
@@ -630,14 +632,14 @@ func TestGetCountsMethod(t *testing.T) {
 	cleanup := setupTestServicesMissingMethods(mock)
 	defer cleanup()
 
-	method := &GetCountsMethod{}
+	method := &rpc_handlers.GetCountsMethod{}
 
 	t.Run("Returns object counts with uptime", func(t *testing.T) {
 		// Based on GetCounts_test.cpp::testGetCounts
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleAdmin,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleAdmin,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		result, rpcErr := method.Handle(ctx, nil)
@@ -652,10 +654,10 @@ func TestGetCountsMethod(t *testing.T) {
 
 	t.Run("Accepts min_count parameter", func(t *testing.T) {
 		// Based on GetCounts_test.cpp: "make request with min threshold 100"
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleAdmin,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleAdmin,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{"min_count": 100}`)
@@ -666,7 +668,7 @@ func TestGetCountsMethod(t *testing.T) {
 	})
 
 	t.Run("RequiredRole is Admin", func(t *testing.T) {
-		assert.Equal(t, RoleAdmin, method.RequiredRole())
+		assert.Equal(t, rpc_types.RoleAdmin, method.RequiredRole())
 	})
 }
 
@@ -679,13 +681,13 @@ func TestLogLevelMethod(t *testing.T) {
 	cleanup := setupTestServicesMissingMethods(mock)
 	defer cleanup()
 
-	method := &LogLevelMethod{}
+	method := &rpc_handlers.LogLevelMethod{}
 
 	t.Run("Returns current log levels without params", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleAdmin,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleAdmin,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		result, rpcErr := method.Handle(ctx, nil)
@@ -695,10 +697,10 @@ func TestLogLevelMethod(t *testing.T) {
 	})
 
 	t.Run("Invalid severity returns error", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleAdmin,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleAdmin,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{"severity": "invalid_level"}`)
@@ -706,7 +708,7 @@ func TestLogLevelMethod(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcINVALID_PARAMS, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcINVALID_PARAMS, rpcErr.Code)
 	})
 
 	t.Run("Valid severity levels are accepted", func(t *testing.T) {
@@ -714,10 +716,10 @@ func TestLogLevelMethod(t *testing.T) {
 
 		for _, level := range validLevels {
 			t.Run("severity: "+level, func(t *testing.T) {
-				ctx := &RpcContext{
+				ctx := &rpc_types.RpcContext{
 					Context:    context.Background(),
-					Role:       RoleAdmin,
-					ApiVersion: ApiVersion1,
+					Role:       rpc_types.RoleAdmin,
+					ApiVersion: rpc_types.ApiVersion1,
 				}
 
 				params, _ := json.Marshal(map[string]string{"severity": level})
@@ -730,7 +732,7 @@ func TestLogLevelMethod(t *testing.T) {
 	})
 
 	t.Run("RequiredRole is Admin", func(t *testing.T) {
-		assert.Equal(t, RoleAdmin, method.RequiredRole())
+		assert.Equal(t, rpc_types.RoleAdmin, method.RequiredRole())
 	})
 }
 
@@ -743,13 +745,13 @@ func TestLogRotateMethod(t *testing.T) {
 	cleanup := setupTestServicesMissingMethods(mock)
 	defer cleanup()
 
-	method := &LogRotateMethod{}
+	method := &rpc_handlers.LogRotateMethod{}
 
 	t.Run("Returns rotation message", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleAdmin,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleAdmin,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		result, rpcErr := method.Handle(ctx, nil)
@@ -762,7 +764,7 @@ func TestLogRotateMethod(t *testing.T) {
 	})
 
 	t.Run("RequiredRole is Admin", func(t *testing.T) {
-		assert.Equal(t, RoleAdmin, method.RequiredRole())
+		assert.Equal(t, rpc_types.RoleAdmin, method.RequiredRole())
 	})
 }
 
@@ -776,14 +778,14 @@ func TestAMMInfoMethod(t *testing.T) {
 	cleanup := setupTestServicesMissingMethods(mock)
 	defer cleanup()
 
-	method := &AMMInfoMethod{}
+	method := &rpc_handlers.AMMInfoMethod{}
 
 	t.Run("Returns not implemented error", func(t *testing.T) {
 		// AMM requires AMM ledger entry type which is not implemented
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleGuest,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleGuest,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{"amm_account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"}`)
@@ -791,15 +793,15 @@ func TestAMMInfoMethod(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcNOT_IMPL, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcNOT_IMPL, rpcErr.Code)
 	})
 
 	t.Run("Invalid parameters - neither assets nor amm_account", func(t *testing.T) {
 		// Based on AMMInfo_test.cpp::testErrors - "Invalid parameters"
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleGuest,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleGuest,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{}`)
@@ -807,14 +809,14 @@ func TestAMMInfoMethod(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcINVALID_PARAMS, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcINVALID_PARAMS, rpcErr.Code)
 	})
 
 	t.Run("Invalid parameters - both assets and amm_account", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleGuest,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleGuest,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{
@@ -826,11 +828,11 @@ func TestAMMInfoMethod(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcINVALID_PARAMS, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcINVALID_PARAMS, rpcErr.Code)
 	})
 
 	t.Run("RequiredRole is Guest", func(t *testing.T) {
-		assert.Equal(t, RoleGuest, method.RequiredRole())
+		assert.Equal(t, rpc_types.RoleGuest, method.RequiredRole())
 	})
 }
 
@@ -843,14 +845,14 @@ func TestVaultInfoMethod(t *testing.T) {
 	cleanup := setupTestServicesMissingMethods(mock)
 	defer cleanup()
 
-	method := &VaultInfoMethod{}
+	method := &rpc_handlers.VaultInfoMethod{}
 
 	t.Run("Returns not implemented error", func(t *testing.T) {
 		// Vault requires Vault ledger entry type which is not implemented
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleGuest,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleGuest,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{"vault_id": "test_vault_id"}`)
@@ -858,14 +860,14 @@ func TestVaultInfoMethod(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcNOT_IMPL, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcNOT_IMPL, rpcErr.Code)
 	})
 
 	t.Run("Invalid parameters - neither vault_id nor owner+seq", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleGuest,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleGuest,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{}`)
@@ -873,14 +875,14 @@ func TestVaultInfoMethod(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcINVALID_PARAMS, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcINVALID_PARAMS, rpcErr.Code)
 	})
 
 	t.Run("Invalid parameters - both vault_id and owner+seq", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleGuest,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleGuest,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{
@@ -892,11 +894,11 @@ func TestVaultInfoMethod(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcINVALID_PARAMS, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcINVALID_PARAMS, rpcErr.Code)
 	})
 
 	t.Run("RequiredRole is Guest", func(t *testing.T) {
-		assert.Equal(t, RoleGuest, method.RequiredRole())
+		assert.Equal(t, rpc_types.RoleGuest, method.RequiredRole())
 	})
 }
 
@@ -909,13 +911,13 @@ func TestUnlListMethod(t *testing.T) {
 	cleanup := setupTestServicesMissingMethods(mock)
 	defer cleanup()
 
-	method := &UnlListMethod{}
+	method := &rpc_handlers.UnlListMethod{}
 
 	t.Run("Returns UNL array", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleAdmin,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleAdmin,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		result, rpcErr := method.Handle(ctx, nil)
@@ -928,7 +930,7 @@ func TestUnlListMethod(t *testing.T) {
 	})
 
 	t.Run("RequiredRole is Admin", func(t *testing.T) {
-		assert.Equal(t, RoleAdmin, method.RequiredRole())
+		assert.Equal(t, rpc_types.RoleAdmin, method.RequiredRole())
 	})
 }
 
@@ -941,13 +943,13 @@ func TestBlackListMethod(t *testing.T) {
 	cleanup := setupTestServicesMissingMethods(mock)
 	defer cleanup()
 
-	method := &BlackListMethod{}
+	method := &rpc_handlers.BlackListMethod{}
 
 	t.Run("Returns blacklist array", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleAdmin,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleAdmin,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		result, rpcErr := method.Handle(ctx, nil)
@@ -960,10 +962,10 @@ func TestBlackListMethod(t *testing.T) {
 	})
 
 	t.Run("Accepts threshold parameter", func(t *testing.T) {
-		ctx := &RpcContext{
+		ctx := &rpc_types.RpcContext{
 			Context:    context.Background(),
-			Role:       RoleAdmin,
-			ApiVersion: ApiVersion1,
+			Role:       rpc_types.RoleAdmin,
+			ApiVersion: rpc_types.ApiVersion1,
 		}
 
 		params := json.RawMessage(`{"threshold": 100}`)
@@ -974,7 +976,7 @@ func TestBlackListMethod(t *testing.T) {
 	})
 
 	t.Run("RequiredRole is Admin", func(t *testing.T) {
-		assert.Equal(t, RoleAdmin, method.RequiredRole())
+		assert.Equal(t, rpc_types.RoleAdmin, method.RequiredRole())
 	})
 }
 
@@ -984,40 +986,40 @@ func TestBlackListMethod(t *testing.T) {
 
 func TestMissingMethodsServiceUnavailable(t *testing.T) {
 	// Test all methods handle nil Services gracefully
-	oldServices := Services
-	Services = nil
-	defer func() { Services = oldServices }()
+	oldServices := rpc_types.Services
+	rpc_types.Services = nil
+	defer func() { rpc_types.Services = oldServices }()
 
-	ctx := &RpcContext{
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleAdmin,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleAdmin,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	methods := []struct {
 		name   string
-		method MethodHandler
+		method rpc_types.MethodHandler
 	}{
-		{"FetchInfoMethod", &FetchInfoMethod{}},
-		{"OwnerInfoMethod", &OwnerInfoMethod{}},
-		{"LedgerHeaderMethod", &LedgerHeaderMethod{}},
-		{"LedgerRequestMethod", &LedgerRequestMethod{}},
-		{"LedgerCleanerMethod", &LedgerCleanerMethod{}},
-		{"LedgerDiffMethod", &LedgerDiffMethod{}},
-		{"SimulateMethod", &SimulateMethod{}},
-		{"TxReduceRelayMethod", &TxReduceRelayMethod{}},
-		{"ConnectMethod", &ConnectMethod{}},
-		{"PrintMethod", &PrintMethod{}},
-		{"ValidatorInfoMethod", &ValidatorInfoMethod{}},
-		{"CanDeleteMethod", &CanDeleteMethod{}},
-		{"GetAggregatePriceMethod", &GetAggregatePriceMethod{}},
-		{"GetCountsMethod", &GetCountsMethod{}},
-		{"LogLevelMethod", &LogLevelMethod{}},
-		{"LogRotateMethod", &LogRotateMethod{}},
-		{"AMMInfoMethod", &AMMInfoMethod{}},
-		{"VaultInfoMethod", &VaultInfoMethod{}},
-		{"UnlListMethod", &UnlListMethod{}},
-		{"BlackListMethod", &BlackListMethod{}},
+		{"FetchInfoMethod", &rpc_handlers.FetchInfoMethod{}},
+		{"OwnerInfoMethod", &rpc_handlers.OwnerInfoMethod{}},
+		{"LedgerHeaderMethod", &rpc_handlers.LedgerHeaderMethod{}},
+		{"LedgerRequestMethod", &rpc_handlers.LedgerRequestMethod{}},
+		{"LedgerCleanerMethod", &rpc_handlers.LedgerCleanerMethod{}},
+		{"LedgerDiffMethod", &rpc_handlers.LedgerDiffMethod{}},
+		{"SimulateMethod", &rpc_handlers.SimulateMethod{}},
+		{"TxReduceRelayMethod", &rpc_handlers.TxReduceRelayMethod{}},
+		{"ConnectMethod", &rpc_handlers.ConnectMethod{}},
+		{"PrintMethod", &rpc_handlers.PrintMethod{}},
+		{"ValidatorInfoMethod", &rpc_handlers.ValidatorInfoMethod{}},
+		{"CanDeleteMethod", &rpc_handlers.CanDeleteMethod{}},
+		{"GetAggregatePriceMethod", &rpc_handlers.GetAggregatePriceMethod{}},
+		{"GetCountsMethod", &rpc_handlers.GetCountsMethod{}},
+		{"LogLevelMethod", &rpc_handlers.LogLevelMethod{}},
+		{"LogRotateMethod", &rpc_handlers.LogRotateMethod{}},
+		{"AMMInfoMethod", &rpc_handlers.AMMInfoMethod{}},
+		{"VaultInfoMethod", &rpc_handlers.VaultInfoMethod{}},
+		{"UnlListMethod", &rpc_handlers.UnlListMethod{}},
+		{"BlackListMethod", &rpc_handlers.BlackListMethod{}},
 	}
 
 	for _, tc := range methods {
@@ -1026,7 +1028,7 @@ func TestMissingMethodsServiceUnavailable(t *testing.T) {
 
 			// Should return an internal error, not panic
 			if rpcErr != nil {
-				assert.Equal(t, RpcINTERNAL, rpcErr.Code)
+				assert.Equal(t, rpc_types.RpcINTERNAL, rpcErr.Code)
 			}
 			// Result should be nil if there's an error
 			if rpcErr != nil {
@@ -1042,29 +1044,29 @@ func TestMissingMethodsServiceUnavailable(t *testing.T) {
 
 func TestMissingMethodsNilLedgerService(t *testing.T) {
 	// Test all methods handle nil Ledger gracefully
-	oldServices := Services
-	Services = &ServiceContainer{Ledger: nil}
-	defer func() { Services = oldServices }()
+	oldServices := rpc_types.Services
+	rpc_types.Services = &rpc_types.ServiceContainer{Ledger: nil}
+	defer func() { rpc_types.Services = oldServices }()
 
-	ctx := &RpcContext{
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleAdmin,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleAdmin,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	methods := []struct {
 		name   string
-		method MethodHandler
+		method rpc_types.MethodHandler
 	}{
-		{"FetchInfoMethod", &FetchInfoMethod{}},
-		{"PrintMethod", &PrintMethod{}},
-		{"ValidatorInfoMethod", &ValidatorInfoMethod{}},
-		{"CanDeleteMethod", &CanDeleteMethod{}},
-		{"GetCountsMethod", &GetCountsMethod{}},
-		{"LogLevelMethod", &LogLevelMethod{}},
-		{"LogRotateMethod", &LogRotateMethod{}},
-		{"UnlListMethod", &UnlListMethod{}},
-		{"BlackListMethod", &BlackListMethod{}},
+		{"FetchInfoMethod", &rpc_handlers.FetchInfoMethod{}},
+		{"PrintMethod", &rpc_handlers.PrintMethod{}},
+		{"ValidatorInfoMethod", &rpc_handlers.ValidatorInfoMethod{}},
+		{"CanDeleteMethod", &rpc_handlers.CanDeleteMethod{}},
+		{"GetCountsMethod", &rpc_handlers.GetCountsMethod{}},
+		{"LogLevelMethod", &rpc_handlers.LogLevelMethod{}},
+		{"LogRotateMethod", &rpc_handlers.LogRotateMethod{}},
+		{"UnlListMethod", &rpc_handlers.UnlListMethod{}},
+		{"BlackListMethod", &rpc_handlers.BlackListMethod{}},
 	}
 
 	for _, tc := range methods {
@@ -1073,7 +1075,7 @@ func TestMissingMethodsNilLedgerService(t *testing.T) {
 
 			// Should return an internal error, not panic
 			require.NotNil(t, rpcErr)
-			assert.Equal(t, RpcINTERNAL, rpcErr.Code)
+			assert.Equal(t, rpc_types.RpcINTERNAL, rpcErr.Code)
 			assert.Nil(t, result)
 		})
 	}

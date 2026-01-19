@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_handlers"
+	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,7 +18,7 @@ import (
 // mockLedgerServiceTx extends mockLedgerService with tx-specific behavior
 type mockLedgerServiceTx struct {
 	*mockLedgerService
-	transactions       map[string]*TransactionInfo
+	transactions       map[string]*rpc_types.TransactionInfo
 	networkID          uint16
 	txLookupError      error
 	ledgerRangeError   error
@@ -28,7 +30,7 @@ type mockLedgerServiceTx struct {
 func newMockLedgerServiceTx() *mockLedgerServiceTx {
 	return &mockLedgerServiceTx{
 		mockLedgerService:  newMockLedgerService(),
-		transactions:       make(map[string]*TransactionInfo),
+		transactions:       make(map[string]*rpc_types.TransactionInfo),
 		networkID:          0, // Default: mainnet-like (no network ID)
 		completeLedgers:    "1-1000",
 		minAvailableLedger: 1,
@@ -36,7 +38,7 @@ func newMockLedgerServiceTx() *mockLedgerServiceTx {
 	}
 }
 
-func (m *mockLedgerServiceTx) GetTransaction(txHash [32]byte) (*TransactionInfo, error) {
+func (m *mockLedgerServiceTx) GetTransaction(txHash [32]byte) (*rpc_types.TransactionInfo, error) {
 	if m.txLookupError != nil {
 		return nil, m.txLookupError
 	}
@@ -51,11 +53,11 @@ func (m *mockLedgerServiceTx) GetNetworkID() uint16 {
 	return m.networkID
 }
 
-func (m *mockLedgerServiceTx) GetLedgerRange(minSeq, maxSeq uint32) (*LedgerRangeResult, error) {
+func (m *mockLedgerServiceTx) GetLedgerRange(minSeq, maxSeq uint32) (*rpc_types.LedgerRangeResult, error) {
 	if m.ledgerRangeError != nil {
 		return nil, m.ledgerRangeError
 	}
-	return &LedgerRangeResult{
+	return &rpc_types.LedgerRangeResult{
 		LedgerFirst: m.minAvailableLedger,
 		LedgerLast:  m.maxAvailableLedger,
 		Hashes:      make(map[uint32][32]byte),
@@ -64,12 +66,12 @@ func (m *mockLedgerServiceTx) GetLedgerRange(minSeq, maxSeq uint32) (*LedgerRang
 
 // setupTestServicesTx initializes the Services singleton with a tx mock for testing
 func setupTestServicesTx(mock *mockLedgerServiceTx) func() {
-	oldServices := Services
-	Services = &ServiceContainer{
+	oldServices := rpc_types.Services
+	rpc_types.Services = &rpc_types.ServiceContainer{
 		Ledger: mock,
 	}
 	return func() {
-		Services = oldServices
+		rpc_types.Services = oldServices
 	}
 }
 
@@ -84,11 +86,11 @@ func TestTxMethodErrorValidation(t *testing.T) {
 	cleanup := setupTestServicesTx(mock)
 	defer cleanup()
 
-	method := &TxMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.TxMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	tests := []struct {
@@ -102,13 +104,13 @@ func TestTxMethodErrorValidation(t *testing.T) {
 			name:          "Missing transaction field - empty params",
 			params:        map[string]interface{}{},
 			expectedError: "Missing required parameter: transaction",
-			expectedCode:  RpcINVALID_PARAMS,
+			expectedCode:  rpc_types.RpcINVALID_PARAMS,
 		},
 		{
 			name:          "Missing transaction field - nil params",
 			params:        nil,
 			expectedError: "Missing required parameter: transaction",
-			expectedCode:  RpcINVALID_PARAMS,
+			expectedCode:  rpc_types.RpcINVALID_PARAMS,
 		},
 		{
 			name: "Invalid hash format - too short",
@@ -116,7 +118,7 @@ func TestTxMethodErrorValidation(t *testing.T) {
 				"transaction": "ABC123",
 			},
 			expectedError: "Invalid transaction hash",
-			expectedCode:  RpcINVALID_PARAMS,
+			expectedCode:  rpc_types.RpcINVALID_PARAMS,
 		},
 		{
 			name: "Invalid hash format - too long (68 chars)",
@@ -124,7 +126,7 @@ func TestTxMethodErrorValidation(t *testing.T) {
 				"transaction": "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4",
 			},
 			expectedError: "Invalid transaction hash",
-			expectedCode:  RpcINVALID_PARAMS,
+			expectedCode:  rpc_types.RpcINVALID_PARAMS,
 		},
 		{
 			name: "Invalid hash format - 63 chars (1 short)",
@@ -132,7 +134,7 @@ func TestTxMethodErrorValidation(t *testing.T) {
 				"transaction": "E08D6E9754025BA2534A78707605E0601F03ACE063687A0CA1BDDACFCD1698C",
 			},
 			expectedError: "Invalid transaction hash",
-			expectedCode:  RpcINVALID_PARAMS,
+			expectedCode:  rpc_types.RpcINVALID_PARAMS,
 		},
 		{
 			name: "Invalid hash format - 65 chars (1 extra)",
@@ -140,7 +142,7 @@ func TestTxMethodErrorValidation(t *testing.T) {
 				"transaction": "E08D6E9754025BA2534A78707605E0601F03ACE063687A0CA1BDDACFCD1698C70",
 			},
 			expectedError: "Invalid transaction hash",
-			expectedCode:  RpcINVALID_PARAMS,
+			expectedCode:  rpc_types.RpcINVALID_PARAMS,
 		},
 		{
 			name: "Invalid hash format - not hex (contains G)",
@@ -148,7 +150,7 @@ func TestTxMethodErrorValidation(t *testing.T) {
 				"transaction": "G08D6E9754025BA2534A78707605E0601F03ACE063687A0CA1BDDACFCD1698C7",
 			},
 			expectedError: "Invalid transaction hash",
-			expectedCode:  RpcINVALID_PARAMS,
+			expectedCode:  rpc_types.RpcINVALID_PARAMS,
 		},
 		{
 			name: "Invalid hash format - not hex (contains Z)",
@@ -156,7 +158,7 @@ func TestTxMethodErrorValidation(t *testing.T) {
 				"transaction": "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ",
 			},
 			expectedError: "Invalid transaction hash",
-			expectedCode:  RpcINVALID_PARAMS,
+			expectedCode:  rpc_types.RpcINVALID_PARAMS,
 		},
 		{
 			name: "Invalid hash format - special characters",
@@ -164,7 +166,7 @@ func TestTxMethodErrorValidation(t *testing.T) {
 				"transaction": "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6!@#$",
 			},
 			expectedError: "Invalid transaction hash",
-			expectedCode:  RpcINVALID_PARAMS,
+			expectedCode:  rpc_types.RpcINVALID_PARAMS,
 		},
 		{
 			name: "Invalid hash format - contains spaces",
@@ -172,7 +174,7 @@ func TestTxMethodErrorValidation(t *testing.T) {
 				"transaction": "E08D6E9754025BA2534A78707605E0601F03ACE063687A0CA1BDDACFCD169 C7",
 			},
 			expectedError: "Invalid transaction hash",
-			expectedCode:  RpcINVALID_PARAMS,
+			expectedCode:  rpc_types.RpcINVALID_PARAMS,
 		},
 		{
 			name: "Invalid hash format - empty string",
@@ -180,7 +182,7 @@ func TestTxMethodErrorValidation(t *testing.T) {
 				"transaction": "",
 			},
 			expectedError: "Missing required parameter: transaction",
-			expectedCode:  RpcINVALID_PARAMS,
+			expectedCode:  rpc_types.RpcINVALID_PARAMS,
 		},
 		{
 			name: "Transaction not found - valid hash format (txnNotFound)",
@@ -198,7 +200,7 @@ func TestTxMethodErrorValidation(t *testing.T) {
 				"transaction": 12345,
 			},
 			expectedError: "Invalid parameters",
-			expectedCode:  RpcINVALID_PARAMS,
+			expectedCode:  rpc_types.RpcINVALID_PARAMS,
 		},
 		{
 			name: "Invalid transaction type - boolean",
@@ -206,7 +208,7 @@ func TestTxMethodErrorValidation(t *testing.T) {
 				"transaction": true,
 			},
 			expectedError: "Invalid parameters",
-			expectedCode:  RpcINVALID_PARAMS,
+			expectedCode:  rpc_types.RpcINVALID_PARAMS,
 		},
 		{
 			name: "Invalid transaction type - array",
@@ -214,7 +216,7 @@ func TestTxMethodErrorValidation(t *testing.T) {
 				"transaction": []string{"hash1", "hash2"},
 			},
 			expectedError: "Invalid parameters",
-			expectedCode:  RpcINVALID_PARAMS,
+			expectedCode:  rpc_types.RpcINVALID_PARAMS,
 		},
 		{
 			name: "Invalid transaction type - object",
@@ -222,7 +224,7 @@ func TestTxMethodErrorValidation(t *testing.T) {
 				"transaction": map[string]interface{}{"hash": "value"},
 			},
 			expectedError: "Invalid parameters",
-			expectedCode:  RpcINVALID_PARAMS,
+			expectedCode:  rpc_types.RpcINVALID_PARAMS,
 		},
 		{
 			name: "Invalid transaction type - float",
@@ -230,7 +232,7 @@ func TestTxMethodErrorValidation(t *testing.T) {
 				"transaction": 123.456,
 			},
 			expectedError: "Invalid parameters",
-			expectedCode:  RpcINVALID_PARAMS,
+			expectedCode:  rpc_types.RpcINVALID_PARAMS,
 		},
 		{
 			name: "Invalid transaction type - null",
@@ -238,7 +240,7 @@ func TestTxMethodErrorValidation(t *testing.T) {
 				"transaction": nil,
 			},
 			expectedError: "Missing required parameter: transaction",
-			expectedCode:  RpcINVALID_PARAMS,
+			expectedCode:  rpc_types.RpcINVALID_PARAMS,
 		},
 	}
 
@@ -283,11 +285,11 @@ func TestTxMethodLookupByHash(t *testing.T) {
 	cleanup := setupTestServicesTx(mock)
 	defer cleanup()
 
-	method := &TxMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.TxMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	// Valid 64-character transaction hash
@@ -302,7 +304,7 @@ func TestTxMethodLookupByHash(t *testing.T) {
 		"Fee":             "10",
 		"Sequence":        1,
 	}
-	storedTx := StoredTransaction{
+	storedTx := rpc_handlers.StoredTransaction{
 		TxJSON: txJSON,
 		Meta: map[string]interface{}{
 			"TransactionResult": "tesSUCCESS",
@@ -311,7 +313,7 @@ func TestTxMethodLookupByHash(t *testing.T) {
 	}
 	storedData, _ := json.Marshal(storedTx)
 
-	mock.transactions[validHash] = &TransactionInfo{
+	mock.transactions[validHash] = &rpc_types.TransactionInfo{
 		TxData:      storedData,
 		LedgerIndex: 100,
 		LedgerHash:  "4BC50C9B0D8515D3EAAE1E74B29A95804346C491EE1A95BF25E4AAB854A6A652",
@@ -398,11 +400,11 @@ func TestTxMethodBinaryOption(t *testing.T) {
 	cleanup := setupTestServicesTx(mock)
 	defer cleanup()
 
-	method := &TxMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.TxMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	validHash := "E08D6E9754025BA2534A78707605E0601F03ACE063687A0CA1BDDACFCD1698C7"
@@ -415,7 +417,7 @@ func TestTxMethodBinaryOption(t *testing.T) {
 		"Fee":             "10",
 		"Sequence":        1,
 	}
-	storedTx := StoredTransaction{
+	storedTx := rpc_handlers.StoredTransaction{
 		TxJSON: txJSON,
 		Meta: map[string]interface{}{
 			"TransactionResult": "tesSUCCESS",
@@ -424,7 +426,7 @@ func TestTxMethodBinaryOption(t *testing.T) {
 	}
 	storedData, _ := json.Marshal(storedTx)
 
-	mock.transactions[validHash] = &TransactionInfo{
+	mock.transactions[validHash] = &rpc_types.TransactionInfo{
 		TxData:      storedData,
 		LedgerIndex: 100,
 		LedgerHash:  "4BC50C9B0D8515D3EAAE1E74B29A95804346C491EE1A95BF25E4AAB854A6A652",
@@ -1035,11 +1037,11 @@ func TestTxMethodLedgerRange(t *testing.T) {
 	cleanup := setupTestServicesTx(mock)
 	defer cleanup()
 
-	method := &TxMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.TxMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	validHash := "E08D6E9754025BA2534A78707605E0601F03ACE063687A0CA1BDDACFCD1698C7"
@@ -1048,10 +1050,10 @@ func TestTxMethodLedgerRange(t *testing.T) {
 		"TransactionType": "Payment",
 		"Account":         "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
 	}
-	storedTx := StoredTransaction{TxJSON: txJSON}
+	storedTx := rpc_handlers.StoredTransaction{TxJSON: txJSON}
 	storedData, _ := json.Marshal(storedTx)
 
-	mock.transactions[validHash] = &TransactionInfo{
+	mock.transactions[validHash] = &rpc_types.TransactionInfo{
 		TxData:      storedData,
 		LedgerIndex: 100,
 		LedgerHash:  "4BC50C9B0D8515D3EAAE1E74B29A95804346C491EE1A95BF25E4AAB854A6A652",
@@ -1155,7 +1157,7 @@ func TestTxMethodInvalidLedgerRange(t *testing.T) {
 			name:        "Invalid range - min > max",
 			minLedger:   100,
 			maxLedger:   50,
-			errorCode:   RpcINVALID_LGR_RANGE,
+			errorCode:   rpc_types.RpcINVALID_LGR_RANGE,
 			errorToken:  "invalidLgrRange",
 			description: "Minimum ledger cannot be greater than maximum",
 		},
@@ -1163,7 +1165,7 @@ func TestTxMethodInvalidLedgerRange(t *testing.T) {
 			name:        "Invalid range - negative min",
 			minLedger:   -1,
 			maxLedger:   100,
-			errorCode:   RpcINVALID_LGR_RANGE,
+			errorCode:   rpc_types.RpcINVALID_LGR_RANGE,
 			errorToken:  "invalidLgrRange",
 			description: "Negative ledger values are invalid",
 		},
@@ -1171,7 +1173,7 @@ func TestTxMethodInvalidLedgerRange(t *testing.T) {
 			name:        "Invalid range - both negative",
 			minLedger:   -20,
 			maxLedger:   -10,
-			errorCode:   RpcINVALID_LGR_RANGE,
+			errorCode:   rpc_types.RpcINVALID_LGR_RANGE,
 			errorToken:  "invalidLgrRange",
 			description: "Negative ledger values are invalid",
 		},
@@ -1179,7 +1181,7 @@ func TestTxMethodInvalidLedgerRange(t *testing.T) {
 			name:        "Invalid range - negative max only",
 			minLedger:   0,
 			maxLedger:   -1,
-			errorCode:   RpcINVALID_LGR_RANGE,
+			errorCode:   rpc_types.RpcINVALID_LGR_RANGE,
 			errorToken:  "invalidLgrRange",
 			description: "Negative ledger values are invalid",
 		},
@@ -1203,7 +1205,7 @@ func TestTxMethodInvalidLedgerRange(t *testing.T) {
 			name:        "Invalid range - only min provided as single value",
 			minLedger:   20,
 			maxLedger:   nil,
-			errorCode:   RpcINVALID_LGR_RANGE,
+			errorCode:   rpc_types.RpcINVALID_LGR_RANGE,
 			errorToken:  "invalidLgrRange",
 			description: "Both min and max must be provided for range search",
 		},
@@ -1282,11 +1284,11 @@ func TestTxMethodResponseFields(t *testing.T) {
 	cleanup := setupTestServicesTx(mock)
 	defer cleanup()
 
-	method := &TxMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.TxMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	validHash := "E08D6E9754025BA2534A78707605E0601F03ACE063687A0CA1BDDACFCD1698C7"
@@ -1300,7 +1302,7 @@ func TestTxMethodResponseFields(t *testing.T) {
 		"Fee":             "10",
 		"Sequence":        1,
 	}
-	storedTx := StoredTransaction{
+	storedTx := rpc_handlers.StoredTransaction{
 		TxJSON: txJSON,
 		Meta: map[string]interface{}{
 			"TransactionResult": "tesSUCCESS",
@@ -1310,7 +1312,7 @@ func TestTxMethodResponseFields(t *testing.T) {
 	}
 	storedData, _ := json.Marshal(storedTx)
 
-	mock.transactions[validHash] = &TransactionInfo{
+	mock.transactions[validHash] = &rpc_types.TransactionInfo{
 		TxData:      storedData,
 		LedgerIndex: 100,
 		LedgerHash:  expectedLedgerHash,
@@ -1431,15 +1433,15 @@ func TestTxMethodResponseFields(t *testing.T) {
 // TestTxMethodServiceUnavailable tests behavior when ledger service is not available
 func TestTxMethodServiceUnavailable(t *testing.T) {
 	// Temporarily set Services to nil
-	oldServices := Services
-	Services = nil
-	defer func() { Services = oldServices }()
+	oldServices := rpc_types.Services
+	rpc_types.Services = nil
+	defer func() { rpc_types.Services = oldServices }()
 
-	method := &TxMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.TxMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	params := map[string]interface{}{
@@ -1452,22 +1454,22 @@ func TestTxMethodServiceUnavailable(t *testing.T) {
 
 	assert.Nil(t, result)
 	require.NotNil(t, rpcErr)
-	assert.Equal(t, RpcINTERNAL, rpcErr.Code)
+	assert.Equal(t, rpc_types.RpcINTERNAL, rpcErr.Code)
 	assert.Contains(t, rpcErr.Message, "Ledger service not available")
 }
 
 // TestTxMethodServiceNilLedger tests behavior when ledger service is nil
 func TestTxMethodServiceNilLedger(t *testing.T) {
 	// Set Services with nil Ledger
-	oldServices := Services
-	Services = &ServiceContainer{Ledger: nil}
-	defer func() { Services = oldServices }()
+	oldServices := rpc_types.Services
+	rpc_types.Services = &rpc_types.ServiceContainer{Ledger: nil}
+	defer func() { rpc_types.Services = oldServices }()
 
-	method := &TxMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.TxMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	params := map[string]interface{}{
@@ -1480,7 +1482,7 @@ func TestTxMethodServiceNilLedger(t *testing.T) {
 
 	assert.Nil(t, result)
 	require.NotNil(t, rpcErr)
-	assert.Equal(t, RpcINTERNAL, rpcErr.Code)
+	assert.Equal(t, rpc_types.RpcINTERNAL, rpcErr.Code)
 	assert.Contains(t, rpcErr.Message, "Ledger service not available")
 }
 
@@ -1490,18 +1492,18 @@ func TestTxMethodServiceNilLedger(t *testing.T) {
 
 // TestTxMethodMetadata tests the method's metadata functions
 func TestTxMethodMetadata(t *testing.T) {
-	method := &TxMethod{}
+	method := &rpc_handlers.TxMethod{}
 
 	t.Run("RequiredRole", func(t *testing.T) {
-		assert.Equal(t, RoleGuest, method.RequiredRole(),
+		assert.Equal(t, rpc_types.RoleGuest, method.RequiredRole(),
 			"tx method should be accessible to guests")
 	})
 
 	t.Run("SupportedApiVersions", func(t *testing.T) {
 		versions := method.SupportedApiVersions()
-		assert.Contains(t, versions, ApiVersion1, "Should support API version 1")
-		assert.Contains(t, versions, ApiVersion2, "Should support API version 2")
-		assert.Contains(t, versions, ApiVersion3, "Should support API version 3")
+		assert.Contains(t, versions, rpc_types.ApiVersion1, "Should support API version 1")
+		assert.Contains(t, versions, rpc_types.ApiVersion2, "Should support API version 2")
+		assert.Contains(t, versions, rpc_types.ApiVersion3, "Should support API version 3")
 	})
 }
 
@@ -1516,7 +1518,7 @@ func TestTxMethodApiVersions(t *testing.T) {
 	cleanup := setupTestServicesTx(mock)
 	defer cleanup()
 
-	method := &TxMethod{}
+	method := &rpc_handlers.TxMethod{}
 
 	validHash := "E08D6E9754025BA2534A78707605E0601F03ACE063687A0CA1BDDACFCD1698C7"
 
@@ -1526,7 +1528,7 @@ func TestTxMethodApiVersions(t *testing.T) {
 		"Destination":     "rPMh7Pi9ct699iZUTWaytJUoHcJ7cgyziK",
 		"Amount":          "1000000",
 	}
-	storedTx := StoredTransaction{
+	storedTx := rpc_handlers.StoredTransaction{
 		TxJSON: txJSON,
 		Meta: map[string]interface{}{
 			"TransactionResult": "tesSUCCESS",
@@ -1534,20 +1536,20 @@ func TestTxMethodApiVersions(t *testing.T) {
 	}
 	storedData, _ := json.Marshal(storedTx)
 
-	mock.transactions[validHash] = &TransactionInfo{
+	mock.transactions[validHash] = &rpc_types.TransactionInfo{
 		TxData:      storedData,
 		LedgerIndex: 100,
 		LedgerHash:  "4BC50C9B0D8515D3EAAE1E74B29A95804346C491EE1A95BF25E4AAB854A6A652",
 		Validated:   true,
 	}
 
-	apiVersions := []int{ApiVersion1, ApiVersion2, ApiVersion3}
+	apiVersions := []int{rpc_types.ApiVersion1, rpc_types.ApiVersion2, rpc_types.ApiVersion3}
 
 	for _, version := range apiVersions {
 		t.Run(fmt.Sprintf("API Version %d", version), func(t *testing.T) {
-			ctx := &RpcContext{
+			ctx := &rpc_types.RpcContext{
 				Context:    context.Background(),
-				Role:       RoleGuest,
+				Role:       rpc_types.RoleGuest,
 				ApiVersion: version,
 			}
 
@@ -1673,17 +1675,17 @@ func TestTxMethodEdgeCases(t *testing.T) {
 	cleanup := setupTestServicesTx(mock)
 	defer cleanup()
 
-	method := &TxMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.TxMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	t.Run("Transaction with corrupted stored data", func(t *testing.T) {
 		// Store invalid JSON as transaction data
 		invalidHash := "1111111111111111111111111111111111111111111111111111111111111111"
-		mock.transactions[invalidHash] = &TransactionInfo{
+		mock.transactions[invalidHash] = &rpc_types.TransactionInfo{
 			TxData:      []byte("not valid json"),
 			LedgerIndex: 100,
 			LedgerHash:  "4BC50C9B0D8515D3EAAE1E74B29A95804346C491EE1A95BF25E4AAB854A6A652",
@@ -1699,16 +1701,16 @@ func TestTxMethodEdgeCases(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.NotNil(t, rpcErr)
-		assert.Equal(t, RpcINTERNAL, rpcErr.Code)
+		assert.Equal(t, rpc_types.RpcINTERNAL, rpcErr.Code)
 	})
 
 	t.Run("Transaction hash with leading zeros", func(t *testing.T) {
 		leadingZeroHash := "0000000000000000000000000000000000000000000000000000000000000001"
 		txJSON := map[string]interface{}{"TransactionType": "Payment"}
-		storedTx := StoredTransaction{TxJSON: txJSON}
+		storedTx := rpc_handlers.StoredTransaction{TxJSON: txJSON}
 		storedData, _ := json.Marshal(storedTx)
 
-		mock.transactions[strings.ToUpper(leadingZeroHash)] = &TransactionInfo{
+		mock.transactions[strings.ToUpper(leadingZeroHash)] = &rpc_types.TransactionInfo{
 			TxData:      storedData,
 			LedgerIndex: 100,
 			Validated:   true,
@@ -1728,10 +1730,10 @@ func TestTxMethodEdgeCases(t *testing.T) {
 	t.Run("All-F hash (max value)", func(t *testing.T) {
 		maxHash := "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
 		txJSON := map[string]interface{}{"TransactionType": "Payment"}
-		storedTx := StoredTransaction{TxJSON: txJSON}
+		storedTx := rpc_handlers.StoredTransaction{TxJSON: txJSON}
 		storedData, _ := json.Marshal(storedTx)
 
-		mock.transactions[maxHash] = &TransactionInfo{
+		mock.transactions[maxHash] = &rpc_types.TransactionInfo{
 			TxData:      storedData,
 			LedgerIndex: 100,
 			Validated:   true,
@@ -1755,11 +1757,11 @@ func TestTxMethodInternalErrors(t *testing.T) {
 	cleanup := setupTestServicesTx(mock)
 	defer cleanup()
 
-	method := &TxMethod{}
-	ctx := &RpcContext{
+	method := &rpc_handlers.TxMethod{}
+	ctx := &rpc_types.RpcContext{
 		Context:    context.Background(),
-		Role:       RoleGuest,
-		ApiVersion: ApiVersion1,
+		Role:       rpc_types.RoleGuest,
+		ApiVersion: rpc_types.ApiVersion1,
 	}
 
 	t.Run("Database error during lookup", func(t *testing.T) {

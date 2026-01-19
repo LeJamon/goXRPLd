@@ -14,6 +14,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/genesis"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/service"
 	"github.com/LeJamon/goXRPLd/internal/rpc"
+	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_types"
 	"github.com/LeJamon/goXRPLd/internal/storage/nodestore"
 	"github.com/LeJamon/goXRPLd/internal/storage/relationaldb"
 	"github.com/LeJamon/goXRPLd/internal/storage/relationaldb/postgres"
@@ -178,7 +179,7 @@ func runServer(cmd *cobra.Command, args []string) {
 	}
 
 	// Wire up RPC services
-	rpc.InitServices(rpc.NewLedgerServiceAdapter(ledgerService))
+	rpc_types.InitServices(rpc.NewLedgerServiceAdapter(ledgerService))
 
 	if !quiet {
 		if standalone {
