@@ -44,7 +44,7 @@ func NewWebSocketServer(timeout time.Duration) *WebSocketServer {
 				// For now, allow all origins (matching rippled behavior)
 				return true
 			},
-			Subprotocols: []string{"xrpl"},
+			// Don't require specific subprotocol - xrpl.js doesn't use one
 		},
 		subscriptionManager: &rpc_types.SubscriptionManager{
 			Connections: make(map[string]*rpc_types.Connection),
@@ -64,9 +64,10 @@ func (ws *WebSocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create connection context
-	ctx, cancel := context.WithCancel(r.Context())
-	
+	// Create connection context - use Background() not r.Context()
+	// because the WebSocket connection lives beyond the HTTP request lifecycle
+	ctx, cancel := context.WithCancel(context.Background())
+
 	// Create WebSocket connection object
 	wsConn := &WebSocketConnection{
 		ID:            generateConnectionID(),
@@ -101,16 +102,47 @@ func (ws *WebSocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (ws *WebSocketServer) handleConnection(wsConn *WebSocketConnection) {
 	defer ws.closeConnection(wsConn)
 
-	// Set read deadline and size limits
+	// Set read limit
 	wsConn.conn.SetReadLimit(512 * 1024) // 512KB max message size
-	wsConn.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+
+	// Set up pong handler to reset read deadline on pong received
 	wsConn.conn.SetPongHandler(func(string) error {
-		wsConn.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		wsConn.conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 		return nil
 	})
 
-	// Set up ping ticker
-	ticker := time.NewTicker(54 * time.Second)
+	// Start ping goroutine to keep connection alive
+	go ws.pingLoop(wsConn)
+
+	// Read loop - this is blocking and runs until error or close
+	for {
+		// Set read deadline before each read
+		wsConn.conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+
+		// Read message from WebSocket (blocking)
+		_, message, err := wsConn.conn.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure, websocket.CloseNormalClosure) {
+				log.Printf("WebSocket read error: %v", err)
+			}
+			return
+		}
+
+		// Check if context is cancelled
+		select {
+		case <-wsConn.ctx.Done():
+			return
+		default:
+		}
+
+		// Process message
+		ws.handleMessage(wsConn, message)
+	}
+}
+
+// pingLoop sends periodic pings to keep the connection alive
+func (ws *WebSocketServer) pingLoop(wsConn *WebSocketConnection) {
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -118,24 +150,11 @@ func (ws *WebSocketServer) handleConnection(wsConn *WebSocketConnection) {
 		case <-wsConn.ctx.Done():
 			return
 		case <-ticker.C:
-			// Send ping to keep connection alive
 			wsConn.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := wsConn.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				log.Printf("WebSocket ping failed: %v", err)
 				return
 			}
-		default:
-			// Read message from WebSocket
-			_, message, err := wsConn.conn.ReadMessage()
-			if err != nil {
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					log.Printf("WebSocket error: %v", err)
-				}
-				return
-			}
-
-			// Process message
-			ws.handleMessage(wsConn, message)
 		}
 	}
 }
