@@ -15,6 +15,7 @@ func (s *Server) registerAllMethods() {
 	s.registry.Register("server_definitions", &rpc_handlers.ServerDefinitionsMethod{})
 	s.registry.Register("feature", &rpc_handlers.FeatureMethod{})
 	s.registry.Register("fee", &rpc_handlers.FeeMethod{})
+	s.registry.Register("version", &rpc_handlers.VersionMethod{})
 
 	// Ledger Methods
 	s.registry.Register("ledger", &rpc_handlers.LedgerMethod{})
@@ -22,7 +23,6 @@ func (s *Server) registerAllMethods() {
 	s.registry.Register("ledger_current", &rpc_handlers.LedgerCurrentMethod{})
 	s.registry.Register("ledger_data", &rpc_handlers.LedgerDataMethod{})
 	s.registry.Register("ledger_entry", &rpc_handlers.LedgerEntryMethod{})
-	s.registry.Register("ledger_range", &rpc_handlers.LedgerRangeMethod{})
 
 	// Account Methods
 	s.registry.Register("account_info", &rpc_handlers.AccountInfoMethod{})
@@ -46,6 +46,7 @@ func (s *Server) registerAllMethods() {
 	s.registry.Register("transaction_entry", &rpc_handlers.TransactionEntryMethod{})
 
 	// Path and Order Book Methods
+	s.registry.Register("book_changes", &rpc_handlers.BookChangesMethod{})
 	s.registry.Register("book_offers", &rpc_handlers.BookOffersMethod{})
 	s.registry.Register("path_find", &rpc_handlers.PathFindMethod{})
 	s.registry.Register("ripple_path_find", &rpc_handlers.RipplePathFindMethod{})
@@ -63,11 +64,6 @@ func (s *Server) registerAllMethods() {
 	s.registry.Register("deposit_authorized", &rpc_handlers.DepositAuthorizedMethod{})
 	s.registry.Register("nft_buy_offers", &rpc_handlers.NftBuyOffersMethod{})
 	s.registry.Register("nft_sell_offers", &rpc_handlers.NftSellOffersMethod{})
-	s.registry.Register("nft_history", &rpc_handlers.NftHistoryMethod{})
-	s.registry.Register("nfts_by_issuer", &rpc_handlers.NftsByIssuerMethod{})
-
-	// Generic Methods
-	s.registry.Register("json", &rpc_handlers.JsonMethod{})
 
 	// Standalone mode methods
 	s.registry.Register("ledger_accept", &rpc_handlers.LedgerAcceptMethod{})
@@ -84,14 +80,6 @@ func (s *Server) registerAllMethods() {
 	s.registry.Register("validator_list_sites", &rpc_handlers.ValidatorListSitesMethod{})
 	s.registry.Register("validators", &rpc_handlers.ValidatorsMethod{})
 
-	// Reporting Mode Methods
-	s.registry.Register("download_shard", &rpc_handlers.DownloadShardMethod{})
-	s.registry.Register("crawl_shards", &rpc_handlers.CrawlShardsMethod{})
-
-	// Clio-specific Methods (if running in clio mode)
-	s.registry.Register("nft_info", &rpc_handlers.NftInfoMethod{})
-	s.registry.Register("ledger_index", &rpc_handlers.LedgerIndexMethod{})
-
 	// =========================================================================
 	// Additional Methods (added for rippled compatibility)
 	// =========================================================================
@@ -105,7 +93,6 @@ func (s *Server) registerAllMethods() {
 	s.registry.Register("ledger_header", &rpc_handlers.LedgerHeaderMethod{})
 	s.registry.Register("ledger_request", &rpc_handlers.LedgerRequestMethod{})
 	s.registry.Register("ledger_cleaner", &rpc_handlers.LedgerCleanerMethod{})
-	s.registry.Register("ledger_diff", &rpc_handlers.LedgerDiffMethod{})
 
 	// Account Methods
 	s.registry.Register("owner_info", &rpc_handlers.OwnerInfoMethod{})
@@ -122,8 +109,8 @@ func (s *Server) registerAllMethods() {
 	s.registry.Register("can_delete", &rpc_handlers.CanDeleteMethod{})
 	s.registry.Register("get_counts", &rpc_handlers.GetCountsMethod{})
 	s.registry.Register("log_level", &rpc_handlers.LogLevelMethod{})
-	s.registry.Register("log_rotate", &rpc_handlers.LogRotateMethod{})
-	s.registry.Register("black_list", &rpc_handlers.BlackListMethod{})
+	s.registry.Register("logrotate", &rpc_handlers.LogRotateMethod{})
+	s.registry.Register("blacklist", &rpc_handlers.BlackListMethod{})
 
 	// Feature-specific Methods (depend on unimplemented ledger entry types)
 	s.registry.Register("amm_info", &rpc_handlers.AMMInfoMethod{})
