@@ -2,10 +2,10 @@
 package binarycodec
 
 import (
-	"bytes"
 	"encoding/hex"
 	"errors"
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/LeJamon/goXRPLd/internal/codec/binary-codec/definitions"
@@ -103,6 +103,9 @@ func EncodeForSigning(json map[string]any) (string, error) {
 }
 
 // EncodeForSigningClaim encodes a payment channel claim into binary format in preparation for signing.
+// The message format is: HashPrefix('CLM\0') + channel_id (32 bytes) + amount (8 bytes big-endian uint64)
+// Note: Unlike normal XRP amounts, payment channel claim amounts use the full uint64 range as raw drops,
+// without the XRP amount validation limits.
 func EncodeForSigningClaim(json map[string]any) (string, error) {
 
 	if json["Channel"] == nil || json["Amount"] == nil {
@@ -115,17 +118,30 @@ func EncodeForSigningClaim(json map[string]any) (string, error) {
 		return "", err
 	}
 
-	t := &types.Amount{}
-	amount, err := t.FromJSON(json["Amount"])
+	// Parse amount as raw uint64 drops (not using Amount type to avoid XRP validation limits)
+	var amountStr string
+	switch v := json["Amount"].(type) {
+	case string:
+		amountStr = v
+	default:
+		return "", errors.New("amount must be a string")
+	}
 
+	drops, err := strconv.ParseUint(amountStr, 10, 64)
 	if err != nil {
 		return "", err
-
 	}
 
-	if bytes.HasPrefix(amount, []byte{0x40}) {
-		amount = bytes.Replace(amount, []byte{0x40}, []byte{0x00}, 1)
-	}
+	// Serialize as 8-byte big-endian uint64
+	amount := make([]byte, 8)
+	amount[0] = byte(drops >> 56)
+	amount[1] = byte(drops >> 48)
+	amount[2] = byte(drops >> 40)
+	amount[3] = byte(drops >> 32)
+	amount[4] = byte(drops >> 24)
+	amount[5] = byte(drops >> 16)
+	amount[6] = byte(drops >> 8)
+	amount[7] = byte(drops)
 
 	return strings.ToUpper(paymentChannelClaimPrefix + hex.EncodeToString(channel) + hex.EncodeToString(amount)), nil
 }
