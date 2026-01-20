@@ -67,6 +67,11 @@ const (
 	TecAMM_NOT_EMPTY                 Result = 166
 	TecNO_SUITABLE_PAGE              Result = 167
 	TecNO_PERMISSION_XCHAIN          Result = 168
+	TecEMPTY_DID                     Result = 169
+	TecINVALID_UPDATE_TIME           Result = 170
+	TecTOKEN_PAIR_NOT_FOUND          Result = 171
+	TecARRAY_EMPTY                   Result = 172
+	TecARRAY_TOO_LARGE               Result = 173
 
 	// tefFAILURE and related codes (-199 to -100)
 	// Transaction failed, fee claimed but tx not applied
@@ -247,6 +252,16 @@ func (r Result) String() string {
 		return "tecINTERNAL"
 	case TecOVERSIZE:
 		return "tecOVERSIZE"
+	case TecEMPTY_DID:
+		return "tecEMPTY_DID"
+	case TecINVALID_UPDATE_TIME:
+		return "tecINVALID_UPDATE_TIME"
+	case TecTOKEN_PAIR_NOT_FOUND:
+		return "tecTOKEN_PAIR_NOT_FOUND"
+	case TecARRAY_EMPTY:
+		return "tecARRAY_EMPTY"
+	case TecARRAY_TOO_LARGE:
+		return "tecARRAY_TOO_LARGE"
 	case TefFAILURE:
 		return "tefFAILURE"
 	case TefALREADY:

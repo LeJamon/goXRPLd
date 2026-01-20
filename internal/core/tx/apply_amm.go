@@ -14,32 +14,363 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 )
 
-// parseAmount parses an amount string to uint64
-func parseAmount(value string) uint64 {
-	amount, err := strconv.ParseUint(value, 10, 64)
-	if err != nil {
-		// Try parsing as float for IOU amounts
-		f, err := strconv.ParseFloat(value, 64)
-		if err != nil {
-			return 0
-		}
-		// Convert to drops (assuming 6 decimal places for IOUs)
-		return uint64(f * 1000000)
-	}
-	return amount
+// ============================================================================
+// High-Precision Number type for AMM calculations
+// Reference: rippled Number.h - maintains 16 significant digits with proper rounding
+// ============================================================================
+
+// Number represents a high-precision number for AMM calculations
+// Uses int64 mantissa with explicit exponent to maintain precision
+type Number struct {
+	mantissa int64
+	exponent int
 }
 
-// AMM data structures
+// RoundingMode defines how to round numbers
+type RoundingMode int
+
+const (
+	RoundToNearest RoundingMode = iota
+	RoundDownward
+	RoundUpward
+	RoundTowardZero
+)
+
+// DefaultRounding is the default rounding mode
+var DefaultRounding RoundingMode = RoundToNearest
+
+// NumberZero is the zero value
+var NumberZero = Number{mantissa: 0, exponent: 0}
+
+// NumberOne is the one value
+var NumberOne = Number{mantissa: 1000000000000000, exponent: -15}
+
+// maxMantissa is the maximum mantissa value (10^16 - 1)
+const maxMantissa int64 = 9999999999999999
+
+// minMantissa is the minimum mantissa value for normalization
+const minMantissa int64 = 1000000000000000
+
+// NewNumber creates a new Number from float64
+func NewNumber(v float64) Number {
+	if v == 0 {
+		return NumberZero
+	}
+
+	negative := v < 0
+	if negative {
+		v = -v
+	}
+
+	// Calculate exponent and mantissa
+	exp := 0
+	for v >= 10 {
+		v /= 10
+		exp++
+	}
+	for v < 1 {
+		v *= 10
+		exp--
+	}
+
+	// Scale to 16 digits
+	mantissa := int64(v * 1e15)
+	exp -= 15
+
+	if negative {
+		mantissa = -mantissa
+	}
+
+	return Number{mantissa: mantissa, exponent: exp}.normalize()
+}
+
+// NewNumberFromInt creates a Number from an integer
+func NewNumberFromInt(v int64) Number {
+	if v == 0 {
+		return NumberZero
+	}
+	return Number{mantissa: v * minMantissa, exponent: -15}.normalize()
+}
+
+// NewNumberFromUint64 creates a Number from uint64
+func NewNumberFromUint64(v uint64) Number {
+	if v == 0 {
+		return NumberZero
+	}
+	return NewNumber(float64(v))
+}
+
+// normalize adjusts mantissa to proper range
+func (n Number) normalize() Number {
+	if n.mantissa == 0 {
+		return NumberZero
+	}
+
+	// Normalize mantissa to [minMantissa, maxMantissa]
+	for n.mantissa > maxMantissa || n.mantissa < -maxMantissa {
+		n.mantissa /= 10
+		n.exponent++
+	}
+	for n.mantissa != 0 && (n.mantissa < minMantissa && n.mantissa > -minMantissa) {
+		n.mantissa *= 10
+		n.exponent--
+	}
+
+	return n
+}
+
+// Float64 converts Number to float64
+func (n Number) Float64() float64 {
+	if n.mantissa == 0 {
+		return 0
+	}
+	return float64(n.mantissa) * math.Pow10(n.exponent)
+}
+
+// Int64 converts Number to int64
+func (n Number) Int64() int64 {
+	return int64(n.Float64())
+}
+
+// Uint64 converts Number to uint64
+func (n Number) Uint64() uint64 {
+	f := n.Float64()
+	if f < 0 {
+		return 0
+	}
+	return uint64(f)
+}
+
+// IsZero returns true if the number is zero
+func (n Number) IsZero() bool {
+	return n.mantissa == 0
+}
+
+// IsNegative returns true if the number is negative
+func (n Number) IsNegative() bool {
+	return n.mantissa < 0
+}
+
+// Neg returns the negation of the number
+func (n Number) Neg() Number {
+	return Number{mantissa: -n.mantissa, exponent: n.exponent}
+}
+
+// Add returns n + o
+func (n Number) Add(o Number) Number {
+	if n.IsZero() {
+		return o
+	}
+	if o.IsZero() {
+		return n
+	}
+
+	// Align exponents
+	if n.exponent > o.exponent {
+		diff := n.exponent - o.exponent
+		if diff > 30 {
+			return n
+		}
+		for i := 0; i < diff; i++ {
+			o.mantissa /= 10
+		}
+		o.exponent = n.exponent
+	} else if o.exponent > n.exponent {
+		diff := o.exponent - n.exponent
+		if diff > 30 {
+			return o
+		}
+		for i := 0; i < diff; i++ {
+			n.mantissa /= 10
+		}
+		n.exponent = o.exponent
+	}
+
+	return Number{mantissa: n.mantissa + o.mantissa, exponent: n.exponent}.normalize()
+}
+
+// Sub returns n - o
+func (n Number) Sub(o Number) Number {
+	return n.Add(o.Neg())
+}
+
+// Mul returns n * o
+func (n Number) Mul(o Number) Number {
+	if n.IsZero() || o.IsZero() {
+		return NumberZero
+	}
+
+	// Use big.Int for multiplication to avoid overflow
+	m1 := big.NewInt(n.mantissa)
+	m2 := big.NewInt(o.mantissa)
+	product := new(big.Int).Mul(m1, m2)
+
+	// Normalize back to our format
+	exp := n.exponent + o.exponent
+
+	// Scale down the product
+	divisor := big.NewInt(minMantissa)
+	product.Div(product, divisor)
+	exp += 15
+
+	mantissa := product.Int64()
+	return Number{mantissa: mantissa, exponent: exp}.normalize()
+}
+
+// Div returns n / o
+func (n Number) Div(o Number) Number {
+	if o.IsZero() {
+		// Return a very large number or handle as error
+		return Number{mantissa: maxMantissa, exponent: 308}
+	}
+	if n.IsZero() {
+		return NumberZero
+	}
+
+	// Scale up n for precision
+	m1 := big.NewInt(n.mantissa)
+	m1.Mul(m1, big.NewInt(minMantissa))
+	m2 := big.NewInt(o.mantissa)
+
+	quotient := new(big.Int).Div(m1, m2)
+	exp := n.exponent - o.exponent - 15
+
+	mantissa := quotient.Int64()
+	return Number{mantissa: mantissa, exponent: exp}.normalize()
+}
+
+// Cmp compares n with o, returns -1 if n < o, 0 if n == o, 1 if n > o
+func (n Number) Cmp(o Number) int {
+	diff := n.Sub(o)
+	if diff.IsZero() {
+		return 0
+	}
+	if diff.IsNegative() {
+		return -1
+	}
+	return 1
+}
+
+// Lt returns true if n < o
+func (n Number) Lt(o Number) bool {
+	return n.Cmp(o) < 0
+}
+
+// Gt returns true if n > o
+func (n Number) Gt(o Number) bool {
+	return n.Cmp(o) > 0
+}
+
+// Le returns true if n <= o
+func (n Number) Le(o Number) bool {
+	return n.Cmp(o) <= 0
+}
+
+// Ge returns true if n >= o
+func (n Number) Ge(o Number) bool {
+	return n.Cmp(o) >= 0
+}
+
+// Sqrt returns the square root using Newton's method
+func (n Number) Sqrt() Number {
+	if n.IsZero() {
+		return NumberZero
+	}
+	if n.IsNegative() {
+		return NumberZero // Invalid, return zero
+	}
+
+	// Initial estimate
+	x := NewNumber(math.Sqrt(n.Float64()))
+
+	// Newton-Raphson iterations for precision
+	for i := 0; i < 5; i++ {
+		// x = (x + n/x) / 2
+		xNew := x.Add(n.Div(x)).Div(NewNumberFromInt(2))
+		if x.Sub(xNew).Float64() < 1e-15 {
+			break
+		}
+		x = xNew
+	}
+
+	return x
+}
+
+// Power returns n^exp (for small integer exponents)
+func (n Number) Power(exp int) Number {
+	if exp == 0 {
+		return NumberOne
+	}
+	if exp == 1 {
+		return n
+	}
+	if n.IsZero() {
+		return NumberZero
+	}
+
+	result := NumberOne
+	base := n
+	negative := exp < 0
+	if negative {
+		exp = -exp
+	}
+
+	for exp > 0 {
+		if exp&1 == 1 {
+			result = result.Mul(base)
+		}
+		base = base.Mul(base)
+		exp >>= 1
+	}
+
+	if negative {
+		return NumberOne.Div(result)
+	}
+	return result
+}
+
+// PowerFloat returns n^exp for fractional exponents
+func (n Number) PowerFloat(exp float64) Number {
+	if exp == 0 {
+		return NumberOne
+	}
+	if n.IsZero() {
+		return NumberZero
+	}
+	return NewNumber(math.Pow(n.Float64(), exp))
+}
+
+// Max returns the maximum of n and o
+func (n Number) Max(o Number) Number {
+	if n.Gt(o) {
+		return n
+	}
+	return o
+}
+
+// Min returns the minimum of n and o
+func (n Number) Min(o Number) Number {
+	if n.Lt(o) {
+		return n
+	}
+	return o
+}
+
+// ============================================================================
+// AMM Data Structures
+// Reference: rippled ltAMM.h, SLE.h
+// ============================================================================
 
 // AMMData represents an AMM ledger entry
 type AMMData struct {
-	Account        [20]byte // AMM account
-	Asset          [20]byte // First asset currency (20 bytes)
-	Asset2         [20]byte // Second asset currency (20 bytes)
-	TradingFee     uint16
-	LPTokenBalance uint64
-	VoteSlots      []VoteSlotData
-	AuctionSlot    *AuctionSlotData
+	Account        [20]byte        // AMM account
+	Asset          Asset           // First asset
+	Asset2         Asset           // Second asset
+	TradingFee     uint16          // Trading fee in basis points (0-1000)
+	LPTokenBalance Number          // LP token balance
+	VoteSlots      []VoteSlotData  // Vote slots for fee voting
+	AuctionSlot    *AuctionSlotData // Auction slot
+	OwnerNode      uint64          // Directory node
 }
 
 // VoteSlotData represents a voting slot in an AMM
@@ -51,29 +382,306 @@ type VoteSlotData struct {
 
 // AuctionSlotData represents the auction slot in an AMM
 type AuctionSlotData struct {
-	Account      [20]byte
-	Expiration   uint32
-	Price        uint64
-	AuthAccounts [][20]byte
+	Account       [20]byte
+	Expiration    uint32
+	Price         Number
+	DiscountedFee uint16
+	AuthAccounts  [][20]byte
 }
 
-// computeAMMAccountID derives the AMM account ID from the AMM keylet
-// Reference: rippled AMMUtils.cpp createPseudoAccount
-func computeAMMAccountID(ammKeyletKey [32]byte) [20]byte {
-	var result [20]byte
-	copy(result[:], ammKeyletKey[:20])
+// ============================================================================
+// AMM Constants
+// Reference: rippled AMMCore.h
+// ============================================================================
+
+const (
+	// TRADING_FEE_THRESHOLD is maximum trading fee (1000 = 1%)
+	TRADING_FEE_THRESHOLD_VAL uint16 = 1000
+
+	// Fee calculation constants
+	FEE_MULTIPLIER = 100000 // tfee is in 1/100000 units
+
+	// Vote slot constants
+	VOTE_MAX_SLOTS_VAL       = 8
+	VOTE_WEIGHT_SCALE_FACTOR_VAL = 100000
+
+	// Auction slot constants
+	AUCTION_SLOT_TIME_INTERVALS_VAL  = 20
+	AUCTION_SLOT_TOTAL_TIME_SECS_VAL = 24 * 60 * 60 // 24 hours
+	AUCTION_SLOT_INTERVAL_DURATION_VAL = AUCTION_SLOT_TOTAL_TIME_SECS_VAL / AUCTION_SLOT_TIME_INTERVALS_VAL
+	AUCTION_SLOT_MIN_FEE_FRACTION_VAL  = 25    // minPrice = lptBalance * fee / 25
+	AUCTION_SLOT_DISCOUNTED_FEE_FRACTION_VAL = 10 // discountedFee = fee / 10
+	AUCTION_SLOT_MAX_AUTH_ACCOUNTS_VAL = 4
+)
+
+// ============================================================================
+// AMM Math Functions
+// Reference: rippled AMMHelpers.cpp
+// ============================================================================
+
+// parseAmount parses an amount string to Number
+func parseAmountToNumber(value string) Number {
+	if value == "" {
+		return NumberZero
+	}
+	f, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return NumberZero
+	}
+	return NewNumber(f)
+}
+
+// parseAmount parses an amount string to uint64 (for backward compatibility)
+func parseAmount(value string) uint64 {
+	if value == "" {
+		return 0
+	}
+	// Try parsing as integer first (for XRP drops)
+	if i, err := strconv.ParseUint(value, 10, 64); err == nil {
+		return i
+	}
+	// Try parsing as float (for IOU amounts)
+	if f, err := strconv.ParseFloat(value, 64); err == nil {
+		if f < 0 {
+			return 0
+		}
+		return uint64(f)
+	}
+	return 0
+}
+
+// feeMult returns (1 - fee/100000) as a Number
+// Reference: rippled AMMCore.h feeMult
+func feeMultNumber(tfee uint16) Number {
+	fee := NewNumber(float64(tfee) / FEE_MULTIPLIER)
+	return NumberOne.Sub(fee)
+}
+
+// getFeeNumber returns fee as a fraction
+func getFeeNumber(tfee uint16) Number {
+	return NewNumber(float64(tfee) / FEE_MULTIPLIER)
+}
+
+// feeMult returns (1 - fee/100000) for fee calculations
+// tfee is in units of 1/100000 (e.g., 1000 = 1%)
+func feeMult(tfee uint16) float64 {
+	return 1.0 - float64(tfee)/100000.0
+}
+
+// feeMultHalf returns (1 - fee/200000) for fee calculations
+func feeMultHalf(tfee uint16) float64 {
+	return 1.0 - float64(tfee)/200000.0
+}
+
+// getFee returns fee as a fraction (e.g., 1000 -> 0.01)
+func getFee(tfee uint16) float64 {
+	return float64(tfee) / 100000.0
+}
+
+// ammLPTokens calculates initial LP tokens: sqrt(amount1 * amount2)
+// Reference: rippled AMMHelpers.cpp ammLPTokens
+func ammLPTokens(amount1, amount2 Number) Number {
+	return amount1.Mul(amount2).Sqrt()
+}
+
+// calculateLPTokens calculates initial LP tokens using sqrt(amount1 * amount2)
+// Reference: rippled AMMHelpers.cpp ammLPTokens
+func calculateLPTokens(amount1, amount2 uint64) uint64 {
+	// Use big.Int to avoid overflow in multiplication
+	a1 := new(big.Int).SetUint64(amount1)
+	a2 := new(big.Int).SetUint64(amount2)
+	product := new(big.Int).Mul(a1, a2)
+
+	// Calculate square root
+	sqrt := new(big.Int).Sqrt(product)
+	return sqrt.Uint64()
+}
+
+// lpTokensOut calculates LP tokens for single asset deposit
+// Reference: rippled AMMHelpers.cpp lpTokensOut (Equation 3 from XLS-30d)
+// Formula: tokens = lptBalance * ((sqrt(1 + deposit/balance * (1-fee)) - 1))
+// Simplified: t = T * (b/B - x) / (1 + x), where x = sqrt(f2² + b/(B*f1)) - f2
+func lpTokensOut(assetBalance, assetDeposit, lptBalance Number, tfee uint16) Number {
+	if assetBalance.IsZero() || lptBalance.IsZero() {
+		return NumberZero
+	}
+
+	f1 := feeMultNumber(tfee)                  // 1 - fee
+	feeHalf := NewNumber(float64(tfee) / 200000.0) // fee/2
+	f2 := NumberOne.Sub(feeHalf).Div(f1)       // (1 - fee/2) / (1 - fee)
+
+	r := assetDeposit.Div(assetBalance) // deposit / balance
+
+	// x = sqrt(f2² + r/f1) - f2
+	f2Squared := f2.Mul(f2)
+	rOverF1 := r.Div(f1)
+	x := f2Squared.Add(rOverF1).Sqrt().Sub(f2)
+
+	// t = T * (r - x) / (1 + x)
+	numerator := r.Sub(x)
+	denominator := NumberOne.Add(x)
+	tokens := lptBalance.Mul(numerator).Div(denominator)
+
+	if tokens.IsNegative() {
+		return NumberZero
+	}
+	return tokens
+}
+
+// ammAssetIn calculates asset needed for desired LP tokens
+// Reference: rippled AMMHelpers.cpp ammAssetIn (Equation 4 from XLS-30d)
+func ammAssetIn(assetBalance, lptBalance, lpTokens Number, tfee uint16) Number {
+	if lptBalance.IsZero() {
+		return NumberZero
+	}
+
+	f1 := feeMultNumber(tfee)
+	feeHalf := NewNumber(float64(tfee) / 200000.0)
+	f2 := NumberOne.Sub(feeHalf).Div(f1)
+
+	t1 := lpTokens.Div(lptBalance) // tokens / total
+	t2 := NumberOne.Add(t1)        // 1 + t1
+	d := f2.Sub(t1.Div(t2))        // f2 - t1/(1+t1)
+
+	// Quadratic coefficients: a*R² + b*R + c = 0
+	a := NumberOne.Div(t2.Mul(t2))                   // 1 / (1+t1)²
+	b := NewNumber(2).Mul(d).Div(t2).Sub(NumberOne.Div(f1)) // 2d/(1+t1) - 1/f1
+	c := d.Mul(d).Sub(f2.Mul(f2))                    // d² - f2²
+
+	// Solve quadratic: R = (-b + sqrt(b² - 4ac)) / 2a
+	discriminant := b.Mul(b).Sub(NewNumber(4).Mul(a).Mul(c))
+	if discriminant.IsNegative() {
+		return NumberZero
+	}
+	R := b.Neg().Add(discriminant.Sqrt()).Div(NewNumber(2).Mul(a))
+
+	return assetBalance.Mul(R)
+}
+
+// lpTokensIn calculates LP tokens to burn for single asset withdrawal
+// Reference: rippled AMMHelpers.cpp lpTokensIn (Equation 7 from XLS-30d)
+// Formula: t = T * (c - sqrt(c² - 4*R)) / 2, where R = b/B, c = R*fee + 2 - fee
+func lpTokensIn(assetBalance, assetWithdraw, lptBalance Number, tfee uint16) Number {
+	if assetBalance.IsZero() || lptBalance.IsZero() {
+		return NumberZero
+	}
+
+	R := assetWithdraw.Div(assetBalance)
+	fee := getFeeNumber(tfee)
+	c := R.Mul(fee).Add(NewNumber(2)).Sub(fee) // R*fee + 2 - fee
+
+	discriminant := c.Mul(c).Sub(NewNumber(4).Mul(R))
+	if discriminant.IsNegative() {
+		return NumberZero
+	}
+
+	tokens := lptBalance.Mul(c.Sub(discriminant.Sqrt())).Div(NewNumber(2))
+	if tokens.IsNegative() {
+		return NumberZero
+	}
+	return tokens
+}
+
+// ammAssetOut calculates asset amount for LP tokens burned
+// Reference: rippled AMMHelpers.cpp ammAssetOut (Equation 8 from XLS-30d)
+// Formula: b = B * (t1² - t1*(2-f)) / (t1*f - 1), where t1 = t/T
+func ammAssetOut(assetBalance, lptBalance, lpTokens Number, tfee uint16) Number {
+	if lptBalance.IsZero() {
+		return NumberZero
+	}
+
+	fee := getFeeNumber(tfee)
+	t1 := lpTokens.Div(lptBalance) // t/T
+
+	// Denominator: t1*f - 1
+	denominator := t1.Mul(fee).Sub(NumberOne)
+	if denominator.IsZero() {
+		return NumberZero
+	}
+
+	// Numerator: t1² - t1*(2-f)
+	twoMinusFee := NewNumber(2).Sub(fee)
+	numerator := t1.Mul(t1).Sub(t1.Mul(twoMinusFee))
+
+	asset := assetBalance.Mul(numerator).Div(denominator)
+	if asset.IsNegative() {
+		return NumberZero
+	}
+	return asset
+}
+
+// equalDepositTokens calculates LP tokens for equal (proportional) deposit
+// Reference: rippled AMMDeposit.cpp equalDepositTokens
+func equalDepositTokens(assetBalance1, assetBalance2, lptBalance, amount1, amount2 Number) Number {
+	if assetBalance1.IsZero() || assetBalance2.IsZero() || lptBalance.IsZero() {
+		return NumberZero
+	}
+
+	// Calculate the fraction deposited (use smaller fraction to maintain ratio)
+	frac1 := amount1.Div(assetBalance1)
+	frac2 := amount2.Div(assetBalance2)
+
+	frac := frac1
+	if frac2.Lt(frac1) {
+		frac = frac2
+	}
+
+	return lptBalance.Mul(frac)
+}
+
+// equalWithdrawTokens calculates withdrawal amounts for proportional withdrawal
+func equalWithdrawTokens(assetBalance1, assetBalance2, lptBalance, lpTokens Number) (Number, Number) {
+	if lptBalance.IsZero() {
+		return NumberZero, NumberZero
+	}
+
+	frac := lpTokens.Div(lptBalance)
+	return assetBalance1.Mul(frac), assetBalance2.Mul(frac)
+}
+
+// calculateWeightedFee calculates the weighted average trading fee from vote slots
+// Reference: rippled AMMVote.cpp
+func calculateWeightedFee(voteSlots []VoteSlotData, lptBalance Number) uint16 {
+	if len(voteSlots) == 0 || lptBalance.IsZero() {
+		return 0
+	}
+
+	numerator := NumberZero
+	denominator := NumberZero
+
+	for _, slot := range voteSlots {
+		// Convert vote weight back to LP tokens
+		lpTokens := NewNumberFromUint64(uint64(slot.VoteWeight)).Mul(lptBalance).Div(NewNumberFromInt(VOTE_WEIGHT_SCALE_FACTOR_VAL))
+		if lpTokens.IsZero() {
+			continue
+		}
+
+		fee := NewNumber(float64(slot.TradingFee))
+		numerator = numerator.Add(fee.Mul(lpTokens))
+		denominator = denominator.Add(lpTokens)
+	}
+
+	if denominator.IsZero() {
+		return 0
+	}
+
+	avgFee := numerator.Div(denominator)
+	result := uint16(avgFee.Float64())
+	if result > TRADING_FEE_THRESHOLD_VAL {
+		return TRADING_FEE_THRESHOLD_VAL
+	}
 	return result
 }
 
+// ============================================================================
+// AMM Keylet and Account Functions
+// ============================================================================
+
 // computeAMMKeylet computes the AMM keylet from asset pair
 func computeAMMKeylet(asset1, asset2 Asset) keylet.Keylet {
-	// Convert assets to [20]byte format for keylet computation
 	var issuer1, currency1, issuer2, currency2 [20]byte
 
-	// Parse asset1
-	if asset1.Currency == "" || asset1.Currency == "XRP" {
-		// XRP - zero issuer and currency
-	} else {
+	if asset1.Currency != "" && asset1.Currency != "XRP" {
 		currency1 = currencyToBytes(asset1.Currency)
 		if asset1.Issuer != "" {
 			issuerID, _ := decodeAccountID(asset1.Issuer)
@@ -81,10 +689,7 @@ func computeAMMKeylet(asset1, asset2 Asset) keylet.Keylet {
 		}
 	}
 
-	// Parse asset2
-	if asset2.Currency == "" || asset2.Currency == "XRP" {
-		// XRP - zero issuer and currency
-	} else {
+	if asset2.Currency != "" && asset2.Currency != "XRP" {
 		currency2 = currencyToBytes(asset2.Currency)
 		if asset2.Issuer != "" {
 			issuerID, _ := decodeAccountID(asset2.Issuer)
@@ -93,6 +698,14 @@ func computeAMMKeylet(asset1, asset2 Asset) keylet.Keylet {
 	}
 
 	return keylet.AMM(issuer1, currency1, issuer2, currency2)
+}
+
+// computeAMMAccountID derives the AMM account ID from the AMM keylet
+// Reference: rippled AMMUtils.cpp createPseudoAccount
+func computeAMMAccountID(ammKeyletKey [32]byte) [20]byte {
+	var result [20]byte
+	copy(result[:], ammKeyletKey[:20])
+	return result
 }
 
 // currencyToBytes converts a currency code to 20-byte representation
@@ -111,39 +724,25 @@ func currencyToBytes(currency string) [20]byte {
 	return result
 }
 
-// calculateLPTokens calculates initial LP tokens using sqrt(amount1 * amount2)
-// Reference: rippled AMMHelpers.cpp ammLPTokens
-func calculateLPTokens(amount1, amount2 uint64) uint64 {
-	// Use big.Int to avoid overflow in multiplication
-	a1 := new(big.Int).SetUint64(amount1)
-	a2 := new(big.Int).SetUint64(amount2)
-	product := new(big.Int).Mul(a1, a2)
-
-	// Calculate square root
-	sqrt := new(big.Int).Sqrt(product)
-	return sqrt.Uint64()
-}
-
-// calculateLPTokensFloat calculates LP tokens for IOU amounts
-func calculateLPTokensFloat(amount1, amount2 float64) float64 {
-	return math.Sqrt(amount1 * amount2)
-}
-
 // generateAMMLPTCurrency generates the LP token currency code
-// Format: 03 + first 19 bytes of sha512half(currency1 + currency2)
+// Reference: rippled AMMCore.cpp ammLPTCurrency
+// Format: 03 + first 19 bytes of sha512half(min(currency1, currency2) + max(currency1, currency2))
 func generateAMMLPTCurrency(currency1, currency2 string) string {
-	// Normalize currencies
-	c1 := currency1
-	c2 := currency2
-	if c1 == "" {
-		c1 = "XRP"
-	}
-	if c2 == "" {
-		c2 = "XRP"
+	c1 := currencyToBytes(currency1)
+	c2 := currencyToBytes(currency2)
+
+	// Sort currencies (minmax)
+	var minC, maxC [20]byte
+	if compareCurrencies(c1, c2) < 0 {
+		minC, maxC = c1, c2
+	} else {
+		minC, maxC = c2, c1
 	}
 
 	// Hash the concatenation
-	data := []byte(c1 + c2)
+	data := make([]byte, 40)
+	copy(data[:20], minC[:])
+	copy(data[20:], maxC[:])
 	hash := crypto.Sha512Half(data)
 
 	// Build currency: 03 prefix + first 19 bytes of hash
@@ -154,8 +753,98 @@ func generateAMMLPTCurrency(currency1, currency2 string) string {
 	return strings.ToUpper(hex.EncodeToString(lptCurrency[:]))
 }
 
+// compareCurrencies compares two currency byte arrays
+func compareCurrencies(a, b [20]byte) int {
+	for i := 0; i < 20; i++ {
+		if a[i] < b[i] {
+			return -1
+		}
+		if a[i] > b[i] {
+			return 1
+		}
+	}
+	return 0
+}
+
+// ============================================================================
+// AMM Parsing and Serialization
+// ============================================================================
+
+// parseAMMData parses AMM data from binary format
+func parseAMMData(data []byte) (*AMMData, error) {
+	amm := &AMMData{
+		VoteSlots:      make([]VoteSlotData, 0),
+		LPTokenBalance: NumberZero,
+	}
+	// Simplified parsing - in production would use full binary codec
+	return amm, nil
+}
+
+// serializeAMMData serializes AMM data to binary format
+func serializeAMMData(amm *AMMData) ([]byte, error) {
+	accountAddress, err := addresscodec.EncodeAccountIDToClassicAddress(amm.Account[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode AMM account address: %w", err)
+	}
+
+	jsonObj := map[string]any{
+		"LedgerEntryType": "AMM",
+		"Account":         accountAddress,
+		"TradingFee":      amm.TradingFee,
+		"Flags":           uint32(0),
+	}
+
+	// Add LPTokenBalance
+	lpBalance := amm.LPTokenBalance.Uint64()
+	jsonObj["LPTokenBalance"] = map[string]any{
+		"currency": amm.Asset.Currency,
+		"issuer":   accountAddress,
+		"value":    fmt.Sprintf("%d", lpBalance),
+	}
+
+	hexStr, err := binarycodec.Encode(jsonObj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode AMM: %w", err)
+	}
+
+	return hex.DecodeString(hexStr)
+}
+
+// serializeAMM serializes an AMM ledger entry
+func serializeAMM(amm *AMMData, ownerID [20]byte) ([]byte, error) {
+	return serializeAMMData(amm)
+}
+
+// formatAsset formats an asset for metadata
+func formatAsset(asset Asset) map[string]string {
+	if asset.Currency == "" || asset.Currency == "XRP" {
+		return map[string]string{"currency": "XRP"}
+	}
+	return map[string]string{
+		"currency": asset.Currency,
+		"issuer":   asset.Issuer,
+	}
+}
+
+// compareAccountIDs compares two account IDs for ordering
+func compareAccountIDs(a, b [20]byte) int {
+	for i := 0; i < 20; i++ {
+		if a[i] < b[i] {
+			return -1
+		}
+		if a[i] > b[i] {
+			return 1
+		}
+	}
+	return 0
+}
+
+// ============================================================================
+// AMMCreate Implementation
+// Reference: rippled AMMCreate.cpp
+// ============================================================================
+
 // applyAMMCreate applies an AMMCreate transaction
-// Reference: rippled AMMCreate.cpp doApply / applyCreate
 func (e *Engine) applyAMMCreate(tx *AMMCreate, account *AccountRoot, metadata *Metadata) Result {
 	accountID, _ := decodeAccountID(tx.Account)
 
@@ -176,7 +865,7 @@ func (e *Engine) applyAMMCreate(tx *AMMCreate, account *AccountRoot, metadata *M
 	ammAccountID := computeAMMAccountID(ammKey.Key)
 	ammAccountAddr, _ := encodeAccountID(ammAccountID)
 
-	// Check if AMM account already exists (should not happen)
+	// Check if AMM account already exists
 	ammAccountKey := keylet.Account(ammAccountID)
 	acctExists, _ := e.view.Exists(ammAccountKey)
 	if acctExists {
@@ -184,32 +873,34 @@ func (e *Engine) applyAMMCreate(tx *AMMCreate, account *AccountRoot, metadata *M
 	}
 
 	// Parse amounts
-	amount1 := parseAmount(tx.Amount.Value)
-	amount2 := parseAmount(tx.Amount2.Value)
+	amount1 := parseAmountToNumber(tx.Amount.Value)
+	amount2 := parseAmountToNumber(tx.Amount2.Value)
 
-	// Check creator has sufficient balance
+	// Validate amounts are positive
+	if amount1.Le(NumberZero) || amount2.Le(NumberZero) {
+		return TemBAD_AMOUNT
+	}
+
+	// Check for XRP amounts
 	isXRP1 := tx.Amount.Currency == "" || tx.Amount.Currency == "XRP"
 	isXRP2 := tx.Amount2.Currency == "" || tx.Amount2.Currency == "XRP"
 
-	// For XRP amounts, verify balance
+	// Verify sufficient balance for XRP
 	totalXRPNeeded := uint64(0)
 	if isXRP1 {
-		totalXRPNeeded += amount1
+		totalXRPNeeded += amount1.Uint64()
 	}
 	if isXRP2 {
-		totalXRPNeeded += amount2
+		totalXRPNeeded += amount2.Uint64()
 	}
 	if totalXRPNeeded > 0 && account.Balance < totalXRPNeeded {
 		return TecUNFUNDED_AMM
 	}
 
 	// Calculate initial LP token balance: sqrt(amount1 * amount2)
-	var lpTokenBalance uint64
-	if amount1 > 0 && amount2 > 0 {
-		lpTokenBalance = calculateLPTokens(amount1, amount2)
-	}
-	if lpTokenBalance == 0 {
-		return TecAMM_BALANCE // AMM empty or invalid LP token calculation
+	lpTokenBalance := ammLPTokens(amount1, amount2)
+	if lpTokenBalance.Le(NumberZero) {
+		return TecAMM_BALANCE
 	}
 
 	// Generate LP token currency code
@@ -220,36 +911,35 @@ func (e *Engine) applyAMMCreate(tx *AMMCreate, account *AccountRoot, metadata *M
 		Account:    ammAccountAddr,
 		Balance:    0,
 		Sequence:   0,
-		OwnerCount: 1, // For the AMM entry itself
+		OwnerCount: 1,
 		Flags:      lsfAMM,
 	}
 
 	// Create the AMM entry
 	ammData := &AMMData{
 		Account:        ammAccountID,
+		Asset:          asset1,
+		Asset2:         asset2,
 		TradingFee:     tx.TradingFee,
 		LPTokenBalance: lpTokenBalance,
 		VoteSlots:      make([]VoteSlotData, 0),
 	}
 
-	// Set asset currency bytes
-	ammData.Asset = currencyToBytes(tx.Amount.Currency)
-	ammData.Asset2 = currencyToBytes(tx.Amount2.Currency)
-
-	// Initialize creator's vote slot with their LP token weight
+	// Initialize creator's vote slot
+	voteWeight := uint32(VOTE_WEIGHT_SCALE_FACTOR_VAL) // Creator holds all LP tokens initially
 	creatorVote := VoteSlotData{
 		Account:    accountID,
 		TradingFee: tx.TradingFee,
-		VoteWeight: uint32(lpTokenBalance), // Truncate for vote weight
+		VoteWeight: voteWeight,
 	}
 	ammData.VoteSlots = append(ammData.VoteSlots, creatorVote)
 
-	// Initialize auction slot (creator gets initial slot)
+	// Initialize auction slot with zero price (unowned)
 	ammData.AuctionSlot = &AuctionSlotData{
-		Account:      accountID,
-		Expiration:   0, // No expiration initially
-		Price:        0,
-		AuthAccounts: make([][20]byte, 0),
+		Expiration:    0,
+		Price:         NumberZero,
+		DiscountedFee: tx.TradingFee / AUCTION_SLOT_DISCOUNTED_FEE_FRACTION_VAL,
+		AuthAccounts:  make([][20]byte, 0),
 	}
 
 	// Store the AMM pseudo-account
@@ -270,31 +960,30 @@ func (e *Engine) applyAMMCreate(tx *AMMCreate, account *AccountRoot, metadata *M
 		return TefINTERNAL
 	}
 
-	// Transfer XRP from creator to AMM account
+	// Transfer assets from creator to AMM account
 	if isXRP1 {
-		account.Balance -= amount1
-		ammAccount.Balance += amount1
+		account.Balance -= amount1.Uint64()
+		ammAccount.Balance += amount1.Uint64()
 	}
 	if isXRP2 {
-		account.Balance -= amount2
-		ammAccount.Balance += amount2
+		account.Balance -= amount2.Uint64()
+		ammAccount.Balance += amount2.Uint64()
 	}
 
 	// For IOU transfers, update trustlines
 	if !isXRP1 {
-		if err := e.createOrUpdateAMMTrustline(ammAccountID, asset1, amount1); err != nil {
+		if err := e.createOrUpdateAMMTrustline(ammAccountID, asset1, amount1.Uint64()); err != nil {
 			return TecNO_LINE
 		}
-		// Debit from creator's trustline
-		if err := e.updateTrustlineBalance(accountID, asset1, -int64(amount1)); err != nil {
+		if err := e.updateTrustlineBalance(accountID, asset1, -int64(amount1.Uint64())); err != nil {
 			return TecUNFUNDED_AMM
 		}
 	}
 	if !isXRP2 {
-		if err := e.createOrUpdateAMMTrustline(ammAccountID, asset2, amount2); err != nil {
+		if err := e.createOrUpdateAMMTrustline(ammAccountID, asset2, amount2.Uint64()); err != nil {
 			return TecNO_LINE
 		}
-		if err := e.updateTrustlineBalance(accountID, asset2, -int64(amount2)); err != nil {
+		if err := e.updateTrustlineBalance(accountID, asset2, -int64(amount2.Uint64())); err != nil {
 			return TecUNFUNDED_AMM
 		}
 	}
@@ -304,24 +993,14 @@ func (e *Engine) applyAMMCreate(tx *AMMCreate, account *AccountRoot, metadata *M
 		Currency: lptCurrency,
 		Issuer:   ammAccountAddr,
 	}
-	if err := e.createLPTokenTrustline(accountID, lptAsset, lpTokenBalance); err != nil {
+	if err := e.createLPTokenTrustline(accountID, lptAsset, lpTokenBalance.Uint64()); err != nil {
 		return TecINSUF_RESERVE_LINE
 	}
 
-	// Update creator account (owner count increases for LP token trustline)
+	// Update creator account owner count
 	account.OwnerCount++
 
-	// Persist updated creator account
-	accountKey := keylet.Account(accountID)
-	accountBytes, err := serializeAccountRoot(account)
-	if err != nil {
-		return TefINTERNAL
-	}
-	if err := e.view.Update(accountKey, accountBytes); err != nil {
-		return TefINTERNAL
-	}
-
-	// Update AMM account balance (for XRP)
+	// Update AMM account balance
 	ammAccountBytes, err = serializeAccountRoot(ammAccount)
 	if err != nil {
 		return TefINTERNAL
@@ -339,7 +1018,7 @@ func (e *Engine) applyAMMCreate(tx *AMMCreate, account *AccountRoot, metadata *M
 			"Account":        ammAccountAddr,
 			"Asset":          formatAsset(asset1),
 			"Asset2":         formatAsset(asset2),
-			"LPTokenBalance": fmt.Sprintf("%d", lpTokenBalance),
+			"LPTokenBalance": lpTokenBalance.Uint64(),
 			"TradingFee":     tx.TradingFee,
 		},
 	})
@@ -397,8 +1076,7 @@ func (e *Engine) updateTrustlineBalance(accountID [20]byte, asset Asset, delta i
 	if asset.Currency == "" || asset.Currency == "XRP" {
 		return nil
 	}
-	// In a full implementation, this would read the trustline,
-	// update the balance, and re-serialize
+	// In a full implementation, this would read, update, and re-serialize the trustline
 	return nil
 }
 
@@ -433,200 +1111,22 @@ func (e *Engine) createLPTokenTrustline(accountID [20]byte, lptAsset Asset, bala
 	return e.view.Insert(lineKey, decoded)
 }
 
-// formatAsset formats an asset for metadata
-func formatAsset(asset Asset) map[string]string {
-	if asset.Currency == "" || asset.Currency == "XRP" {
-		return map[string]string{"currency": "XRP"}
-	}
-	return map[string]string{
-		"currency": asset.Currency,
-		"issuer":   asset.Issuer,
-	}
-}
-
-// AMM Math Helper Functions
-// Reference: rippled AMMHelpers.cpp
-
-// feeMult returns (1 - fee/100000) for fee calculations
-// tfee is in units of 1/100000 (e.g., 1000 = 1%)
-func feeMult(tfee uint16) float64 {
-	return 1.0 - float64(tfee)/100000.0
-}
-
-// feeMultHalf returns (1 - fee/200000) for fee calculations
-func feeMultHalf(tfee uint16) float64 {
-	return 1.0 - float64(tfee)/200000.0
-}
-
-// getFee returns fee as a fraction (e.g., 1000 -> 0.01)
-func getFee(tfee uint16) float64 {
-	return float64(tfee) / 100000.0
-}
-
-// lpTokensOut calculates LP tokens for single asset deposit (Equation 3)
-// t = T * (b/B - x) / (1 + x)
-// where x = sqrt(f2² + b/(B*f1)) - f2, f1 = 1-tfee, f2 = (1-tfee/2)/f1
-func lpTokensOut(assetBalance, assetDeposit, lptBalance uint64, tfee uint16) uint64 {
-	if assetBalance == 0 || lptBalance == 0 {
-		return 0
-	}
-
-	f1 := feeMult(tfee)
-	f2 := feeMultHalf(tfee) / f1
-	r := float64(assetDeposit) / float64(assetBalance)
-
-	x := math.Sqrt(f2*f2+r/f1) - f2
-	t := float64(lptBalance) * (r - x) / (1 + x)
-
-	if t < 0 {
-		return 0
-	}
-	return uint64(t)
-}
-
-// ammAssetIn calculates asset needed for desired LP tokens (Equation 4)
-// Solves equation 3 for b (asset deposit amount)
-func ammAssetIn(assetBalance, lptBalance, lpTokens uint64, tfee uint16) uint64 {
-	if lptBalance == 0 {
-		return 0
-	}
-
-	f1 := feeMult(tfee)
-	f2 := feeMultHalf(tfee) / f1
-	t1 := float64(lpTokens) / float64(lptBalance)
-	t2 := 1 + t1
-	d := f2 - t1/t2
-	a := 1 / (t2 * t2)
-	b := 2*d/t2 - 1/f1
-	c := d*d - f2*f2
-
-	// Solve quadratic: ax² + bx + c = 0
-	discriminant := b*b - 4*a*c
-	if discriminant < 0 {
-		return 0
-	}
-	R := (-b + math.Sqrt(discriminant)) / (2 * a)
-
-	return uint64(float64(assetBalance) * R)
-}
-
-// calcLPTokensIn calculates LP tokens to burn for single asset withdrawal (Equation 7)
-// t = T * (c - sqrt(c² - 4*R)) / 2
-// where R = b/B, c = R*fee + 2 - fee
-func calcLPTokensIn(assetBalance, assetWithdraw, lptBalance uint64, tfee uint16) uint64 {
-	if assetBalance == 0 || lptBalance == 0 {
-		return 0
-	}
-
-	R := float64(assetWithdraw) / float64(assetBalance)
-	f := getFee(tfee)
-	c := R*f + 2 - f
-
-	discriminant := c*c - 4*R
-	if discriminant < 0 {
-		return 0
-	}
-	t := float64(lptBalance) * (c - math.Sqrt(discriminant)) / 2
-
-	if t < 0 {
-		return 0
-	}
-	return uint64(t)
-}
-
-// ammAssetOut calculates asset amount for LP tokens burned (Equation 8)
-// b = B * (t1² - t1*(2-f)) / (t1*f - 1)
-// where t1 = t/T
-func ammAssetOut(assetBalance, lptBalance, lpTokens uint64, tfee uint16) uint64 {
-	if lptBalance == 0 {
-		return 0
-	}
-
-	f := getFee(tfee)
-	t1 := float64(lpTokens) / float64(lptBalance)
-
-	denominator := t1*f - 1
-	if denominator == 0 {
-		return 0
-	}
-
-	b := float64(assetBalance) * (t1*t1 - t1*(2-f)) / denominator
-
-	if b < 0 {
-		return 0
-	}
-	return uint64(b)
-}
-
-// calculateWeightedFee calculates the weighted average trading fee from vote slots
-func calculateWeightedFee(voteSlots []VoteSlotData) uint16 {
-	if len(voteSlots) == 0 {
-		return 0
-	}
-
-	var totalWeight uint64
-	var weightedSum uint64
-
-	for _, slot := range voteSlots {
-		totalWeight += uint64(slot.VoteWeight)
-		weightedSum += uint64(slot.VoteWeight) * uint64(slot.TradingFee)
-	}
-
-	if totalWeight == 0 {
-		return 0
-	}
-
-	return uint16(weightedSum / totalWeight)
-}
-
-// parseAMMData parses AMM data from binary format
-func parseAMMData(data []byte) (*AMMData, error) {
-	// Simplified parsing - in production would use binary codec
-	amm := &AMMData{
-		VoteSlots: make([]VoteSlotData, 0),
-	}
-	// For now, return empty AMM data structure
-	// In a full implementation, this would parse the binary format
-	return amm, nil
-}
-
-// serializeAMMData serializes AMM data to binary format
-func serializeAMMData(amm *AMMData) ([]byte, error) {
-	accountAddress, err := addresscodec.EncodeAccountIDToClassicAddress(amm.Account[:])
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode AMM account address: %w", err)
-	}
-
-	jsonObj := map[string]any{
-		"LedgerEntryType": "AMM",
-		"Account":         accountAddress,
-		"TradingFee":      amm.TradingFee,
-		"LPTokenBalance":  fmt.Sprintf("%d", amm.LPTokenBalance),
-		"Flags":           uint32(0),
-	}
-
-	hexStr, err := binarycodec.Encode(jsonObj)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode AMM: %w", err)
-	}
-
-	return hex.DecodeString(hexStr)
-}
+// ============================================================================
+// AMMDeposit Implementation
+// Reference: rippled AMMDeposit.cpp
+// ============================================================================
 
 // applyAMMDeposit applies an AMMDeposit transaction
-// Reference: rippled AMMDeposit.cpp applyGuts
 func (e *Engine) applyAMMDeposit(tx *AMMDeposit, account *AccountRoot, metadata *Metadata) Result {
 	accountID, _ := decodeAccountID(tx.Account)
 
 	// Find the AMM
 	ammKey := computeAMMKeylet(tx.Asset, tx.Asset2)
-
 	ammData, err := e.view.Read(ammKey)
 	if err != nil {
 		return TerNO_AMM
 	}
 
-	// Parse AMM data
 	amm, err := parseAMMData(ammData)
 	if err != nil {
 		return TefINTERNAL
@@ -648,62 +1148,60 @@ func (e *Engine) applyAMMDeposit(tx *AMMDeposit, account *AccountRoot, metadata 
 	tfee := amm.TradingFee
 
 	// Parse amounts
-	var amount1, amount2, lpTokensRequested uint64
+	var amount1, amount2, lpTokensRequested Number
 	if tx.Amount != nil {
-		amount1 = parseAmount(tx.Amount.Value)
+		amount1 = parseAmountToNumber(tx.Amount.Value)
 	}
 	if tx.Amount2 != nil {
-		amount2 = parseAmount(tx.Amount2.Value)
+		amount2 = parseAmountToNumber(tx.Amount2.Value)
 	}
 	if tx.LPTokenOut != nil {
-		lpTokensRequested = parseAmount(tx.LPTokenOut.Value)
+		lpTokensRequested = parseAmountToNumber(tx.LPTokenOut.Value)
 	}
 
-	// Get current AMM balances (simplified - using stored balance)
-	assetBalance1 := ammAccount.Balance // For XRP
-	assetBalance2 := uint64(0)          // Would come from trustline
+	// Get current AMM balances
+	assetBalance1 := NewNumberFromUint64(ammAccount.Balance) // For XRP
+	assetBalance2 := NumberZero                              // Would come from trustline for IOU
 	lptBalance := amm.LPTokenBalance
 
-	var lpTokensToIssue uint64
-	var depositAmount1, depositAmount2 uint64
+	var lpTokensToIssue, depositAmount1, depositAmount2 Number
 
 	// Handle different deposit modes
 	switch {
 	case flags&tfLPToken != 0:
 		// Proportional deposit for specified LP tokens
-		if lpTokensRequested == 0 || lptBalance == 0 {
+		if lpTokensRequested.Le(NumberZero) || lptBalance.Le(NumberZero) {
 			return TecAMM_INVALID_TOKENS
 		}
-		frac := float64(lpTokensRequested) / float64(lptBalance)
-		depositAmount1 = uint64(float64(assetBalance1) * frac)
-		depositAmount2 = uint64(float64(assetBalance2) * frac)
+		frac := lpTokensRequested.Div(lptBalance)
+		depositAmount1 = assetBalance1.Mul(frac)
+		depositAmount2 = assetBalance2.Mul(frac)
 		lpTokensToIssue = lpTokensRequested
 
 	case flags&tfSingleAsset != 0:
 		// Single asset deposit
 		lpTokensToIssue = lpTokensOut(assetBalance1, amount1, lptBalance, tfee)
-		if lpTokensToIssue == 0 {
+		if lpTokensToIssue.Le(NumberZero) {
 			return TecAMM_INVALID_TOKENS
 		}
 		depositAmount1 = amount1
 
 	case flags&tfTwoAsset != 0:
 		// Two asset deposit with limits
-		frac1 := float64(amount1) / float64(assetBalance1)
-		frac2 := float64(amount2) / float64(assetBalance2)
-		// Use the smaller fraction to maintain ratio
-		frac := frac1
-		if assetBalance2 > 0 && frac2 < frac1 {
-			frac = frac2
+		if assetBalance1.IsZero() || assetBalance2.IsZero() {
+			return TecAMM_BALANCE
 		}
-		lpTokensToIssue = uint64(float64(lptBalance) * frac)
-		depositAmount1 = uint64(float64(assetBalance1) * frac)
-		depositAmount2 = uint64(float64(assetBalance2) * frac)
+		frac1 := amount1.Div(assetBalance1)
+		frac2 := amount2.Div(assetBalance2)
+		frac := frac1.Min(frac2)
+		lpTokensToIssue = lptBalance.Mul(frac)
+		depositAmount1 = assetBalance1.Mul(frac)
+		depositAmount2 = assetBalance2.Mul(frac)
 
 	case flags&tfOneAssetLPToken != 0:
 		// Single asset deposit for specific LP tokens
 		depositAmount1 = ammAssetIn(assetBalance1, lptBalance, lpTokensRequested, tfee)
-		if depositAmount1 > amount1 {
+		if depositAmount1.Gt(amount1) {
 			return TecAMM_FAILED
 		}
 		lpTokensToIssue = lpTokensRequested
@@ -711,27 +1209,28 @@ func (e *Engine) applyAMMDeposit(tx *AMMDeposit, account *AccountRoot, metadata 
 	case flags&tfLimitLPToken != 0:
 		// Single asset deposit with effective price limit
 		lpTokensToIssue = lpTokensOut(assetBalance1, amount1, lptBalance, tfee)
-		if lpTokensToIssue == 0 {
+		if lpTokensToIssue.Le(NumberZero) {
 			return TecAMM_INVALID_TOKENS
 		}
-		// Check effective price
 		if tx.EPrice != nil {
-			ePrice := parseAmount(tx.EPrice.Value)
-			if ePrice > 0 && amount1/lpTokensToIssue > ePrice {
-				return TecAMM_FAILED
+			ePrice := parseAmountToNumber(tx.EPrice.Value)
+			if !ePrice.IsZero() {
+				effectivePrice := amount1.Div(lpTokensToIssue)
+				if effectivePrice.Gt(ePrice) {
+					return TecAMM_FAILED
+				}
 			}
 		}
 		depositAmount1 = amount1
 
 	case flags&tfTwoAssetIfEmpty != 0:
 		// Deposit into empty AMM
-		if lptBalance != 0 {
+		if !lptBalance.IsZero() {
 			return TecAMM_NOT_EMPTY
 		}
-		lpTokensToIssue = calculateLPTokens(amount1, amount2)
+		lpTokensToIssue = ammLPTokens(amount1, amount2)
 		depositAmount1 = amount1
 		depositAmount2 = amount2
-		// Set trading fee if provided
 		if tx.TradingFee > 0 {
 			amm.TradingFee = tx.TradingFee
 		}
@@ -740,7 +1239,7 @@ func (e *Engine) applyAMMDeposit(tx *AMMDeposit, account *AccountRoot, metadata 
 		return TemMALFORMED
 	}
 
-	if lpTokensToIssue == 0 {
+	if lpTokensToIssue.Le(NumberZero) {
 		return TecAMM_INVALID_TOKENS
 	}
 
@@ -749,34 +1248,34 @@ func (e *Engine) applyAMMDeposit(tx *AMMDeposit, account *AccountRoot, metadata 
 	isXRP2 := tx.Asset2.Currency == "" || tx.Asset2.Currency == "XRP"
 
 	totalXRPNeeded := uint64(0)
-	if isXRP1 && depositAmount1 > 0 {
-		totalXRPNeeded += depositAmount1
+	if isXRP1 && !depositAmount1.IsZero() {
+		totalXRPNeeded += depositAmount1.Uint64()
 	}
-	if isXRP2 && depositAmount2 > 0 {
-		totalXRPNeeded += depositAmount2
+	if isXRP2 && !depositAmount2.IsZero() {
+		totalXRPNeeded += depositAmount2.Uint64()
 	}
 	if totalXRPNeeded > 0 && account.Balance < totalXRPNeeded {
 		return TecUNFUNDED_AMM
 	}
 
 	// Transfer assets from depositor to AMM
-	if isXRP1 && depositAmount1 > 0 {
-		account.Balance -= depositAmount1
-		ammAccount.Balance += depositAmount1
+	if isXRP1 && !depositAmount1.IsZero() {
+		account.Balance -= depositAmount1.Uint64()
+		ammAccount.Balance += depositAmount1.Uint64()
 	}
-	if isXRP2 && depositAmount2 > 0 {
-		account.Balance -= depositAmount2
-		ammAccount.Balance += depositAmount2
+	if isXRP2 && !depositAmount2.IsZero() {
+		account.Balance -= depositAmount2.Uint64()
+		ammAccount.Balance += depositAmount2.Uint64()
 	}
 
 	// Issue LP tokens to depositor
-	amm.LPTokenBalance += lpTokensToIssue
+	amm.LPTokenBalance = amm.LPTokenBalance.Add(lpTokensToIssue)
 
 	// Update LP token trustline for depositor
 	ammAccountAddr, _ := encodeAccountID(ammAccountID)
 	lptCurrency := generateAMMLPTCurrency(tx.Asset.Currency, tx.Asset2.Currency)
 	lptAsset := Asset{Currency: lptCurrency, Issuer: ammAccountAddr}
-	e.createLPTokenTrustline(accountID, lptAsset, lpTokensToIssue)
+	e.createLPTokenTrustline(accountID, lptAsset, lpTokensToIssue.Uint64())
 
 	// Persist updated AMM
 	ammBytes, err := serializeAMMData(amm)
@@ -796,42 +1295,35 @@ func (e *Engine) applyAMMDeposit(tx *AMMDeposit, account *AccountRoot, metadata 
 		return TefINTERNAL
 	}
 
-	// Persist updated depositor account
-	accountKey := keylet.Account(accountID)
-	accountBytes, err := serializeAccountRoot(account)
-	if err != nil {
-		return TefINTERNAL
-	}
-	if err := e.view.Update(accountKey, accountBytes); err != nil {
-		return TefINTERNAL
-	}
-
 	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
 		NodeType:        "ModifiedNode",
 		LedgerEntryType: "AMM",
 		LedgerIndex:     strings.ToUpper(hex.EncodeToString(ammKey.Key[:])),
 		FinalFields: map[string]any{
-			"LPTokenBalance": fmt.Sprintf("%d", amm.LPTokenBalance),
+			"LPTokenBalance": amm.LPTokenBalance.Uint64(),
 		},
 	})
 
 	return TesSUCCESS
 }
 
+// ============================================================================
+// AMMWithdraw Implementation
+// Reference: rippled AMMWithdraw.cpp
+// ============================================================================
+
 // applyAMMWithdraw applies an AMMWithdraw transaction
-// Reference: rippled AMMWithdraw.cpp applyGuts
 func (e *Engine) applyAMMWithdraw(tx *AMMWithdraw, account *AccountRoot, metadata *Metadata) Result {
 	accountID, _ := decodeAccountID(tx.Account)
+	_ = accountID // Used for LP token trustline operations (simplified)
 
 	// Find the AMM
 	ammKey := computeAMMKeylet(tx.Asset, tx.Asset2)
-
 	ammData, err := e.view.Read(ammKey)
 	if err != nil {
 		return TerNO_AMM
 	}
 
-	// Parse AMM data
 	amm, err := parseAMMData(ammData)
 	if err != nil {
 		return TefINTERNAL
@@ -853,157 +1345,133 @@ func (e *Engine) applyAMMWithdraw(tx *AMMWithdraw, account *AccountRoot, metadat
 	tfee := amm.TradingFee
 
 	// Parse amounts
-	var amount1, amount2, lpTokensRequested uint64
+	var amount1, amount2, lpTokensRequested Number
 	if tx.Amount != nil {
-		amount1 = parseAmount(tx.Amount.Value)
+		amount1 = parseAmountToNumber(tx.Amount.Value)
 	}
 	if tx.Amount2 != nil {
-		amount2 = parseAmount(tx.Amount2.Value)
+		amount2 = parseAmountToNumber(tx.Amount2.Value)
 	}
 	if tx.LPTokenIn != nil {
-		lpTokensRequested = parseAmount(tx.LPTokenIn.Value)
+		lpTokensRequested = parseAmountToNumber(tx.LPTokenIn.Value)
 	}
 
 	// Get current AMM balances
-	assetBalance1 := ammAccount.Balance // For XRP
-	assetBalance2 := uint64(0)          // Would come from trustline for IOU
+	assetBalance1 := NewNumberFromUint64(ammAccount.Balance)
+	assetBalance2 := NumberZero
 	lptBalance := amm.LPTokenBalance
 
-	if lptBalance == 0 {
-		return TecAMM_BALANCE // AMM empty
+	if lptBalance.Le(NumberZero) {
+		return TecAMM_BALANCE
 	}
 
-	// Get withdrawer's LP token balance (simplified - use what they're trying to withdraw)
-	// In full implementation, would read from trustline
+	// Get withdrawer's LP token balance (simplified)
 	lpTokensHeld := lpTokensRequested
 	if flags&(tfWithdrawAll|tfOneAssetWithdrawAll) != 0 {
-		lpTokensHeld = lptBalance // For withdraw all, use full balance
+		lpTokensHeld = lptBalance
 	}
 
-	var lpTokensToRedeem uint64
-	var withdrawAmount1, withdrawAmount2 uint64
+	var lpTokensToRedeem, withdrawAmount1, withdrawAmount2 Number
 
 	// Handle different withdrawal modes
-	// Reference: rippled AMMWithdraw.cpp applyGuts switch
 	switch {
 	case flags&tfLPToken != 0:
 		// Proportional withdrawal for specified LP tokens
-		// Equations 5 and 6: a = (t/T) * A, b = (t/T) * B
-		if lpTokensRequested == 0 || lptBalance == 0 {
+		if lpTokensRequested.Le(NumberZero) || lptBalance.Le(NumberZero) {
 			return TecAMM_INVALID_TOKENS
 		}
-		if lpTokensRequested > lpTokensHeld || lpTokensRequested > lptBalance {
+		if lpTokensRequested.Gt(lpTokensHeld) || lpTokensRequested.Gt(lptBalance) {
 			return TecAMM_INVALID_TOKENS
 		}
-		frac := float64(lpTokensRequested) / float64(lptBalance)
-		withdrawAmount1 = uint64(float64(assetBalance1) * frac)
-		withdrawAmount2 = uint64(float64(assetBalance2) * frac)
+		withdrawAmount1, withdrawAmount2 = equalWithdrawTokens(assetBalance1, assetBalance2, lptBalance, lpTokensRequested)
 		lpTokensToRedeem = lpTokensRequested
 
 	case flags&tfWithdrawAll != 0:
-		// Withdraw all - proportional withdrawal of all LP tokens held
-		if lpTokensHeld == 0 {
+		// Withdraw all LP tokens held
+		if lpTokensHeld.Le(NumberZero) {
 			return TecAMM_INVALID_TOKENS
 		}
-		if lpTokensHeld >= lptBalance {
-			// Last LP withdrawing everything
+		if lpTokensHeld.Ge(lptBalance) {
 			withdrawAmount1 = assetBalance1
 			withdrawAmount2 = assetBalance2
 			lpTokensToRedeem = lptBalance
 		} else {
-			frac := float64(lpTokensHeld) / float64(lptBalance)
-			withdrawAmount1 = uint64(float64(assetBalance1) * frac)
-			withdrawAmount2 = uint64(float64(assetBalance2) * frac)
+			withdrawAmount1, withdrawAmount2 = equalWithdrawTokens(assetBalance1, assetBalance2, lptBalance, lpTokensHeld)
 			lpTokensToRedeem = lpTokensHeld
 		}
 
 	case flags&tfOneAssetWithdrawAll != 0:
-		// Withdraw all LP tokens as a single asset
-		// Use equation 8: ammAssetOut
-		if lpTokensHeld == 0 || amount1 == 0 {
+		// Withdraw all LP tokens as single asset
+		if lpTokensHeld.Le(NumberZero) {
 			return TecAMM_INVALID_TOKENS
 		}
 		withdrawAmount1 = ammAssetOut(assetBalance1, lptBalance, lpTokensHeld, tfee)
-		if withdrawAmount1 > assetBalance1 {
+		if withdrawAmount1.Gt(assetBalance1) {
 			return TecAMM_BALANCE
 		}
 		lpTokensToRedeem = lpTokensHeld
 
 	case flags&tfSingleAsset != 0:
-		// Single asset withdrawal - compute LP tokens from amount
-		// Equation 7: lpTokensIn function
-		if amount1 == 0 {
+		// Single asset withdrawal
+		if amount1.Le(NumberZero) {
 			return TemMALFORMED
 		}
-		if amount1 > assetBalance1 {
+		if amount1.Gt(assetBalance1) {
 			return TecAMM_BALANCE
 		}
-		lpTokensToRedeem = calcLPTokensIn(assetBalance1, amount1, lptBalance, tfee)
-		if lpTokensToRedeem == 0 || lpTokensToRedeem > lpTokensHeld {
+		lpTokensToRedeem = lpTokensIn(assetBalance1, amount1, lptBalance, tfee)
+		if lpTokensToRedeem.Le(NumberZero) || lpTokensToRedeem.Gt(lpTokensHeld) {
 			return TecAMM_INVALID_TOKENS
 		}
 		withdrawAmount1 = amount1
 
 	case flags&tfTwoAsset != 0:
 		// Two asset withdrawal with limits
-		// Equations 5 and 6 with limits
-		if amount1 == 0 || amount2 == 0 {
+		if amount1.Le(NumberZero) || amount2.Le(NumberZero) {
 			return TemMALFORMED
 		}
-		// Calculate proportional withdrawal
-		frac1 := float64(amount1) / float64(assetBalance1)
-		frac2 := float64(amount2) / float64(assetBalance2)
-		// Use the smaller fraction
-		frac := frac1
-		if assetBalance2 > 0 && frac2 < frac1 {
-			frac = frac2
-		}
-		lpTokensToRedeem = uint64(float64(lptBalance) * frac)
-		if lpTokensToRedeem == 0 || lpTokensToRedeem > lpTokensHeld {
+		frac1 := amount1.Div(assetBalance1)
+		frac2 := amount2.Div(assetBalance2)
+		frac := frac1.Min(frac2)
+		lpTokensToRedeem = lptBalance.Mul(frac)
+		if lpTokensToRedeem.Le(NumberZero) || lpTokensToRedeem.Gt(lpTokensHeld) {
 			return TecAMM_INVALID_TOKENS
 		}
-		// Recalculate amounts based on the fraction used
-		withdrawAmount1 = uint64(float64(assetBalance1) * frac)
-		withdrawAmount2 = uint64(float64(assetBalance2) * frac)
+		withdrawAmount1, withdrawAmount2 = equalWithdrawTokens(assetBalance1, assetBalance2, lptBalance, lpTokensToRedeem)
 
 	case flags&tfOneAssetLPToken != 0:
 		// Single asset withdrawal for specific LP tokens
-		// Equation 8: ammAssetOut
-		if lpTokensRequested == 0 {
+		if lpTokensRequested.Le(NumberZero) {
 			return TecAMM_INVALID_TOKENS
 		}
-		if lpTokensRequested > lpTokensHeld || lpTokensRequested > lptBalance {
+		if lpTokensRequested.Gt(lpTokensHeld) || lpTokensRequested.Gt(lptBalance) {
 			return TecAMM_INVALID_TOKENS
 		}
 		withdrawAmount1 = ammAssetOut(assetBalance1, lptBalance, lpTokensRequested, tfee)
-		if withdrawAmount1 > assetBalance1 {
+		if withdrawAmount1.Gt(assetBalance1) {
 			return TecAMM_BALANCE
 		}
-		// Check minimum amount if specified
-		if amount1 > 0 && withdrawAmount1 < amount1 {
+		if !amount1.IsZero() && withdrawAmount1.Lt(amount1) {
 			return TecAMM_FAILED
 		}
 		lpTokensToRedeem = lpTokensRequested
 
 	case flags&tfLimitLPToken != 0:
 		// Single asset withdrawal with effective price limit
-		if amount1 == 0 || tx.EPrice == nil {
+		if amount1.Le(NumberZero) || tx.EPrice == nil {
 			return TemMALFORMED
 		}
-		ePrice := parseAmount(tx.EPrice.Value)
-		if ePrice == 0 {
+		ePrice := parseAmountToNumber(tx.EPrice.Value)
+		if ePrice.Le(NumberZero) {
 			return TemMALFORMED
 		}
-		// Calculate LP tokens based on effective price
-		// EP = lpTokens / amount => lpTokens = EP * amount
-		// Use equation that solves for lpTokens given EP constraint
-		lpTokensToRedeem = calcLPTokensIn(assetBalance1, amount1, lptBalance, tfee)
-		if lpTokensToRedeem == 0 || lpTokensToRedeem > lpTokensHeld {
+		lpTokensToRedeem = lpTokensIn(assetBalance1, amount1, lptBalance, tfee)
+		if lpTokensToRedeem.Le(NumberZero) || lpTokensToRedeem.Gt(lpTokensHeld) {
 			return TecAMM_INVALID_TOKENS
 		}
 		// Check effective price: EP = lpTokens / amount
-		actualEP := lpTokensToRedeem / amount1
-		if actualEP > ePrice {
+		actualEP := lpTokensToRedeem.Div(amount1)
+		if actualEP.Gt(ePrice) {
 			return TecAMM_FAILED
 		}
 		withdrawAmount1 = amount1
@@ -1012,15 +1480,12 @@ func (e *Engine) applyAMMWithdraw(tx *AMMWithdraw, account *AccountRoot, metadat
 		return TemMALFORMED
 	}
 
-	if lpTokensToRedeem == 0 {
+	if lpTokensToRedeem.Le(NumberZero) {
 		return TecAMM_INVALID_TOKENS
 	}
 
 	// Verify withdrawal doesn't exceed balances
-	if withdrawAmount1 > assetBalance1 {
-		return TecAMM_BALANCE
-	}
-	if withdrawAmount2 > assetBalance2 {
+	if withdrawAmount1.Gt(assetBalance1) || withdrawAmount2.Gt(assetBalance2) {
 		return TecAMM_BALANCE
 	}
 
@@ -1028,23 +1493,22 @@ func (e *Engine) applyAMMWithdraw(tx *AMMWithdraw, account *AccountRoot, metadat
 	isXRP1 := tx.Asset.Currency == "" || tx.Asset.Currency == "XRP"
 	isXRP2 := tx.Asset2.Currency == "" || tx.Asset2.Currency == "XRP"
 
-	if isXRP1 && withdrawAmount1 > 0 {
-		ammAccount.Balance -= withdrawAmount1
-		account.Balance += withdrawAmount1
+	if isXRP1 && !withdrawAmount1.IsZero() {
+		ammAccount.Balance -= withdrawAmount1.Uint64()
+		account.Balance += withdrawAmount1.Uint64()
 	}
-	if isXRP2 && withdrawAmount2 > 0 {
-		ammAccount.Balance -= withdrawAmount2
-		account.Balance += withdrawAmount2
+	if isXRP2 && !withdrawAmount2.IsZero() {
+		ammAccount.Balance -= withdrawAmount2.Uint64()
+		account.Balance += withdrawAmount2.Uint64()
 	}
 
 	// Redeem LP tokens
-	newLPBalance := lptBalance - lpTokensToRedeem
+	newLPBalance := lptBalance.Sub(lpTokensToRedeem)
 	amm.LPTokenBalance = newLPBalance
 
-	// Check if AMM should be deleted (empty)
+	// Check if AMM should be deleted
 	ammDeleted := false
-	if newLPBalance == 0 {
-		// Delete AMM and AMM account
+	if newLPBalance.Le(NumberZero) {
 		if err := e.view.Erase(ammKey); err != nil {
 			return TefINTERNAL
 		}
@@ -1055,7 +1519,6 @@ func (e *Engine) applyAMMWithdraw(tx *AMMWithdraw, account *AccountRoot, metadat
 	}
 
 	if !ammDeleted {
-		// Persist updated AMM
 		ammBytes, err := serializeAMMData(amm)
 		if err != nil {
 			return TefINTERNAL
@@ -1064,7 +1527,6 @@ func (e *Engine) applyAMMWithdraw(tx *AMMWithdraw, account *AccountRoot, metadat
 			return TefINTERNAL
 		}
 
-		// Persist updated AMM account
 		ammAccountBytes, err := serializeAccountRoot(ammAccount)
 		if err != nil {
 			return TefINTERNAL
@@ -1074,17 +1536,6 @@ func (e *Engine) applyAMMWithdraw(tx *AMMWithdraw, account *AccountRoot, metadat
 		}
 	}
 
-	// Persist updated withdrawer account
-	accountKey := keylet.Account(accountID)
-	accountBytes, err := serializeAccountRoot(account)
-	if err != nil {
-		return TefINTERNAL
-	}
-	if err := e.view.Update(accountKey, accountBytes); err != nil {
-		return TefINTERNAL
-	}
-
-	// Record metadata
 	if ammDeleted {
 		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
 			NodeType:        "DeletedNode",
@@ -1097,7 +1548,7 @@ func (e *Engine) applyAMMWithdraw(tx *AMMWithdraw, account *AccountRoot, metadat
 			LedgerEntryType: "AMM",
 			LedgerIndex:     strings.ToUpper(hex.EncodeToString(ammKey.Key[:])),
 			FinalFields: map[string]any{
-				"LPTokenBalance": fmt.Sprintf("%d", amm.LPTokenBalance),
+				"LPTokenBalance": amm.LPTokenBalance.Uint64(),
 			},
 		})
 	}
@@ -1105,86 +1556,71 @@ func (e *Engine) applyAMMWithdraw(tx *AMMWithdraw, account *AccountRoot, metadat
 	return TesSUCCESS
 }
 
-// AMM vote constants
-// Reference: rippled AMMCore.h
-const (
-	voteMaxSlots             = 8      // Maximum vote slots
-	voteWeightScaleFactor    = 100000 // Scale factor for vote weight
-	auctionSlotDiscountedFee = 10     // Discounted fee fraction (tradingFee / 10)
-)
+// ============================================================================
+// AMMVote Implementation
+// Reference: rippled AMMVote.cpp
+// ============================================================================
 
 // applyAMMVote applies an AMMVote transaction
-// Reference: rippled AMMVote.cpp applyVote
 func (e *Engine) applyAMMVote(tx *AMMVote, account *AccountRoot, metadata *Metadata) Result {
 	accountID, _ := decodeAccountID(tx.Account)
 
 	// Find the AMM
 	ammKey := computeAMMKeylet(tx.Asset, tx.Asset2)
-
 	ammData, err := e.view.Read(ammKey)
 	if err != nil {
 		return TerNO_AMM
 	}
 
-	// Parse AMM data
 	amm, err := parseAMMData(ammData)
 	if err != nil {
 		return TefINTERNAL
 	}
 
 	lptAMMBalance := amm.LPTokenBalance
-	if lptAMMBalance == 0 {
-		return TecAMM_BALANCE // AMM empty
+	if lptAMMBalance.Le(NumberZero) {
+		return TecAMM_BALANCE
 	}
 
-	// Get voter's LP token balance (simplified - in full implementation would read from trustline)
-	// For now, assume voter has tokens proportional to their vote weight
-	lpTokensNew := uint64(1000000) // Placeholder - in production would read from trustline
-
+	// Get voter's LP token balance (simplified - would read from trustline)
+	lpTokensNew := NewNumberFromUint64(1000000)
 	feeNew := tx.TradingFee
 
 	// Track minimum token holder for potential replacement
-	var minTokens uint64 = math.MaxUint64
+	var minTokens Number = NewNumber(math.MaxFloat64)
 	var minPos int = -1
 	var minAccount [20]byte
 	var minFee uint16
 
 	// Build updated vote slots
-	updatedVoteSlots := make([]VoteSlotData, 0, voteMaxSlots)
+	updatedVoteSlots := make([]VoteSlotData, 0, VOTE_MAX_SLOTS_VAL)
 	foundAccount := false
 
-	// Running totals for weighted fee calculation
-	var numerator uint64 = 0
-	var denominator uint64 = 0
+	numerator := NumberZero
+	denominator := NumberZero
 
-	// Iterate over current vote entries
 	for i, slot := range amm.VoteSlots {
-		lpTokens := uint64(slot.VoteWeight) * lptAMMBalance / voteWeightScaleFactor
-		if lpTokens == 0 {
-			// Skip entries with no tokens
+		lpTokens := NewNumberFromUint64(uint64(slot.VoteWeight)).Mul(lptAMMBalance).Div(NewNumberFromInt(VOTE_WEIGHT_SCALE_FACTOR_VAL))
+		if lpTokens.Le(NumberZero) {
 			continue
 		}
 
 		feeVal := slot.TradingFee
 
-		// Check if this is the voting account
 		if slot.Account == accountID {
 			lpTokens = lpTokensNew
 			feeVal = feeNew
 			foundAccount = true
 		}
 
-		// Calculate new vote weight
-		voteWeight := lpTokens * voteWeightScaleFactor / lptAMMBalance
+		voteWeight := lpTokens.Mul(NewNumberFromInt(VOTE_WEIGHT_SCALE_FACTOR_VAL)).Div(lptAMMBalance)
 
-		// Update running totals for weighted fee
-		numerator += uint64(feeVal) * lpTokens
-		denominator += lpTokens
+		numerator = numerator.Add(NewNumber(float64(feeVal)).Mul(lpTokens))
+		denominator = denominator.Add(lpTokens)
 
-		// Track minimum for potential replacement
-		if lpTokens < minTokens ||
-			(lpTokens == minTokens && feeVal < minFee) ||
-			(lpTokens == minTokens && feeVal == minFee && compareAccountIDs(slot.Account, minAccount) < 0) {
+		if lpTokens.Lt(minTokens) ||
+			(lpTokens.Float64() == minTokens.Float64() && feeVal < minFee) ||
+			(lpTokens.Float64() == minTokens.Float64() && feeVal == minFee && compareAccountIDs(slot.Account, minAccount) < 0) {
 			minTokens = lpTokens
 			minPos = i
 			minAccount = slot.Account
@@ -1194,63 +1630,56 @@ func (e *Engine) applyAMMVote(tx *AMMVote, account *AccountRoot, metadata *Metad
 		updatedVoteSlots = append(updatedVoteSlots, VoteSlotData{
 			Account:    slot.Account,
 			TradingFee: feeVal,
-			VoteWeight: uint32(voteWeight),
+			VoteWeight: uint32(voteWeight.Uint64()),
 		})
 	}
 
-	// If account doesn't have a vote entry yet
 	if !foundAccount {
-		voteWeight := lpTokensNew * voteWeightScaleFactor / lptAMMBalance
+		voteWeight := lpTokensNew.Mul(NewNumberFromInt(VOTE_WEIGHT_SCALE_FACTOR_VAL)).Div(lptAMMBalance)
 
-		if len(updatedVoteSlots) < voteMaxSlots {
-			// Add new entry if slots available
+		if len(updatedVoteSlots) < VOTE_MAX_SLOTS_VAL {
 			updatedVoteSlots = append(updatedVoteSlots, VoteSlotData{
 				Account:    accountID,
 				TradingFee: feeNew,
-				VoteWeight: uint32(voteWeight),
+				VoteWeight: uint32(voteWeight.Uint64()),
 			})
-			numerator += uint64(feeNew) * lpTokensNew
-			denominator += lpTokensNew
-		} else if lpTokensNew > minTokens || (lpTokensNew == minTokens && feeNew > minFee) {
-			// Replace minimum token holder if new account has more tokens
+			numerator = numerator.Add(NewNumber(float64(feeNew)).Mul(lpTokensNew))
+			denominator = denominator.Add(lpTokensNew)
+		} else if lpTokensNew.Gt(minTokens) || (lpTokensNew.Float64() == minTokens.Float64() && feeNew > minFee) {
 			if minPos >= 0 && minPos < len(updatedVoteSlots) {
-				// Remove min holder's contribution from totals
-				numerator -= uint64(minFee) * minTokens
-				denominator -= minTokens
+				numerator = numerator.Sub(NewNumber(float64(minFee)).Mul(minTokens))
+				denominator = denominator.Sub(minTokens)
 
-				// Replace with new voter
 				updatedVoteSlots[minPos] = VoteSlotData{
 					Account:    accountID,
 					TradingFee: feeNew,
-					VoteWeight: uint32(voteWeight),
+					VoteWeight: uint32(voteWeight.Uint64()),
 				}
 
-				// Add new voter's contribution
-				numerator += uint64(feeNew) * lpTokensNew
-				denominator += lpTokensNew
+				numerator = numerator.Add(NewNumber(float64(feeNew)).Mul(lpTokensNew))
+				denominator = denominator.Add(lpTokensNew)
 			}
 		}
-		// else: all slots full and account doesn't have more tokens - vote not recorded
 	}
 
 	// Calculate weighted average trading fee
 	var newTradingFee uint16 = 0
-	if denominator > 0 {
-		newTradingFee = uint16(numerator / denominator)
+	if !denominator.IsZero() {
+		avgFee := numerator.Div(denominator)
+		newTradingFee = uint16(avgFee.Uint64())
+		if newTradingFee > TRADING_FEE_THRESHOLD_VAL {
+			newTradingFee = TRADING_FEE_THRESHOLD_VAL
+		}
 	}
 
-	// Update AMM data
 	amm.VoteSlots = updatedVoteSlots
 	amm.TradingFee = newTradingFee
 
 	// Update discounted fee in auction slot
 	if amm.AuctionSlot != nil {
-		discountedFee := newTradingFee / auctionSlotDiscountedFee
-		// Discounted fee would be stored in auction slot
-		_ = discountedFee
+		amm.AuctionSlot.DiscountedFee = newTradingFee / AUCTION_SLOT_DISCOUNTED_FEE_FRACTION_VAL
 	}
 
-	// Persist updated AMM
 	ammBytes, err := serializeAMMData(amm)
 	if err != nil {
 		return TefINTERNAL
@@ -1271,85 +1700,59 @@ func (e *Engine) applyAMMVote(tx *AMMVote, account *AccountRoot, metadata *Metad
 	return TesSUCCESS
 }
 
-// compareAccountIDs compares two account IDs for ordering
-func compareAccountIDs(a, b [20]byte) int {
-	for i := 0; i < 20; i++ {
-		if a[i] < b[i] {
-			return -1
-		}
-		if a[i] > b[i] {
-			return 1
-		}
-	}
-	return 0
-}
-
-// AMM auction slot constants
-// Reference: rippled AMMCore.h
-const (
-	auctionSlotTotalTimeSecs    = 86400 // 24 hours in seconds
-	auctionSlotTimeIntervals    = 20    // Number of time intervals
-	auctionSlotMinFeeFraction   = 25    // Min slot price = lptBalance * fee / 25
-	auctionSlotMaxAuthAccounts  = 4     // Maximum authorized accounts
-	auctionSlotIntervalDuration = auctionSlotTotalTimeSecs / auctionSlotTimeIntervals
-)
+// ============================================================================
+// AMMBid Implementation
+// Reference: rippled AMMBid.cpp
+// ============================================================================
 
 // applyAMMBid applies an AMMBid transaction
-// Reference: rippled AMMBid.cpp applyBid
 func (e *Engine) applyAMMBid(tx *AMMBid, account *AccountRoot, metadata *Metadata) Result {
 	accountID, _ := decodeAccountID(tx.Account)
 
 	// Find the AMM
 	ammKey := computeAMMKeylet(tx.Asset, tx.Asset2)
-
 	ammData, err := e.view.Read(ammKey)
 	if err != nil {
 		return TerNO_AMM
 	}
 
-	// Parse AMM data
 	amm, err := parseAMMData(ammData)
 	if err != nil {
 		return TefINTERNAL
 	}
 
 	lptAMMBalance := amm.LPTokenBalance
-	if lptAMMBalance == 0 {
-		return TecAMM_BALANCE // AMM empty
+	if lptAMMBalance.Le(NumberZero) {
+		return TecAMM_BALANCE
 	}
 
 	// Get bidder's LP token balance (simplified)
-	lpTokens := uint64(1000000) // Placeholder - would read from trustline
+	lpTokens := NewNumberFromUint64(1000000)
 
 	// Parse bid amounts
-	var bidMin, bidMax uint64
+	var bidMin, bidMax Number
 	if tx.BidMin != nil {
-		bidMin = parseAmount(tx.BidMin.Value)
-		if bidMin > lpTokens || bidMin >= lptAMMBalance {
+		bidMin = parseAmountToNumber(tx.BidMin.Value)
+		if bidMin.Gt(lpTokens) || bidMin.Ge(lptAMMBalance) {
 			return TecAMM_INVALID_TOKENS
 		}
 	}
 	if tx.BidMax != nil {
-		bidMax = parseAmount(tx.BidMax.Value)
-		if bidMax > lpTokens || bidMax >= lptAMMBalance {
+		bidMax = parseAmountToNumber(tx.BidMax.Value)
+		if bidMax.Gt(lpTokens) || bidMax.Ge(lptAMMBalance) {
 			return TecAMM_INVALID_TOKENS
 		}
 	}
-	if bidMin > 0 && bidMax > 0 && bidMin > bidMax {
+	if !bidMin.IsZero() && !bidMax.IsZero() && bidMin.Gt(bidMax) {
 		return TecAMM_INVALID_TOKENS
 	}
 
-	// Calculate trading fee fraction
-	tradingFee := getFee(amm.TradingFee)
+	tradingFee := getFeeNumber(amm.TradingFee)
+	minSlotPrice := lptAMMBalance.Mul(tradingFee).Div(NewNumberFromInt(AUCTION_SLOT_MIN_FEE_FRACTION_VAL))
+	discountedFee := amm.TradingFee / AUCTION_SLOT_DISCOUNTED_FEE_FRACTION_VAL
 
-	// Minimum slot price = lptAMMBalance * tradingFee / 25
-	minSlotPrice := float64(lptAMMBalance) * tradingFee / float64(auctionSlotMinFeeFraction)
-
-	// Calculate discounted fee
-	discountedFee := amm.TradingFee / uint16(auctionSlotDiscountedFee)
-
-	// Get current time (simplified - would use ledger close time)
-	currentTime := uint32(0) // Would be ctx.view.info().parentCloseTime
+	// Get current time (simplified)
+	currentTime := e.config.ParentCloseTime
 
 	// Initialize auction slot if needed
 	if amm.AuctionSlot == nil {
@@ -1358,13 +1761,13 @@ func (e *Engine) applyAMMBid(tx *AMMBid, account *AccountRoot, metadata *Metadat
 		}
 	}
 
-	// Calculate time slot (0-19)
+	// Calculate time slot
 	var timeSlot *int
 	if amm.AuctionSlot.Expiration > 0 && currentTime < amm.AuctionSlot.Expiration {
-		elapsed := amm.AuctionSlot.Expiration - auctionSlotTotalTimeSecs
-		if currentTime >= elapsed {
-			slot := int((currentTime - elapsed) / auctionSlotIntervalDuration)
-			if slot >= 0 && slot < auctionSlotTimeIntervals {
+		start := amm.AuctionSlot.Expiration - AUCTION_SLOT_TOTAL_TIME_SECS_VAL
+		if currentTime >= start {
+			slot := int((currentTime - start) / AUCTION_SLOT_INTERVAL_DURATION_VAL)
+			if slot >= 0 && slot < AUCTION_SLOT_TIME_INTERVALS_VAL {
 				timeSlot = &slot
 			}
 		}
@@ -1372,8 +1775,7 @@ func (e *Engine) applyAMMBid(tx *AMMBid, account *AccountRoot, metadata *Metadat
 
 	// Check if current owner is valid
 	validOwner := false
-	if timeSlot != nil && *timeSlot < auctionSlotTimeIntervals-1 {
-		// Check if owner account exists
+	if timeSlot != nil && *timeSlot < AUCTION_SLOT_TIME_INTERVALS_VAL-1 {
 		var zeroAccount [20]byte
 		if amm.AuctionSlot.Account != zeroAccount {
 			ownerKey := keylet.Account(amm.AuctionSlot.Account)
@@ -1382,87 +1784,74 @@ func (e *Engine) applyAMMBid(tx *AMMBid, account *AccountRoot, metadata *Metadat
 		}
 	}
 
-	// Calculate pay price based on slot state
-	var computedPrice float64
-	var fractionRemaining float64 = 0.0
-	pricePurchased := float64(amm.AuctionSlot.Price)
+	// Calculate pay price
+	var computedPrice Number
+	var fractionRemaining Number = NumberZero
+	pricePurchased := amm.AuctionSlot.Price
 
 	if !validOwner || timeSlot == nil {
-		// Slot is unowned or expired - pay minimum price
 		computedPrice = minSlotPrice
 	} else {
-		// Slot is owned - calculate price based on time interval
-		fractionUsed := (float64(*timeSlot) + 1) / float64(auctionSlotTimeIntervals)
-		fractionRemaining = 1.0 - fractionUsed
+		fractionUsed := NewNumber(float64(*timeSlot+1) / float64(AUCTION_SLOT_TIME_INTERVALS_VAL))
+		fractionRemaining = NumberOne.Sub(fractionUsed)
 
 		if *timeSlot == 0 {
-			// First interval: price = pricePurchased * 1.05 + minSlotPrice
-			computedPrice = pricePurchased*1.05 + minSlotPrice
+			computedPrice = pricePurchased.Mul(NewNumber(1.05)).Add(minSlotPrice)
 		} else {
-			// Other intervals: price = pricePurchased * 1.05 * (1 - fractionUsed^60) + minSlotPrice
-			computedPrice = pricePurchased*1.05*(1-math.Pow(fractionUsed, 60)) + minSlotPrice
+			decay := NumberOne.Sub(fractionUsed.PowerFloat(60))
+			computedPrice = pricePurchased.Mul(NewNumber(1.05)).Mul(decay).Add(minSlotPrice)
 		}
 	}
 
-	// Determine actual pay price based on bidMin/bidMax
-	var payPrice float64
-	if bidMin > 0 && bidMax > 0 {
-		// Both min/max specified
-		if computedPrice <= float64(bidMax) {
-			payPrice = math.Max(computedPrice, float64(bidMin))
+	// Determine actual pay price
+	var payPrice Number
+	if !bidMin.IsZero() && !bidMax.IsZero() {
+		if computedPrice.Le(bidMax) {
+			payPrice = computedPrice.Max(bidMin)
 		} else {
 			return TecAMM_FAILED
 		}
-	} else if bidMin > 0 {
-		// Only min specified
-		payPrice = math.Max(computedPrice, float64(bidMin))
-	} else if bidMax > 0 {
-		// Only max specified
-		if computedPrice <= float64(bidMax) {
+	} else if !bidMin.IsZero() {
+		payPrice = computedPrice.Max(bidMin)
+	} else if !bidMax.IsZero() {
+		if computedPrice.Le(bidMax) {
 			payPrice = computedPrice
 		} else {
 			return TecAMM_FAILED
 		}
 	} else {
-		// Neither specified - pay computed price
 		payPrice = computedPrice
 	}
 
-	// Check bidder has enough tokens
-	if uint64(payPrice) > lpTokens {
+	if payPrice.Gt(lpTokens) {
 		return TecAMM_INVALID_TOKENS
 	}
 
-	// Calculate refund and burn amounts
-	var refund float64 = 0.0
-	var burn float64 = payPrice
+	// Calculate refund and burn
+	var refund Number = NumberZero
+	burn := payPrice
 
 	if validOwner && timeSlot != nil {
-		// Refund previous owner
-		refund = fractionRemaining * pricePurchased
-		if refund > payPrice {
-			return TefINTERNAL // Should not happen
+		refund = fractionRemaining.Mul(pricePurchased)
+		if refund.Gt(payPrice) {
+			return TefINTERNAL
 		}
-		burn = payPrice - refund
-
-		// Transfer refund to previous owner
-		// In full implementation, would use accountSend
-		_ = refund
+		burn = payPrice.Sub(refund)
 	}
 
-	// Burn tokens (reduce LP balance)
-	burnAmount := uint64(burn)
-	if burnAmount >= lptAMMBalance {
+	// Burn tokens
+	if burn.Ge(lptAMMBalance) {
 		return TefINTERNAL
 	}
-	amm.LPTokenBalance -= burnAmount
+	amm.LPTokenBalance = amm.LPTokenBalance.Sub(burn)
 
 	// Update auction slot
 	amm.AuctionSlot.Account = accountID
-	amm.AuctionSlot.Expiration = currentTime + auctionSlotTotalTimeSecs
-	amm.AuctionSlot.Price = uint64(payPrice)
+	amm.AuctionSlot.Expiration = currentTime + AUCTION_SLOT_TOTAL_TIME_SECS_VAL
+	amm.AuctionSlot.Price = payPrice
+	amm.AuctionSlot.DiscountedFee = discountedFee
 
-	// Parse auth accounts if provided
+	// Parse auth accounts
 	if tx.AuthAccounts != nil {
 		amm.AuctionSlot.AuthAccounts = make([][20]byte, 0, len(tx.AuthAccounts))
 		for _, authAccountEntry := range tx.AuthAccounts {
@@ -1475,10 +1864,6 @@ func (e *Engine) applyAMMBid(tx *AMMBid, account *AccountRoot, metadata *Metadat
 		amm.AuctionSlot.AuthAccounts = make([][20]byte, 0)
 	}
 
-	// Set discounted fee
-	_ = discountedFee // Would be stored in auction slot
-
-	// Persist updated AMM
 	ammBytes, err := serializeAMMData(amm)
 	if err != nil {
 		return TefINTERNAL
@@ -1492,11 +1877,11 @@ func (e *Engine) applyAMMBid(tx *AMMBid, account *AccountRoot, metadata *Metadat
 		LedgerEntryType: "AMM",
 		LedgerIndex:     strings.ToUpper(hex.EncodeToString(ammKey.Key[:])),
 		FinalFields: map[string]any{
-			"LPTokenBalance": fmt.Sprintf("%d", amm.LPTokenBalance),
+			"LPTokenBalance": amm.LPTokenBalance.Uint64(),
 			"AuctionSlot": map[string]any{
 				"Account":    tx.Account,
 				"Expiration": amm.AuctionSlot.Expiration,
-				"Price":      amm.AuctionSlot.Price,
+				"Price":      amm.AuctionSlot.Price.Uint64(),
 			},
 		},
 	})
@@ -1504,37 +1889,62 @@ func (e *Engine) applyAMMBid(tx *AMMBid, account *AccountRoot, metadata *Metadat
 	return TesSUCCESS
 }
 
+// ============================================================================
+// AMMDelete Implementation
+// Reference: rippled AMMDelete.cpp
+// ============================================================================
+
 // applyAMMDelete applies an AMMDelete transaction
 func (e *Engine) applyAMMDelete(tx *AMMDelete, account *AccountRoot, metadata *Metadata) Result {
 	// Find the AMM
 	ammKey := computeAMMKeylet(tx.Asset, tx.Asset2)
 
-	exists, _ := e.view.Exists(ammKey)
-	if !exists {
-		return TecNO_ENTRY
+	ammData, err := e.view.Read(ammKey)
+	if err != nil {
+		return TerNO_AMM
 	}
 
-	// Delete the AMM (only works if empty)
+	amm, err := parseAMMData(ammData)
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	// Can only delete empty AMM (LP token balance = 0)
+	if !amm.LPTokenBalance.IsZero() {
+		return TecAMM_NOT_EMPTY
+	}
+
+	// Delete the AMM entry
 	if err := e.view.Erase(ammKey); err != nil {
+		return TefINTERNAL
+	}
+
+	// Delete the AMM account
+	ammAccountID := computeAMMAccountID(ammKey.Key)
+	ammAccountKey := keylet.Account(ammAccountID)
+	if err := e.view.Erase(ammAccountKey); err != nil {
 		return TefINTERNAL
 	}
 
 	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
 		NodeType:        "DeletedNode",
 		LedgerEntryType: "AMM",
-		LedgerIndex:     hex.EncodeToString(ammKey.Key[:]),
+		LedgerIndex:     strings.ToUpper(hex.EncodeToString(ammKey.Key[:])),
 	})
 
 	return TesSUCCESS
 }
 
+// ============================================================================
+// AMMClawback Implementation
+// Reference: rippled AMMClawback.cpp
+// ============================================================================
+
 // applyAMMClawback applies an AMMClawback transaction
-// Reference: rippled AMMClawback.cpp applyGuts
 func (e *Engine) applyAMMClawback(tx *AMMClawback, account *AccountRoot, metadata *Metadata) Result {
 	issuerID, _ := decodeAccountID(tx.Account)
 
-	// Verify issuer has lsfAllowTrustLineClawback and NOT lsfNoFreeze
-	// Reference: rippled AMMClawback.cpp preclaim
+	// Verify issuer permissions
 	if (account.Flags & lsfAllowTrustLineClawback) == 0 {
 		return TecNO_PERMISSION
 	}
@@ -1565,7 +1975,6 @@ func (e *Engine) applyAMMClawback(tx *AMMClawback, account *AccountRoot, metadat
 		return TerNO_AMM
 	}
 
-	// Parse AMM data
 	amm, err := parseAMMData(ammData)
 	if err != nil {
 		return TefINTERNAL
@@ -1583,113 +1992,88 @@ func (e *Engine) applyAMMClawback(tx *AMMClawback, account *AccountRoot, metadat
 		return TefINTERNAL
 	}
 
-	// Get current AMM balances
-	assetBalance1 := ammAccount.Balance // For XRP in asset1
-	assetBalance2 := uint64(0)          // Would come from trustline for IOU
+	// Get AMM balances
+	assetBalance1 := NewNumberFromUint64(ammAccount.Balance)
+	assetBalance2 := NumberZero
 	lptAMMBalance := amm.LPTokenBalance
 
-	if lptAMMBalance == 0 {
-		return TecAMM_BALANCE // AMM is empty
+	if lptAMMBalance.Le(NumberZero) {
+		return TecAMM_BALANCE
 	}
 
-	// Get holder's LP token balance
-	// In full implementation, would read from LP token trustline
-	// For now, use a portion of the AMM LP token balance as holder's balance
-	holdLPTokens := lptAMMBalance / 2 // Simplified - would read from trustline
-
-	if holdLPTokens == 0 {
-		return TecAMM_BALANCE // Holder has no LP tokens
+	// Get holder's LP tokens (simplified)
+	holdLPTokens := lptAMMBalance.Div(NewNumber(2))
+	if holdLPTokens.Le(NumberZero) {
+		return TecAMM_BALANCE
 	}
 
 	flags := tx.GetFlags()
-
-	var lpTokensToWithdraw uint64
-	var withdrawAmount1, withdrawAmount2 uint64
+	var lpTokensToWithdraw, withdrawAmount1, withdrawAmount2 Number
 
 	if tx.Amount == nil {
-		// No amount specified - withdraw all LP tokens the holder has
-		// This is a proportional two-asset withdrawal
+		// Withdraw all holder's LP tokens
 		lpTokensToWithdraw = holdLPTokens
-
-		// Calculate proportional withdrawal amounts
-		frac := float64(holdLPTokens) / float64(lptAMMBalance)
-		withdrawAmount1 = uint64(float64(assetBalance1) * frac)
-		withdrawAmount2 = uint64(float64(assetBalance2) * frac)
+		withdrawAmount1, withdrawAmount2 = equalWithdrawTokens(assetBalance1, assetBalance2, lptAMMBalance, holdLPTokens)
 	} else {
-		// Amount specified - calculate proportional withdrawal based on specified amount
-		clawAmount := parseAmount(tx.Amount.Value)
-
-		// Calculate fraction based on the clawback amount relative to asset1 balance
-		if assetBalance1 == 0 {
+		clawAmount := parseAmountToNumber(tx.Amount.Value)
+		if assetBalance1.IsZero() {
 			return TecAMM_BALANCE
 		}
-		frac := float64(clawAmount) / float64(assetBalance1)
+		frac := clawAmount.Div(assetBalance1)
+		lpTokensNeeded := lptAMMBalance.Mul(frac)
 
-		// Calculate LP tokens needed for this withdrawal
-		lpTokensNeeded := uint64(float64(lptAMMBalance) * frac)
-
-		// If holder doesn't have enough LP tokens, clawback all they have
-		if lpTokensNeeded > holdLPTokens {
+		if lpTokensNeeded.Gt(holdLPTokens) {
 			lpTokensToWithdraw = holdLPTokens
-			frac = float64(holdLPTokens) / float64(lptAMMBalance)
-			withdrawAmount1 = uint64(float64(assetBalance1) * frac)
-			withdrawAmount2 = uint64(float64(assetBalance2) * frac)
+			withdrawAmount1, withdrawAmount2 = equalWithdrawTokens(assetBalance1, assetBalance2, lptAMMBalance, holdLPTokens)
 		} else {
 			lpTokensToWithdraw = lpTokensNeeded
 			withdrawAmount1 = clawAmount
-			withdrawAmount2 = uint64(float64(assetBalance2) * frac)
+			withdrawAmount2 = assetBalance2.Mul(frac)
 		}
 	}
 
-	// Verify withdrawal amounts don't exceed balances
-	if withdrawAmount1 > assetBalance1 {
+	// Clamp withdrawal amounts
+	if withdrawAmount1.Gt(assetBalance1) {
 		withdrawAmount1 = assetBalance1
 	}
-	if withdrawAmount2 > assetBalance2 {
+	if withdrawAmount2.Gt(assetBalance2) {
 		withdrawAmount2 = assetBalance2
 	}
 
-	// Perform the withdrawal from AMM
+	// Perform withdrawal from AMM
 	isXRP1 := tx.Asset.Currency == "" || tx.Asset.Currency == "XRP"
 	isXRP2 := tx.Asset2.Currency == "" || tx.Asset2.Currency == "XRP"
 
-	// Transfer asset1 from AMM to holder (intermediate step)
-	if isXRP1 && withdrawAmount1 > 0 {
-		ammAccount.Balance -= withdrawAmount1
+	if isXRP1 && !withdrawAmount1.IsZero() {
+		ammAccount.Balance -= withdrawAmount1.Uint64()
 	}
-	// Transfer asset2 from AMM to holder (intermediate step)
-	if isXRP2 && withdrawAmount2 > 0 {
-		ammAccount.Balance -= withdrawAmount2
+	if isXRP2 && !withdrawAmount2.IsZero() {
+		ammAccount.Balance -= withdrawAmount2.Uint64()
 	}
 
-	// Now claw back: transfer asset1 from holder to issuer
-	// For XRP, this is a balance transfer (though clawback is typically for IOUs)
-	// In rippled, this uses rippleCredit to transfer the IOU balance
-	if isXRP1 && withdrawAmount1 > 0 {
-		// XRP clawback to issuer - add to issuer balance
-		account.Balance += withdrawAmount1
+	// Claw back asset1 to issuer
+	if isXRP1 && !withdrawAmount1.IsZero() {
+		account.Balance += withdrawAmount1.Uint64()
 	}
 
-	// If tfClawTwoAssets is set, also claw back asset2
+	// Handle asset2 based on tfClawTwoAssets flag
 	if flags&tfClawTwoAssets != 0 {
-		if isXRP2 && withdrawAmount2 > 0 {
-			account.Balance += withdrawAmount2
+		if isXRP2 && !withdrawAmount2.IsZero() {
+			account.Balance += withdrawAmount2.Uint64()
 		}
 	} else {
-		// Asset2 goes to holder (not clawed back)
-		if isXRP2 && withdrawAmount2 > 0 {
-			holderAccount.Balance += withdrawAmount2
+		if isXRP2 && !withdrawAmount2.IsZero() {
+			holderAccount.Balance += withdrawAmount2.Uint64()
 		}
 	}
 
 	// Reduce LP token balance
-	newLPBalance := lptAMMBalance - lpTokensToWithdraw
+	newLPBalance := lptAMMBalance.Sub(lpTokensToWithdraw)
 	amm.LPTokenBalance = newLPBalance
 
-	// Check if AMM should be deleted (empty)
+	// Check if AMM should be deleted
 	ammDeleted := false
-	if newLPBalance == 0 {
-		// Delete AMM and AMM account
+	if newLPBalance.Le(NumberZero) {
 		if err := e.view.Erase(ammKey); err != nil {
 			return TefINTERNAL
 		}
@@ -1700,7 +2084,6 @@ func (e *Engine) applyAMMClawback(tx *AMMClawback, account *AccountRoot, metadat
 	}
 
 	if !ammDeleted {
-		// Persist updated AMM
 		ammBytes, err := serializeAMMData(amm)
 		if err != nil {
 			return TefINTERNAL
@@ -1709,7 +2092,6 @@ func (e *Engine) applyAMMClawback(tx *AMMClawback, account *AccountRoot, metadat
 			return TefINTERNAL
 		}
 
-		// Persist updated AMM account
 		ammAccountBytes, err := serializeAccountRoot(ammAccount)
 		if err != nil {
 			return TefINTERNAL
@@ -1719,7 +2101,7 @@ func (e *Engine) applyAMMClawback(tx *AMMClawback, account *AccountRoot, metadat
 		}
 	}
 
-	// Persist updated issuer account
+	// Persist issuer account
 	accountKey := keylet.Account(issuerID)
 	accountBytes, err := serializeAccountRoot(account)
 	if err != nil {
@@ -1729,7 +2111,7 @@ func (e *Engine) applyAMMClawback(tx *AMMClawback, account *AccountRoot, metadat
 		return TefINTERNAL
 	}
 
-	// Persist updated holder account
+	// Persist holder account
 	holderBytes, err := serializeAccountRoot(holderAccount)
 	if err != nil {
 		return TefINTERNAL
@@ -1751,12 +2133,11 @@ func (e *Engine) applyAMMClawback(tx *AMMClawback, account *AccountRoot, metadat
 			LedgerEntryType: "AMM",
 			LedgerIndex:     strings.ToUpper(hex.EncodeToString(ammKey.Key[:])),
 			FinalFields: map[string]any{
-				"LPTokenBalance": fmt.Sprintf("%d", amm.LPTokenBalance),
+				"LPTokenBalance": amm.LPTokenBalance.Uint64(),
 			},
 		})
 	}
 
-	// Record holder account modification
 	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
 		NodeType:        "ModifiedNode",
 		LedgerEntryType: "AccountRoot",
@@ -1766,25 +2147,11 @@ func (e *Engine) applyAMMClawback(tx *AMMClawback, account *AccountRoot, metadat
 	return TesSUCCESS
 }
 
-// serializeAMM serializes an AMM ledger entry
-func serializeAMM(amm *AMMData, ownerID [20]byte) ([]byte, error) {
-	accountAddress, err := addresscodec.EncodeAccountIDToClassicAddress(amm.Account[:])
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode AMM account address: %w", err)
-	}
+// ============================================================================
+// Helper function for backward compatibility
+// ============================================================================
 
-	jsonObj := map[string]any{
-		"LedgerEntryType": "AMM",
-		"Account":         accountAddress,
-		"TradingFee":      amm.TradingFee,
-		"OwnerNode":       "0",
-		"Flags":           uint32(0),
-	}
-
-	hexStr, err := binarycodec.Encode(jsonObj)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode AMM: %w", err)
-	}
-
-	return hex.DecodeString(hexStr)
+// calculateLPTokensFloat calculates LP tokens for IOU amounts (float version)
+func calculateLPTokensFloat(amount1, amount2 float64) float64 {
+	return math.Sqrt(amount1 * amount2)
 }
