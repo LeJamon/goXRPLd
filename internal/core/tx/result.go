@@ -414,6 +414,8 @@ func (r Result) Message() string {
 		return "The transaction is ill-formed."
 	case TemINVALID_FLAG:
 		return "Invalid flags."
+	case TemDISABLED:
+		return "The transaction requires an amendment that is not enabled."
 	case TerNO_ACCOUNT:
 		return "The source account does not exist."
 	case TerPRE_SEQ:

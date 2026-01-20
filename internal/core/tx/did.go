@@ -48,6 +48,11 @@ func (d *DIDSet) Flatten() (map[string]any, error) {
 	return m, nil
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (d *DIDSet) RequiredAmendments() []string {
+	return []string{AmendmentDID}
+}
+
 // DIDDelete deletes a DID document.
 type DIDDelete struct {
 	BaseTx
@@ -73,4 +78,9 @@ func (d *DIDDelete) Validate() error {
 // Flatten returns a flat map of all transaction fields
 func (d *DIDDelete) Flatten() (map[string]any, error) {
 	return d.Common.ToMap(), nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (d *DIDDelete) RequiredAmendments() []string {
+	return []string{AmendmentDID}
 }

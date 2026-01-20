@@ -103,6 +103,11 @@ func (o *OracleSet) AddPriceData(baseAsset, quoteAsset string, price uint64, sca
 	})
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (o *OracleSet) RequiredAmendments() []string {
+	return []string{AmendmentPriceOracle}
+}
+
 // OracleDelete deletes a price oracle.
 type OracleDelete struct {
 	BaseTx
@@ -134,4 +139,9 @@ func (o *OracleDelete) Flatten() (map[string]any, error) {
 	m := o.Common.ToMap()
 	m["OracleDocumentID"] = o.OracleDocumentID
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (o *OracleDelete) RequiredAmendments() []string {
+	return []string{AmendmentPriceOracle}
 }

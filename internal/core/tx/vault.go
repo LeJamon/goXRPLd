@@ -64,6 +64,11 @@ func (v *VaultCreate) Flatten() (map[string]any, error) {
 	return m, nil
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (v *VaultCreate) RequiredAmendments() []string {
+	return []string{AmendmentSingleAssetVault}
+}
+
 // VaultSet modifies a vault.
 type VaultSet struct {
 	BaseTx
@@ -126,6 +131,11 @@ func (v *VaultSet) Flatten() (map[string]any, error) {
 	return m, nil
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (v *VaultSet) RequiredAmendments() []string {
+	return []string{AmendmentSingleAssetVault}
+}
+
 // VaultDelete deletes a vault.
 type VaultDelete struct {
 	BaseTx
@@ -165,6 +175,11 @@ func (v *VaultDelete) Flatten() (map[string]any, error) {
 	m := v.Common.ToMap()
 	m["VaultID"] = v.VaultID
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (v *VaultDelete) RequiredAmendments() []string {
+	return []string{AmendmentSingleAssetVault}
 }
 
 // VaultDeposit deposits assets into a vault.
@@ -217,6 +232,11 @@ func (v *VaultDeposit) Flatten() (map[string]any, error) {
 	m["Amount"] = flattenAmount(v.Amount)
 
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (v *VaultDeposit) RequiredAmendments() []string {
+	return []string{AmendmentSingleAssetVault}
 }
 
 // VaultWithdraw withdraws assets from a vault.
@@ -278,6 +298,11 @@ func (v *VaultWithdraw) Flatten() (map[string]any, error) {
 	return m, nil
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (v *VaultWithdraw) RequiredAmendments() []string {
+	return []string{AmendmentSingleAssetVault}
+}
+
 // VaultClawback claws back assets from a vault.
 type VaultClawback struct {
 	BaseTx
@@ -335,4 +360,9 @@ func (v *VaultClawback) Flatten() (map[string]any, error) {
 	}
 
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (v *VaultClawback) RequiredAmendments() []string {
+	return []string{AmendmentSingleAssetVault}
 }

@@ -223,3 +223,8 @@ func (c *Clawback) Flatten() (map[string]any, error) {
 	m["Amount"] = flattenAmount(c.Amount)
 	return m, nil
 }
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (c *Clawback) RequiredAmendments() []string {
+	return []string{AmendmentClawback}
+}

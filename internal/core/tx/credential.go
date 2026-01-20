@@ -67,6 +67,11 @@ func (c *CredentialCreate) Flatten() (map[string]any, error) {
 	return m, nil
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (c *CredentialCreate) RequiredAmendments() []string {
+	return []string{AmendmentCredentials}
+}
+
 // CredentialAccept accepts a credential.
 type CredentialAccept struct {
 	BaseTx
@@ -117,6 +122,11 @@ func (c *CredentialAccept) Flatten() (map[string]any, error) {
 	m["CredentialType"] = c.CredentialType
 
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (c *CredentialAccept) RequiredAmendments() []string {
+	return []string{AmendmentCredentials}
 }
 
 // CredentialDelete deletes a credential.
@@ -173,4 +183,9 @@ func (c *CredentialDelete) Flatten() (map[string]any, error) {
 	}
 
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (c *CredentialDelete) RequiredAmendments() []string {
+	return []string{AmendmentCredentials}
 }

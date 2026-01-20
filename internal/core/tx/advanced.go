@@ -56,6 +56,11 @@ func (d *DelegateSet) Flatten() (map[string]any, error) {
 	return m, nil
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (d *DelegateSet) RequiredAmendments() []string {
+	return []string{AmendmentPermissionDelegation}
+}
+
 // NFTokenModify modifies an existing NFToken.
 type NFTokenModify struct {
 	BaseTx
@@ -110,6 +115,11 @@ func (n *NFTokenModify) Flatten() (map[string]any, error) {
 	}
 
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (n *NFTokenModify) RequiredAmendments() []string {
+	return []string{AmendmentDynamicNFT}
 }
 
 // LedgerStateFix is a system transaction to fix ledger state issues.
@@ -249,4 +259,9 @@ func (b *Batch) AddRawTransaction(blob string) {
 			RawTxBlob: blob,
 		},
 	})
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (b *Batch) RequiredAmendments() []string {
+	return []string{AmendmentBatch}
 }

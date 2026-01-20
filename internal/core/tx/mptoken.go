@@ -83,6 +83,11 @@ func (m *MPTokenIssuanceCreate) Flatten() (map[string]any, error) {
 	return result, nil
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (m *MPTokenIssuanceCreate) RequiredAmendments() []string {
+	return []string{AmendmentMPTokensV1}
+}
+
 // MPTokenIssuanceDestroy destroys a multi-purpose token issuance.
 type MPTokenIssuanceDestroy struct {
 	BaseTx
@@ -122,6 +127,11 @@ func (m *MPTokenIssuanceDestroy) Flatten() (map[string]any, error) {
 	result := m.Common.ToMap()
 	result["MPTokenIssuanceID"] = m.MPTokenIssuanceID
 	return result, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (m *MPTokenIssuanceDestroy) RequiredAmendments() []string {
+	return []string{AmendmentMPTokensV1}
 }
 
 // MPTokenIssuanceSet modifies a multi-purpose token issuance.
@@ -182,6 +192,11 @@ func (m *MPTokenIssuanceSet) Flatten() (map[string]any, error) {
 	return result, nil
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (m *MPTokenIssuanceSet) RequiredAmendments() []string {
+	return []string{AmendmentMPTokensV1}
+}
+
 // MPTokenAuthorize authorizes or unauthorizes MPToken operations.
 type MPTokenAuthorize struct {
 	BaseTx
@@ -236,4 +251,9 @@ func (m *MPTokenAuthorize) Flatten() (map[string]any, error) {
 	}
 
 	return result, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (m *MPTokenAuthorize) RequiredAmendments() []string {
+	return []string{AmendmentMPTokensV1}
 }

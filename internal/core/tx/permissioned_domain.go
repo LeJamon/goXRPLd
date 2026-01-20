@@ -65,6 +65,11 @@ func (p *PermissionedDomainSet) AddAcceptedCredential(issuer, credentialType str
 	})
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (p *PermissionedDomainSet) RequiredAmendments() []string {
+	return []string{AmendmentPermissionedDomains, AmendmentCredentials}
+}
+
 // PermissionedDomainDelete deletes a permissioned domain.
 type PermissionedDomainDelete struct {
 	BaseTx
@@ -104,4 +109,9 @@ func (p *PermissionedDomainDelete) Flatten() (map[string]any, error) {
 	m := p.Common.ToMap()
 	m["DomainID"] = p.DomainID
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (p *PermissionedDomainDelete) RequiredAmendments() []string {
+	return []string{AmendmentPermissionedDomains, AmendmentCredentials}
 }
