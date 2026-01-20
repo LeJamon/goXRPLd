@@ -24,12 +24,14 @@ const (
 var (
 	_ crypto.Algorithm = SECP256K1CryptoAlgorithm{}
 
-	// ErrValidatorKeypairDerivation is returned when a validator keypair is attempted to be derived
-	ErrValidatorKeypairDerivation = errors.New("validator keypair derivation not supported")
 	// ErrInvalidPrivateKey is returned when a private key is invalid
 	ErrInvalidPrivateKey = errors.New("invalid private key")
 	// ErrInvalidMessage is returned when a message is required but not provided
 	ErrInvalidMessage = errors.New("message is required")
+	// ErrInvalidSignature is returned when a signature is invalid or not fully canonical
+	ErrInvalidSignature = errors.New("invalid signature")
+	// ErrSignatureNotCanonical is returned when a signature is not fully canonical
+	ErrSignatureNotCanonical = errors.New("signature is not fully canonical")
 )
 
 // SECP256K1CryptoAlgorithm is the implementation of the SECP256K1 algorithm.
@@ -95,27 +97,35 @@ func (c SECP256K1CryptoAlgorithm) deriveScalar(bytes []byte, discrim *big.Int) *
 }
 
 // DeriveKeypair derives a keypair from a seed.
+// For regular (non-validator) keys, the derivation uses an additional scalar derived
+// from the root public key. For validator keys, only the root generator is used.
 func (c SECP256K1CryptoAlgorithm) DeriveKeypair(seed []byte, validator bool) (string, string, error) {
 	curve := btcec.S256()
 	order := curve.N
 
+	// Derive the root private generator from the seed
 	privateGen := c.deriveScalar(seed, nil)
 
+	var privateKey *big.Int
 	if validator {
-		return "", "", ErrValidatorKeypairDerivation
+		// For validator keys, use the root generator directly
+		privateKey = privateGen
+	} else {
+		// For regular keys, derive an additional scalar from the root public key
+		rootPrivateKey, _ := btcec.PrivKeyFromBytes(privateGen.Bytes())
+		derivatedScalar := c.deriveScalar(rootPrivateKey.PubKey().SerializeCompressed(), big.NewInt(0))
+		scalarWithPrivateGen := derivatedScalar.Add(derivatedScalar, privateGen)
+		privateKey = scalarWithPrivateGen.Mod(scalarWithPrivateGen, order)
 	}
 
-	rootPrivateKey, _ := btcec.PrivKeyFromBytes(privateGen.Bytes())
+	// Ensure private key is 32 bytes with leading zeros if needed
+	privKeyBytes := make([]byte, 32)
+	keyBytes := privateKey.Bytes()
+	copy(privKeyBytes[32-len(keyBytes):], keyBytes)
 
-	derivatedScalar := c.deriveScalar(rootPrivateKey.PubKey().SerializeCompressed(), big.NewInt(0))
-	scalarWithPrivateGen := derivatedScalar.Add(derivatedScalar, privateGen)
-	privateKey := scalarWithPrivateGen.Mod(scalarWithPrivateGen, order)
-
-	privKeyBytes := privateKey.Bytes()
 	private := strings.ToUpper(hex.EncodeToString(privKeyBytes))
 
 	_, pubKey := btcec.PrivKeyFromBytes(privKeyBytes)
-
 	pubKeyBytes := pubKey.SerializeCompressed()
 
 	return "00" + private, strings.ToUpper(hex.EncodeToString(pubKeyBytes)), nil
@@ -150,8 +160,31 @@ func (c SECP256K1CryptoAlgorithm) Sign(msg, privKey string) (string, error) {
 }
 
 // Validate validates a signature for a message with a public key.
+// It checks that the signature is fully canonical (low S) to prevent
+// signature malleability attacks.
 func (c SECP256K1CryptoAlgorithm) Validate(msg, pubkey, sig string) bool {
-	// Decode the signature from DERHex to a hex string
+	return c.ValidateWithCanonicality(msg, pubkey, sig, true)
+}
+
+// ValidateWithCanonicality validates a signature with optional canonicality checking.
+// If mustBeFullyCanonical is true, the signature must have S <= curve_order/2.
+func (c SECP256K1CryptoAlgorithm) ValidateWithCanonicality(msg, pubkey, sig string, mustBeFullyCanonical bool) bool {
+	// Decode the signature from hex
+	sigBytes, err := hex.DecodeString(sig)
+	if err != nil {
+		return false
+	}
+
+	// Check signature canonicality
+	canonicality := crypto.ECDSACanonicality(sigBytes)
+	if canonicality == crypto.CanonicityNone {
+		return false
+	}
+	if mustBeFullyCanonical && canonicality != crypto.CanonicityFullyCanonical {
+		return false
+	}
+
+	// Decode the signature from DERHex to r and s
 	r, s, err := crypto.DERHexToSig(sig)
 	if err != nil {
 		return false
@@ -225,4 +258,47 @@ func (c SECP256K1CryptoAlgorithm) DerivePublicKeyFromPublicGenerator(pubKey []by
 
 	// Return compressed format
 	return finalPubKey.SerializeCompressed(), nil
+}
+
+// SignCanonical signs a message and ensures the signature is fully canonical.
+// It automatically normalizes the S value if needed to produce a low-S signature.
+func (c SECP256K1CryptoAlgorithm) SignCanonical(msg, privKey string) (string, error) {
+	sig, err := c.Sign(msg, privKey)
+	if err != nil {
+		return "", err
+	}
+
+	// Check if signature is already fully canonical
+	sigBytes, err := hex.DecodeString(sig)
+	if err != nil {
+		return "", ErrInvalidSignature
+	}
+
+	canonicality := crypto.ECDSACanonicality(sigBytes)
+	if canonicality == crypto.CanonicityNone {
+		return "", ErrInvalidSignature
+	}
+	if canonicality == crypto.CanonicityFullyCanonical {
+		return sig, nil
+	}
+
+	// Make the signature canonical
+	canonicalSig := crypto.MakeSignatureCanonical(sigBytes)
+	if canonicalSig == nil {
+		return "", ErrInvalidSignature
+	}
+
+	return strings.ToUpper(hex.EncodeToString(canonicalSig)), nil
+}
+
+// DeriveValidatorKeypair derives a validator keypair from a seed.
+// This is a convenience function that calls DeriveKeypair with validator=true.
+func (c SECP256K1CryptoAlgorithm) DeriveValidatorKeypair(seed []byte) (string, string, error) {
+	return c.DeriveKeypair(seed, true)
+}
+
+// DeriveAccountKeypair derives an account keypair from a seed.
+// This is a convenience function that calls DeriveKeypair with validator=false.
+func (c SECP256K1CryptoAlgorithm) DeriveAccountKeypair(seed []byte) (string, string, error) {
+	return c.DeriveKeypair(seed, false)
 }
