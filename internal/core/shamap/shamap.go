@@ -1070,6 +1070,254 @@ func (sm *SHAMap) cloneNodeTree(node Node) (*InnerNode, error) {
 	return clonedInner, nil
 }
 
-func (sm *SHAMap) FindDifference() {
-	//TODO implement me
+// Key is a type alias for a 32-byte key used in the SHAMap.
+type Key = [32]byte
+
+// FindDifference finds all keys that differ between this map and another.
+// This is a convenience method that returns just the keys of items that differ,
+// without the full DifferenceItem details.
+//
+// Parameters:
+//   - other: the SHAMap to compare against
+//
+// Returns a slice of keys that are different (added, removed, or modified)
+// between the two maps.
+func (sm *SHAMap) FindDifference(other *SHAMap) ([]Key, error) {
+	if other == nil {
+		return nil, errors.New("cannot compare with nil map")
+	}
+
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	other.mu.RLock()
+	defer other.mu.RUnlock()
+
+	if sm.state == StateInvalid || other.state == StateInvalid {
+		return nil, errors.New("cannot compare invalid maps")
+	}
+
+	// Quick check: if root hashes are identical, maps are identical
+	ourHash := sm.root.Hash()
+	otherHash := other.root.Hash()
+	if ourHash == otherHash {
+		return nil, nil
+	}
+
+	var keys []Key
+
+	// Use a stack-based approach to compare trees
+	type compareItem struct {
+		ourNode   Node
+		otherNode Node
+	}
+
+	stack := []compareItem{{ourNode: sm.root, otherNode: other.root}}
+
+	for len(stack) > 0 {
+		// Pop from stack
+		item := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+
+		if item.ourNode == nil && item.otherNode == nil {
+			continue
+		}
+
+		// Handle case where one side is nil
+		if item.ourNode == nil {
+			// Everything in otherNode is added
+			otherKeys, err := other.collectAllKeysUnsafe(item.otherNode)
+			if err != nil {
+				return nil, err
+			}
+			keys = append(keys, otherKeys...)
+			continue
+		}
+
+		if item.otherNode == nil {
+			// Everything in ourNode is removed
+			ourKeys, err := sm.collectAllKeysUnsafe(item.ourNode)
+			if err != nil {
+				return nil, err
+			}
+			keys = append(keys, ourKeys...)
+			continue
+		}
+
+		// Both nodes exist - compare hashes first
+		ourNodeHash := item.ourNode.Hash()
+		otherNodeHash := item.otherNode.Hash()
+		if ourNodeHash == otherNodeHash {
+			// Subtrees are identical
+			continue
+		}
+
+		// Hashes differ - need to compare more deeply
+		ourIsLeaf := item.ourNode.IsLeaf()
+		otherIsLeaf := item.otherNode.IsLeaf()
+
+		if ourIsLeaf && otherIsLeaf {
+			// Both are leaves
+			ourLeaf, ok := item.ourNode.(LeafNode)
+			if !ok {
+				return nil, ErrInvalidType
+			}
+			otherLeaf, ok := item.otherNode.(LeafNode)
+			if !ok {
+				return nil, ErrInvalidType
+			}
+
+			ourKey := ourLeaf.Item().Key()
+			otherKey := otherLeaf.Item().Key()
+
+			if ourKey == otherKey {
+				// Same key, different content
+				keys = append(keys, ourKey)
+			} else {
+				// Different keys - both are differences
+				keys = append(keys, ourKey)
+				keys = append(keys, otherKey)
+			}
+		} else if ourIsLeaf && !otherIsLeaf {
+			// Our side is leaf, other side is inner
+			ourLeaf, ok := item.ourNode.(LeafNode)
+			if !ok {
+				return nil, ErrInvalidType
+			}
+			ourKey := ourLeaf.Item().Key()
+
+			// Add our key as a difference
+			keys = append(keys, ourKey)
+
+			// Collect all keys from other inner node that don't match our key
+			otherKeys, err := other.collectAllKeysExceptUnsafe(item.otherNode, ourKey)
+			if err != nil {
+				return nil, err
+			}
+			keys = append(keys, otherKeys...)
+		} else if !ourIsLeaf && otherIsLeaf {
+			// Our side is inner, other side is leaf
+			otherLeaf, ok := item.otherNode.(LeafNode)
+			if !ok {
+				return nil, ErrInvalidType
+			}
+			otherKey := otherLeaf.Item().Key()
+
+			// Add other key as a difference
+			keys = append(keys, otherKey)
+
+			// Collect all keys from our inner node that don't match other key
+			ourKeys, err := sm.collectAllKeysExceptUnsafe(item.ourNode, otherKey)
+			if err != nil {
+				return nil, err
+			}
+			keys = append(keys, ourKeys...)
+		} else {
+			// Both are inner nodes - compare children
+			ourInner, ok := item.ourNode.(*InnerNode)
+			if !ok {
+				return nil, ErrInvalidType
+			}
+			otherInner, ok := item.otherNode.(*InnerNode)
+			if !ok {
+				return nil, ErrInvalidType
+			}
+
+			for branch := 0; branch < BranchFactor; branch++ {
+				ourChild, err := ourInner.Child(branch)
+				if err != nil {
+					return nil, err
+				}
+				otherChild, err := otherInner.Child(branch)
+				if err != nil {
+					return nil, err
+				}
+
+				// Skip if both are nil
+				if ourChild == nil && otherChild == nil {
+					continue
+				}
+
+				// Skip if hashes match
+				if ourChild != nil && otherChild != nil {
+					if ourChild.Hash() == otherChild.Hash() {
+						continue
+					}
+				}
+
+				// Need to compare this branch
+				stack = append(stack, compareItem{
+					ourNode:   ourChild,
+					otherNode: otherChild,
+				})
+			}
+		}
+	}
+
+	return keys, nil
+}
+
+// collectAllKeysUnsafe collects all keys from a node and its descendants.
+// Caller must hold the read lock.
+func (sm *SHAMap) collectAllKeysUnsafe(node Node) ([]Key, error) {
+	if node == nil {
+		return nil, nil
+	}
+
+	var keys []Key
+
+	stack := []Node{node}
+
+	for len(stack) > 0 {
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+
+		if current == nil {
+			continue
+		}
+
+		if current.IsLeaf() {
+			leaf, ok := current.(LeafNode)
+			if !ok {
+				return nil, ErrInvalidType
+			}
+			keys = append(keys, leaf.Item().Key())
+			continue
+		}
+
+		inner, ok := current.(*InnerNode)
+		if !ok {
+			return nil, ErrInvalidType
+		}
+
+		for branch := 0; branch < BranchFactor; branch++ {
+			child, err := inner.Child(branch)
+			if err != nil {
+				return nil, err
+			}
+			if child != nil {
+				stack = append(stack, child)
+			}
+		}
+	}
+
+	return keys, nil
+}
+
+// collectAllKeysExceptUnsafe collects all keys from a node except the given key.
+// Caller must hold the read lock.
+func (sm *SHAMap) collectAllKeysExceptUnsafe(node Node, exceptKey Key) ([]Key, error) {
+	allKeys, err := sm.collectAllKeysUnsafe(node)
+	if err != nil {
+		return nil, err
+	}
+
+	var filteredKeys []Key
+	for _, key := range allKeys {
+		if key != exceptKey {
+			filteredKeys = append(filteredKeys, key)
+		}
+	}
+
+	return filteredKeys, nil
 }
