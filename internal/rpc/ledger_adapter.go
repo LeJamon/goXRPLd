@@ -485,3 +485,266 @@ func (a *LedgerServiceAdapter) GetAccountObjects(account string, ledgerIndex str
 		Marker:         result.Marker,
 	}, nil
 }
+
+// GetAccountChannels retrieves payment channels for an account
+func (a *LedgerServiceAdapter) GetAccountChannels(account string, destinationAccount string, ledgerIndex string, limit uint32) (*rpc_types.AccountChannelsResult, error) {
+	result, err := a.svc.GetAccountChannels(account, destinationAccount, ledgerIndex, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert service result to RPC result
+	channels := make([]rpc_types.AccountChannel, len(result.Channels))
+	for i, ch := range result.Channels {
+		channels[i] = rpc_types.AccountChannel{
+			ChannelID:          ch.ChannelID,
+			Account:            ch.Account,
+			DestinationAccount: ch.DestinationAccount,
+			Amount:             ch.Amount,
+			Balance:            ch.Balance,
+			SettleDelay:        ch.SettleDelay,
+			PublicKey:          ch.PublicKey,
+			PublicKeyHex:       ch.PublicKeyHex,
+			Expiration:         ch.Expiration,
+			CancelAfter:        ch.CancelAfter,
+			SourceTag:          ch.SourceTag,
+			DestinationTag:     ch.DestinationTag,
+			HasSourceTag:       ch.HasSourceTag,
+			HasDestTag:         ch.HasDestTag,
+		}
+	}
+
+	return &rpc_types.AccountChannelsResult{
+		Account:     result.Account,
+		Channels:    channels,
+		LedgerIndex: result.LedgerIndex,
+		LedgerHash:  result.LedgerHash,
+		Validated:   result.Validated,
+		Marker:      result.Marker,
+	}, nil
+}
+
+// GetAccountCurrencies retrieves currencies an account can send and receive
+func (a *LedgerServiceAdapter) GetAccountCurrencies(account string, ledgerIndex string) (*rpc_types.AccountCurrenciesResult, error) {
+	result, err := a.svc.GetAccountCurrencies(account, ledgerIndex)
+	if err != nil {
+		return nil, err
+	}
+
+	return &rpc_types.AccountCurrenciesResult{
+		ReceiveCurrencies: result.ReceiveCurrencies,
+		SendCurrencies:    result.SendCurrencies,
+		LedgerIndex:       result.LedgerIndex,
+		LedgerHash:        result.LedgerHash,
+		Validated:         result.Validated,
+	}, nil
+}
+
+// GetAccountNFTs retrieves NFTs owned by an account
+func (a *LedgerServiceAdapter) GetAccountNFTs(account string, ledgerIndex string, limit uint32) (*rpc_types.AccountNFTsResult, error) {
+	result, err := a.svc.GetAccountNFTs(account, ledgerIndex, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert service result to RPC result
+	nfts := make([]rpc_types.NFTInfo, len(result.AccountNFTs))
+	for i, nft := range result.AccountNFTs {
+		nfts[i] = rpc_types.NFTInfo{
+			Flags:        nft.Flags,
+			Issuer:       nft.Issuer,
+			NFTokenID:    nft.NFTokenID,
+			NFTokenTaxon: nft.NFTokenTaxon,
+			URI:          nft.URI,
+			NFTSerial:    nft.NFTSerial,
+			TransferFee:  nft.TransferFee,
+		}
+	}
+
+	return &rpc_types.AccountNFTsResult{
+		Account:     result.Account,
+		AccountNFTs: nfts,
+		LedgerIndex: result.LedgerIndex,
+		LedgerHash:  result.LedgerHash,
+		Validated:   result.Validated,
+		Marker:      result.Marker,
+	}, nil
+}
+
+// GetNoRippleCheck checks trust lines for proper NoRipple flag settings
+func (a *LedgerServiceAdapter) GetNoRippleCheck(account string, role string, ledgerIndex string, limit uint32, transactions bool) (*rpc_types.NoRippleCheckResult, error) {
+	result, err := a.svc.GetNoRippleCheck(account, role, ledgerIndex, limit, transactions)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert service result to RPC result
+	var txs []rpc_types.SuggestedTransaction
+	if len(result.Transactions) > 0 {
+		txs = make([]rpc_types.SuggestedTransaction, len(result.Transactions))
+		for i, tx := range result.Transactions {
+			txs[i] = rpc_types.SuggestedTransaction{
+				TransactionType: tx.TransactionType,
+				Account:         tx.Account,
+				Fee:             tx.Fee,
+				Sequence:        tx.Sequence,
+				SetFlag:         tx.SetFlag,
+				Flags:           tx.Flags,
+				LimitAmount:     tx.LimitAmount,
+			}
+		}
+	}
+
+	return &rpc_types.NoRippleCheckResult{
+		Problems:     result.Problems,
+		Transactions: txs,
+		LedgerIndex:  result.LedgerIndex,
+		LedgerHash:   result.LedgerHash,
+		Validated:    result.Validated,
+	}, nil
+}
+
+// GetGatewayBalances retrieves obligations and balances for a gateway account
+func (a *LedgerServiceAdapter) GetGatewayBalances(account string, hotWallets []string, ledgerIndex string) (*rpc_types.GatewayBalancesResult, error) {
+	result, err := a.svc.GetGatewayBalances(account, hotWallets, ledgerIndex)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert service result to RPC result
+	var balances map[string][]rpc_types.CurrencyBalance
+	if result.Balances != nil {
+		balances = make(map[string][]rpc_types.CurrencyBalance)
+		for acct, bals := range result.Balances {
+			rpcBals := make([]rpc_types.CurrencyBalance, len(bals))
+			for i, b := range bals {
+				rpcBals[i] = rpc_types.CurrencyBalance{
+					Currency: b.Currency,
+					Value:    b.Value,
+				}
+			}
+			balances[acct] = rpcBals
+		}
+	}
+
+	var frozenBalances map[string][]rpc_types.CurrencyBalance
+	if result.FrozenBalances != nil {
+		frozenBalances = make(map[string][]rpc_types.CurrencyBalance)
+		for acct, bals := range result.FrozenBalances {
+			rpcBals := make([]rpc_types.CurrencyBalance, len(bals))
+			for i, b := range bals {
+				rpcBals[i] = rpc_types.CurrencyBalance{
+					Currency: b.Currency,
+					Value:    b.Value,
+				}
+			}
+			frozenBalances[acct] = rpcBals
+		}
+	}
+
+	var assets map[string][]rpc_types.CurrencyBalance
+	if result.Assets != nil {
+		assets = make(map[string][]rpc_types.CurrencyBalance)
+		for acct, bals := range result.Assets {
+			rpcBals := make([]rpc_types.CurrencyBalance, len(bals))
+			for i, b := range bals {
+				rpcBals[i] = rpc_types.CurrencyBalance{
+					Currency: b.Currency,
+					Value:    b.Value,
+				}
+			}
+			assets[acct] = rpcBals
+		}
+	}
+
+	return &rpc_types.GatewayBalancesResult{
+		Account:        result.Account,
+		Obligations:    result.Obligations,
+		Balances:       balances,
+		FrozenBalances: frozenBalances,
+		Assets:         assets,
+		Locked:         result.Locked,
+		LedgerIndex:    result.LedgerIndex,
+		LedgerHash:     result.LedgerHash,
+		Validated:      result.Validated,
+	}, nil
+}
+
+// GetDepositAuthorized checks if a source account is authorized to deposit to a destination account
+func (a *LedgerServiceAdapter) GetDepositAuthorized(sourceAccount string, destinationAccount string, ledgerIndex string) (*rpc_types.DepositAuthorizedResult, error) {
+	result, err := a.svc.GetDepositAuthorized(sourceAccount, destinationAccount, ledgerIndex)
+	if err != nil {
+		return nil, err
+	}
+
+	return &rpc_types.DepositAuthorizedResult{
+		SourceAccount:      result.SourceAccount,
+		DestinationAccount: result.DestinationAccount,
+		DepositAuthorized:  result.DepositAuthorized,
+		LedgerIndex:        result.LedgerIndex,
+		LedgerHash:         result.LedgerHash,
+		Validated:          result.Validated,
+	}, nil
+}
+
+// GetNFTBuyOffers retrieves buy offers for an NFToken
+func (a *LedgerServiceAdapter) GetNFTBuyOffers(nftID [32]byte, ledgerIndex string, limit uint32, marker string) (*rpc_types.NFTOffersResult, error) {
+	result, err := a.svc.GetNFTBuyOffers(nftID, ledgerIndex, limit, marker)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert service result to RPC result
+	offers := make([]rpc_types.NFTOfferInfo, len(result.Offers))
+	for i, offer := range result.Offers {
+		offers[i] = rpc_types.NFTOfferInfo{
+			NFTOfferIndex: offer.NFTOfferIndex,
+			Flags:         offer.Flags,
+			Owner:         offer.Owner,
+			Amount:        offer.Amount,
+			Destination:   offer.Destination,
+			Expiration:    offer.Expiration,
+		}
+	}
+
+	return &rpc_types.NFTOffersResult{
+		NFTID:       result.NFTID,
+		Offers:      offers,
+		LedgerIndex: result.LedgerIndex,
+		LedgerHash:  result.LedgerHash,
+		Validated:   result.Validated,
+		Limit:       result.Limit,
+		Marker:      result.Marker,
+	}, nil
+}
+
+// GetNFTSellOffers retrieves sell offers for an NFToken
+func (a *LedgerServiceAdapter) GetNFTSellOffers(nftID [32]byte, ledgerIndex string, limit uint32, marker string) (*rpc_types.NFTOffersResult, error) {
+	result, err := a.svc.GetNFTSellOffers(nftID, ledgerIndex, limit, marker)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert service result to RPC result
+	offers := make([]rpc_types.NFTOfferInfo, len(result.Offers))
+	for i, offer := range result.Offers {
+		offers[i] = rpc_types.NFTOfferInfo{
+			NFTOfferIndex: offer.NFTOfferIndex,
+			Flags:         offer.Flags,
+			Owner:         offer.Owner,
+			Amount:        offer.Amount,
+			Destination:   offer.Destination,
+			Expiration:    offer.Expiration,
+		}
+	}
+
+	return &rpc_types.NFTOffersResult{
+		NFTID:       result.NFTID,
+		Offers:      offers,
+		LedgerIndex: result.LedgerIndex,
+		LedgerHash:  result.LedgerHash,
+		Validated:   result.Validated,
+		Limit:       result.Limit,
+		Marker:      result.Marker,
+	}, nil
+}

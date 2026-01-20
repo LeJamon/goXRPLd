@@ -13,15 +13,17 @@ import (
 //
 // The following RPC methods have dependencies on features not yet implemented:
 //
-// 1. amm_info - Requires AMM ledger entry type (not implemented)
-// 2. vault_info - Requires Vault ledger entry type (not implemented)
-// 3. simulate - Requires transaction dry-run in TxQ (partial implementation)
-// 4. get_aggregate_price - Requires Oracle ledger entry type (not implemented)
-// 5. ledger_diff - gRPC only in rippled, JSON-RPC stub provided
-// 6. owner_info - Requires NetworkOPs.getOwnerInfo (not implemented)
-// 7. can_delete - Requires SHAMapStore advisory delete (not implemented)
-// 8. ledger_cleaner - Requires LedgerCleaner service (not implemented)
-// 9. ledger_request - Requires network ledger fetching (not implemented)
+// 1. simulate - Requires transaction dry-run in TxQ (partial implementation)
+// 2. ledger_diff - gRPC only in rippled, JSON-RPC stub provided
+// 3. owner_info - Requires NetworkOPs.getOwnerInfo (not implemented)
+// 4. can_delete - Requires SHAMapStore advisory delete (not implemented)
+// 5. ledger_cleaner - Requires LedgerCleaner service (not implemented)
+// 6. ledger_request - Requires network ledger fetching (not implemented)
+//
+// IMPLEMENTED methods (moved to separate files):
+// - amm_info - See amm_info.go
+// - vault_info - See vault_info.go
+// - get_aggregate_price - See get_aggregate_price.go
 //
 // These methods return appropriate error responses indicating the feature
 // is not yet available.
@@ -430,57 +432,7 @@ func (m *CanDeleteMethod) SupportedApiVersions() []int {
 	return []int{rpc_types.ApiVersion1, rpc_types.ApiVersion2, rpc_types.ApiVersion3}
 }
 
-// GetAggregatePriceMethod handles the get_aggregate_price RPC method
-type GetAggregatePriceMethod struct{}
-
-func (m *GetAggregatePriceMethod) Handle(ctx *rpc_types.RpcContext, params json.RawMessage) (interface{}, *rpc_types.RpcError) {
-	var request struct {
-		Oracles       []map[string]interface{} `json:"oracles"`
-		BaseAsset     string                   `json:"base_asset"`
-		QuoteAsset    string                   `json:"quote_asset"`
-		Trim          uint32                   `json:"trim,omitempty"`
-		TimeThreshold uint32                   `json:"time_threshold,omitempty"`
-	}
-
-	if params != nil {
-		if err := json.Unmarshal(params, &request); err != nil {
-			return nil, rpc_types.RpcErrorInvalidParams("Invalid parameters: " + err.Error())
-		}
-	}
-
-	if len(request.Oracles) == 0 {
-		return nil, rpc_types.RpcErrorInvalidParams("Missing required parameter: oracles")
-	}
-	if request.BaseAsset == "" {
-		return nil, rpc_types.RpcErrorInvalidParams("Missing required parameter: base_asset")
-	}
-	if request.QuoteAsset == "" {
-		return nil, rpc_types.RpcErrorInvalidParams("Missing required parameter: quote_asset")
-	}
-
-	if len(request.Oracles) > 200 {
-		return nil, rpc_types.RpcErrorInvalidParams("oracles array exceeds maximum size of 200")
-	}
-
-	if request.Trim > 25 {
-		return nil, rpc_types.RpcErrorInvalidParams("trim must be between 1 and 25")
-	}
-
-	if rpc_types.Services == nil || rpc_types.Services.Ledger == nil {
-		return nil, rpc_types.RpcErrorInternal("Ledger service not available")
-	}
-
-	return nil, rpc_types.NewRpcError(rpc_types.RpcNOT_IMPL, "notImplemented", "notImplemented",
-		"get_aggregate_price is not yet implemented - requires Oracle ledger entry type")
-}
-
-func (m *GetAggregatePriceMethod) RequiredRole() rpc_types.Role {
-	return rpc_types.RoleGuest
-}
-
-func (m *GetAggregatePriceMethod) SupportedApiVersions() []int {
-	return []int{rpc_types.ApiVersion1, rpc_types.ApiVersion2, rpc_types.ApiVersion3}
-}
+// NOTE: GetAggregatePriceMethod is now implemented in get_aggregate_price.go
 
 // GetCountsMethod handles the get_counts RPC method
 type GetCountsMethod struct{}
@@ -580,86 +532,9 @@ func (m *LogRotateMethod) SupportedApiVersions() []int {
 	return []int{rpc_types.ApiVersion1, rpc_types.ApiVersion2, rpc_types.ApiVersion3}
 }
 
-// AMMInfoMethod handles the amm_info RPC method
-type AMMInfoMethod struct{}
+// NOTE: AMMInfoMethod is now implemented in amm_info.go
 
-func (m *AMMInfoMethod) Handle(ctx *rpc_types.RpcContext, params json.RawMessage) (interface{}, *rpc_types.RpcError) {
-	var request struct {
-		rpc_types.LedgerSpecifier
-		Asset      map[string]interface{} `json:"asset,omitempty"`
-		Asset2     map[string]interface{} `json:"asset2,omitempty"`
-		AMMAccount string                 `json:"amm_account,omitempty"`
-		Account    string                 `json:"account,omitempty"`
-	}
-
-	if params != nil {
-		if err := json.Unmarshal(params, &request); err != nil {
-			return nil, rpc_types.RpcErrorInvalidParams("Invalid parameters: " + err.Error())
-		}
-	}
-
-	hasAssets := request.Asset != nil && request.Asset2 != nil
-	hasAMMAccount := request.AMMAccount != ""
-
-	if hasAssets == hasAMMAccount {
-		return nil, rpc_types.RpcErrorInvalidParams("Must specify either (asset + asset2) or amm_account, but not both or neither")
-	}
-
-	if rpc_types.Services == nil || rpc_types.Services.Ledger == nil {
-		return nil, rpc_types.RpcErrorInternal("Ledger service not available")
-	}
-
-	return nil, rpc_types.NewRpcError(rpc_types.RpcNOT_IMPL, "notImplemented", "notImplemented",
-		"amm_info is not yet implemented - requires AMM ledger entry type")
-}
-
-func (m *AMMInfoMethod) RequiredRole() rpc_types.Role {
-	return rpc_types.RoleGuest
-}
-
-func (m *AMMInfoMethod) SupportedApiVersions() []int {
-	return []int{rpc_types.ApiVersion1, rpc_types.ApiVersion2, rpc_types.ApiVersion3}
-}
-
-// VaultInfoMethod handles the vault_info RPC method
-type VaultInfoMethod struct{}
-
-func (m *VaultInfoMethod) Handle(ctx *rpc_types.RpcContext, params json.RawMessage) (interface{}, *rpc_types.RpcError) {
-	var request struct {
-		rpc_types.LedgerSpecifier
-		VaultID string `json:"vault_id,omitempty"`
-		Owner   string `json:"owner,omitempty"`
-		Seq     uint32 `json:"seq,omitempty"`
-	}
-
-	if params != nil {
-		if err := json.Unmarshal(params, &request); err != nil {
-			return nil, rpc_types.RpcErrorInvalidParams("Invalid parameters: " + err.Error())
-		}
-	}
-
-	hasVaultID := request.VaultID != ""
-	hasOwnerSeq := request.Owner != "" && request.Seq > 0
-
-	if hasVaultID == hasOwnerSeq {
-		return nil, rpc_types.RpcErrorInvalidParams("Must specify either vault_id or (owner + seq), but not both or neither")
-	}
-
-	if rpc_types.Services == nil || rpc_types.Services.Ledger == nil {
-		return nil, rpc_types.RpcErrorInternal("Ledger service not available")
-	}
-
-	return nil, rpc_types.NewRpcError(rpc_types.RpcNOT_IMPL, "notImplemented", "notImplemented",
-		"vault_info is not yet implemented - requires Vault ledger entry type")
-}
-
-func (m *VaultInfoMethod) RequiredRole() rpc_types.Role {
-	return rpc_types.RoleGuest
-}
-
-func (m *VaultInfoMethod) SupportedApiVersions() []int {
-	return []int{rpc_types.ApiVersion1, rpc_types.ApiVersion2, rpc_types.ApiVersion3}
-}
+// NOTE: VaultInfoMethod is now implemented in vault_info.go
 
 // UnlListMethod handles the unl_list RPC method
 type UnlListMethod struct{}

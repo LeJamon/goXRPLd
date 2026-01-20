@@ -1,9 +1,16 @@
 package rpc_handlers
 
 import (
+	"encoding/hex"
 	"encoding/json"
+	"strconv"
+	"strings"
 
+	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
+	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
+	ed25519crypto "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/ed25519"
+	secp256k1crypto "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/secp256k1"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_types"
 )
@@ -40,37 +47,104 @@ func (m *SignMethod) Handle(ctx *rpc_types.RpcContext, params json.RawMessage) (
 		return nil, rpc_types.RpcErrorInvalidParams("Missing signing credentials")
 	}
 
-	// Check if ledger service is available
-	if rpc_types.Services == nil || rpc_types.Services.Ledger == nil {
+	// Check if ledger service is available (needed for auto-filling fields)
+	if !request.Offline && (rpc_types.Services == nil || rpc_types.Services.Ledger == nil) {
 		return nil, rpc_types.RpcErrorInternal("Ledger service not available")
 	}
 
-	// Determine the seed to use
-	seed := request.Seed
-	if seed == "" {
-		seed = request.Secret // secret is an alias for seed
+	// Determine the key type
+	keyType := strings.ToLower(request.KeyType)
+	if keyType == "" {
+		keyType = "secp256k1" // Default
 	}
-	if seed == "" && request.Passphrase != "" {
-		// TODO: Derive seed from passphrase
-		return nil, rpc_types.RpcErrorInvalidParams("Passphrase-based signing not yet implemented")
-	}
-	if seed == "" && request.SeedHex != "" {
-		// TODO: Handle hex-encoded seed
-		return nil, rpc_types.RpcErrorInvalidParams("Hex seed signing not yet implemented")
-	}
-
-	if seed == "" {
-		return nil, rpc_types.RpcErrorInvalidParams("No valid signing credential provided")
+	if keyType != "secp256k1" && keyType != "ed25519" {
+		return nil, &rpc_types.RpcError{
+			Code:        rpc_types.RpcBAD_KEY_TYPE,
+			ErrorString: "badKeyType",
+			Type:        "badKeyType",
+			Message:     "Invalid field 'key_type'.",
+		}
 	}
 
-	// Derive keypair from seed
-	privateKey, publicKey, err := tx.DeriveKeypairFromSeed(seed)
-	if err != nil {
-		return nil, rpc_types.RpcErrorInvalidParams("Failed to derive keypair: " + err.Error())
+	// Derive entropy from the provided credential
+	var entropy []byte
+	var detectedKeyType string
+
+	if request.Seed != "" || request.Secret != "" {
+		// secret is an alias for seed
+		seedStr := request.Seed
+		if seedStr == "" {
+			seedStr = request.Secret
+		}
+
+		// Decode the seed
+		var err error
+		var algo interface{}
+		entropy, algo, err = addresscodec.DecodeSeed(seedStr)
+		if err != nil {
+			return nil, &rpc_types.RpcError{
+				Code:        rpc_types.RpcBAD_SEED,
+				ErrorString: "badSeed",
+				Type:        "badSeed",
+				Message:     "Disallowed seed.",
+			}
+		}
+
+		// Detect key type from seed
+		if _, isEd25519 := algo.(ed25519crypto.ED25519CryptoAlgorithm); isEd25519 {
+			detectedKeyType = "ed25519"
+		} else {
+			detectedKeyType = "secp256k1"
+		}
+
+		// If key_type was specified, verify it matches
+		if request.KeyType != "" && keyType != detectedKeyType {
+			return nil, &rpc_types.RpcError{
+				Code:        rpc_types.RpcBAD_SEED,
+				ErrorString: "badSeed",
+				Type:        "badSeed",
+				Message:     "Disallowed seed.",
+			}
+		}
+		keyType = detectedKeyType
+	} else if request.SeedHex != "" {
+		// Decode hex seed
+		var err error
+		entropy, err = hex.DecodeString(request.SeedHex)
+		if err != nil || len(entropy) != 16 {
+			return nil, &rpc_types.RpcError{
+				Code:        rpc_types.RpcBAD_SEED,
+				ErrorString: "badSeed",
+				Type:        "badSeed",
+				Message:     "Disallowed seed.",
+			}
+		}
+	} else if request.Passphrase != "" {
+		// Derive seed from passphrase using SHA-512 Half (first 16 bytes of SHA-512)
+		hash := crypto.Sha512Half([]byte(request.Passphrase))
+		entropy = hash[:16]
+	}
+
+	// Derive keypair based on key type
+	var privateKey, publicKey string
+	var err error
+
+	if keyType == "ed25519" {
+		algo := ed25519crypto.ED25519()
+		privateKey, publicKey, err = algo.DeriveKeypair(entropy, false)
+		if err != nil {
+			return nil, rpc_types.RpcErrorInternal("Failed to derive keypair: " + err.Error())
+		}
+	} else {
+		algo := secp256k1crypto.SECP256K1()
+		privateKey, publicKey, err = algo.DeriveKeypair(entropy, false)
+		if err != nil {
+			return nil, rpc_types.RpcErrorInternal("Failed to derive keypair: " + err.Error())
+		}
 	}
 
 	// Derive address from public key
-	address, err := tx.DeriveAddressFromPublicKey(publicKey)
+	address, err := addresscodec.EncodeClassicAddressFromPublicKeyHex(publicKey)
 	if err != nil {
 		return nil, rpc_types.RpcErrorInternal("Failed to derive address: " + err.Error())
 	}
@@ -96,7 +170,7 @@ func (m *SignMethod) Handle(ctx *rpc_types.RpcContext, params json.RawMessage) (
 		// Set Fee if not present
 		if _, ok := txMap["Fee"]; !ok {
 			baseFee, _, _ := rpc_types.Services.Ledger.GetCurrentFees()
-			txMap["Fee"] = string(rune(baseFee)) // Convert to string
+			txMap["Fee"] = formatUint64AsString(baseFee)
 		}
 
 		// Set Sequence if not present
@@ -140,7 +214,7 @@ func (m *SignMethod) Handle(ctx *rpc_types.RpcContext, params json.RawMessage) (
 		return nil, rpc_types.RpcErrorInternal("Failed to sign transaction: " + err.Error())
 	}
 
-	// Add signature to transaction
+	// Add signature to transaction map
 	txMap["TxnSignature"] = signature
 
 	// Encode the transaction to binary
@@ -152,7 +226,7 @@ func (m *SignMethod) Handle(ctx *rpc_types.RpcContext, params json.RawMessage) (
 	// Calculate transaction hash
 	txHash := CalculateTxHash(txBlob)
 
-	// Add hash to response
+	// Add hash to response tx_json
 	txMap["hash"] = txHash
 
 	response := map[string]interface{}{
@@ -161,6 +235,11 @@ func (m *SignMethod) Handle(ctx *rpc_types.RpcContext, params json.RawMessage) (
 	}
 
 	return response, nil
+}
+
+// formatUint64AsString formats a uint64 as a decimal string
+func formatUint64AsString(v uint64) string {
+	return strconv.FormatUint(v, 10)
 }
 
 func (m *SignMethod) RequiredRole() rpc_types.Role {

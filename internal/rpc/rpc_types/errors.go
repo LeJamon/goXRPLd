@@ -52,11 +52,14 @@ const (
 	RpcTXN_NOT_READY = 25
 
 	// Account errors
-	RpcACT_NOT_FOUND     = 19
-	RpcACT_LINES         = 20
-	RpcACT_CHANNELS      = 21
-	RpcACT_OBJECTS       = 22
+	RpcACT_NOT_FOUND      = 19
+	RpcACT_LINES          = 20
+	RpcACT_CHANNELS       = 21
+	RpcACT_OBJECTS        = 22
 	RpcACT_ROOT_NOT_FOUND = 23
+	RpcACT_MALFORMED      = 50
+	RpcSRC_ACT_NOT_FOUND  = 51
+	RpcDST_ACT_NOT_FOUND  = 52
 
 	// Server state
 	RpcSERVER_INFO = 18
@@ -101,6 +104,16 @@ const (
 	RpcNOT_IMPL      = 47 // Feature not implemented
 	RpcNOT_VALIDATOR = 48 // Server is not configured as a validator
 	RpcNOT_SYNCED    = 49 // Not synced to network
+
+	// Signing/Key errors - must match rippled exactly
+	RpcBAD_SEED             = 44 // Disallowed seed
+	RpcCHANNEL_MALFORMED    = 45 // Payment channel is malformed
+	RpcCHANNEL_AMT_MALFORMED = 46 // Payment channel amount is malformed
+	RpcPUBLIC_MALFORMED     = 62 // Public key is malformed
+	RpcBAD_KEY_TYPE         = 76 // Bad key type
+
+	// Object errors - must match rippled exactly
+	RpcOBJECT_NOT_FOUND = 92 // Object not found
 )
 
 // Standard error constructors
@@ -168,4 +181,19 @@ func RpcErrorNotEnabled(feature string) *RpcError {
 
 func RpcErrorAmendmentBlocked(amendment string) *RpcError {
 	return NewRpcError(RpcAMENDMENT_BLOCKED, "amendmentBlocked", "amendmentBlocked", "Amendment blocked: "+amendment)
+}
+
+// RpcErrorObjectNotFound returns an error for object not found (matches rippled rpcOBJECT_NOT_FOUND)
+func RpcErrorObjectNotFound(message string) *RpcError {
+	return NewRpcError(RpcOBJECT_NOT_FOUND, "objectNotFound", "objectNotFound", message)
+}
+
+// RpcErrorMissingField returns an error for missing required field (matches rippled missing_field_error)
+func RpcErrorMissingField(field string) *RpcError {
+	return NewRpcError(RpcINVALID_PARAMS, "invalidParams", "invalidParams", "Missing field '"+field+"'.")
+}
+
+// RpcErrorInvalidField returns an error for invalid field value (matches rippled invalid_field_error)
+func RpcErrorInvalidField(field string) *RpcError {
+	return NewRpcError(RpcINVALID_PARAMS, "invalidParams", "invalidParams", "Invalid field '"+field+"'.")
 }

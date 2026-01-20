@@ -71,6 +71,14 @@ const (
 	lsfLowFreeze uint32 = 0x00400000
 	// lsfHighFreeze - high side is frozen
 	lsfHighFreeze uint32 = 0x00800000
+
+	// Exported freeze constants for external use
+	LsfLowFreeze  uint32 = lsfLowFreeze
+	LsfHighFreeze uint32 = lsfHighFreeze
+
+	// Exported NoRipple constants for external use
+	LsfLowNoRipple  uint32 = lsfLowNoRipple
+	LsfHighNoRipple uint32 = lsfHighNoRipple
 )
 
 // Ledger entry type code for RippleState

@@ -372,3 +372,33 @@ func compareCurrencies(a, b [20]byte) int {
 	}
 	return 0
 }
+
+// Oracle returns the keylet for an Oracle entry.
+// Reference: rippled Indexes.cpp oracle(AccountID const& account, std::uint32_t const& documentID)
+func Oracle(accountID [20]byte, documentID uint32) Keylet {
+	docIDBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(docIDBytes, documentID)
+	return Keylet{
+		Type: entry.TypeOracle,
+		Key:  indexHash(spaceOracle, accountID[:], docIDBytes),
+	}
+}
+
+// Vault returns the keylet for a Vault entry.
+// Reference: rippled Indexes.cpp vault(AccountID const& owner, std::uint32_t seq)
+func Vault(ownerID [20]byte, sequence uint32) Keylet {
+	seqBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(seqBytes, sequence)
+	return Keylet{
+		Type: entry.TypeVault,
+		Key:  indexHash(spaceVault, ownerID[:], seqBytes),
+	}
+}
+
+// VaultByID returns a Vault keylet for a known Vault ID.
+func VaultByID(vaultID [32]byte) Keylet {
+	return Keylet{
+		Type: entry.TypeVault,
+		Key:  vaultID,
+	}
+}

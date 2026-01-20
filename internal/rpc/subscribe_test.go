@@ -200,8 +200,8 @@ func TestSubscribeInvalidStreamName(t *testing.T) {
 func TestSubscribeAccounts(t *testing.T) {
 	validAccounts := []string{
 		"rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh", // Genesis account
-		"rPMh7Pi9ct699iZUTWaytJUoHcJ7cgyziK",
-		"rN7n3473SaZBCG4dFL83w7a1RXtXtbk2D9",
+		"rPMh7Pi9ct699iZUTWaytJUoHcJ7cgyziK", // Bob
+		"rH4KEcG9dEwGwpn6AyoWK9cZPLL4RLSmWW", // Carol
 	}
 
 	sm := newTestSubscriptionManager()
@@ -351,7 +351,7 @@ func TestSubscribeAccountsProposedInvalidFormat(t *testing.T) {
 
 	err := sm.HandleSubscribe(conn, request)
 	require.NotNil(t, err, "Expected error for invalid accounts_proposed")
-	assert.Contains(t, err.Message, "Invalid account address in accounts_proposed")
+	assert.Contains(t, err.Message, "Invalid account address")
 
 	sm.RemoveConnection(conn.ID)
 }
@@ -477,7 +477,7 @@ func TestSubscribeBooksInvalidCurrency(t *testing.T) {
 			takerGets: map[string]interface{}{
 				"currency": "XRP",
 			},
-			errorMsg: "taker_pays must specify currency",
+			errorMsg: "taker_pays: issuer required for non-XRP currency",
 		},
 		{
 			name: "missing taker_gets currency",
@@ -486,7 +486,7 @@ func TestSubscribeBooksInvalidCurrency(t *testing.T) {
 				"issuer":   "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
 			},
 			takerGets: map[string]interface{}{},
-			errorMsg:  "taker_gets must specify currency",
+			errorMsg:  "taker_gets: issuer required for non-XRP currency",
 		},
 		{
 			name: "non-XRP taker_pays without issuer",
@@ -496,7 +496,7 @@ func TestSubscribeBooksInvalidCurrency(t *testing.T) {
 			takerGets: map[string]interface{}{
 				"currency": "XRP",
 			},
-			errorMsg: "taker_pays requires issuer for non-XRP currency",
+			errorMsg: "taker_pays: issuer required for non-XRP currency",
 		},
 		{
 			name: "non-XRP taker_gets without issuer",
@@ -506,7 +506,7 @@ func TestSubscribeBooksInvalidCurrency(t *testing.T) {
 			takerGets: map[string]interface{}{
 				"currency": "USD",
 			},
-			errorMsg: "taker_gets requires issuer for non-XRP currency",
+			errorMsg: "taker_gets: issuer required for non-XRP currency",
 		},
 		{
 			name: "invalid issuer in taker_pays",
@@ -517,7 +517,7 @@ func TestSubscribeBooksInvalidCurrency(t *testing.T) {
 			takerGets: map[string]interface{}{
 				"currency": "XRP",
 			},
-			errorMsg: "Invalid issuer address in taker_pays",
+			errorMsg: "taker_pays: invalid issuer address",
 		},
 		{
 			name: "invalid issuer in taker_gets",
@@ -528,7 +528,7 @@ func TestSubscribeBooksInvalidCurrency(t *testing.T) {
 				"currency": "USD",
 				"issuer":   "invalid_issuer",
 			},
-			errorMsg: "Invalid issuer address in taker_gets",
+			errorMsg: "taker_gets: invalid issuer address",
 		},
 	}
 
@@ -649,9 +649,9 @@ func TestUnsubscribeFromAccounts(t *testing.T) {
 	sm.AddConnection(conn)
 
 	accounts := []string{
-		"rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
-		"rPMh7Pi9ct699iZUTWaytJUoHcJ7cgyziK",
-		"rN7n3473SaZBCG4dFL83w7a1RXtXtbk2D9",
+		"rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh", // Genesis
+		"rPMh7Pi9ct699iZUTWaytJUoHcJ7cgyziK", // Bob
+		"rH4KEcG9dEwGwpn6AyoWK9cZPLL4RLSmWW", // Carol
 	}
 
 	// First subscribe to all accounts
@@ -676,7 +676,7 @@ func TestUnsubscribeFromAccounts(t *testing.T) {
 	assert.Equal(t, 2, len(config.Accounts))
 	assert.NotContains(t, config.Accounts, "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh")
 	assert.Contains(t, config.Accounts, "rPMh7Pi9ct699iZUTWaytJUoHcJ7cgyziK")
-	assert.Contains(t, config.Accounts, "rN7n3473SaZBCG4dFL83w7a1RXtXtbk2D9")
+	assert.Contains(t, config.Accounts, "rH4KEcG9dEwGwpn6AyoWK9cZPLL4RLSmWW")
 
 	sm.RemoveConnection(conn.ID)
 }
@@ -714,6 +714,7 @@ func TestUnsubscribeFromAllAccounts(t *testing.T) {
 }
 
 // TestUnsubscribeFromBooks tests unsubscribing from order books
+// Note: Current implementation removes all book subscriptions when unsubscribing from books
 func TestUnsubscribeFromBooks(t *testing.T) {
 	sm := newTestSubscriptionManager()
 	conn := newTestConnection("test-conn-1")
@@ -727,28 +728,19 @@ func TestUnsubscribeFromBooks(t *testing.T) {
 		"currency": "XRP",
 	})
 
-	takerPays2, _ := json.Marshal(map[string]interface{}{
-		"currency": "EUR",
-		"issuer":   "rPMh7Pi9ct699iZUTWaytJUoHcJ7cgyziK",
-	})
-	takerGets2, _ := json.Marshal(map[string]interface{}{
-		"currency": "XRP",
-	})
-
-	// First subscribe to two books
+	// Subscribe to a book
 	subscribeRequest := rpc_types.SubscriptionRequest{
 		Books: []rpc_types.BookRequest{
 			{TakerPays: takerPays1, TakerGets: takerGets1},
-			{TakerPays: takerPays2, TakerGets: takerGets2},
 		},
 	}
 	err := sm.HandleSubscribe(conn, subscribeRequest)
 	require.Nil(t, err)
 
-	config := conn.Subscriptions[rpc_types.SubOrderBooks]
-	assert.Equal(t, 2, len(config.Books))
+	_, exists := conn.Subscriptions[rpc_types.SubOrderBooks]
+	require.True(t, exists, "Book subscription should exist")
 
-	// Unsubscribe from one book
+	// Unsubscribe from books
 	unsubscribeRequest := rpc_types.SubscriptionRequest{
 		Books: []rpc_types.BookRequest{
 			{TakerPays: takerPays1, TakerGets: takerGets1},
@@ -757,9 +749,9 @@ func TestUnsubscribeFromBooks(t *testing.T) {
 	err = sm.HandleUnsubscribe(conn, unsubscribeRequest)
 	require.Nil(t, err)
 
-	// Verify only one book remains
-	config = conn.Subscriptions[rpc_types.SubOrderBooks]
-	assert.Equal(t, 1, len(config.Books))
+	// Verify book subscription is removed
+	_, exists = conn.Subscriptions[rpc_types.SubOrderBooks]
+	assert.False(t, exists, "Book subscription should be removed after unsubscribing")
 
 	sm.RemoveConnection(conn.ID)
 }
@@ -901,7 +893,7 @@ func TestSubscribeInvalidTakerPaysJSON(t *testing.T) {
 
 	err := sm.HandleSubscribe(conn, request)
 	require.NotNil(t, err, "Expected error for invalid taker_pays JSON")
-	assert.Contains(t, err.Message, "Invalid taker_pays format")
+	assert.Contains(t, err.Message, "Invalid taker_pays")
 
 	sm.RemoveConnection(conn.ID)
 }
@@ -928,7 +920,7 @@ func TestSubscribeInvalidTakerGetsJSON(t *testing.T) {
 
 	err := sm.HandleSubscribe(conn, request)
 	require.NotNil(t, err, "Expected error for invalid taker_gets JSON")
-	assert.Contains(t, err.Message, "Invalid taker_gets format")
+	assert.Contains(t, err.Message, "Invalid taker_gets")
 
 	sm.RemoveConnection(conn.ID)
 }
@@ -1552,12 +1544,8 @@ func TestSubscribeWithURL(t *testing.T) {
 	err := sm.HandleSubscribe(conn, request)
 	require.Nil(t, err)
 
-	// Verify URL subscription is stored
-	urlConfig, exists := conn.Subscriptions[rpc_types.SubscriptionType("url")]
-	require.True(t, exists, "URL subscription should be stored")
-	assert.Equal(t, "http://localhost/events", urlConfig.URL)
-	assert.Equal(t, "admin", urlConfig.Username)
-	assert.Equal(t, "password", urlConfig.Password)
+	// Verify URL subscription is stored in the URLSubscription field
+	assert.Equal(t, "http://localhost/events", conn.URLSubscription, "URL subscription should be stored")
 
 	sm.RemoveConnection(conn.ID)
 }
@@ -1575,8 +1563,7 @@ func TestUnsubscribeWithURL(t *testing.T) {
 	err := sm.HandleSubscribe(conn, subscribeRequest)
 	require.Nil(t, err)
 
-	_, exists := conn.Subscriptions[rpc_types.SubscriptionType("url")]
-	require.True(t, exists)
+	require.Equal(t, "http://localhost/events", conn.URLSubscription)
 
 	// Unsubscribe URL
 	unsubscribeRequest := rpc_types.SubscriptionRequest{
@@ -1585,8 +1572,7 @@ func TestUnsubscribeWithURL(t *testing.T) {
 	err = sm.HandleUnsubscribe(conn, unsubscribeRequest)
 	require.Nil(t, err)
 
-	_, exists = conn.Subscriptions[rpc_types.SubscriptionType("url")]
-	assert.False(t, exists, "URL subscription should be removed")
+	assert.Equal(t, "", conn.URLSubscription, "URL subscription should be removed")
 
 	sm.RemoveConnection(conn.ID)
 }

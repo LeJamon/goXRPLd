@@ -126,6 +126,30 @@ func (m *mockAccountLinesLedgerService) GetLedgerData(ledgerIndex string, limit 
 func (m *mockAccountLinesLedgerService) GetAccountObjects(account string, ledgerIndex string, objType string, limit uint32) (*rpc_types.AccountObjectsResult, error) {
 	return nil, errors.New("not implemented")
 }
+func (m *mockAccountLinesLedgerService) GetAccountChannels(account string, destinationAccount string, ledgerIndex string, limit uint32) (*rpc_types.AccountChannelsResult, error) {
+	return nil, errors.New("not implemented")
+}
+func (m *mockAccountLinesLedgerService) GetAccountCurrencies(account string, ledgerIndex string) (*rpc_types.AccountCurrenciesResult, error) {
+	return nil, errors.New("not implemented")
+}
+func (m *mockAccountLinesLedgerService) GetAccountNFTs(account string, ledgerIndex string, limit uint32) (*rpc_types.AccountNFTsResult, error) {
+	return nil, errors.New("not implemented")
+}
+func (m *mockAccountLinesLedgerService) GetGatewayBalances(account string, hotWallets []string, ledgerIndex string) (*rpc_types.GatewayBalancesResult, error) {
+	return nil, errors.New("not implemented")
+}
+func (m *mockAccountLinesLedgerService) GetNoRippleCheck(account string, role string, ledgerIndex string, limit uint32, transactions bool) (*rpc_types.NoRippleCheckResult, error) {
+	return nil, errors.New("not implemented")
+}
+func (m *mockAccountLinesLedgerService) GetDepositAuthorized(sourceAccount string, destinationAccount string, ledgerIndex string) (*rpc_types.DepositAuthorizedResult, error) {
+	return nil, errors.New("not implemented")
+}
+func (m *mockAccountLinesLedgerService) GetNFTBuyOffers(nftID [32]byte, ledgerIndex string, limit uint32, marker string) (*rpc_types.NFTOffersResult, error) {
+	return nil, errors.New("not implemented")
+}
+func (m *mockAccountLinesLedgerService) GetNFTSellOffers(nftID [32]byte, ledgerIndex string, limit uint32, marker string) (*rpc_types.NFTOffersResult, error) {
+	return nil, errors.New("not implemented")
+}
 
 // setupAccountLinesTestServices initializes the Services singleton with a mock for testing
 func setupAccountLinesTestServices(mock *mockAccountLinesLedgerService) func() {

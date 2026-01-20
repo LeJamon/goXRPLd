@@ -159,9 +159,12 @@ func (s *Server) handlePostRequest(w http.ResponseWriter, r *http.Request) {
 	var requestObj interface{}
 	if params != nil {
 		var reqMap map[string]interface{}
-		if err := json.Unmarshal(params, &reqMap); err == nil {
+		// Check both for unmarshal error AND nil map (params could be JSON null)
+		if err := json.Unmarshal(params, &reqMap); err == nil && reqMap != nil {
 			reqMap["command"] = request.Method
 			requestObj = reqMap
+		} else {
+			requestObj = map[string]interface{}{"command": request.Method}
 		}
 	} else {
 		requestObj = map[string]interface{}{"command": request.Method}

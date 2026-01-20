@@ -13,14 +13,18 @@ import (
 
 // PayChannelData represents a PayChannel ledger entry
 type PayChannelData struct {
-	Account       [20]byte
-	DestinationID [20]byte
-	Amount        uint64
-	Balance       uint64
-	SettleDelay   uint32
-	PublicKey     string
-	Expiration    uint32
-	CancelAfter   uint32
+	Account        [20]byte
+	DestinationID  [20]byte
+	Amount         uint64
+	Balance        uint64
+	SettleDelay    uint32
+	PublicKey      string
+	Expiration     uint32
+	CancelAfter    uint32
+	SourceTag      uint32
+	DestinationTag uint32
+	HasSourceTag   bool
+	HasDestTag     bool
 }
 
 // applyPaymentChannelCreate applies a PaymentChannelCreate transaction
@@ -379,8 +383,13 @@ func serializePayChannelFromData(channel *PayChannelData) ([]byte, error) {
 	return hex.DecodeString(hexStr)
 }
 
-// parsePayChannel parses a PayChannel ledger entry from binary data
+// parsePayChannel parses a PayChannel ledger entry from binary data (internal use)
 func parsePayChannel(data []byte) (*PayChannelData, error) {
+	return ParsePayChannelFromBytes(data)
+}
+
+// ParsePayChannelFromBytes parses a PayChannel ledger entry from binary data
+func ParsePayChannelFromBytes(data []byte) (*PayChannelData, error) {
 	channel := &PayChannelData{}
 	offset := 0
 
@@ -431,6 +440,12 @@ func parsePayChannel(data []byte) (*PayChannelData, error) {
 				channel.CancelAfter = value
 			case 10: // Expiration
 				channel.Expiration = value
+			case 3: // SourceTag
+				channel.SourceTag = value
+				channel.HasSourceTag = true
+			case 14: // DestinationTag
+				channel.DestinationTag = value
+				channel.HasDestTag = true
 			}
 
 		case fieldTypeUInt64:

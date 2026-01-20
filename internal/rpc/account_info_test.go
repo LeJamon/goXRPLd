@@ -112,6 +112,30 @@ func (m *mockLedgerService) GetLedgerData(ledgerIndex string, limit uint32, mark
 func (m *mockLedgerService) GetAccountObjects(account string, ledgerIndex string, objType string, limit uint32) (*rpc_types.AccountObjectsResult, error) {
 	return nil, errors.New("not implemented")
 }
+func (m *mockLedgerService) GetAccountChannels(account string, destinationAccount string, ledgerIndex string, limit uint32) (*rpc_types.AccountChannelsResult, error) {
+	return nil, errors.New("not implemented")
+}
+func (m *mockLedgerService) GetAccountCurrencies(account string, ledgerIndex string) (*rpc_types.AccountCurrenciesResult, error) {
+	return nil, errors.New("not implemented")
+}
+func (m *mockLedgerService) GetAccountNFTs(account string, ledgerIndex string, limit uint32) (*rpc_types.AccountNFTsResult, error) {
+	return nil, errors.New("not implemented")
+}
+func (m *mockLedgerService) GetGatewayBalances(account string, hotWallets []string, ledgerIndex string) (*rpc_types.GatewayBalancesResult, error) {
+	return nil, errors.New("not implemented")
+}
+func (m *mockLedgerService) GetNoRippleCheck(account string, role string, ledgerIndex string, limit uint32, transactions bool) (*rpc_types.NoRippleCheckResult, error) {
+	return nil, errors.New("not implemented")
+}
+func (m *mockLedgerService) GetDepositAuthorized(sourceAccount string, destinationAccount string, ledgerIndex string) (*rpc_types.DepositAuthorizedResult, error) {
+	return nil, errors.New("not implemented")
+}
+func (m *mockLedgerService) GetNFTBuyOffers(nftID [32]byte, ledgerIndex string, limit uint32, marker string) (*rpc_types.NFTOffersResult, error) {
+	return nil, errors.New("not implemented")
+}
+func (m *mockLedgerService) GetNFTSellOffers(nftID [32]byte, ledgerIndex string, limit uint32, marker string) (*rpc_types.NFTOffersResult, error) {
+	return nil, errors.New("not implemented")
+}
 
 // setupTestServices initializes the Services singleton with a mock for testing
 func setupTestServices(mock *mockLedgerService) func() {

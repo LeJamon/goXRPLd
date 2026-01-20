@@ -23,29 +23,49 @@ func (m *AccountCurrenciesMethod) Handle(ctx *rpc_types.RpcContext, params json.
 	}
 
 	if request.Account == "" {
-		return nil, rpc_types.RpcErrorInvalidParams("Missing required parameter: account")
+		return nil, rpc_types.RpcErrorInvalidParams("Missing field 'account'.")
 	}
 
-	// TODO: Implement currency retrieval
-	// 1. Validate account address
-	// 2. Determine target ledger
-	// 3. Find all RippleState objects for the account
-	// 4. Extract unique currencies that the account can send/receive
-	// 5. Separate into send_currencies and receive_currencies
-	// 6. Handle strict mode (only currencies with positive balance/trust)
+	// Check if ledger service is available
+	if rpc_types.Services == nil || rpc_types.Services.Ledger == nil {
+		return nil, rpc_types.RpcErrorInternal("Ledger service not available")
+	}
 
+	// Determine ledger index to use
+	ledgerIndex := "current"
+	if request.LedgerIndex != "" {
+		ledgerIndex = request.LedgerIndex.String()
+	}
+
+	// Get account currencies from the ledger service
+	result, err := rpc_types.Services.Ledger.GetAccountCurrencies(
+		request.Account,
+		ledgerIndex,
+	)
+	if err != nil {
+		if err.Error() == "account not found" {
+			return nil, &rpc_types.RpcError{
+				Code:    rpc_types.RpcACT_NOT_FOUND,
+				Message: "Account not found.",
+			}
+		}
+		// Check for malformed account address
+		if len(err.Error()) > 24 && err.Error()[:24] == "invalid account address:" {
+			return nil, &rpc_types.RpcError{
+				Code:    rpc_types.RpcACT_NOT_FOUND,
+				Message: "Account malformed.",
+			}
+		}
+		return nil, rpc_types.RpcErrorInternal("Failed to get account currencies: " + err.Error())
+	}
+
+	// Build response
 	response := map[string]interface{}{
-		"ledger_hash":        "PLACEHOLDER_LEDGER_HASH",
-		"ledger_index":       1000,
-		"receive_currencies": []string{
-			// TODO: Load actual receivable currencies
-			// Example: ["USD", "EUR", "BTC"]
-		},
-		"send_currencies": []string{
-			// TODO: Load actual sendable currencies
-			// Example: ["USD", "EUR"]
-		},
-		"validated": true,
+		"ledger_hash":        FormatLedgerHash(result.LedgerHash),
+		"ledger_index":       result.LedgerIndex,
+		"receive_currencies": result.ReceiveCurrencies,
+		"send_currencies":    result.SendCurrencies,
+		"validated":          result.Validated,
 	}
 
 	return response, nil

@@ -13,8 +13,8 @@ func (m *GatewayBalancesMethod) Handle(ctx *rpc_types.RpcContext, params json.Ra
 	var request struct {
 		rpc_types.AccountParam
 		rpc_types.LedgerSpecifier
-		Strict    bool     `json:"strict,omitempty"`
-		HotWallet []string `json:"hotwallet,omitempty"`
+		Strict    bool            `json:"strict,omitempty"`
+		HotWallet json.RawMessage `json:"hotwallet,omitempty"`
 	}
 
 	if params != nil {
@@ -27,31 +27,137 @@ func (m *GatewayBalancesMethod) Handle(ctx *rpc_types.RpcContext, params json.Ra
 		return nil, rpc_types.RpcErrorInvalidParams("Missing required parameter: account")
 	}
 
-	// TODO: Implement gateway balance calculation
-	// 1. Validate account address (should be a gateway/issuer)
-	// 2. Determine target ledger
-	// 3. Find all RippleState objects where account is the issuer
-	// 4. Calculate total issued amounts by currency
-	// 5. Separate hot wallet balances if hot wallet addresses provided
-	// 6. Calculate net balances and obligations
+	// Check if ledger service is available
+	if rpc_types.Services == nil || rpc_types.Services.Ledger == nil {
+		return nil, rpc_types.RpcErrorInternal("Ledger service not available")
+	}
 
+	// Parse hotwallet parameter - can be a string or array of strings
+	var hotWallets []string
+	if len(request.HotWallet) > 0 {
+		// Try to parse as a single string first
+		var singleWallet string
+		if err := json.Unmarshal(request.HotWallet, &singleWallet); err == nil {
+			if singleWallet != "" {
+				hotWallets = []string{singleWallet}
+			}
+		} else {
+			// Try to parse as an array of strings
+			var walletArray []string
+			if err := json.Unmarshal(request.HotWallet, &walletArray); err == nil {
+				hotWallets = walletArray
+			} else {
+				// Invalid hotwallet format
+				if ctx.ApiVersion < 2 {
+					return nil, &rpc_types.RpcError{
+						Code:    rpc_types.RpcINVALID_PARAMS,
+						Message: "Invalid hotwallet.",
+					}
+				}
+				return nil, rpc_types.RpcErrorInvalidParams("Invalid field 'hotwallet'.")
+			}
+		}
+	}
+
+	// Determine ledger index to use
+	ledgerIndex := "current"
+	if request.LedgerIndex != "" {
+		ledgerIndex = request.LedgerIndex.String()
+	}
+
+	// Get gateway balances from the ledger service
+	result, err := rpc_types.Services.Ledger.GetGatewayBalances(
+		request.Account,
+		hotWallets,
+		ledgerIndex,
+	)
+	if err != nil {
+		if err.Error() == "account not found" {
+			return nil, &rpc_types.RpcError{
+				Code:    rpc_types.RpcACT_NOT_FOUND,
+				Message: "Account not found.",
+			}
+		}
+		// Check for malformed account address
+		if len(err.Error()) > 24 && err.Error()[:24] == "invalid account address:" {
+			return nil, &rpc_types.RpcError{
+				Code:    rpc_types.RpcACT_NOT_FOUND,
+				Message: "Account malformed.",
+			}
+		}
+		// Check for invalid hotwallet
+		if len(err.Error()) > 20 && err.Error()[:20] == "invalid hotwallet ad" {
+			if ctx.ApiVersion < 2 {
+				return nil, &rpc_types.RpcError{
+					Code:    rpc_types.RpcINVALID_PARAMS,
+					Message: "Invalid hotwallet.",
+				}
+			}
+			return nil, rpc_types.RpcErrorInvalidParams("Invalid field 'hotwallet'.")
+		}
+		return nil, rpc_types.RpcErrorInternal("Failed to get gateway balances: " + err.Error())
+	}
+
+	// Build response
 	response := map[string]interface{}{
-		"account":     request.Account,
-		"obligations": map[string]interface{}{
-			// TODO: Calculate actual obligations by currency
-			// Example:
-			// "USD": "12345.67",
-			// "EUR": "9876.54"
-		},
-		"balances": map[string]interface{}{
-			// TODO: Calculate actual balances
-		},
-		"assets": map[string]interface{}{
-			// TODO: Calculate assets (positive balances)
-		},
-		"ledger_hash":  "PLACEHOLDER_LEDGER_HASH",
-		"ledger_index": 1000,
-		"validated":    true,
+		"account":      result.Account,
+		"ledger_hash":  FormatLedgerHash(result.LedgerHash),
+		"ledger_index": result.LedgerIndex,
+		"validated":    result.Validated,
+	}
+
+	// Add optional fields only if they have values
+	if len(result.Obligations) > 0 {
+		response["obligations"] = result.Obligations
+	}
+
+	if len(result.Balances) > 0 {
+		balances := make(map[string]interface{})
+		for acct, bals := range result.Balances {
+			balArray := make([]map[string]interface{}, len(bals))
+			for i, b := range bals {
+				balArray[i] = map[string]interface{}{
+					"currency": b.Currency,
+					"value":    b.Value,
+				}
+			}
+			balances[acct] = balArray
+		}
+		response["balances"] = balances
+	}
+
+	if len(result.FrozenBalances) > 0 {
+		frozenBalances := make(map[string]interface{})
+		for acct, bals := range result.FrozenBalances {
+			balArray := make([]map[string]interface{}, len(bals))
+			for i, b := range bals {
+				balArray[i] = map[string]interface{}{
+					"currency": b.Currency,
+					"value":    b.Value,
+				}
+			}
+			frozenBalances[acct] = balArray
+		}
+		response["frozen_balances"] = frozenBalances
+	}
+
+	if len(result.Assets) > 0 {
+		assets := make(map[string]interface{})
+		for acct, bals := range result.Assets {
+			balArray := make([]map[string]interface{}, len(bals))
+			for i, b := range bals {
+				balArray[i] = map[string]interface{}{
+					"currency": b.Currency,
+					"value":    b.Value,
+				}
+			}
+			assets[acct] = balArray
+		}
+		response["assets"] = assets
+	}
+
+	if len(result.Locked) > 0 {
+		response["locked"] = result.Locked
 	}
 
 	return response, nil

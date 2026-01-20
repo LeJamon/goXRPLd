@@ -306,10 +306,11 @@ type SubscriptionConfig struct {
 
 // Connection represents a WebSocket connection for subscription management
 type Connection struct {
-	ID            string
-	Subscriptions map[SubscriptionType]SubscriptionConfig
-	SendChannel   chan []byte
-	CloseChannel  chan struct{}
+	ID              string
+	Subscriptions   map[SubscriptionType]SubscriptionConfig
+	SendChannel     chan []byte
+	CloseChannel    chan struct{}
+	URLSubscription string // URL for server-to-server subscriptions
 }
 
 // WebSocketResponseOptions contains optional fields for WebSocket responses
@@ -344,35 +345,163 @@ func (sm *SubscriptionManager) RemoveConnection(connID string) {
 	delete(sm.Connections, connID)
 }
 
+// validStreams contains the set of valid stream types
+var validStreams = map[SubscriptionType]bool{
+	SubLedger:       true,
+	SubTransactions: true,
+	SubAccounts:     true,
+	SubOrderBooks:   true,
+	SubValidations:  true,
+	SubManifests:    true,
+	SubPeerStatus:   true,
+	SubConsensus:    true,
+	SubPath:         true,
+}
+
 // HandleSubscribe handles a subscribe request for a connection
 func (sm *SubscriptionManager) HandleSubscribe(conn *Connection, request SubscriptionRequest) *RpcError {
-	// Add stream subscriptions
+	// Validate and add stream subscriptions
 	for _, stream := range request.Streams {
+		if !validStreams[stream] {
+			return &RpcError{
+				Code:    RpcINVALID_PARAMS,
+				Message: "Unknown stream type: " + string(stream),
+			}
+		}
 		conn.Subscriptions[stream] = SubscriptionConfig{}
 	}
 
 	// Add account subscriptions
 	if len(request.Accounts) > 0 {
+		// Validate all accounts first
+		for _, acc := range request.Accounts {
+			if !isValidXRPLAddress(acc) {
+				return &RpcError{
+					Code:    RpcINVALID_PARAMS,
+					Message: "Invalid account address: " + acc,
+				}
+			}
+		}
+
+		// Merge with existing accounts if already subscribed
+		existing, ok := conn.Subscriptions[SubAccounts]
+		accounts := request.Accounts
+		if ok {
+			// Append new accounts avoiding duplicates
+			existingMap := make(map[string]bool)
+			for _, acc := range existing.Accounts {
+				existingMap[acc] = true
+			}
+			for _, acc := range request.Accounts {
+				if !existingMap[acc] {
+					accounts = append(accounts, acc)
+				}
+			}
+		}
 		conn.Subscriptions[SubAccounts] = SubscriptionConfig{
-			Accounts: request.Accounts,
+			Accounts: accounts,
+		}
+	}
+
+	// Add accounts_proposed subscriptions
+	if len(request.AccountsProposed) > 0 {
+		// Validate all accounts first
+		for _, acc := range request.AccountsProposed {
+			if !isValidXRPLAddress(acc) {
+				return &RpcError{
+					Code:    RpcINVALID_PARAMS,
+					Message: "Invalid account address: " + acc,
+				}
+			}
+		}
+		// Store in a separate subscription type (using accounts for now)
+		conn.Subscriptions["accounts_proposed"] = SubscriptionConfig{
+			Accounts: request.AccountsProposed,
 		}
 	}
 
 	// Add book subscriptions
 	if len(request.Books) > 0 {
-		// Parse taker_gets and taker_pays from json.RawMessage
-		var takerGets, takerPays CurrencySpec
-		// TODO: Parse book.TakerGets and book.TakerPays from first book
-		conn.Subscriptions[SubOrderBooks] = SubscriptionConfig{
-			Books:     request.Books,
-			TakerGets: &takerGets,
-			TakerPays: &takerPays,
-			Snapshot:  request.Books[0].Snapshot,
-			Both:      request.Books[0].Both,
+		for _, book := range request.Books {
+			// Validate taker_gets
+			if book.TakerGets == nil {
+				return &RpcError{
+					Code:    RpcINVALID_PARAMS,
+					Message: "Missing taker_gets in book subscription",
+				}
+			}
+			// Validate taker_pays
+			if book.TakerPays == nil {
+				return &RpcError{
+					Code:    RpcINVALID_PARAMS,
+					Message: "Missing taker_pays in book subscription",
+				}
+			}
+
+			// Parse and validate currency specs
+			var takerGets, takerPays CurrencySpec
+			if err := json.Unmarshal(book.TakerGets, &takerGets); err != nil {
+				return &RpcError{
+					Code:    RpcINVALID_PARAMS,
+					Message: "Invalid taker_gets: " + err.Error(),
+				}
+			}
+			if err := json.Unmarshal(book.TakerPays, &takerPays); err != nil {
+				return &RpcError{
+					Code:    RpcINVALID_PARAMS,
+					Message: "Invalid taker_pays: " + err.Error(),
+				}
+			}
+
+			// Validate issuer for non-XRP currencies
+			if takerGets.Currency != "XRP" && takerGets.Issuer == "" {
+				return &RpcError{
+					Code:    RpcINVALID_PARAMS,
+					Message: "taker_gets: issuer required for non-XRP currency",
+				}
+			}
+			if takerPays.Currency != "XRP" && takerPays.Issuer == "" {
+				return &RpcError{
+					Code:    RpcINVALID_PARAMS,
+					Message: "taker_pays: issuer required for non-XRP currency",
+				}
+			}
+
+			// Validate issuer format if provided
+			if takerGets.Issuer != "" && !isValidXRPLAddress(takerGets.Issuer) {
+				return &RpcError{
+					Code:    RpcINVALID_PARAMS,
+					Message: "taker_gets: invalid issuer address",
+				}
+			}
+			if takerPays.Issuer != "" && !isValidXRPLAddress(takerPays.Issuer) {
+				return &RpcError{
+					Code:    RpcINVALID_PARAMS,
+					Message: "taker_pays: invalid issuer address",
+				}
+			}
+
+			conn.Subscriptions[SubOrderBooks] = SubscriptionConfig{
+				Books:     request.Books,
+				TakerGets: &takerGets,
+				TakerPays: &takerPays,
+				Snapshot:  book.Snapshot,
+				Both:      book.Both,
+			}
 		}
 	}
 
+	// Handle URL subscriptions
+	if request.URL != "" {
+		conn.URLSubscription = request.URL
+	}
+
 	return nil
+}
+
+// isValidXRPLAddress checks if a string is a valid XRPL address
+func isValidXRPLAddress(addr string) bool {
+	return addresscodec.IsValidClassicAddress(addr)
 }
 
 // HandleUnsubscribe handles an unsubscribe request for a connection
@@ -382,14 +511,38 @@ func (sm *SubscriptionManager) HandleUnsubscribe(conn *Connection, request Subsc
 		delete(conn.Subscriptions, stream)
 	}
 
-	// Remove account subscriptions
+	// Remove specific account subscriptions
 	if len(request.Accounts) > 0 {
-		delete(conn.Subscriptions, SubAccounts)
+		if existing, ok := conn.Subscriptions[SubAccounts]; ok {
+			// Remove specific accounts from the subscription
+			accountsToRemove := make(map[string]bool)
+			for _, acc := range request.Accounts {
+				accountsToRemove[acc] = true
+			}
+			var remainingAccounts []string
+			for _, acc := range existing.Accounts {
+				if !accountsToRemove[acc] {
+					remainingAccounts = append(remainingAccounts, acc)
+				}
+			}
+			if len(remainingAccounts) > 0 {
+				conn.Subscriptions[SubAccounts] = SubscriptionConfig{
+					Accounts: remainingAccounts,
+				}
+			} else {
+				delete(conn.Subscriptions, SubAccounts)
+			}
+		}
 	}
 
 	// Remove book subscriptions
 	if len(request.Books) > 0 {
 		delete(conn.Subscriptions, SubOrderBooks)
+	}
+
+	// Handle URL unsubscription
+	if request.URL != "" {
+		conn.URLSubscription = ""
 	}
 
 	return nil

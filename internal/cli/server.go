@@ -24,6 +24,7 @@ import (
 var (
 	// Server flags
 	port       int
+	wsPort     int
 	bindAddr   string
 	standalone bool
 	dataDir    string
@@ -51,7 +52,8 @@ func init() {
 	rootCmd.Run = runServer
 
 	// Server-specific flags
-	serverCmd.Flags().IntVarP(&port, "port", "p", 8080, "port to listen on")
+	serverCmd.Flags().IntVarP(&port, "port", "p", 5005, "HTTP JSON-RPC port to listen on")
+	serverCmd.Flags().IntVar(&wsPort, "ws-port", 6006, "WebSocket port to listen on")
 	serverCmd.Flags().StringVar(&bindAddr, "bind", "", "address to bind to (default: all interfaces)")
 	serverCmd.Flags().BoolVarP(&standalone, "standalone", "a", true, "run in standalone mode (default: true)")
 	serverCmd.Flags().StringVar(&dataDir, "data-dir", "", "data directory for storage (empty for in-memory only)")
@@ -256,28 +258,29 @@ func runServer(cmd *cobra.Command, args []string) {
 		}
 	})
 
-	// Register HTTP endpoints
-	http.Handle("/", httpServer)    // Main RPC endpoint
-	http.Handle("/rpc", httpServer) // Alternative RPC endpoint
-	http.Handle("/ws", wsServer)    // WebSocket endpoint
+	// Create separate HTTP multiplexers for HTTP RPC and WebSocket
+	httpMux := http.NewServeMux()
+	wsMux := http.NewServeMux()
 
-	// Add a simple health check endpoint
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+	// Register HTTP RPC endpoints
+	httpMux.Handle("/", httpServer)    // Main RPC endpoint
+	httpMux.Handle("/rpc", httpServer) // Alternative RPC endpoint
+
+	// Add health check to HTTP server
+	httpMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok","service":"goXRPLd"}`))
 	})
 
-	if !quiet {
-		listenAddr := fmt.Sprintf("%s:%d", bindAddr, port)
-		if bindAddr == "" {
-			listenAddr = fmt.Sprintf(":%d", port)
-		}
+	// Register WebSocket endpoint - accepts connections at root path
+	wsMux.Handle("/", wsServer)
 
+	if !quiet {
 		fmt.Println("Server Configuration:")
 		fmt.Printf("  - HTTP JSON-RPC: http://localhost:%d/\n", port)
 		fmt.Printf("  - HTTP JSON-RPC: http://localhost:%d/rpc\n", port)
-		fmt.Printf("  - WebSocket:     ws://localhost:%d/ws\n", port)
+		fmt.Printf("  - WebSocket:     ws://localhost:%d/\n", wsPort)
 		fmt.Printf("  - Health Check:  http://localhost:%d/health\n", port)
 		fmt.Println()
 		fmt.Println("Supported Features:")
@@ -288,20 +291,28 @@ func runServer(cmd *cobra.Command, args []string) {
 		fmt.Printf("  - Error codes matching rippled\n")
 		fmt.Printf("  - Multi-version API support (v1, v2, v3)\n")
 		fmt.Println()
-		fmt.Println("Note: This is a skeleton implementation with TODO placeholders")
-		fmt.Println("Real functionality requires integration with storage and consensus systems")
-		fmt.Println()
-		fmt.Printf("Starting server on %s...\n", listenAddr)
+		fmt.Printf("Starting HTTP server on port %d...\n", port)
+		fmt.Printf("Starting WebSocket server on port %d...\n", wsPort)
 	}
 
-	// Determine listen address
-	listenAddr := fmt.Sprintf("%s:%d", bindAddr, port)
+	// Determine listen addresses
+	httpAddr := fmt.Sprintf("%s:%d", bindAddr, port)
+	wsAddr := fmt.Sprintf("%s:%d", bindAddr, wsPort)
 	if bindAddr == "" {
-		listenAddr = fmt.Sprintf(":%d", port)
+		httpAddr = fmt.Sprintf(":%d", port)
+		wsAddr = fmt.Sprintf(":%d", wsPort)
 	}
 
-	if err := http.ListenAndServe(listenAddr, nil); err != nil {
-		log.Fatal("Server failed to start:", err)
+	// Start WebSocket server in a goroutine
+	go func() {
+		if err := http.ListenAndServe(wsAddr, wsMux); err != nil {
+			log.Fatal("WebSocket server failed to start:", err)
+		}
+	}()
+
+	// Start HTTP server (blocks)
+	if err := http.ListenAndServe(httpAddr, httpMux); err != nil {
+		log.Fatal("HTTP server failed to start:", err)
 	}
 }
 
