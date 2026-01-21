@@ -1,6 +1,4 @@
-// Package ledgersync implements ledger synchronization message handlers for XRPL.
-// It handles ledger data requests, proof paths, and replay deltas.
-package ledgersync
+package peermanagement
 
 import (
 	"context"
@@ -8,7 +6,6 @@ import (
 	"time"
 
 	"github.com/LeJamon/goXRPLd/internal/peermanagement/message"
-	"github.com/LeJamon/goXRPLd/internal/peermanagement/protocol"
 )
 
 // LedgerDataType represents the type of ledger data being requested.
@@ -43,6 +40,7 @@ const (
 	RequestStateTimeout
 )
 
+// Ledger sync constants.
 const (
 	// DefaultRequestTimeout is the default timeout for ledger data requests.
 	DefaultRequestTimeout = 30 * time.Second
@@ -61,7 +59,7 @@ type LedgerRequest struct {
 	CreatedAt    time.Time
 	SentAt       time.Time
 	CompletedAt  time.Time
-	Peer         protocol.PeerID
+	Peer         PeerID
 	ResponseData [][]byte
 	Error        error
 }
@@ -76,54 +74,58 @@ type LedgerProvider interface {
 	GetTransactionNode(ledgerHash []byte, nodeID []byte) ([]byte, error)
 }
 
-// Handler handles ledger synchronization messages.
-type Handler struct {
+// LedgerSyncHandler handles ledger synchronization messages.
+type LedgerSyncHandler struct {
 	mu sync.RWMutex
 
 	// Pending requests
 	requests map[uint64]*LedgerRequest
 
 	// Request callbacks
-	onLedgerData func(ctx context.Context, peerID protocol.PeerID, data *message.LedgerData)
-	onProofPath  func(ctx context.Context, peerID protocol.PeerID, response *message.ProofPathResponse)
+	onLedgerData func(ctx context.Context, peerID PeerID, data *message.LedgerData)
+	onProofPath  func(ctx context.Context, peerID PeerID, response *message.ProofPathResponse)
 
 	// Data provider for responding to requests
 	provider LedgerProvider
 
 	// Request ID counter
 	nextRequestID uint64
+
+	// Event channel for sending responses
+	events chan<- Event
 }
 
-// NewHandler creates a new ledger sync handler.
-func NewHandler() *Handler {
-	return &Handler{
+// NewLedgerSyncHandler creates a new ledger sync handler.
+func NewLedgerSyncHandler(events chan<- Event) *LedgerSyncHandler {
+	return &LedgerSyncHandler{
 		requests: make(map[uint64]*LedgerRequest),
+		events:   events,
 	}
 }
 
 // SetLedgerDataCallback sets the callback for incoming ledger data.
-func (h *Handler) SetLedgerDataCallback(fn func(ctx context.Context, peerID protocol.PeerID, data *message.LedgerData)) {
+func (h *LedgerSyncHandler) SetLedgerDataCallback(fn func(ctx context.Context, peerID PeerID, data *message.LedgerData)) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.onLedgerData = fn
 }
 
 // SetProofPathCallback sets the callback for incoming proof paths.
-func (h *Handler) SetProofPathCallback(fn func(ctx context.Context, peerID protocol.PeerID, response *message.ProofPathResponse)) {
+func (h *LedgerSyncHandler) SetProofPathCallback(fn func(ctx context.Context, peerID PeerID, response *message.ProofPathResponse)) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.onProofPath = fn
 }
 
 // SetProvider sets the ledger data provider for responding to requests.
-func (h *Handler) SetProvider(provider LedgerProvider) {
+func (h *LedgerSyncHandler) SetProvider(provider LedgerProvider) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.provider = provider
 }
 
 // HandleMessage handles a ledger sync message.
-func (h *Handler) HandleMessage(ctx context.Context, peerID protocol.PeerID, msg message.Message) error {
+func (h *LedgerSyncHandler) HandleMessage(ctx context.Context, peerID PeerID, msg message.Message) error {
 	switch m := msg.(type) {
 	case *message.GetLedger:
 		return h.handleGetLedger(ctx, peerID, m)
@@ -142,7 +144,7 @@ func (h *Handler) HandleMessage(ctx context.Context, peerID protocol.PeerID, msg
 }
 
 // handleGetLedger handles incoming ledger data requests.
-func (h *Handler) handleGetLedger(ctx context.Context, peerID protocol.PeerID, req *message.GetLedger) error {
+func (h *LedgerSyncHandler) handleGetLedger(ctx context.Context, peerID PeerID, req *message.GetLedger) error {
 	h.mu.RLock()
 	provider := h.provider
 	h.mu.RUnlock()
@@ -180,13 +182,23 @@ func (h *Handler) handleGetLedger(ctx context.Context, peerID protocol.PeerID, r
 		}
 	}
 
-	// TODO: Send response through peer connection
-	_ = response
+	// Send response via events channel
+	if h.events != nil && len(response.Nodes) > 0 {
+		encoded, err := message.Encode(response)
+		if err == nil {
+			h.events <- Event{
+				Type:    EventLedgerResponse,
+				PeerID:  peerID,
+				Payload: encoded,
+			}
+		}
+	}
+
 	return nil
 }
 
 // handleLedgerData handles incoming ledger data responses.
-func (h *Handler) handleLedgerData(ctx context.Context, peerID protocol.PeerID, data *message.LedgerData) error {
+func (h *LedgerSyncHandler) handleLedgerData(ctx context.Context, peerID PeerID, data *message.LedgerData) error {
 	h.mu.RLock()
 	callback := h.onLedgerData
 	h.mu.RUnlock()
@@ -199,13 +211,13 @@ func (h *Handler) handleLedgerData(ctx context.Context, peerID protocol.PeerID, 
 }
 
 // handleProofPathRequest handles proof path requests.
-func (h *Handler) handleProofPathRequest(ctx context.Context, peerID protocol.PeerID, req *message.ProofPathRequest) error {
+func (h *LedgerSyncHandler) handleProofPathRequest(ctx context.Context, peerID PeerID, req *message.ProofPathRequest) error {
 	// TODO: Implement proof path generation
 	return nil
 }
 
 // handleProofPathResponse handles proof path responses.
-func (h *Handler) handleProofPathResponse(ctx context.Context, peerID protocol.PeerID, resp *message.ProofPathResponse) error {
+func (h *LedgerSyncHandler) handleProofPathResponse(ctx context.Context, peerID PeerID, resp *message.ProofPathResponse) error {
 	h.mu.RLock()
 	callback := h.onProofPath
 	h.mu.RUnlock()
@@ -218,19 +230,19 @@ func (h *Handler) handleProofPathResponse(ctx context.Context, peerID protocol.P
 }
 
 // handleReplayDeltaRequest handles replay delta requests.
-func (h *Handler) handleReplayDeltaRequest(ctx context.Context, peerID protocol.PeerID, req *message.ReplayDeltaRequest) error {
+func (h *LedgerSyncHandler) handleReplayDeltaRequest(ctx context.Context, peerID PeerID, req *message.ReplayDeltaRequest) error {
 	// TODO: Implement replay delta generation
 	return nil
 }
 
 // handleReplayDeltaResponse handles replay delta responses.
-func (h *Handler) handleReplayDeltaResponse(ctx context.Context, peerID protocol.PeerID, resp *message.ReplayDeltaResponse) error {
+func (h *LedgerSyncHandler) handleReplayDeltaResponse(ctx context.Context, peerID PeerID, resp *message.ReplayDeltaResponse) error {
 	// TODO: Process replay delta
 	return nil
 }
 
 // CreateRequest creates a new ledger data request.
-func (h *Handler) CreateRequest(ledgerHash []byte, ledgerSeq uint32, dataType LedgerDataType) *LedgerRequest {
+func (h *LedgerSyncHandler) CreateRequest(ledgerHash []byte, ledgerSeq uint32, dataType LedgerDataType) *LedgerRequest {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -248,7 +260,7 @@ func (h *Handler) CreateRequest(ledgerHash []byte, ledgerSeq uint32, dataType Le
 }
 
 // GetPendingRequests returns all pending requests for a peer.
-func (h *Handler) GetPendingRequests(peerID protocol.PeerID) []*LedgerRequest {
+func (h *LedgerSyncHandler) GetPendingRequests(peerID PeerID) []*LedgerRequest {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
@@ -262,7 +274,7 @@ func (h *Handler) GetPendingRequests(peerID protocol.PeerID) []*LedgerRequest {
 }
 
 // CleanupExpiredRequests removes timed-out requests.
-func (h *Handler) CleanupExpiredRequests() {
+func (h *LedgerSyncHandler) CleanupExpiredRequests() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -276,7 +288,7 @@ func (h *Handler) CleanupExpiredRequests() {
 }
 
 // PendingRequestCount returns the number of pending requests.
-func (h *Handler) PendingRequestCount() int {
+func (h *LedgerSyncHandler) PendingRequestCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
