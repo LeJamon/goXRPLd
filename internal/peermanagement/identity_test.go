@@ -1,4 +1,4 @@
-package identity
+package peermanagement
 
 import (
 	"bytes"
@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -47,7 +48,6 @@ func TestNewIdentity(t *testing.T) {
 }
 
 // TestNewIdentityFromSeed tests creating identity from seed
-// Note: Our seed derivation uses SHA-512 hash of seed, different from rippled's generateSeed
 func TestNewIdentityFromSeed(t *testing.T) {
 	// Test that same seed produces same identity
 	seed1 := []byte("test_seed_16bytes")
@@ -106,7 +106,7 @@ func TestNewIdentityFromPrivateKey(t *testing.T) {
 // TestNewIdentityFromPrivateKey_Invalid tests invalid private keys
 func TestNewIdentityFromPrivateKey_Invalid(t *testing.T) {
 	tests := []struct {
-		name   string
+		name    string
 		privKey string
 	}{
 		{"empty", ""},
@@ -148,12 +148,11 @@ func TestSign(t *testing.T) {
 	hash := h.Sum(nil)[:32]
 
 	// Verify signature is valid
-	assert.True(t, parsedSig.Verify(hash, id.publicKey),
+	assert.True(t, parsedSig.Verify(hash, id.BtcecPublicKey()),
 		"signature verification failed")
 }
 
 // TestSign_DifferentMessages tests that different messages produce different signatures
-// Reference: rippled SecretKey_test.cpp testDigestSigning - wrong digest test
 func TestSign_DifferentMessages(t *testing.T) {
 	id, err := NewIdentity()
 	require.NoError(t, err)
@@ -178,39 +177,8 @@ func TestSign_DifferentMessages(t *testing.T) {
 	h.Write(msg2)
 	wrongHash := h.Sum(nil)[:32]
 
-	assert.False(t, parsedSig1.Verify(wrongHash, id.publicKey),
+	assert.False(t, parsedSig1.Verify(wrongHash, id.BtcecPublicKey()),
 		"signature should not verify wrong message")
-}
-
-// TestSign_Deterministic tests that same identity signs same message consistently
-func TestSign_Deterministic(t *testing.T) {
-	// Create identity from fixed seed for reproducibility
-	seed, _ := hex.DecodeString("DEDCE9CE67B451D852FD4E846FCDE31C")
-	id, err := NewIdentityFromSeed(seed)
-	require.NoError(t, err)
-
-	message := []byte("deterministic test message")
-
-	// Sign multiple times
-	var sigs [][]byte
-	for i := 0; i < 5; i++ {
-		sig, err := id.Sign(message)
-		require.NoError(t, err)
-		sigs = append(sigs, sig)
-	}
-
-	// All signatures should verify (even if not identical due to k randomness)
-	for i, sig := range sigs {
-		parsedSig, err := ecdsa.ParseDERSignature(sig)
-		require.NoError(t, err)
-
-		h := sha512.New()
-		h.Write(message)
-		hash := h.Sum(nil)[:32]
-
-		assert.True(t, parsedSig.Verify(hash, id.publicKey),
-			"signature %d failed verification", i)
-	}
 }
 
 // TestEncodedPublicKey tests the Base58 encoding of public keys
@@ -229,19 +197,6 @@ func TestEncodedPublicKey(t *testing.T) {
 	// Length should be around 52-53 characters for node public keys
 	assert.True(t, len(encoded) >= 50 && len(encoded) <= 55,
 		"encoded length %d outside expected range", len(encoded))
-}
-
-// TestEncodedPublicKey_KnownVector tests encoding with known test vector
-func TestEncodedPublicKey_KnownVector(t *testing.T) {
-	// From rippled PublicKey_test.cpp - masterpassphrase secp256k1 key
-	// n94a1u4jAz288pZLtw6yFWVbi89YamiC6JBXPVUj5zmExe5fTVg9
-	seed, _ := hex.DecodeString("DEDCE9CE67B451D852FD4E846FCDE31C")
-	id, err := NewIdentityFromSeed(seed)
-	require.NoError(t, err)
-
-	encoded := id.EncodedPublicKey()
-	assert.True(t, strings.HasPrefix(encoded, "n"))
-	t.Logf("Encoded public key: %s", encoded)
 }
 
 // TestGenerateSeed tests random seed generation
@@ -287,5 +242,170 @@ func TestIdentityRoundTrip(t *testing.T) {
 	h.Write(message)
 	hash := h.Sum(nil)[:32]
 
-	assert.True(t, parsedSig.Verify(hash, restored.publicKey))
+	assert.True(t, parsedSig.Verify(hash, restored.BtcecPublicKey()))
+}
+
+// ============== PublicKeyToken Tests (from token/) ==============
+
+// Test vectors from rippled PublicKey_test.cpp testBase58
+var base58TestVectors = []struct {
+	name      string
+	publicKey string // hex-encoded compressed public key
+}{
+	{
+		name:      "masterpassphrase_secp256k1",
+		publicKey: "0330E7FC9D56BB25D6893BA3F317AE5BCF33B3291BD63DB32654A313222F7FD020",
+	},
+}
+
+// TestNewPublicKeyToken tests creating a PublicKeyToken from raw bytes
+func TestNewPublicKeyToken(t *testing.T) {
+	for _, tv := range base58TestVectors {
+		t.Run(tv.name, func(t *testing.T) {
+			pubKeyBytes, err := hex.DecodeString(tv.publicKey)
+			require.NoError(t, err)
+
+			pk, err := NewPublicKeyToken(pubKeyBytes)
+			require.NoError(t, err)
+			require.NotNil(t, pk)
+
+			// Round-trip: bytes should match
+			assert.Equal(t, pubKeyBytes, pk.Bytes())
+		})
+	}
+}
+
+// TestNewPublicKeyToken_Invalid tests invalid public key inputs
+func TestNewPublicKeyToken_Invalid(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+	}{
+		{"empty", []byte{}},
+		{"too_short", make([]byte, 32)},
+		{"too_long", make([]byte, 34)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewPublicKeyToken(tt.data)
+			assert.Error(t, err)
+		})
+	}
+}
+
+// TestParsePublicKeyToken_Empty tests empty string parsing
+func TestParsePublicKeyToken_Empty(t *testing.T) {
+	_, err := ParsePublicKeyToken("")
+	assert.Error(t, err)
+}
+
+// TestParsePublicKeyToken_Whitespace tests whitespace-only string
+func TestParsePublicKeyToken_Whitespace(t *testing.T) {
+	_, err := ParsePublicKeyToken(" ")
+	assert.Error(t, err)
+}
+
+// TestParsePublicKeyToken_Malformed tests malformed input
+func TestParsePublicKeyToken_Malformed(t *testing.T) {
+	_, err := ParsePublicKeyToken("!ty89234gh45")
+	assert.Error(t, err)
+}
+
+// TestPublicKeyTokenEncode tests encoding a public key to Base58
+func TestPublicKeyTokenEncode(t *testing.T) {
+	for _, tv := range base58TestVectors {
+		t.Run(tv.name, func(t *testing.T) {
+			pubKeyBytes, err := hex.DecodeString(tv.publicKey)
+			require.NoError(t, err)
+
+			pk, err := NewPublicKeyToken(pubKeyBytes)
+			require.NoError(t, err)
+
+			encoded := pk.Encode()
+
+			// Must start with 'n' (node public key prefix)
+			assert.True(t, strings.HasPrefix(encoded, "n"),
+				"encoded key should start with 'n', got: %s", encoded)
+
+			// Should be non-empty
+			assert.NotEmpty(t, encoded)
+		})
+	}
+}
+
+// TestPublicKeyTokenEncodeDecodeRoundTrip tests round-trip encoding and decoding
+func TestPublicKeyTokenEncodeDecodeRoundTrip(t *testing.T) {
+	// Generate multiple random keys and verify round-trip
+	for i := 0; i < 10; i++ {
+		t.Run("key_"+string(rune('A'+i)), func(t *testing.T) {
+			// Generate random key
+			privKey, err := btcec.NewPrivateKey()
+			require.NoError(t, err)
+
+			pk := NewPublicKeyTokenFromBtcec(privKey.PubKey())
+
+			// Encode
+			encoded := pk.Encode()
+			assert.NotEmpty(t, encoded)
+			assert.True(t, strings.HasPrefix(encoded, "n"))
+
+			// Decode
+			decoded, err := ParsePublicKeyToken(encoded)
+			require.NoError(t, err)
+
+			// Should be equal
+			assert.True(t, pk.Equal(decoded),
+				"round-trip failed: original != decoded")
+
+			// Bytes should match
+			assert.Equal(t, pk.Bytes(), decoded.Bytes())
+		})
+	}
+}
+
+// TestPublicKeyTokenEquality tests the Equal method
+func TestPublicKeyTokenEquality(t *testing.T) {
+	// Generate two different keys
+	privKey1, _ := btcec.NewPrivateKey()
+	privKey2, _ := btcec.NewPrivateKey()
+
+	pk1 := NewPublicKeyTokenFromBtcec(privKey1.PubKey())
+	pk2 := NewPublicKeyTokenFromBtcec(privKey2.PubKey())
+
+	// Same key should be equal to itself
+	assert.True(t, pk1.Equal(pk1))
+	assert.True(t, pk2.Equal(pk2))
+
+	// Different keys should not be equal
+	assert.False(t, pk1.Equal(pk2))
+	assert.False(t, pk2.Equal(pk1))
+
+	// Copy should be equal
+	pk1Copy, _ := NewPublicKeyToken(pk1.Bytes())
+	assert.True(t, pk1.Equal(pk1Copy))
+}
+
+// TestPublicKeyTokenEquality_Nil tests Equal with nil values
+func TestPublicKeyTokenEquality_Nil(t *testing.T) {
+	privKey, _ := btcec.NewPrivateKey()
+	pk := NewPublicKeyTokenFromBtcec(privKey.PubKey())
+
+	assert.False(t, pk.Equal(nil))
+
+	var nilPk *PublicKeyToken
+	assert.True(t, nilPk.Equal(nil))
+}
+
+// TestChecksumValidation tests that invalid checksums are rejected
+func TestChecksumValidation(t *testing.T) {
+	// Generate a valid encoded key
+	privKey, _ := btcec.NewPrivateKey()
+	pk := NewPublicKeyTokenFromBtcec(privKey.PubKey())
+	valid := pk.Encode()
+
+	// Corrupt the last character (part of checksum)
+	corrupted := valid[:len(valid)-1] + "X"
+	_, err := ParsePublicKeyToken(corrupted)
+	assert.Error(t, err)
 }
