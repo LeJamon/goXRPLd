@@ -7,8 +7,19 @@ const (
 	// maxTransferFee is the maximum transfer fee (50000 = 50%)
 	maxTransferFee = 50000
 
-	// maxTokenURILength is the maximum length of a token URI (256 bytes)
+	// maxTokenURILength is the maximum length of a token URI (256 bytes when encoded)
+	// Note: When provided in transactions, URI is hex-encoded, so the actual
+	// byte length is len(hexString)/2
 	maxTokenURILength = 256
+
+	// transferFeeDivisor is the divisor used for transfer fee calculation
+	// Transfer fee is in basis points where 50000 = 50%
+	// Calculation: amount * transferFee / transferFeeDivisor
+	transferFeeDivisor = 100000
+
+	// dirMaxTokensPerPage is the maximum number of NFTs per page
+	// Reference: rippled Protocol.h - dirMaxTokensPerPage = 32
+	dirMaxTokensPerPage = 32
 
 	// NFToken flags stored in NFTokenID
 	nftFlagBurnable     uint16 = 0x0001
@@ -278,7 +289,7 @@ func (n *NFTokenCreateOffer) TxType() Type {
 }
 
 // Validate validates the NFTokenCreateOffer transaction
-// Reference: rippled NFTokenCreateOffer.cpp preflight
+// Reference: rippled NFTokenCreateOffer.cpp preflight and tokenOfferCreatePreflight
 func (n *NFTokenCreateOffer) Validate() error {
 	if err := n.BaseTx.Validate(); err != nil {
 		return err
@@ -318,14 +329,26 @@ func (n *NFTokenCreateOffer) Validate() error {
 		return errors.New("temMALFORMED: Destination cannot be the same as Account")
 	}
 
+	// Expiration validation - expiration of 0 is invalid
+	if n.Expiration != nil && *n.Expiration == 0 {
+		return errors.New("temBAD_EXPIRATION: Expiration cannot be 0")
+	}
+
 	// Amount validation
 	if n.Amount.Currency == "" {
-		// XRP amount must be non-negative
-		// (negative check would be done during parsing)
+		// XRP amount
+		// For buy offers, zero amount is not allowed
+		if !isSellOffer && n.Amount.Value == "0" {
+			return errors.New("temBAD_AMOUNT: buy offer amount cannot be zero")
+		}
 	} else {
 		// IOU amount - check if OnlyXRP flag is set on the token
 		if nftFlags&nftFlagOnlyXRP != 0 {
 			return errors.New("temBAD_AMOUNT: NFToken requires XRP only")
+		}
+		// IOU amount of 0 is not allowed
+		if n.Amount.Value == "0" {
+			return errors.New("temBAD_AMOUNT: IOU amount cannot be zero")
 		}
 	}
 
@@ -496,8 +519,11 @@ func (n *NFTokenAcceptOffer) Validate() error {
 		if n.NFTokenSellOffer == "" || n.NFTokenBuyOffer == "" {
 			return errors.New("temMALFORMED: NFTokenBrokerFee requires both sell and buy offers")
 		}
-		// BrokerFee must be positive
-		// Note: Actual amount parsing and validation done elsewhere
+		// BrokerFee must be positive (greater than zero)
+		// Reference: rippled NFTokenAcceptOffer.cpp:56 - if (*bf <= beast::zero)
+		if n.NFTokenBrokerFee.Value == "0" || n.NFTokenBrokerFee.Value == "" {
+			return errors.New("temMALFORMED: NFTokenBrokerFee must be greater than zero")
+		}
 	}
 
 	// Validate offer IDs are valid hex strings (64 characters = 32 bytes)

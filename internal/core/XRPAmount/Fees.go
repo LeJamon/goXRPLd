@@ -1,11 +1,11 @@
 package XRPAmount
 
 type Fees struct {
-	base      XRPAmount
-	reserve   XRPAmount
-	increment XRPAmount
+	Base      XRPAmount
+	Reserve   XRPAmount
+	Increment XRPAmount
 }
 
 func (f *Fees) AccountReserve(ownerSize int64) XRPAmount {
-	return f.reserve + f.increment.Mul(ownerSize)
+	return f.Reserve + f.Increment.Mul(ownerSize)
 }

@@ -831,9 +831,13 @@ func writeResultJSON(path string, result *ReplayResult) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// updateSkipList updates the LedgerHashes entry (skip list) with the parent hash.
+// updateSkipList updates the LedgerHashes entries (skip lists) with the parent hash.
 // This mirrors rippled's Ledger::updateSkipList() function.
-// It maintains a rolling list of up to 256 recent ledger hashes.
+// There are TWO skip lists:
+// 1. "Every 256th ledger" skip list: Updated only when (prevIndex & 0xff) == 0,
+//    using keylet::skip(prevIndex). Records a hash of every 256th ledger.
+// 2. "Rolling 256" skip list: Always updated, using keylet::skip().
+//    Maintains a rolling window of the most recent 256 ledger hashes.
 func updateSkipList(l *ledger.Ledger, parentHash [32]byte, currentSeq uint32) error {
 	if currentSeq == 0 {
 		// Genesis ledger has no parent
@@ -842,14 +846,31 @@ func updateSkipList(l *ledger.Ledger, parentHash [32]byte, currentSeq uint32) er
 
 	prevIndex := currentSeq - 1
 
-	// Get the LedgerHashes keylet
-	k := keylet.LedgerHashes()
+	// 1. Update record of every 256th ledger (only when prevIndex is a multiple of 256)
+	if (prevIndex & 0xff) == 0 {
+		k := keylet.LedgerHashesForSeq(prevIndex)
+		if err := updateOrCreateSkipListEntry(l, k, parentHash, prevIndex, false); err != nil {
+			return fmt.Errorf("updating every-256th skip list: %w", err)
+		}
+	}
 
+	// 2. Update record of past 256 ledgers (always)
+	k := keylet.LedgerHashes()
+	if err := updateOrCreateSkipListEntry(l, k, parentHash, prevIndex, true); err != nil {
+		return fmt.Errorf("updating rolling-256 skip list: %w", err)
+	}
+
+	return nil
+}
+
+// updateOrCreateSkipListEntry updates or creates a skip list entry.
+// If rolling is true, it removes the oldest hash when at 256 hashes (rolling window).
+// If rolling is false, it just appends (for the every-256th ledger skip list).
+func updateOrCreateSkipListEntry(l *ledger.Ledger, k keylet.Keylet, parentHash [32]byte, prevIndex uint32, rolling bool) error {
 	// Read the existing entry
 	data, err := l.Read(k)
 	if err != nil {
-		// Entry doesn't exist - this shouldn't happen in a proper state
-		// but we can handle it by creating a new entry
+		// Entry doesn't exist - create a new one
 		return createSkipListEntry(l, k, parentHash, prevIndex)
 	}
 
@@ -878,8 +899,8 @@ func updateSkipList(l *ledger.Ledger, parentHash [32]byte, currentSeq uint32) er
 		}
 	}
 
-	// If we have 256 hashes, remove the oldest (first)
-	if len(hashes) >= 256 {
+	// If rolling and we have 256 hashes, remove the oldest (first)
+	if rolling && len(hashes) >= 256 {
 		hashes = hashes[1:]
 	}
 

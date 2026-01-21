@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"strconv"
 
+	"github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 )
 
@@ -164,54 +165,380 @@ func (e *Engine) applyXChainAddAccountCreateAttestation(tx *XChainAddAccountCrea
 
 // DID transactions
 
+// DIDData represents a DID ledger entry
+// Reference: rippled ledger_entries.macro ltDID
+type DIDData struct {
+	Account     [20]byte
+	OwnerNode   uint64
+	URI         string // hex-encoded
+	DIDDocument string // hex-encoded
+	Data        string // hex-encoded
+}
+
 // applyDIDSet applies a DIDSet transaction
+// Reference: rippled DID.cpp DIDSet::doApply
 func (e *Engine) applyDIDSet(tx *DIDSet, account *AccountRoot, metadata *Metadata) Result {
 	accountID, _ := decodeAccountID(tx.Account)
-	didKey := keylet.Account(accountID) // Simplified - would use DID keylet
+	didKey := keylet.DID(accountID)
 
-	exists, _ := e.view.Exists(didKey)
-	if exists {
+	// Check if DID already exists
+	existingData, err := e.view.Read(didKey)
+	if err == nil && existingData != nil {
 		// Update existing DID
+		// Parse existing DID
+		did, err := parseDID(existingData)
+		if err != nil {
+			return TefINTERNAL
+		}
+
+		// Update fields based on what's provided in transaction
+		// Reference: DID.cpp line 124-136
+		// If field is present in tx and empty, clear it
+		// If field is present in tx and non-empty, update it
+		// If field is not present in tx, leave it unchanged
+
+		previousFields := make(map[string]any)
+		finalFields := make(map[string]any)
+		finalFields["Account"] = tx.Account
+
+		// Process URI field
+		if tx.URI != "" {
+			// URI provided and non-empty - update it
+			if did.URI != "" && did.URI != tx.URI {
+				previousFields["URI"] = did.URI
+			}
+			did.URI = tx.URI
+			finalFields["URI"] = tx.URI
+		} else if tx.URI == "" && tx.Common.hasField("URI") {
+			// URI field present but empty - clear it
+			if did.URI != "" {
+				previousFields["URI"] = did.URI
+			}
+			did.URI = ""
+		} else {
+			// URI not in transaction - keep existing
+			if did.URI != "" {
+				finalFields["URI"] = did.URI
+			}
+		}
+
+		// Process DIDDocument field
+		if tx.DIDDocument != "" {
+			// DIDDocument provided and non-empty - update it
+			if did.DIDDocument != "" && did.DIDDocument != tx.DIDDocument {
+				previousFields["DIDDocument"] = did.DIDDocument
+			}
+			did.DIDDocument = tx.DIDDocument
+			finalFields["DIDDocument"] = tx.DIDDocument
+		} else if tx.DIDDocument == "" && tx.Common.hasField("DIDDocument") {
+			// DIDDocument field present but empty - clear it
+			if did.DIDDocument != "" {
+				previousFields["DIDDocument"] = did.DIDDocument
+			}
+			did.DIDDocument = ""
+		} else {
+			// DIDDocument not in transaction - keep existing
+			if did.DIDDocument != "" {
+				finalFields["DIDDocument"] = did.DIDDocument
+			}
+		}
+
+		// Process Data field
+		if tx.Data != "" {
+			// Data provided and non-empty - update it
+			if did.Data != "" && did.Data != tx.Data {
+				previousFields["Data"] = did.Data
+			}
+			did.Data = tx.Data
+			finalFields["Data"] = tx.Data
+		} else if tx.Data == "" && tx.Common.hasField("Data") {
+			// Data field present but empty - clear it
+			if did.Data != "" {
+				previousFields["Data"] = did.Data
+			}
+			did.Data = ""
+		} else {
+			// Data not in transaction - keep existing
+			if did.Data != "" {
+				finalFields["Data"] = did.Data
+			}
+		}
+
+		// Check that at least one field remains after update
+		// Reference: DID.cpp line 141-146
+		if did.URI == "" && did.DIDDocument == "" && did.Data == "" {
+			return TecEMPTY_DID
+		}
+
+		// Serialize and update the DID
+		updatedData, err := serializeDID(did, tx.Account)
+		if err != nil {
+			return TefINTERNAL
+		}
+
+		if err := e.view.Update(didKey, updatedData); err != nil {
+			return TefINTERNAL
+		}
+
+		// Record metadata
 		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
 			NodeType:        "ModifiedNode",
 			LedgerEntryType: "DID",
 			LedgerIndex:     hex.EncodeToString(didKey.Key[:]),
-			FinalFields: map[string]any{
-				"Account": tx.Account,
-			},
+			PreviousFields:  previousFields,
+			FinalFields:     finalFields,
 		})
-	} else {
-		// Create new DID
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "CreatedNode",
-			LedgerEntryType: "DID",
-			LedgerIndex:     hex.EncodeToString(didKey.Key[:]),
-			NewFields: map[string]any{
-				"Account": tx.Account,
-			},
-		})
-		account.OwnerCount++
+
+		return TesSUCCESS
 	}
+
+	// Create new DID
+	// Reference: DID.cpp line 151-171
+
+	// Check reserve availability
+	// Reference: DID.cpp addSLE function line 90-98
+	reserve := e.AccountReserve(account.OwnerCount + 1)
+	if account.Balance < reserve {
+		return TecINSUFFICIENT_RESERVE
+	}
+
+	// Create new DID entry
+	did := &DIDData{
+		Account:   accountID,
+		OwnerNode: 0, // Will be set when added to owner directory
+	}
+
+	// Set fields (only non-empty ones)
+	// Reference: DID.cpp line 155-162
+	newFields := make(map[string]any)
+	newFields["Account"] = tx.Account
+
+	if tx.URI != "" {
+		did.URI = tx.URI
+		newFields["URI"] = tx.URI
+	}
+	if tx.DIDDocument != "" {
+		did.DIDDocument = tx.DIDDocument
+		newFields["DIDDocument"] = tx.DIDDocument
+	}
+	if tx.Data != "" {
+		did.Data = tx.Data
+		newFields["Data"] = tx.Data
+	}
+
+	// Check that at least one field is set (fixEmptyDID amendment)
+	// Reference: DID.cpp line 163-169
+	if did.URI == "" && did.DIDDocument == "" && did.Data == "" {
+		// With fixEmptyDID amendment enabled, reject empty DIDs
+		return TecEMPTY_DID
+	}
+
+	// Serialize the DID
+	didData, err := serializeDID(did, tx.Account)
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	// Insert the DID
+	if err := e.view.Insert(didKey, didData); err != nil {
+		return TefINTERNAL
+	}
+
+	// Increment owner count
+	account.OwnerCount++
+
+	// Record metadata
+	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
+		NodeType:        "CreatedNode",
+		LedgerEntryType: "DID",
+		LedgerIndex:     hex.EncodeToString(didKey.Key[:]),
+		NewFields:       newFields,
+	})
 
 	return TesSUCCESS
 }
 
 // applyDIDDelete applies a DIDDelete transaction
+// Reference: rippled DID.cpp DIDDelete::doApply and deleteSLE
 func (e *Engine) applyDIDDelete(tx *DIDDelete, account *AccountRoot, metadata *Metadata) Result {
 	accountID, _ := decodeAccountID(tx.Account)
-	didKey := keylet.Account(accountID)
+	didKey := keylet.DID(accountID)
 
+	// Check if DID exists
+	// Reference: DID.cpp deleteSLE line 192-194
+	existingData, err := e.view.Read(didKey)
+	if err != nil || existingData == nil {
+		return TecNO_ENTRY
+	}
+
+	// Parse the existing DID for metadata
+	did, err := parseDID(existingData)
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	// Delete the DID entry
+	// Reference: DID.cpp deleteSLE line 221-222
+	if err := e.view.Erase(didKey); err != nil {
+		return TefINTERNAL
+	}
+
+	// Decrement owner count
+	// Reference: DID.cpp deleteSLE line 218
 	if account.OwnerCount > 0 {
 		account.OwnerCount--
 	}
 
+	// Build final fields for metadata
+	finalFields := make(map[string]any)
+	finalFields["Account"] = tx.Account
+	if did.URI != "" {
+		finalFields["URI"] = did.URI
+	}
+	if did.DIDDocument != "" {
+		finalFields["DIDDocument"] = did.DIDDocument
+	}
+	if did.Data != "" {
+		finalFields["Data"] = did.Data
+	}
+
+	// Record metadata
 	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
 		NodeType:        "DeletedNode",
 		LedgerEntryType: "DID",
 		LedgerIndex:     hex.EncodeToString(didKey.Key[:]),
+		FinalFields:     finalFields,
 	})
 
 	return TesSUCCESS
+}
+
+// serializeDID serializes a DID ledger entry using the binary codec
+func serializeDID(did *DIDData, accountAddress string) ([]byte, error) {
+	jsonObj := map[string]any{
+		"LedgerEntryType": "DID",
+		"Account":         accountAddress,
+		"OwnerNode":       "0",
+		"Flags":           uint32(0),
+	}
+
+	if did.URI != "" {
+		jsonObj["URI"] = did.URI
+	}
+	if did.DIDDocument != "" {
+		jsonObj["DIDDocument"] = did.DIDDocument
+	}
+	if did.Data != "" {
+		jsonObj["Data"] = did.Data
+	}
+
+	hexStr, err := binarycodec.Encode(jsonObj)
+	if err != nil {
+		return nil, err
+	}
+
+	return hex.DecodeString(hexStr)
+}
+
+// parseDID parses a DID ledger entry from binary data
+func parseDID(data []byte) (*DIDData, error) {
+	did := &DIDData{}
+	offset := 0
+
+	for offset < len(data) {
+		if offset+1 > len(data) {
+			break
+		}
+
+		header := data[offset]
+		offset++
+
+		typeCode := (header >> 4) & 0x0F
+		fieldCode := header & 0x0F
+
+		if typeCode == 0 {
+			if offset >= len(data) {
+				break
+			}
+			typeCode = data[offset]
+			offset++
+		}
+
+		if fieldCode == 0 {
+			if offset >= len(data) {
+				break
+			}
+			fieldCode = data[offset]
+			offset++
+		}
+
+		switch typeCode {
+		case fieldTypeUInt16:
+			if offset+2 > len(data) {
+				return did, nil
+			}
+			offset += 2
+
+		case fieldTypeUInt32:
+			if offset+4 > len(data) {
+				return did, nil
+			}
+			offset += 4
+
+		case fieldTypeUInt64:
+			if offset+8 > len(data) {
+				return did, nil
+			}
+			value := binary.BigEndian.Uint64(data[offset : offset+8])
+			if fieldCode == 34 { // OwnerNode
+				did.OwnerNode = value
+			}
+			offset += 8
+
+		case fieldTypeAccountID:
+			if offset+21 > len(data) {
+				return did, nil
+			}
+			length := data[offset]
+			offset++
+			if length == 20 {
+				if fieldCode == 1 { // Account
+					copy(did.Account[:], data[offset:offset+20])
+				}
+				offset += 20
+			}
+
+		case fieldTypeHash256:
+			if offset+32 > len(data) {
+				return did, nil
+			}
+			offset += 32
+
+		case fieldTypeBlob:
+			if offset >= len(data) {
+				return did, nil
+			}
+			length := int(data[offset])
+			offset++
+			if offset+length > len(data) {
+				return did, nil
+			}
+			switch fieldCode {
+			case 9: // URI (sfURI field code)
+				did.URI = hex.EncodeToString(data[offset : offset+length])
+			case 26: // DIDDocument (sfDIDDocument field code)
+				did.DIDDocument = hex.EncodeToString(data[offset : offset+length])
+			case 27: // Data (sfData field code)
+				did.Data = hex.EncodeToString(data[offset : offset+length])
+			}
+			offset += length
+
+		default:
+			return did, nil
+		}
+	}
+
+	return did, nil
 }
 
 // Oracle transactions

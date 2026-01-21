@@ -90,10 +90,25 @@ func Amendments() Keylet {
 }
 
 // LedgerHashes returns the keylet for the skip list / ledger hashes entry.
+// This is the "rolling 256" skip list that tracks the most recent 256 ledger hashes.
 func LedgerHashes() Keylet {
 	return Keylet{
 		Type: entry.TypeLedgerHashes,
 		Key:  indexHash(spaceSkip),
+	}
+}
+
+// LedgerHashesForSeq returns the keylet for a skip list entry that records
+// every 256th ledger hash. This is updated only when (prevIndex & 0xff) == 0.
+// The key is computed using (ledgerSeq >> 16) to group ledgers into chunks of 65536.
+// Reference: rippled Indexes.cpp skip(LedgerIndex ledger)
+func LedgerHashesForSeq(ledgerSeq uint32) Keylet {
+	// Include ledgerSeq >> 16 in the hash
+	seqBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(seqBytes, ledgerSeq>>16)
+	return Keylet{
+		Type: entry.TypeLedgerHashes,
+		Key:  indexHash(spaceSkip, seqBytes),
 	}
 }
 
@@ -400,5 +415,14 @@ func VaultByID(vaultID [32]byte) Keylet {
 	return Keylet{
 		Type: entry.TypeVault,
 		Key:  vaultID,
+	}
+}
+
+// DID returns the keylet for a DID (Decentralized Identifier) entry.
+// Reference: rippled Indexes.cpp did(AccountID const& account)
+func DID(accountID [20]byte) Keylet {
+	return Keylet{
+		Type: entry.TypeDID,
+		Key:  indexHash(spaceDID, accountID[:]),
 	}
 }

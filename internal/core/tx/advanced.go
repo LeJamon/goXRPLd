@@ -84,13 +84,39 @@ func (n *NFTokenModify) TxType() Type {
 }
 
 // Validate validates the NFTokenModify transaction
+// Reference: rippled NFTokenModify.cpp preflight
 func (n *NFTokenModify) Validate() error {
 	if err := n.BaseTx.Validate(); err != nil {
 		return err
 	}
 
+	// Check for invalid flags (no flags are valid for NFTokenModify)
+	// Reference: rippled NFTokenModify.cpp:38 - if (ctx.tx.getFlags() & tfUniversalMask)
+	if n.GetFlags() != 0 {
+		return errors.New("temINVALID_FLAG: NFTokenModify does not accept any flags")
+	}
+
 	if n.NFTokenID == "" {
-		return errors.New("NFTokenID is required")
+		return errors.New("temMALFORMED: NFTokenID is required")
+	}
+
+	// Owner cannot be the same as Account
+	// Reference: rippled NFTokenModify.cpp:41 - if (auto owner = ctx.tx[~sfOwner]; owner == ctx.tx[sfAccount])
+	if n.Owner != "" && n.Owner == n.Account {
+		return errors.New("temMALFORMED: Owner cannot be the same as Account")
+	}
+
+	// URI validation: if present, must not be empty and not exceed maxTokenURILength
+	// Reference: rippled NFTokenModify.cpp:44-47
+	if n.URI != "" {
+		// URI in transactions is hex-encoded, so actual byte length is len/2
+		uriBytes := len(n.URI) / 2
+		if uriBytes == 0 {
+			return errors.New("temMALFORMED: URI cannot be empty")
+		}
+		if uriBytes > maxTokenURILength {
+			return errors.New("temMALFORMED: URI too long")
+		}
 	}
 
 	return nil
