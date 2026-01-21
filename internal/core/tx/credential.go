@@ -1,6 +1,30 @@
 package tx
 
-import "errors"
+import (
+	"encoding/hex"
+	"errors"
+)
+
+// Credential constants matching rippled Protocol.h
+const (
+	// MaxCredentialURILength is the maximum length of a URI inside a Credential (256 bytes)
+	MaxCredentialURILength = 256
+
+	// MaxCredentialTypeLength is the maximum length of CredentialType (64 bytes)
+	MaxCredentialTypeLength = 64
+)
+
+// Credential validation errors
+var (
+	ErrCredentialTypeTooLong  = errors.New("temMALFORMED: CredentialType exceeds maximum length")
+	ErrCredentialTypeEmpty    = errors.New("temMALFORMED: CredentialType is empty")
+	ErrCredentialURITooLong   = errors.New("temMALFORMED: URI exceeds maximum length")
+	ErrCredentialURIEmpty     = errors.New("temMALFORMED: URI is empty")
+	ErrCredentialNoSubject    = errors.New("temMALFORMED: Subject is required")
+	ErrCredentialNoIssuer     = errors.New("temINVALID_ACCOUNT_ID: Issuer field zeroed")
+	ErrCredentialNoFields     = errors.New("temMALFORMED: No Subject or Issuer fields")
+	ErrCredentialZeroAccount  = errors.New("temINVALID_ACCOUNT_ID: Subject or Issuer field zeroed")
+)
 
 // CredentialCreate creates a credential.
 type CredentialCreate struct {
@@ -34,17 +58,53 @@ func (c *CredentialCreate) TxType() Type {
 }
 
 // Validate validates the CredentialCreate transaction
+// Reference: rippled Credentials.cpp CredentialCreate::preflight()
 func (c *CredentialCreate) Validate() error {
 	if err := c.BaseTx.Validate(); err != nil {
 		return err
 	}
 
-	if c.Subject == "" {
-		return errors.New("Subject is required")
+	// Check for invalid flags (tfUniversalMask)
+	// Reference: rippled Credentials.cpp:66-71
+	if c.Common.Flags != nil && *c.Common.Flags&tfUniversal != 0 {
+		return ErrInvalidFlags
 	}
 
+	// Subject is required
+	// Reference: rippled Credentials.cpp:73-77
+	if c.Subject == "" {
+		return ErrCredentialNoSubject
+	}
+
+	// Validate URI field length (optional but if present must be valid)
+	// Reference: rippled Credentials.cpp:79-84
+	if c.URI != "" {
+		decoded, err := hex.DecodeString(c.URI)
+		if err != nil {
+			return errors.New("temMALFORMED: URI must be valid hex string")
+		}
+		if len(decoded) == 0 {
+			return ErrCredentialURIEmpty
+		}
+		if len(decoded) > MaxCredentialURILength {
+			return ErrCredentialURITooLong
+		}
+	}
+
+	// Validate CredentialType field (required, max 64 bytes)
+	// Reference: rippled Credentials.cpp:86-92
 	if c.CredentialType == "" {
-		return errors.New("CredentialType is required")
+		return ErrCredentialTypeEmpty
+	}
+	decoded, err := hex.DecodeString(c.CredentialType)
+	if err != nil {
+		return errors.New("temMALFORMED: CredentialType must be valid hex string")
+	}
+	if len(decoded) == 0 {
+		return ErrCredentialTypeEmpty
+	}
+	if len(decoded) > MaxCredentialTypeLength {
+		return ErrCredentialTypeTooLong
 	}
 
 	return nil
@@ -65,6 +125,11 @@ func (c *CredentialCreate) Flatten() (map[string]any, error) {
 	}
 
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (c *CredentialCreate) RequiredAmendments() []string {
+	return []string{AmendmentCredentials}
 }
 
 // CredentialAccept accepts a credential.
@@ -93,17 +158,38 @@ func (c *CredentialAccept) TxType() Type {
 }
 
 // Validate validates the CredentialAccept transaction
+// Reference: rippled Credentials.cpp CredentialAccept::preflight()
 func (c *CredentialAccept) Validate() error {
 	if err := c.BaseTx.Validate(); err != nil {
 		return err
 	}
 
-	if c.Issuer == "" {
-		return errors.New("Issuer is required")
+	// Check for invalid flags (tfUniversalMask)
+	// Reference: rippled Credentials.cpp:304-308
+	if c.Common.Flags != nil && *c.Common.Flags&tfUniversal != 0 {
+		return ErrInvalidFlags
 	}
 
+	// Issuer is required and must not be zero
+	// Reference: rippled Credentials.cpp:310-314
+	if c.Issuer == "" {
+		return ErrCredentialNoIssuer
+	}
+
+	// Validate CredentialType field (required, max 64 bytes)
+	// Reference: rippled Credentials.cpp:316-323
 	if c.CredentialType == "" {
-		return errors.New("CredentialType is required")
+		return ErrCredentialTypeEmpty
+	}
+	decoded, err := hex.DecodeString(c.CredentialType)
+	if err != nil {
+		return errors.New("temMALFORMED: CredentialType must be valid hex string")
+	}
+	if len(decoded) == 0 {
+		return ErrCredentialTypeEmpty
+	}
+	if len(decoded) > MaxCredentialTypeLength {
+		return ErrCredentialTypeTooLong
 	}
 
 	return nil
@@ -117,6 +203,11 @@ func (c *CredentialAccept) Flatten() (map[string]any, error) {
 	m["CredentialType"] = c.CredentialType
 
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (c *CredentialAccept) RequiredAmendments() []string {
+	return []string{AmendmentCredentials}
 }
 
 // CredentialDelete deletes a credential.
@@ -147,13 +238,42 @@ func (c *CredentialDelete) TxType() Type {
 }
 
 // Validate validates the CredentialDelete transaction
+// Reference: rippled Credentials.cpp CredentialDelete::preflight()
 func (c *CredentialDelete) Validate() error {
 	if err := c.BaseTx.Validate(); err != nil {
 		return err
 	}
 
+	// Check for invalid flags (tfUniversalMask)
+	// Reference: rippled Credentials.cpp:217-222
+	if c.Common.Flags != nil && *c.Common.Flags&tfUniversal != 0 {
+		return ErrInvalidFlags
+	}
+
+	// At least one of Subject or Issuer must be present
+	// Reference: rippled Credentials.cpp:224-233
+	if c.Subject == "" && c.Issuer == "" {
+		return ErrCredentialNoFields
+	}
+
+	// If present, Subject and Issuer must not be zero accounts
+	// Reference: rippled Credentials.cpp:235-241
+	// (In Go, empty string already handles this case)
+
+	// Validate CredentialType field (required, max 64 bytes)
+	// Reference: rippled Credentials.cpp:243-249
 	if c.CredentialType == "" {
-		return errors.New("CredentialType is required")
+		return ErrCredentialTypeEmpty
+	}
+	decoded, err := hex.DecodeString(c.CredentialType)
+	if err != nil {
+		return errors.New("temMALFORMED: CredentialType must be valid hex string")
+	}
+	if len(decoded) == 0 {
+		return ErrCredentialTypeEmpty
+	}
+	if len(decoded) > MaxCredentialTypeLength {
+		return ErrCredentialTypeTooLong
 	}
 
 	return nil
@@ -173,4 +293,9 @@ func (c *CredentialDelete) Flatten() (map[string]any, error) {
 	}
 
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (c *CredentialDelete) RequiredAmendments() []string {
+	return []string{AmendmentCredentials}
 }

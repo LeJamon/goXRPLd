@@ -10,6 +10,7 @@ import (
 
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
 )
@@ -143,6 +144,10 @@ type EngineConfig struct {
 	// ParentCloseTime is the close time of the parent ledger (in Ripple epoch seconds)
 	// This is used for checking offer/escrow expiration
 	ParentCloseTime uint32
+
+	// Rules contains the amendment rules for this ledger
+	// Used to check if transactions' required amendments are enabled
+	Rules *amendment.Rules
 }
 
 // LedgerView provides read/write access to ledger state
@@ -418,6 +423,22 @@ func (e *Engine) Apply(tx Transaction) ApplyResult {
 
 // preflight performs initial validation on the transaction
 func (e *Engine) preflight(tx Transaction) Result {
+	// Check amendment requirements first (before any other validation)
+	// This matches rippled's behavior where amendment checks are done early
+	if e.config.Rules != nil {
+		requiredAmendments := tx.RequiredAmendments()
+		for _, amendmentName := range requiredAmendments {
+			feature := amendment.GetFeatureByName(amendmentName)
+			if feature == nil {
+				// Unknown amendment - this shouldn't happen but handle gracefully
+				continue
+			}
+			if !e.config.Rules.Enabled(feature.ID) {
+				return TemDISABLED
+			}
+		}
+	}
+
 	// Validate common fields
 	common := tx.GetCommon()
 

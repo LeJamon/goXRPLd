@@ -78,6 +78,11 @@ func (c *CheckCreate) Flatten() (map[string]any, error) {
 	return m, nil
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (c *CheckCreate) RequiredAmendments() []string {
+	return []string{AmendmentChecks}
+}
+
 // CheckCash cashes a Check, drawing from the sender's balance.
 type CheckCash struct {
 	BaseTx
@@ -158,6 +163,11 @@ func (c *CheckCash) SetDeliverMin(amount Amount) {
 	c.Amount = nil
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (c *CheckCash) RequiredAmendments() []string {
+	return []string{AmendmentChecks}
+}
+
 // CheckCancel cancels a Check.
 type CheckCancel struct {
 	BaseTx
@@ -197,4 +207,9 @@ func (c *CheckCancel) Flatten() (map[string]any, error) {
 	m := c.Common.ToMap()
 	m["CheckID"] = c.CheckID
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (c *CheckCancel) RequiredAmendments() []string {
+	return []string{AmendmentChecks}
 }

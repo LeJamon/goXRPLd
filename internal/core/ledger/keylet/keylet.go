@@ -402,3 +402,95 @@ func VaultByID(vaultID [32]byte) Keylet {
 		Key:  vaultID,
 	}
 }
+
+// MakeMPTID creates an MPTokenIssuanceID from sequence and account.
+// The ID is the sequence (big-endian 4 bytes) concatenated with the account ID (20 bytes).
+// Reference: rippled Indexes.cpp makeMptID
+func MakeMPTID(sequence uint32, account [20]byte) [24]byte {
+	var mptID [24]byte
+	// Sequence in big-endian
+	seqBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(seqBytes, sequence)
+	copy(mptID[:4], seqBytes)
+	copy(mptID[4:], account[:])
+	return mptID
+}
+
+// MPTIssuance returns the keylet for an MPToken issuance entry.
+// Reference: rippled keylet::mptIssuance(MPTID const& issuanceID)
+func MPTIssuance(mptID [24]byte) Keylet {
+	return Keylet{
+		Type: entry.TypeMPTokenIssuance,
+		Key:  indexHash(spaceMPTIssu, mptID[:]),
+	}
+}
+
+// MPTIssuanceBySeq returns the keylet for an MPToken issuance entry using sequence and issuer.
+// Reference: rippled keylet::mptIssuance(std::uint32_t seq, AccountID const& issuer)
+func MPTIssuanceBySeq(sequence uint32, issuer [20]byte) Keylet {
+	return MPTIssuance(MakeMPTID(sequence, issuer))
+}
+
+// MPToken returns the keylet for an MPToken holder entry.
+// The keylet is computed from the issuance key and holder account.
+// Reference: rippled keylet::mptoken(uint256 const& issuanceKey, AccountID const& holder)
+func MPToken(issuanceKey [32]byte, holder [20]byte) Keylet {
+	return Keylet{
+		Type: entry.TypeMPToken,
+		Key:  indexHash(spaceMPToken, issuanceKey[:], holder[:]),
+	}
+}
+
+// MPTokenByID returns the keylet for an MPToken holder entry using the MPT ID.
+// Reference: rippled keylet::mptoken(MPTID const& issuanceID, AccountID const& holder)
+func MPTokenByID(mptID [24]byte, holder [20]byte) Keylet {
+	issuanceKey := MPTIssuance(mptID).Key
+	return MPToken(issuanceKey, holder)
+}
+
+// DID returns the keylet for a DID entry.
+// Reference: rippled Indexes.cpp did(AccountID const& account)
+// Each account can have at most one DID entry.
+func DID(accountID [20]byte) Keylet {
+	return Keylet{
+		Type: entry.TypeDID,
+		Key:  indexHash(spaceDID, accountID[:]),
+	}
+}
+
+// Credential returns the keylet for a Credential entry.
+// Reference: rippled Indexes.cpp credential(AccountID const& subject, AccountID const& issuer, Slice const& credType)
+// The credential keylet is computed from subject, issuer, and credential type.
+func Credential(subject, issuer [20]byte, credentialType []byte) Keylet {
+	return Keylet{
+		Type: entry.TypeCredential,
+		Key:  indexHash(spaceCredential, subject[:], issuer[:], credentialType),
+	}
+}
+
+// CredentialByID returns a Credential keylet for a known Credential ID.
+func CredentialByID(credentialID [32]byte) Keylet {
+	return Keylet{
+		Type: entry.TypeCredential,
+		Key:  credentialID,
+	}
+}
+
+// PermissionedDomain returns the keylet for a Permissioned Domain entry.
+// Reference: rippled Indexes.cpp permissionedDomain(AccountID const& account, std::uint32_t seq)
+func PermissionedDomain(accountID [20]byte, sequence uint32) Keylet {
+	seqBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(seqBytes, sequence)
+	return Keylet{
+		Type: entry.TypePermissionedDomain,
+		Key:  indexHash(spacePermDomain, accountID[:], seqBytes),
+	}
+}
+
+// PermissionedDomainByID returns a PermissionedDomain keylet for a known domain ID.
+func PermissionedDomainByID(domainID [32]byte) Keylet {
+	return Keylet{
+		Type: entry.TypePermissionedDomain,
+		Key:  domainID,
+	}
+}

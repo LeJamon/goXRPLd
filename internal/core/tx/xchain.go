@@ -65,6 +65,11 @@ func (x *XChainCreateBridge) Flatten() (map[string]any, error) {
 	return m, nil
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (x *XChainCreateBridge) RequiredAmendments() []string {
+	return []string{AmendmentXChainBridge}
+}
+
 // XChainModifyBridge modifies an existing cross-chain bridge.
 type XChainModifyBridge struct {
 	BaseTx
@@ -119,6 +124,11 @@ func (x *XChainModifyBridge) Flatten() (map[string]any, error) {
 	return m, nil
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (x *XChainModifyBridge) RequiredAmendments() []string {
+	return []string{AmendmentXChainBridge}
+}
+
 // XChainCreateClaimID creates a claim ID for cross-chain transfers.
 type XChainCreateClaimID struct {
 	BaseTx
@@ -170,6 +180,11 @@ func (x *XChainCreateClaimID) Flatten() (map[string]any, error) {
 	m["OtherChainSource"] = x.OtherChainSource
 
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (x *XChainCreateClaimID) RequiredAmendments() []string {
+	return []string{AmendmentXChainBridge}
 }
 
 // XChainCommit commits assets to a cross-chain transfer.
@@ -230,6 +245,11 @@ func (x *XChainCommit) Flatten() (map[string]any, error) {
 	}
 
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (x *XChainCommit) RequiredAmendments() []string {
+	return []string{AmendmentXChainBridge}
 }
 
 // XChainClaim claims assets from a cross-chain transfer.
@@ -301,6 +321,11 @@ func (x *XChainClaim) Flatten() (map[string]any, error) {
 	return m, nil
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (x *XChainClaim) RequiredAmendments() []string {
+	return []string{AmendmentXChainBridge}
+}
+
 // XChainAccountCreateCommit commits to create an account on the other chain.
 type XChainAccountCreateCommit struct {
 	BaseTx
@@ -361,6 +386,11 @@ func (x *XChainAccountCreateCommit) Flatten() (map[string]any, error) {
 	m["SignatureReward"] = flattenAmount(x.SignatureReward)
 
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (x *XChainAccountCreateCommit) RequiredAmendments() []string {
+	return []string{AmendmentXChainBridge}
 }
 
 // XChainAddClaimAttestation adds a witness attestation for a claim.
@@ -468,6 +498,11 @@ func (x *XChainAddClaimAttestation) Flatten() (map[string]any, error) {
 	return m, nil
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (x *XChainAddClaimAttestation) RequiredAmendments() []string {
+	return []string{AmendmentXChainBridge}
+}
+
 // XChainAddAccountCreateAttestation adds a witness attestation for account creation.
 type XChainAddAccountCreateAttestation struct {
 	BaseTx
@@ -558,4 +593,9 @@ func (x *XChainAddAccountCreateAttestation) Flatten() (map[string]any, error) {
 	}
 
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (x *XChainAddAccountCreateAttestation) RequiredAmendments() []string {
+	return []string{AmendmentXChainBridge}
 }
