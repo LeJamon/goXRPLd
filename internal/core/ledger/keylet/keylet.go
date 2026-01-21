@@ -457,3 +457,40 @@ func DID(accountID [20]byte) Keylet {
 		Key:  indexHash(spaceDID, accountID[:]),
 	}
 }
+
+// Credential returns the keylet for a Credential entry.
+// Reference: rippled Indexes.cpp credential(AccountID const& subject, AccountID const& issuer, Slice const& credType)
+// The credential keylet is computed from subject, issuer, and credential type.
+func Credential(subject, issuer [20]byte, credentialType []byte) Keylet {
+	return Keylet{
+		Type: entry.TypeCredential,
+		Key:  indexHash(spaceCredential, subject[:], issuer[:], credentialType),
+	}
+}
+
+// CredentialByID returns a Credential keylet for a known Credential ID.
+func CredentialByID(credentialID [32]byte) Keylet {
+	return Keylet{
+		Type: entry.TypeCredential,
+		Key:  credentialID,
+	}
+}
+
+// PermissionedDomain returns the keylet for a Permissioned Domain entry.
+// Reference: rippled Indexes.cpp permissionedDomain(AccountID const& account, std::uint32_t seq)
+func PermissionedDomain(accountID [20]byte, sequence uint32) Keylet {
+	seqBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(seqBytes, sequence)
+	return Keylet{
+		Type: entry.TypePermissionedDomain,
+		Key:  indexHash(spacePermDomain, accountID[:], seqBytes),
+	}
+}
+
+// PermissionedDomainByID returns a PermissionedDomain keylet for a known domain ID.
+func PermissionedDomainByID(domainID [32]byte) Keylet {
+	return Keylet{
+		Type: entry.TypePermissionedDomain,
+		Key:  domainID,
+	}
+}

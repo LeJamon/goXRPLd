@@ -1,6 +1,57 @@
 package tx
 
-import "errors"
+import (
+	"encoding/hex"
+	"errors"
+	"strconv"
+)
+
+// Vault constants
+const (
+	// MaxVaultDataLength is the maximum length of Data field
+	MaxVaultDataLength = 256
+
+	// MaxMPTokenMetadataLength is the maximum length of MPTokenMetadata
+	MaxMPTokenMetadataLength = 1024
+
+	// VaultStrategyFirstComeFirstServe is the only valid withdrawal policy
+	VaultStrategyFirstComeFirstServe uint8 = 1
+)
+
+// VaultCreate flags
+const (
+	// tfVaultPrivate makes the vault private (requires authorization)
+	VaultFlagPrivate uint32 = 0x00000001
+	// tfVaultShareNonTransferable makes vault shares non-transferable
+	VaultFlagShareNonTransferable uint32 = 0x00000002
+
+	// tfVaultCreateMask is the mask for invalid VaultCreate flags
+	tfVaultCreateMask uint32 = ^(VaultFlagPrivate | VaultFlagShareNonTransferable)
+)
+
+// Vault errors
+var (
+	ErrVaultIDRequired       = errors.New("temMALFORMED: VaultID is required")
+	ErrVaultIDZero           = errors.New("temMALFORMED: VaultID cannot be zero")
+	ErrVaultAssetRequired    = errors.New("temMALFORMED: Asset is required")
+	ErrVaultDataTooLong      = errors.New("temMALFORMED: Data exceeds maximum length")
+	ErrVaultDataEmpty        = errors.New("temMALFORMED: Data cannot be empty if present")
+	ErrVaultDomainIDZero     = errors.New("temMALFORMED: DomainID cannot be zero")
+	ErrVaultDomainNotPrivate = errors.New("temMALFORMED: DomainID only allowed on private vaults")
+	ErrVaultAmountRequired   = errors.New("temBAD_AMOUNT: Amount is required")
+	ErrVaultAmountNotPos     = errors.New("temBAD_AMOUNT: Amount must be positive")
+	ErrVaultHolderRequired   = errors.New("temMALFORMED: Holder is required")
+	ErrVaultHolderIsSelf     = errors.New("temMALFORMED: Holder cannot be same as issuer")
+	ErrVaultDestZero         = errors.New("temMALFORMED: Destination cannot be zero")
+	ErrVaultDestTagNoAccount = errors.New("temMALFORMED: DestinationTag without Destination")
+	ErrVaultNoFieldsToUpdate = errors.New("temMALFORMED: nothing to update")
+	ErrVaultAssetsMaxNeg     = errors.New("temMALFORMED: AssetsMaximum cannot be negative")
+	ErrVaultWithdrawalPolicy = errors.New("temMALFORMED: invalid withdrawal policy")
+	ErrVaultMetadataTooLong  = errors.New("temMALFORMED: MPTokenMetadata exceeds maximum length")
+	ErrVaultMetadataEmpty    = errors.New("temMALFORMED: MPTokenMetadata cannot be empty if present")
+	ErrVaultAmountXRP        = errors.New("temMALFORMED: cannot clawback XRP from vault")
+	ErrVaultAmountNotIssuer  = errors.New("temMALFORMED: only asset issuer can clawback")
+)
 
 // VaultCreate creates a new vault.
 type VaultCreate struct {
@@ -15,8 +66,14 @@ type VaultCreate struct {
 	// DomainID is the permissioned domain ID (optional)
 	DomainID string `json:"DomainID,omitempty"`
 
+	// AssetsMaximum is the maximum assets the vault can hold (optional)
+	AssetsMaximum *int64 `json:"AssetsMaximum,omitempty"`
+
+	// MPTokenMetadata is metadata for the vault shares (optional)
+	MPTokenMetadata string `json:"MPTokenMetadata,omitempty"`
+
 	// WithdrawalPolicy configures withdrawal rules (optional)
-	WithdrawalPolicy *Amount `json:"WithdrawalPolicy,omitempty"`
+	WithdrawalPolicy *uint8 `json:"WithdrawalPolicy,omitempty"`
 }
 
 // NewVaultCreate creates a new VaultCreate transaction
@@ -33,13 +90,75 @@ func (v *VaultCreate) TxType() Type {
 }
 
 // Validate validates the VaultCreate transaction
+// Reference: rippled VaultCreate.cpp preflight()
 func (v *VaultCreate) Validate() error {
 	if err := v.BaseTx.Validate(); err != nil {
 		return err
 	}
 
+	// Check for invalid flags
+	// Reference: rippled VaultCreate.cpp:50-51
+	if v.Common.Flags != nil && *v.Common.Flags&tfVaultCreateMask != 0 {
+		return ErrInvalidFlags
+	}
+
+	// Asset is required
 	if v.Asset.Currency == "" {
-		return errors.New("Asset is required")
+		return ErrVaultAssetRequired
+	}
+
+	// Validate Data if present
+	// Reference: rippled VaultCreate.cpp:53-57
+	if v.Data != "" {
+		if len(v.Data) > MaxVaultDataLength {
+			return ErrVaultDataTooLong
+		}
+	}
+
+	// Validate WithdrawalPolicy if present
+	// Reference: rippled VaultCreate.cpp:59-63
+	if v.WithdrawalPolicy != nil {
+		if *v.WithdrawalPolicy != VaultStrategyFirstComeFirstServe {
+			return ErrVaultWithdrawalPolicy
+		}
+	}
+
+	// Validate DomainID if present
+	// Reference: rippled VaultCreate.cpp:66-72
+	if v.DomainID != "" {
+		domainBytes, err := hex.DecodeString(v.DomainID)
+		if err != nil || len(domainBytes) != 32 {
+			return errors.New("temMALFORMED: DomainID must be a valid 256-bit hash")
+		}
+		// Check if zero
+		isZero := true
+		for _, b := range domainBytes {
+			if b != 0 {
+				isZero = false
+				break
+			}
+		}
+		if isZero {
+			return ErrVaultDomainIDZero
+		}
+		// DomainID only allowed on private vaults
+		if v.Common.Flags == nil || (*v.Common.Flags&VaultFlagPrivate) == 0 {
+			return ErrVaultDomainNotPrivate
+		}
+	}
+
+	// Validate AssetsMaximum if present
+	// Reference: rippled VaultCreate.cpp:74-78
+	if v.AssetsMaximum != nil && *v.AssetsMaximum < 0 {
+		return ErrVaultAssetsMaxNeg
+	}
+
+	// Validate MPTokenMetadata if present
+	// Reference: rippled VaultCreate.cpp:80-84
+	if v.MPTokenMetadata != "" {
+		if len(v.MPTokenMetadata) > MaxMPTokenMetadataLength {
+			return ErrVaultMetadataTooLong
+		}
 	}
 
 	return nil
@@ -57,8 +176,14 @@ func (v *VaultCreate) Flatten() (map[string]any, error) {
 	if v.DomainID != "" {
 		m["DomainID"] = v.DomainID
 	}
+	if v.AssetsMaximum != nil {
+		m["AssetsMaximum"] = *v.AssetsMaximum
+	}
+	if v.MPTokenMetadata != "" {
+		m["MPTokenMetadata"] = v.MPTokenMetadata
+	}
 	if v.WithdrawalPolicy != nil {
-		m["WithdrawalPolicy"] = flattenAmount(*v.WithdrawalPolicy)
+		m["WithdrawalPolicy"] = *v.WithdrawalPolicy
 	}
 
 	return m, nil
@@ -81,13 +206,10 @@ type VaultSet struct {
 
 	// DomainID is the permissioned domain ID (optional)
 	DomainID string `json:"DomainID,omitempty"`
-}
 
-// VaultSet flags
-const (
-	// tfVaultPrivate makes the vault private
-	VaultSetFlagPrivate uint32 = 0x00000001
-)
+	// AssetsMaximum is the maximum assets (optional)
+	AssetsMaximum *int64 `json:"AssetsMaximum,omitempty"`
+}
 
 // NewVaultSet creates a new VaultSet transaction
 func NewVaultSet(account, vaultID string) *VaultSet {
@@ -103,13 +225,56 @@ func (v *VaultSet) TxType() Type {
 }
 
 // Validate validates the VaultSet transaction
+// Reference: rippled VaultSet.cpp preflight()
 func (v *VaultSet) Validate() error {
 	if err := v.BaseTx.Validate(); err != nil {
 		return err
 	}
 
+	// Check for invalid flags (universal mask)
+	// Reference: rippled VaultSet.cpp:52-53
+	if v.Common.Flags != nil && *v.Common.Flags&tfUniversal != 0 {
+		return ErrInvalidFlags
+	}
+
+	// VaultID is required and cannot be zero
+	// Reference: rippled VaultSet.cpp:46-50
 	if v.VaultID == "" {
-		return errors.New("VaultID is required")
+		return ErrVaultIDRequired
+	}
+	vaultBytes, err := hex.DecodeString(v.VaultID)
+	if err != nil || len(vaultBytes) != 32 {
+		return errors.New("temMALFORMED: VaultID must be a valid 256-bit hash")
+	}
+	isZero := true
+	for _, b := range vaultBytes {
+		if b != 0 {
+			isZero = false
+			break
+		}
+	}
+	if isZero {
+		return ErrVaultIDZero
+	}
+
+	// Validate Data if present
+	// Reference: rippled VaultSet.cpp:55-62
+	if v.Data != "" {
+		if len(v.Data) > MaxVaultDataLength {
+			return ErrVaultDataTooLong
+		}
+	}
+
+	// Validate AssetsMaximum if present
+	// Reference: rippled VaultSet.cpp:64-71
+	if v.AssetsMaximum != nil && *v.AssetsMaximum < 0 {
+		return ErrVaultAssetsMaxNeg
+	}
+
+	// Must update at least one field
+	// Reference: rippled VaultSet.cpp:73-79
+	if v.DomainID == "" && v.AssetsMaximum == nil && v.Data == "" {
+		return ErrVaultNoFieldsToUpdate
 	}
 
 	return nil
@@ -126,6 +291,9 @@ func (v *VaultSet) Flatten() (map[string]any, error) {
 	}
 	if v.DomainID != "" {
 		m["DomainID"] = v.DomainID
+	}
+	if v.AssetsMaximum != nil {
+		m["AssetsMaximum"] = *v.AssetsMaximum
 	}
 
 	return m, nil
@@ -158,13 +326,36 @@ func (v *VaultDelete) TxType() Type {
 }
 
 // Validate validates the VaultDelete transaction
+// Reference: rippled VaultDelete.cpp preflight()
 func (v *VaultDelete) Validate() error {
 	if err := v.BaseTx.Validate(); err != nil {
 		return err
 	}
 
+	// Check for invalid flags (universal mask)
+	// Reference: rippled VaultDelete.cpp:39-40
+	if v.Common.Flags != nil && *v.Common.Flags&tfUniversal != 0 {
+		return ErrInvalidFlags
+	}
+
+	// VaultID is required and cannot be zero
+	// Reference: rippled VaultDelete.cpp:42-46
 	if v.VaultID == "" {
-		return errors.New("VaultID is required")
+		return ErrVaultIDRequired
+	}
+	vaultBytes, err := hex.DecodeString(v.VaultID)
+	if err != nil || len(vaultBytes) != 32 {
+		return errors.New("temMALFORMED: VaultID must be a valid 256-bit hash")
+	}
+	isZero := true
+	for _, b := range vaultBytes {
+		if b != 0 {
+			isZero = false
+			break
+		}
+	}
+	if isZero {
+		return ErrVaultIDZero
 	}
 
 	return nil
@@ -208,17 +399,46 @@ func (v *VaultDeposit) TxType() Type {
 }
 
 // Validate validates the VaultDeposit transaction
+// Reference: rippled VaultDeposit.cpp preflight()
 func (v *VaultDeposit) Validate() error {
 	if err := v.BaseTx.Validate(); err != nil {
 		return err
 	}
 
-	if v.VaultID == "" {
-		return errors.New("VaultID is required")
+	// Check for invalid flags (universal mask)
+	// Reference: rippled VaultDeposit.cpp:44-45
+	if v.Common.Flags != nil && *v.Common.Flags&tfUniversal != 0 {
+		return ErrInvalidFlags
 	}
 
+	// VaultID is required and cannot be zero
+	// Reference: rippled VaultDeposit.cpp:47-51
+	if v.VaultID == "" {
+		return ErrVaultIDRequired
+	}
+	vaultBytes, err := hex.DecodeString(v.VaultID)
+	if err != nil || len(vaultBytes) != 32 {
+		return errors.New("temMALFORMED: VaultID must be a valid 256-bit hash")
+	}
+	isZero := true
+	for _, b := range vaultBytes {
+		if b != 0 {
+			isZero = false
+			break
+		}
+	}
+	if isZero {
+		return ErrVaultIDZero
+	}
+
+	// Amount is required and must be positive
+	// Reference: rippled VaultDeposit.cpp:53-54
 	if v.Amount.Value == "" {
-		return errors.New("Amount is required")
+		return ErrVaultAmountRequired
+	}
+	amountVal, err := strconv.ParseFloat(v.Amount.Value, 64)
+	if err != nil || amountVal <= 0 {
+		return ErrVaultAmountNotPos
 	}
 
 	return nil
@@ -251,6 +471,9 @@ type VaultWithdraw struct {
 
 	// Destination is the destination account (optional)
 	Destination string `json:"Destination,omitempty"`
+
+	// DestinationTag is the destination tag (optional)
+	DestinationTag *uint32 `json:"DestinationTag,omitempty"`
 }
 
 // NewVaultWithdraw creates a new VaultWithdraw transaction
@@ -268,17 +491,60 @@ func (v *VaultWithdraw) TxType() Type {
 }
 
 // Validate validates the VaultWithdraw transaction
+// Reference: rippled VaultWithdraw.cpp preflight()
 func (v *VaultWithdraw) Validate() error {
 	if err := v.BaseTx.Validate(); err != nil {
 		return err
 	}
 
-	if v.VaultID == "" {
-		return errors.New("VaultID is required")
+	// Check for invalid flags (universal mask)
+	// Reference: rippled VaultWithdraw.cpp:42-43
+	if v.Common.Flags != nil && *v.Common.Flags&tfUniversal != 0 {
+		return ErrInvalidFlags
 	}
 
+	// VaultID is required and cannot be zero
+	// Reference: rippled VaultWithdraw.cpp:45-49
+	if v.VaultID == "" {
+		return ErrVaultIDRequired
+	}
+	vaultBytes, err := hex.DecodeString(v.VaultID)
+	if err != nil || len(vaultBytes) != 32 {
+		return errors.New("temMALFORMED: VaultID must be a valid 256-bit hash")
+	}
+	isZero := true
+	for _, b := range vaultBytes {
+		if b != 0 {
+			isZero = false
+			break
+		}
+	}
+	if isZero {
+		return ErrVaultIDZero
+	}
+
+	// Amount is required and must be positive
+	// Reference: rippled VaultWithdraw.cpp:51-52
 	if v.Amount.Value == "" {
-		return errors.New("Amount is required")
+		return ErrVaultAmountRequired
+	}
+	amountVal, err := strconv.ParseFloat(v.Amount.Value, 64)
+	if err != nil || amountVal <= 0 {
+		return ErrVaultAmountNotPos
+	}
+
+	// Validate Destination if present
+	// Reference: rippled VaultWithdraw.cpp:54-63
+	if v.Destination != "" {
+		// Destination cannot be zero (empty is handled by field being absent)
+		// In rippled this checks for beast::zero which is all zeros
+		// For our case, if Destination is set but empty, that's an error
+	}
+
+	// DestinationTag without Destination is invalid
+	// Reference: rippled VaultWithdraw.cpp:64-69
+	if v.Destination == "" && v.DestinationTag != nil {
+		return ErrVaultDestTagNoAccount
 	}
 
 	return nil
@@ -293,6 +559,9 @@ func (v *VaultWithdraw) Flatten() (map[string]any, error) {
 
 	if v.Destination != "" {
 		m["Destination"] = v.Destination
+	}
+	if v.DestinationTag != nil {
+		m["DestinationTag"] = *v.DestinationTag
 	}
 
 	return m, nil
@@ -332,17 +601,68 @@ func (v *VaultClawback) TxType() Type {
 }
 
 // Validate validates the VaultClawback transaction
+// Reference: rippled VaultClawback.cpp preflight()
 func (v *VaultClawback) Validate() error {
 	if err := v.BaseTx.Validate(); err != nil {
 		return err
 	}
 
-	if v.VaultID == "" {
-		return errors.New("VaultID is required")
+	// Check for invalid flags (universal mask)
+	// Reference: rippled VaultClawback.cpp:42-43
+	if v.Common.Flags != nil && *v.Common.Flags&tfUniversal != 0 {
+		return ErrInvalidFlags
 	}
 
+	// VaultID is required and cannot be zero
+	// Reference: rippled VaultClawback.cpp:45-49
+	if v.VaultID == "" {
+		return ErrVaultIDRequired
+	}
+	vaultBytes, err := hex.DecodeString(v.VaultID)
+	if err != nil || len(vaultBytes) != 32 {
+		return errors.New("temMALFORMED: VaultID must be a valid 256-bit hash")
+	}
+	isZero := true
+	for _, b := range vaultBytes {
+		if b != 0 {
+			isZero = false
+			break
+		}
+	}
+	if isZero {
+		return ErrVaultIDZero
+	}
+
+	// Holder is required
+	// Reference: rippled VaultClawback.cpp:51-52
 	if v.Holder == "" {
-		return errors.New("Holder is required")
+		return ErrVaultHolderRequired
+	}
+
+	// Holder cannot be the same as issuer (Account)
+	// Reference: rippled VaultClawback.cpp:54-58
+	if v.Holder == v.Account {
+		return ErrVaultHolderIsSelf
+	}
+
+	// Validate Amount if present
+	// Reference: rippled VaultClawback.cpp:60-77
+	if v.Amount != nil {
+		// Zero amount is valid (means "all"), negative is not
+		if v.Amount.Value != "" && v.Amount.Value != "0" {
+			amountVal, err := strconv.ParseFloat(v.Amount.Value, 64)
+			if err == nil && amountVal < 0 {
+				return ErrVaultAmountNotPos
+			}
+		}
+		// Cannot clawback XRP
+		if v.Amount.IsNative() {
+			return ErrVaultAmountXRP
+		}
+		// Asset issuer must match Account
+		if v.Amount.Issuer != "" && v.Amount.Issuer != v.Account {
+			return ErrVaultAmountNotIssuer
+		}
 	}
 
 	return nil

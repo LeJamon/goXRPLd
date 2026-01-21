@@ -1535,8 +1535,10 @@ func (e *Engine) applyClawback(tx *Clawback, account *AccountRoot, metadata *Met
 }
 
 // Credential transactions
+// Reference: rippled Credentials.cpp
 
 // applyCredentialCreate applies a CredentialCreate transaction
+// Reference: rippled Credentials.cpp CredentialCreate::doApply()
 func (e *Engine) applyCredentialCreate(tx *CredentialCreate, account *AccountRoot, metadata *Metadata) Result {
 	if tx.Subject == "" || tx.CredentialType == "" {
 		return TemINVALID
@@ -1549,39 +1551,108 @@ func (e *Engine) applyCredentialCreate(tx *CredentialCreate, account *AccountRoo
 
 	issuerID, _ := decodeAccountID(tx.Account)
 
-	// Create the credential entry
-	var credKey [32]byte
-	copy(credKey[:20], issuerID[:])
-	copy(credKey[20:], subjectID[:12])
+	// Decode credential type from hex
+	credType, err := hex.DecodeString(tx.CredentialType)
+	if err != nil {
+		return TemINVALID
+	}
 
-	credKeylet := keylet.Keylet{Key: credKey, Type: 0x0081}
+	// Check if subject account exists
+	// Reference: rippled Credentials.cpp preclaim - check subject exists
+	subjectKeylet := keylet.Account(subjectID)
+	if _, err := e.view.Read(subjectKeylet); err != nil {
+		return TecNO_TARGET
+	}
 
-	// Serialize credential data
-	credData := make([]byte, 64)
-	copy(credData[:20], issuerID[:])
-	copy(credData[20:40], subjectID[:])
+	// Compute proper credential keylet
+	// Reference: rippled Indexes.cpp credential(subject, issuer, credentialType)
+	credKeylet := keylet.Credential(subjectID, issuerID, credType)
+
+	// Check for duplicate credential
+	// Reference: rippled Credentials.cpp preclaim - check credential doesn't exist
+	if _, err := e.view.Read(credKeylet); err == nil {
+		return TecDUPLICATE
+	}
+
+	// Check expiration is not in the past
+	// Reference: rippled Credentials.cpp doApply lines 131-144
+	if tx.Expiration != nil {
+		closeTime := e.config.ParentCloseTime
+		if closeTime > *tx.Expiration {
+			return TecEXPIRED
+		}
+	}
+
+	// Check issuer has sufficient reserve
+	// Reference: rippled Credentials.cpp doApply lines 151-155
+	reserve := e.AccountReserve(account.OwnerCount + 1)
+	if account.Balance < reserve {
+		return TecINSUFFICIENT_RESERVE
+	}
+
+	// Create credential entry
+	cred := &CredentialEntry{
+		Subject:        subjectID,
+		Issuer:         issuerID,
+		CredentialType: credType,
+		Expiration:     tx.Expiration,
+	}
+
+	// Parse URI if present
+	if tx.URI != "" {
+		uri, err := hex.DecodeString(tx.URI)
+		if err != nil {
+			return TemINVALID
+		}
+		cred.URI = uri
+	}
+
+	// Serialize and insert the credential
+	credData, err := serializeCredentialEntry(cred)
+	if err != nil {
+		return TefINTERNAL
+	}
 
 	if err := e.view.Insert(credKeylet, credData); err != nil {
 		return TefINTERNAL
 	}
 
+	// Increment issuer's owner count
+	// Reference: rippled Credentials.cpp doApply line 177
 	account.OwnerCount++
+
+	// Build metadata
+	newFields := map[string]any{
+		"Issuer":         tx.Account,
+		"Subject":        tx.Subject,
+		"CredentialType": tx.CredentialType,
+	}
+	if tx.Expiration != nil {
+		newFields["Expiration"] = *tx.Expiration
+	}
+	if tx.URI != "" {
+		newFields["URI"] = tx.URI
+	}
+
+	// Check if self-issued (subject == issuer)
+	// Reference: rippled Credentials.cpp doApply lines 180-196
+	if subjectID == issuerID {
+		// Auto-accept: set lsfAccepted flag
+		newFields["Flags"] = LsfCredentialAccepted
+	}
 
 	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
 		NodeType:        "CreatedNode",
 		LedgerEntryType: "Credential",
-		LedgerIndex:     hex.EncodeToString(credKey[:]),
-		NewFields: map[string]any{
-			"Issuer":         tx.Account,
-			"Subject":        tx.Subject,
-			"CredentialType": tx.CredentialType,
-		},
+		LedgerIndex:     hex.EncodeToString(credKeylet.Key[:]),
+		NewFields:       newFields,
 	})
 
 	return TesSUCCESS
 }
 
 // applyCredentialAccept applies a CredentialAccept transaction
+// Reference: rippled Credentials.cpp CredentialAccept::doApply()
 func (e *Engine) applyCredentialAccept(tx *CredentialAccept, account *AccountRoot, metadata *Metadata) Result {
 	if tx.Issuer == "" || tx.CredentialType == "" {
 		return TemINVALID
@@ -1594,24 +1665,107 @@ func (e *Engine) applyCredentialAccept(tx *CredentialAccept, account *AccountRoo
 
 	subjectID, _ := decodeAccountID(tx.Account)
 
-	// Find and update the credential
-	var credKey [32]byte
-	copy(credKey[:20], issuerID[:])
-	copy(credKey[20:], subjectID[:12])
+	// Decode credential type from hex
+	credType, err := hex.DecodeString(tx.CredentialType)
+	if err != nil {
+		return TemINVALID
+	}
 
-	credKeylet := keylet.Keylet{Key: credKey, Type: 0x0081}
+	// Check issuer account exists
+	// Reference: rippled Credentials.cpp preclaim - check issuer exists
+	issuerKeylet := keylet.Account(issuerID)
+	issuerData, err := e.view.Read(issuerKeylet)
+	if err != nil {
+		return TecNO_ISSUER
+	}
+	issuerAccount, err := parseAccountRoot(issuerData)
+	if err != nil {
+		return TefINTERNAL
+	}
 
-	_, err = e.view.Read(credKeylet)
+	// Compute credential keylet
+	credKeylet := keylet.Credential(subjectID, issuerID, credType)
+
+	// Read the credential entry
+	// Reference: rippled Credentials.cpp preclaim - check credential exists
+	credData, err := e.view.Read(credKeylet)
 	if err != nil {
 		return TecNO_ENTRY
+	}
+
+	cred, err := parseCredentialEntry(credData)
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	// Check if already accepted
+	// Reference: rippled Credentials.cpp preclaim lines 350-355
+	if cred.IsAccepted() {
+		return TecDUPLICATE
+	}
+
+	// Check subject has sufficient reserve
+	// Reference: rippled Credentials.cpp doApply lines 373-377
+	reserve := e.AccountReserve(account.OwnerCount + 1)
+	if account.Balance < reserve {
+		return TecINSUFFICIENT_RESERVE
+	}
+
+	// Check if credential has expired
+	// Reference: rippled Credentials.cpp doApply lines 384-389
+	closeTime := e.config.ParentCloseTime
+	if checkCredentialExpired(cred, closeTime) {
+		// Delete expired credential and return error
+		if err := e.view.Erase(credKeylet); err == nil {
+			// Decrement issuer's owner count since credential wasn't accepted
+			if issuerAccount.OwnerCount > 0 {
+				issuerAccount.OwnerCount--
+			}
+			metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
+				NodeType:        "DeletedNode",
+				LedgerEntryType: "Credential",
+				LedgerIndex:     hex.EncodeToString(credKeylet.Key[:]),
+			})
+		}
+		return TecEXPIRED
+	}
+
+	// Set accepted flag
+	// Reference: rippled Credentials.cpp doApply lines 392-393
+	cred.SetAccepted()
+
+	// Serialize and update the credential
+	updatedData, err := serializeCredentialEntry(cred)
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	if err := e.view.Update(credKeylet, updatedData); err != nil {
+		return TefINTERNAL
+	}
+
+	// Transfer owner count from issuer to subject
+	// Reference: rippled Credentials.cpp doApply lines 395-396
+	if issuerAccount.OwnerCount > 0 {
+		issuerAccount.OwnerCount--
+	}
+	account.OwnerCount++
+
+	// Update issuer account
+	issuerUpdatedData, err := serializeAccountRoot(issuerAccount)
+	if err != nil {
+		return TefINTERNAL
+	}
+	if err := e.view.Update(issuerKeylet, issuerUpdatedData); err != nil {
+		return TefINTERNAL
 	}
 
 	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
 		NodeType:        "ModifiedNode",
 		LedgerEntryType: "Credential",
-		LedgerIndex:     hex.EncodeToString(credKey[:]),
+		LedgerIndex:     hex.EncodeToString(credKeylet.Key[:]),
 		FinalFields: map[string]any{
-			"Accepted": true,
+			"Flags": LsfCredentialAccepted,
 		},
 	})
 
@@ -1619,38 +1773,127 @@ func (e *Engine) applyCredentialAccept(tx *CredentialAccept, account *AccountRoo
 }
 
 // applyCredentialDelete applies a CredentialDelete transaction
+// Reference: rippled Credentials.cpp CredentialDelete::doApply()
 func (e *Engine) applyCredentialDelete(tx *CredentialDelete, account *AccountRoot, metadata *Metadata) Result {
 	if tx.CredentialType == "" {
 		return TemINVALID
 	}
 
-	issuerID, _ := decodeAccountID(tx.Account)
-	var subjectID [20]byte
+	accountID, _ := decodeAccountID(tx.Account)
+
+	// Determine subject and issuer
+	// Reference: rippled Credentials.cpp doApply lines 271-272
+	var subjectID, issuerID [20]byte
 	if tx.Subject != "" {
 		subjectID, _ = decodeAccountID(tx.Subject)
 	} else {
-		subjectID = issuerID
+		subjectID = accountID
+	}
+	if tx.Issuer != "" {
+		issuerID, _ = decodeAccountID(tx.Issuer)
+	} else {
+		issuerID = accountID
 	}
 
-	// Find and delete the credential
-	var credKey [32]byte
-	copy(credKey[:20], issuerID[:])
-	copy(credKey[20:], subjectID[:12])
+	// Decode credential type from hex
+	credType, err := hex.DecodeString(tx.CredentialType)
+	if err != nil {
+		return TemINVALID
+	}
 
-	credKeylet := keylet.Keylet{Key: credKey, Type: 0x0081}
+	// Compute credential keylet
+	credKeylet := keylet.Credential(subjectID, issuerID, credType)
 
-	if err := e.view.Erase(credKeylet); err != nil {
+	// Read the credential entry
+	// Reference: rippled Credentials.cpp preclaim - check credential exists
+	credData, err := e.view.Read(credKeylet)
+	if err != nil {
 		return TecNO_ENTRY
 	}
 
-	if account.OwnerCount > 0 {
-		account.OwnerCount--
+	cred, err := parseCredentialEntry(credData)
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	// Check permission: must be subject or issuer, or credential must be expired
+	// Reference: rippled Credentials.cpp doApply lines 280-284
+	closeTime := e.config.ParentCloseTime
+	isSubject := accountID == subjectID
+	isIssuer := accountID == issuerID
+	isExpired := checkCredentialExpired(cred, closeTime)
+
+	if !isSubject && !isIssuer && !isExpired {
+		return TecNO_PERMISSION
+	}
+
+	// Delete the credential using the helper function logic
+	// Reference: rippled CredentialHelpers.cpp deleteSLE()
+
+	// Determine who owns the credential (for owner count adjustment)
+	// Reference: rippled CredentialHelpers.cpp deleteSLE lines 101-114
+	accepted := cred.IsAccepted()
+
+	// Adjust owner counts
+	if subjectID == issuerID {
+		// Self-issued: only issuer owns it
+		if account.OwnerCount > 0 {
+			account.OwnerCount--
+		}
+	} else {
+		// Different subject and issuer
+		if accepted {
+			// Accepted: subject owns it
+			if isSubject {
+				if account.OwnerCount > 0 {
+					account.OwnerCount--
+				}
+			} else {
+				// Need to decrement subject's owner count
+				subjectKeylet := keylet.Account(subjectID)
+				subjectData, err := e.view.Read(subjectKeylet)
+				if err == nil {
+					subjectAccount, _ := parseAccountRoot(subjectData)
+					if subjectAccount != nil && subjectAccount.OwnerCount > 0 {
+						subjectAccount.OwnerCount--
+						if updatedData, err := serializeAccountRoot(subjectAccount); err == nil {
+							e.view.Update(subjectKeylet, updatedData)
+						}
+					}
+				}
+			}
+		} else {
+			// Not accepted: issuer owns it
+			if isIssuer {
+				if account.OwnerCount > 0 {
+					account.OwnerCount--
+				}
+			} else {
+				// Need to decrement issuer's owner count
+				issuerKeylet := keylet.Account(issuerID)
+				issuerData, err := e.view.Read(issuerKeylet)
+				if err == nil {
+					issuerAccount, _ := parseAccountRoot(issuerData)
+					if issuerAccount != nil && issuerAccount.OwnerCount > 0 {
+						issuerAccount.OwnerCount--
+						if updatedData, err := serializeAccountRoot(issuerAccount); err == nil {
+							e.view.Update(issuerKeylet, updatedData)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Delete the credential entry
+	if err := e.view.Erase(credKeylet); err != nil {
+		return TefINTERNAL
 	}
 
 	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
 		NodeType:        "DeletedNode",
 		LedgerEntryType: "Credential",
-		LedgerIndex:     hex.EncodeToString(credKey[:]),
+		LedgerIndex:     hex.EncodeToString(credKeylet.Key[:]),
 	})
 
 	return TesSUCCESS

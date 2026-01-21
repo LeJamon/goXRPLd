@@ -43,6 +43,9 @@ const (
 	// Batch transaction
 	AmendmentBatch = "Batch"
 
+	// LedgerStateFix transaction
+	AmendmentFixNFTokenPageLinks = "fixNFTokenPageLinks"
+
 	// DelegateSet transaction
 	AmendmentPermissionDelegation = "PermissionDelegation"
 
@@ -51,4 +54,10 @@ const (
 
 	// DeepFreeze amendment
 	AmendmentDeepFreeze = "DeepFreeze"
+
+	// PayChan amendment (Payment Channels)
+	AmendmentPayChan = "PayChan"
+
+	// EscrowTx amendment (Escrow transactions)
+	AmendmentEscrow = "Escrow"
 )
