@@ -412,3 +412,147 @@ func (pc *PeerCapabilities) SupportsCompression() bool {
 func (pc *PeerCapabilities) SupportsReduceRelay() bool {
 	return pc.HasFeature(FeatureReduceRelay)
 }
+
+// X-Protocol-Ctl header constants for feature negotiation.
+// Format: feature1=value1[,value2]*[\s*;\s*feature2=value1[,value2]*]*
+const (
+	HeaderProtocolCtl = "X-Protocol-Ctl"
+
+	// Feature names as defined in rippled
+	FeatureNameCompr        = "compr"
+	FeatureNameVPRR         = "vprr"  // validation/proposal reduce-relay
+	FeatureNameTXRR         = "txrr"  // transaction reduce-relay
+	FeatureNameLedgerReplay = "ledgerreplay"
+
+	// Delimiters
+	FeatureDelimiter = ";"
+	ValueDelimiter   = ","
+)
+
+// GetFeatureValue retrieves the value of a feature from the X-Protocol-Ctl header.
+// Returns the feature value and true if found, empty string and false otherwise.
+// Reference: rippled Handshake.cpp getFeatureValue()
+func GetFeatureValue(headers http.Header, feature string) (string, bool) {
+	headerValue := headers.Get(HeaderProtocolCtl)
+	if headerValue == "" {
+		return "", false
+	}
+
+	// Parse features separated by semicolons
+	features := strings.Split(headerValue, FeatureDelimiter)
+	for _, f := range features {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+
+		// Split on first '=' to get feature name and value
+		parts := strings.SplitN(f, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		name := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+
+		if strings.EqualFold(name, feature) {
+			return value, true
+		}
+	}
+
+	return "", false
+}
+
+// IsFeatureValue checks if a feature has a specific value in the X-Protocol-Ctl header.
+// The value can be one of multiple comma-separated values.
+// Reference: rippled Handshake.cpp isFeatureValue()
+func IsFeatureValue(headers http.Header, feature, value string) bool {
+	featureValue, found := GetFeatureValue(headers, feature)
+	if !found {
+		return false
+	}
+
+	// Check if value is in the comma-separated list
+	values := strings.Split(featureValue, ValueDelimiter)
+	for _, v := range values {
+		if strings.EqualFold(strings.TrimSpace(v), value) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// FeatureEnabled checks if a feature is enabled (has value "1").
+// Reference: rippled Handshake.cpp featureEnabled()
+func FeatureEnabled(headers http.Header, feature string) bool {
+	return IsFeatureValue(headers, feature, "1")
+}
+
+// PeerFeatureEnabled checks if a feature should be enabled for a peer.
+// The feature is enabled if the local config enables it and the peer's header
+// contains the specified feature value.
+// Reference: rippled Handshake.h peerFeatureEnabled()
+func PeerFeatureEnabled(headers http.Header, feature, value string, localEnabled bool) bool {
+	return localEnabled && IsFeatureValue(headers, feature, value)
+}
+
+// MakeFeaturesRequestHeader creates the X-Protocol-Ctl header value for a request.
+// Reference: rippled Handshake.cpp makeFeaturesRequestHeader()
+func MakeFeaturesRequestHeader(comprEnabled, ledgerReplayEnabled, txReduceRelayEnabled, vpReduceRelayEnabled bool) string {
+	var parts []string
+
+	if comprEnabled {
+		parts = append(parts, FeatureNameCompr+"=lz4")
+	}
+	if ledgerReplayEnabled {
+		parts = append(parts, FeatureNameLedgerReplay+"=1")
+	}
+	if txReduceRelayEnabled {
+		parts = append(parts, FeatureNameTXRR+"=1")
+	}
+	if vpReduceRelayEnabled {
+		parts = append(parts, FeatureNameVPRR+"=1")
+	}
+
+	return strings.Join(parts, FeatureDelimiter)
+}
+
+// MakeFeaturesResponseHeader creates the X-Protocol-Ctl header value for a response.
+// Only includes features that are both locally enabled and requested by the peer.
+// Reference: rippled Handshake.cpp makeFeaturesResponseHeader()
+func MakeFeaturesResponseHeader(requestHeaders http.Header, comprEnabled, ledgerReplayEnabled, txReduceRelayEnabled, vpReduceRelayEnabled bool) string {
+	var parts []string
+
+	if comprEnabled && IsFeatureValue(requestHeaders, FeatureNameCompr, "lz4") {
+		parts = append(parts, FeatureNameCompr+"=lz4")
+	}
+	if ledgerReplayEnabled && FeatureEnabled(requestHeaders, FeatureNameLedgerReplay) {
+		parts = append(parts, FeatureNameLedgerReplay+"=1")
+	}
+	if txReduceRelayEnabled && FeatureEnabled(requestHeaders, FeatureNameTXRR) {
+		parts = append(parts, FeatureNameTXRR+"=1")
+	}
+	if vpReduceRelayEnabled && FeatureEnabled(requestHeaders, FeatureNameVPRR) {
+		parts = append(parts, FeatureNameVPRR+"=1")
+	}
+
+	return strings.Join(parts, FeatureDelimiter)
+}
+
+// ParseProtocolCtlFeatures parses the X-Protocol-Ctl header and returns negotiated capabilities.
+func ParseProtocolCtlFeatures(headers http.Header) *FeatureSet {
+	fs := NewFeatureSet()
+
+	if IsFeatureValue(headers, FeatureNameCompr, "lz4") {
+		fs.Enable(FeatureCompression)
+	}
+	if FeatureEnabled(headers, FeatureNameLedgerReplay) {
+		fs.Enable(FeatureLedgerReplay)
+	}
+	if FeatureEnabled(headers, FeatureNameTXRR) || FeatureEnabled(headers, FeatureNameVPRR) {
+		fs.Enable(FeatureReduceRelay)
+	}
+
+	return fs
+}
