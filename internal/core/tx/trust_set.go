@@ -47,7 +47,7 @@ const (
 )
 
 // QUALITY_ONE is the 1:1 quality ratio (1e9)
-const QualityOne uint32 = 1000000000
+// Note: QualityOne is defined in payment_step.go
 
 // NewTrustSet creates a new TrustSet transaction
 func NewTrustSet(account string, limitAmount Amount) *TrustSet {

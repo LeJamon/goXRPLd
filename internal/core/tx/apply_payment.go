@@ -328,9 +328,9 @@ func (e *Engine) applyIOUPayment(payment *Payment, sender *AccountRoot, metadata
 		}
 	}
 
-	// For path-finding payments, return tecPATH_DRY since we don't have full RippleCalc
+	// For path-finding payments, use the Flow Engine (RippleCalculate)
 	if requiresPathFinding {
-		return TecPATH_DRY
+		return e.applyIOUPaymentWithPaths(payment, sender, senderAccountID, destAccountID, issuerAccountID, metadata)
 	}
 
 	// Check destination exists
@@ -391,6 +391,88 @@ func (e *Engine) applyIOUPayment(payment *Payment, sender *AccountRoot, metadata
 				return TecPATH_PARTIAL
 			}
 		}
+	}
+
+	return result
+}
+
+// applyIOUPaymentWithPaths handles IOU payments that require path finding using the Flow Engine.
+// This is the main entry point for cross-currency payments and payments with explicit paths.
+// Reference: rippled/src/xrpld/app/paths/RippleCalc.cpp
+func (e *Engine) applyIOUPaymentWithPaths(
+	payment *Payment,
+	sender *AccountRoot,
+	senderID, destID, issuerID [20]byte,
+	metadata *Metadata,
+) Result {
+	// Determine payment flags
+	flags := payment.GetFlags()
+	partialPayment := (flags & PaymentFlagPartialPayment) != 0
+	limitQuality := (flags & PaymentFlagLimitQuality) != 0
+	noDirectRipple := (flags & PaymentFlagNoDirectRipple) != 0
+
+	// addDefaultPath is true unless tfNoRippleDirect is set
+	addDefaultPath := !noDirectRipple
+
+	// Execute RippleCalculate
+	_, actualOut, removableOffers, sandbox, result := RippleCalculate(
+		e.view,
+		senderID,
+		destID,
+		payment.Amount,
+		payment.SendMax,
+		payment.Paths,
+		addDefaultPath,
+		partialPayment,
+		limitQuality,
+		e.currentTxHash,
+		e.config.LedgerSequence,
+	)
+
+	// Handle result
+	if result != TesSUCCESS && result != TecPATH_PARTIAL {
+		return result
+	}
+
+	// Apply sandbox changes back to the ledger view
+	if sandbox != nil {
+		if err := sandbox.ApplyToView(e.view); err != nil {
+			return TefINTERNAL
+		}
+	}
+
+	// Check if partial payment delivered enough (DeliverMin)
+	if partialPayment && payment.DeliverMin != nil {
+		deliverMin := ToEitherAmount(*payment.DeliverMin)
+		if actualOut.Compare(deliverMin) < 0 {
+			return TecPATH_PARTIAL
+		}
+	}
+
+	// Remove unfunded/expired offers
+	for offerKey := range removableOffers {
+		// The offer should be removed from the ledger
+		// This is handled by the sandbox but we need to record in metadata
+		offerKeylet := keylet.Keylet{Key: offerKey}
+		offerData, err := e.view.Read(offerKeylet)
+		if err == nil && offerData != nil {
+			// Record offer deletion in metadata
+			metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
+				NodeType:        "DeletedNode",
+				LedgerEntryType: "Offer",
+				LedgerIndex:     hex.EncodeToString(offerKey[:]),
+			})
+		}
+	}
+
+	// Record delivered amount in metadata
+	deliveredAmt := FromEitherAmount(actualOut)
+	metadata.DeliveredAmount = &deliveredAmt
+
+	// Generate AffectedNodes from sandbox changes (trust line modifications, etc.)
+	if sandbox != nil && result == TesSUCCESS {
+		affectedNodes := sandbox.GenerateAffectedNodes()
+		metadata.AffectedNodes = append(metadata.AffectedNodes, affectedNodes...)
 	}
 
 	return result
