@@ -3,6 +3,7 @@ package tx
 import (
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"math/big"
 	"strings"
 
@@ -188,23 +189,28 @@ func serializeDirectoryNode(dir *DirectoryNode, isBookDir bool) ([]byte, error) 
 		jsonObj["IndexPrevious"] = formatUint64Hex(dir.IndexPrevious)
 	}
 
-	if isBookDir {
-		// Book directory fields - always include all four fields, even if zero
-		// XRPL serialization includes these for book directories
+	// Include Owner field if set
+	if dir.Owner != [20]byte{} {
+		ownerAddr, err := encodeAccountID(dir.Owner)
+		if err == nil {
+			jsonObj["Owner"] = ownerAddr
+		}
+	}
+
+	// Include book directory fields if they exist
+	// These fields may exist even on owner directory pages (they're stored in ledger state)
+	hasBookFields := isBookDir || dir.ExchangeRate != 0 ||
+		dir.TakerPaysCurrency != [20]byte{} || dir.TakerPaysIssuer != [20]byte{} ||
+		dir.TakerGetsCurrency != [20]byte{} || dir.TakerGetsIssuer != [20]byte{}
+
+	if hasBookFields {
+		// Include all four currency/issuer fields
 		jsonObj["TakerPaysCurrency"] = strings.ToUpper(hex.EncodeToString(dir.TakerPaysCurrency[:]))
 		jsonObj["TakerPaysIssuer"] = strings.ToUpper(hex.EncodeToString(dir.TakerPaysIssuer[:]))
 		jsonObj["TakerGetsCurrency"] = strings.ToUpper(hex.EncodeToString(dir.TakerGetsCurrency[:]))
 		jsonObj["TakerGetsIssuer"] = strings.ToUpper(hex.EncodeToString(dir.TakerGetsIssuer[:]))
 		if dir.ExchangeRate != 0 {
 			jsonObj["ExchangeRate"] = formatUint64Hex(dir.ExchangeRate)
-		}
-	} else {
-		// Owner directory - add Owner field
-		if dir.Owner != [20]byte{} {
-			ownerAddr, err := encodeAccountID(dir.Owner)
-			if err == nil {
-				jsonObj["Owner"] = ownerAddr
-			}
 		}
 	}
 
@@ -256,9 +262,34 @@ func parseDirectoryNode(data []byte) (*DirectoryNode, error) {
 		dir.IndexNext = parseUint64Hex(indexNext)
 	}
 
+	if indexPrev, ok := jsonObj["IndexPrevious"].(string); ok {
+		dir.IndexPrevious = parseUint64Hex(indexPrev)
+	}
+
 	if owner, ok := jsonObj["Owner"].(string); ok {
 		ownerID, _ := decodeAccountID(owner)
 		dir.Owner = ownerID
+	}
+
+	// Parse book directory fields (must preserve these even if not used)
+	if exchangeRate, ok := jsonObj["ExchangeRate"].(string); ok {
+		dir.ExchangeRate = parseUint64Hex(exchangeRate)
+	}
+	if takerPaysCurrency, ok := jsonObj["TakerPaysCurrency"].(string); ok {
+		decoded, _ := hex.DecodeString(takerPaysCurrency)
+		copy(dir.TakerPaysCurrency[:], decoded)
+	}
+	if takerPaysIssuer, ok := jsonObj["TakerPaysIssuer"].(string); ok {
+		decoded, _ := hex.DecodeString(takerPaysIssuer)
+		copy(dir.TakerPaysIssuer[:], decoded)
+	}
+	if takerGetsCurrency, ok := jsonObj["TakerGetsCurrency"].(string); ok {
+		decoded, _ := hex.DecodeString(takerGetsCurrency)
+		copy(dir.TakerGetsCurrency[:], decoded)
+	}
+	if takerGetsIssuer, ok := jsonObj["TakerGetsIssuer"].(string); ok {
+		decoded, _ := hex.DecodeString(takerGetsIssuer)
+		copy(dir.TakerGetsIssuer[:], decoded)
 	}
 
 	return dir, nil
@@ -289,26 +320,47 @@ type DirInsertResult struct {
 	DirKey        [32]byte // Key of the directory node that was modified/created
 	PreviousState *DirectoryNode
 	NewState      *DirectoryNode
+	// For multi-page support:
+	RootModified     bool           // True if root was modified (for IndexPrevious update)
+	RootPrevState    *DirectoryNode // Previous state of root (if root was modified)
+	RootNewState     *DirectoryNode // New state of root
+	NewPageCreated   bool           // True if a new page was created
+	NewPageKey       [32]byte       // Key of the new page created
+	NewPageState     *DirectoryNode // State of the new page
+	PrevPageModified bool           // True if previous page was modified (IndexNext update)
+	PrevPageKey      [32]byte       // Key of the previous page
+	PrevPagePrevState *DirectoryNode // Previous state of prev page
+	PrevPageNewState  *DirectoryNode // New state of prev page
 }
+
+// dirNodeMaxEntries is the maximum number of entries per directory page (matches rippled)
+const dirNodeMaxEntries = 32
 
 // dirInsert adds an item to a directory, creating the directory if needed.
 // Returns the page number where the item was inserted.
+// Follows rippled's dirAdd algorithm for multi-page directory support.
 func (e *Engine) dirInsert(dirKey keylet.Keylet, itemKey [32]byte, setupFunc func(*DirectoryNode)) (*DirInsertResult, error) {
 	result := &DirInsertResult{
 		DirKey: dirKey.Key,
 	}
 
-	// Check if directory exists
+	// Check if root directory exists
 	exists, err := e.view.Exists(dirKey)
 	if err != nil {
 		return nil, err
 	}
 
-	var dir *DirectoryNode
+	// Determine if this is a book directory based on setup function behavior
+	var isBookDir bool
+	testDir := &DirectoryNode{}
+	if setupFunc != nil {
+		setupFunc(testDir)
+		isBookDir = testDir.TakerPaysCurrency != [20]byte{} || testDir.TakerGetsCurrency != [20]byte{}
+	}
 
 	if !exists {
-		// Create new directory
-		dir = &DirectoryNode{
+		// No root exists - create it with the item
+		dir := &DirectoryNode{
 			RootIndex: dirKey.Key,
 			Indexes:   [][32]byte{itemKey},
 		}
@@ -317,46 +369,156 @@ func (e *Engine) dirInsert(dirKey keylet.Keylet, itemKey [32]byte, setupFunc fun
 		}
 		result.Created = true
 		result.Page = 0
-	} else {
-		// Read existing directory
-		data, err := e.view.Read(dirKey)
+		result.NewState = dir
+		result.DirKey = dirKey.Key
+
+		// Serialize and store
+		data, err := serializeDirectoryNode(dir, isBookDir)
 		if err != nil {
 			return nil, err
 		}
-
-		dir, err = parseDirectoryNode(data)
-		if err != nil {
+		if err := e.view.Insert(dirKey, data); err != nil {
 			return nil, err
 		}
-
-		// Save previous state for metadata
-		prevDir := *dir
-		result.PreviousState = &prevDir
-
-		// Add item to indexes
-		dir.Indexes = append(dir.Indexes, itemKey)
-		result.Modified = true
-		result.Page = 0 // For simplicity, always use page 0
+		return result, nil
 	}
 
-	result.NewState = dir
-
-	// Serialize and store
-	// Determine if this is a book directory (has currency fields set)
-	isBookDir := dir.TakerPaysCurrency != [20]byte{} || dir.TakerGetsCurrency != [20]byte{}
-	data, err := serializeDirectoryNode(dir, isBookDir)
+	// Root exists - read it
+	rootData, err := e.view.Read(dirKey)
+	if err != nil {
+		return nil, err
+	}
+	root, err := parseDirectoryNode(rootData)
 	if err != nil {
 		return nil, err
 	}
 
-	if result.Created {
-		if err := e.view.Insert(dirKey, data); err != nil {
+	// Get the last page number from root's IndexPrevious
+	page := root.IndexPrevious
+	node := root
+	nodeKey := dirKey.Key
+
+	// If page != 0, load that page as the node to insert into
+	if page != 0 {
+		pageKeylet := keylet.DirPage(dirKey.Key, page)
+		nodeKey = pageKeylet.Key
+		pageData, err := e.view.Read(pageKeylet)
+		if err != nil {
 			return nil, err
 		}
+		node, err = parseDirectoryNode(pageData)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Check if current page has space
+	if len(node.Indexes) < dirNodeMaxEntries {
+		// Has space - add item to current page
+		prevNode := *node
+		node.Indexes = append(node.Indexes, itemKey)
+
+		result.Modified = true
+		result.Page = page
+		result.DirKey = nodeKey
+		result.PreviousState = &prevNode
+		result.NewState = node
+
+		// Serialize and update
+		nodeIsBookDir := node.TakerPaysCurrency != [20]byte{} || node.TakerGetsCurrency != [20]byte{}
+		data, err := serializeDirectoryNode(node, nodeIsBookDir)
+		if err != nil {
+			return nil, err
+		}
+		if err := e.view.Update(keylet.Keylet{Type: dirKey.Type, Key: nodeKey}, data); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
+
+	// Current page is full - need to create a new page
+	newPage := page + 1
+	newPageKeylet := keylet.DirPage(dirKey.Key, newPage)
+
+	// Save previous states
+	prevNode := *node
+	prevRoot := *root
+
+	// Update current node's IndexNext to point to new page
+	node.IndexNext = newPage
+
+	// Update root's IndexPrevious to point to new page
+	root.IndexPrevious = newPage
+
+	// Create new page
+	newPageNode := &DirectoryNode{
+		RootIndex: dirKey.Key,
+		Indexes:   [][32]byte{itemKey},
+	}
+	// Set IndexPrevious on new page (unless it's page 1)
+	if newPage != 1 {
+		newPageNode.IndexPrevious = newPage - 1
+	}
+	// Copy book directory fields if applicable
+	if setupFunc != nil {
+		setupFunc(newPageNode)
+	}
+
+	// Store results
+	result.Page = newPage
+	result.DirKey = newPageKeylet.Key
+	result.NewPageCreated = true
+	result.NewPageKey = newPageKeylet.Key
+	result.NewPageState = newPageNode
+
+	// Track root modification
+	result.RootModified = true
+	result.RootPrevState = &prevRoot
+	result.RootNewState = root
+
+	// Track previous page modification (if not root)
+	if page != 0 {
+		result.PrevPageModified = true
+		result.PrevPageKey = nodeKey
+		result.PrevPagePrevState = &prevNode
+		result.PrevPageNewState = node
 	} else {
-		if err := e.view.Update(dirKey, data); err != nil {
+		// Previous page was root, already tracked above
+		result.PrevPageModified = false
+	}
+
+	// Serialize and store all changes
+
+	// 1. Update current page (node) with new IndexNext
+	nodeIsBookDir := node.TakerPaysCurrency != [20]byte{} || node.TakerGetsCurrency != [20]byte{}
+	nodeData, err := serializeDirectoryNode(node, nodeIsBookDir)
+	if err != nil {
+		return nil, err
+	}
+	if err := e.view.Update(keylet.Keylet{Type: dirKey.Type, Key: nodeKey}, nodeData); err != nil {
+		return nil, err
+	}
+
+	// 2. Update root with new IndexPrevious (only if root != node)
+	if page != 0 {
+		rootIsBookDir := root.TakerPaysCurrency != [20]byte{} || root.TakerGetsCurrency != [20]byte{}
+		rootData, err := serializeDirectoryNode(root, rootIsBookDir)
+		if err != nil {
 			return nil, err
 		}
+		if err := e.view.Update(dirKey, rootData); err != nil {
+			return nil, err
+		}
+	}
+
+	// 3. Insert new page
+	newPageIsBookDir := newPageNode.TakerPaysCurrency != [20]byte{} || newPageNode.TakerGetsCurrency != [20]byte{}
+	newPageData, err := serializeDirectoryNode(newPageNode, newPageIsBookDir)
+	if err != nil {
+		return nil, err
+	}
+	if err := e.view.Insert(newPageKeylet, newPageData); err != nil {
+		return nil, err
 	}
 
 	return result, nil
@@ -401,4 +563,379 @@ func formatUint64Hex(v uint64) string {
 		h = "0"
 	}
 	return strings.ToLower(h)
+}
+
+// formatUint64HexPadded formats a uint64 as 16-char uppercase hex with leading zeros
+// Used for fields like OwnerNode and BookNode that require zero-padding in metadata
+func formatUint64HexPadded(v uint64) string {
+	return strings.ToUpper(hex.EncodeToString(uint64ToBytes(v)))
+}
+
+// DirRemoveResult contains the result of a directory remove operation
+type DirRemoveResult struct {
+	Success           bool                       // True if the item was found and removed
+	PageModified      bool                       // True if the page was modified but not deleted
+	PageDeleted       bool                       // True if the page was deleted (became empty)
+	RootDeleted       bool                       // True if the entire directory was deleted
+	ModifiedNodes     []DirRemoveModifiedNode    // Nodes that were modified
+	DeletedNodes      []DirRemoveDeletedNode     // Nodes that were deleted
+}
+
+// DirRemoveModifiedNode tracks a modified directory node
+type DirRemoveModifiedNode struct {
+	Key       [32]byte
+	PrevState *DirectoryNode
+	NewState  *DirectoryNode
+}
+
+// DirRemoveDeletedNode tracks a deleted directory node
+type DirRemoveDeletedNode struct {
+	Key        [32]byte
+	FinalState *DirectoryNode
+}
+
+// dirRemove removes an item from a directory.
+// Follows rippled's dirRemove algorithm for proper page cleanup.
+// Parameters:
+//   - directory: keylet for the directory (root)
+//   - page: the page number where the item is located (from OwnerNode/BookNode field)
+//   - key: the item key to remove
+//   - keepRoot: if true, don't delete the root even if empty
+func (e *Engine) dirRemove(directory keylet.Keylet, page uint64, itemKey [32]byte, keepRoot bool) (*DirRemoveResult, error) {
+	result := &DirRemoveResult{
+		ModifiedNodes: make([]DirRemoveModifiedNode, 0),
+		DeletedNodes:  make([]DirRemoveDeletedNode, 0),
+	}
+
+	const rootPage uint64 = 0
+
+	// Get the page where the item should be
+	pageKeylet := keylet.DirPage(directory.Key, page)
+	pageData, err := e.view.Read(pageKeylet)
+	if err != nil {
+		return result, nil // Page not found, return success=false
+	}
+	node, err := parseDirectoryNode(pageData)
+	if err != nil {
+		return nil, err
+	}
+
+	// Find and remove the item from Indexes
+	found := false
+	newIndexes := make([][32]byte, 0, len(node.Indexes))
+	for _, idx := range node.Indexes {
+		if idx == itemKey {
+			found = true
+		} else {
+			newIndexes = append(newIndexes, idx)
+		}
+	}
+
+	if !found {
+		return result, nil // Item not found
+	}
+
+	result.Success = true
+	prevNode := *node
+	node.Indexes = newIndexes
+
+	// If page still has entries, just update it
+	if len(node.Indexes) > 0 {
+		result.PageModified = true
+		result.ModifiedNodes = append(result.ModifiedNodes, DirRemoveModifiedNode{
+			Key:       pageKeylet.Key,
+			PrevState: &prevNode,
+			NewState:  node,
+		})
+
+		// Serialize and update
+		isBookDir := node.TakerPaysCurrency != [20]byte{} || node.TakerGetsCurrency != [20]byte{}
+		data, err := serializeDirectoryNode(node, isBookDir)
+		if err != nil {
+			return nil, err
+		}
+		if err := e.view.Update(pageKeylet, data); err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
+
+	// Page is now empty - need to handle page deletion
+	prevPage := node.IndexPrevious
+	nextPage := node.IndexNext
+
+	// Handle root page specially
+	if page == rootPage {
+		// Check for consistency
+		if nextPage == page && prevPage != page {
+			return nil, fmt.Errorf("directory chain: fwd link broken")
+		}
+		if prevPage == page && nextPage != page {
+			return nil, fmt.Errorf("directory chain: rev link broken")
+		}
+
+		// Handle legacy empty trailing pages
+		if nextPage == prevPage && nextPage != page {
+			lastPageKeylet := keylet.DirPage(directory.Key, nextPage)
+			lastPageData, err := e.view.Read(lastPageKeylet)
+			if err != nil {
+				return nil, fmt.Errorf("directory chain: fwd link broken")
+			}
+			lastPage, err := parseDirectoryNode(lastPageData)
+			if err != nil {
+				return nil, err
+			}
+
+			if len(lastPage.Indexes) == 0 {
+				// Update root's linked list
+				node.IndexNext = rootPage
+				node.IndexPrevious = rootPage
+
+				// Track root modification
+				result.ModifiedNodes = append(result.ModifiedNodes, DirRemoveModifiedNode{
+					Key:       pageKeylet.Key,
+					PrevState: &prevNode,
+					NewState:  node,
+				})
+
+				// Track last page deletion
+				result.DeletedNodes = append(result.DeletedNodes, DirRemoveDeletedNode{
+					Key:        lastPageKeylet.Key,
+					FinalState: lastPage,
+				})
+
+				// Serialize root update
+				isBookDir := node.TakerPaysCurrency != [20]byte{} || node.TakerGetsCurrency != [20]byte{}
+				data, err := serializeDirectoryNode(node, isBookDir)
+				if err != nil {
+					return nil, err
+				}
+				if err := e.view.Update(pageKeylet, data); err != nil {
+					return nil, err
+				}
+
+				// Erase last page
+				if err := e.view.Erase(lastPageKeylet); err != nil {
+					return nil, err
+				}
+
+				nextPage = rootPage
+				prevPage = rootPage
+			}
+		}
+
+		if keepRoot {
+			// Just mark as modified if we changed it
+			if prevNode.IndexNext != node.IndexNext || prevNode.IndexPrevious != node.IndexPrevious {
+				// Already tracked above
+			} else {
+				// Track modification for removing the item
+				result.PageModified = true
+				result.ModifiedNodes = append(result.ModifiedNodes, DirRemoveModifiedNode{
+					Key:       pageKeylet.Key,
+					PrevState: &prevNode,
+					NewState:  node,
+				})
+
+				isBookDir := node.TakerPaysCurrency != [20]byte{} || node.TakerGetsCurrency != [20]byte{}
+				data, err := serializeDirectoryNode(node, isBookDir)
+				if err != nil {
+					return nil, err
+				}
+				if err := e.view.Update(pageKeylet, data); err != nil {
+					return nil, err
+				}
+			}
+			return result, nil
+		}
+
+		// If no other pages, erase the root
+		if nextPage == rootPage && prevPage == rootPage {
+			result.PageDeleted = true
+			result.RootDeleted = true
+			result.DeletedNodes = append(result.DeletedNodes, DirRemoveDeletedNode{
+				Key:        pageKeylet.Key,
+				FinalState: &prevNode, // Use state before item removal
+			})
+
+			if err := e.view.Erase(pageKeylet); err != nil {
+				return nil, err
+			}
+		} else {
+			// Root not empty but we removed an item - just update
+			result.PageModified = true
+			result.ModifiedNodes = append(result.ModifiedNodes, DirRemoveModifiedNode{
+				Key:       pageKeylet.Key,
+				PrevState: &prevNode,
+				NewState:  node,
+			})
+
+			isBookDir := node.TakerPaysCurrency != [20]byte{} || node.TakerGetsCurrency != [20]byte{}
+			data, err := serializeDirectoryNode(node, isBookDir)
+			if err != nil {
+				return nil, err
+			}
+			if err := e.view.Update(pageKeylet, data); err != nil {
+				return nil, err
+			}
+		}
+
+		return result, nil
+	}
+
+	// Non-root page - need to unlink from chain and delete
+
+	// Consistency checks
+	if nextPage == page {
+		return nil, fmt.Errorf("directory chain: fwd link broken")
+	}
+	if prevPage == page {
+		return nil, fmt.Errorf("directory chain: rev link broken")
+	}
+
+	// Get prev and next pages
+	prevPageKeylet := keylet.DirPage(directory.Key, prevPage)
+	prevPageData, err := e.view.Read(prevPageKeylet)
+	if err != nil {
+		return nil, fmt.Errorf("directory chain: fwd link broken")
+	}
+	prev, err := parseDirectoryNode(prevPageData)
+	if err != nil {
+		return nil, err
+	}
+	prevPrev := *prev
+
+	nextPageKeylet := keylet.DirPage(directory.Key, nextPage)
+	nextPageData, err := e.view.Read(nextPageKeylet)
+	if err != nil {
+		return nil, fmt.Errorf("directory chain: rev link broken")
+	}
+	next, err := parseDirectoryNode(nextPageData)
+	if err != nil {
+		return nil, err
+	}
+	nextPrev := *next
+
+	// Unlink: prev.IndexNext = nextPage
+	prev.IndexNext = nextPage
+	// Unlink: next.IndexPrevious = prevPage
+	next.IndexPrevious = prevPage
+
+	// Track prev modification
+	result.ModifiedNodes = append(result.ModifiedNodes, DirRemoveModifiedNode{
+		Key:       prevPageKeylet.Key,
+		PrevState: &prevPrev,
+		NewState:  prev,
+	})
+
+	// Track next modification (only if different from prev)
+	if nextPageKeylet.Key != prevPageKeylet.Key {
+		result.ModifiedNodes = append(result.ModifiedNodes, DirRemoveModifiedNode{
+			Key:       nextPageKeylet.Key,
+			PrevState: &nextPrev,
+			NewState:  next,
+		})
+	}
+
+	// Serialize prev update
+	prevIsBookDir := prev.TakerPaysCurrency != [20]byte{} || prev.TakerGetsCurrency != [20]byte{}
+	prevData, err := serializeDirectoryNode(prev, prevIsBookDir)
+	if err != nil {
+		return nil, err
+	}
+	if err := e.view.Update(prevPageKeylet, prevData); err != nil {
+		return nil, err
+	}
+
+	// Serialize next update (only if different from prev)
+	if nextPageKeylet.Key != prevPageKeylet.Key {
+		nextIsBookDir := next.TakerPaysCurrency != [20]byte{} || next.TakerGetsCurrency != [20]byte{}
+		nextData, err := serializeDirectoryNode(next, nextIsBookDir)
+		if err != nil {
+			return nil, err
+		}
+		if err := e.view.Update(nextPageKeylet, nextData); err != nil {
+			return nil, err
+		}
+	}
+
+	// Delete the now-empty page
+	result.PageDeleted = true
+	result.DeletedNodes = append(result.DeletedNodes, DirRemoveDeletedNode{
+		Key:        pageKeylet.Key,
+		FinalState: &prevNode,
+	})
+	if err := e.view.Erase(pageKeylet); err != nil {
+		return nil, err
+	}
+
+	// Check if next page is now the last page and empty - clean it up
+	if nextPage != rootPage && next.IndexNext == rootPage && len(next.Indexes) == 0 {
+		// Delete next as well
+		result.DeletedNodes = append(result.DeletedNodes, DirRemoveDeletedNode{
+			Key:        nextPageKeylet.Key,
+			FinalState: &nextPrev,
+		})
+		if err := e.view.Erase(nextPageKeylet); err != nil {
+			return nil, err
+		}
+
+		// Update prev to point to root
+		prev.IndexNext = rootPage
+		// Re-serialize prev
+		prevData, err := serializeDirectoryNode(prev, prevIsBookDir)
+		if err != nil {
+			return nil, err
+		}
+		if err := e.view.Update(prevPageKeylet, prevData); err != nil {
+			return nil, err
+		}
+
+		// Update root's IndexPrevious
+		rootKeylet := keylet.DirPage(directory.Key, rootPage)
+		rootData, err := e.view.Read(rootKeylet)
+		if err != nil {
+			return nil, err
+		}
+		root, err := parseDirectoryNode(rootData)
+		if err != nil {
+			return nil, err
+		}
+		rootPrev := *root
+		root.IndexPrevious = prevPage
+
+		result.ModifiedNodes = append(result.ModifiedNodes, DirRemoveModifiedNode{
+			Key:       rootKeylet.Key,
+			PrevState: &rootPrev,
+			NewState:  root,
+		})
+
+		rootIsBookDir := root.TakerPaysCurrency != [20]byte{} || root.TakerGetsCurrency != [20]byte{}
+		rootData, err = serializeDirectoryNode(root, rootIsBookDir)
+		if err != nil {
+			return nil, err
+		}
+		if err := e.view.Update(rootKeylet, rootData); err != nil {
+			return nil, err
+		}
+
+		nextPage = rootPage
+	}
+
+	// If not keeping root, check if prev is root and now empty
+	if !keepRoot && nextPage == rootPage && prevPage == rootPage {
+		if len(prev.Indexes) == 0 {
+			// Delete root as well
+			result.RootDeleted = true
+			result.DeletedNodes = append(result.DeletedNodes, DirRemoveDeletedNode{
+				Key:        prevPageKeylet.Key,
+				FinalState: &prevPrev,
+			})
+			if err := e.view.Erase(prevPageKeylet); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	return result, nil
 }

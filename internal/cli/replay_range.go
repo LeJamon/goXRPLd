@@ -13,6 +13,7 @@ import (
 
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/header"
 	"github.com/LeJamon/goXRPLd/internal/core/shamap"
@@ -374,6 +375,9 @@ func processBlock(
 	openLedger := ledger.NewOpenWithHeader(ledgerHeader, preStateMap, txMap, fees)
 
 	// Setup engine
+	// TODO: Load amendments from the Amendments ledger entry in the state.
+	// For now, use EmptyRules() which is correct for early historical ledgers
+	// before amendments were enabled on mainnet.
 	engineConfig := tx.EngineConfig{
 		BaseFee:                   uint64(fees.Base),
 		ReserveBase:               uint64(fees.Reserve),
@@ -381,6 +385,7 @@ func processBlock(
 		LedgerSequence:            targetLedger,
 		SkipSignatureVerification: true,
 		Standalone:                true,
+		Rules:                     amendment.EmptyRules(),
 	}
 
 	engine := tx.NewEngine(openLedger, engineConfig)

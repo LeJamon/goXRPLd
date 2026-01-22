@@ -3,6 +3,7 @@ package tx
 import (
 	"encoding/hex"
 	"fmt"
+	"math"
 	"math/big"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ func (e *Engine) applyPayment(payment *Payment, sender *AccountRoot, metadata *M
 }
 
 // applyXRPPayment applies an XRP-to-XRP payment
+// Reference: rippled/src/xrpld/app/tx/detail/Payment.cpp doApply() for XRP direct payments
 func (e *Engine) applyXRPPayment(payment *Payment, sender *AccountRoot, metadata *Metadata) Result {
 	// Parse the amount
 	amountDrops, err := strconv.ParseUint(payment.Amount.Value, 10, 64)
@@ -35,20 +37,27 @@ func (e *Engine) applyXRPPayment(payment *Payment, sender *AccountRoot, metadata
 		feeDrops = e.config.BaseFee // fallback to base fee if not specified
 	}
 
+	// IMPORTANT: sender.Balance has already had fee deducted (in doApply).
+	// Rippled checks against mPriorBalance (balance BEFORE fee deduction).
+	// We reconstruct the pre-fee balance for the check.
+	// Reference: rippled Payment.cpp:619 - if (mPriorBalance < dstAmount.xrp() + mmm)
+	priorBalance := sender.Balance + feeDrops
+
 	// Calculate reserve as: ReserveBase + (ownerCount * ReserveIncrement)
 	// This matches rippled's accountReserve(ownerCount) calculation
 	reserve := e.config.ReserveBase + (uint64(sender.OwnerCount) * e.config.ReserveIncrement)
 
 	// Use max(reserve, fee) as the minimum balance that must remain
 	// This matches rippled's behavior: auto const mmm = std::max(reserve, ctx_.tx.getFieldAmount(sfFee).xrp())
-	minBalance := reserve
-	if feeDrops > minBalance {
-		minBalance = feeDrops
+	// Reference: rippled Payment.cpp:617
+	mmm := reserve
+	if feeDrops > mmm {
+		mmm = feeDrops
 	}
 
-	// Check sender has enough balance (amount + minBalance)
-	requiredBalance := amountDrops + minBalance
-	if sender.Balance < requiredBalance {
+	// Check sender has enough balance using PRE-FEE balance
+	// Reference: rippled Payment.cpp:619 - if (mPriorBalance < dstAmount.xrp() + mmm)
+	if priorBalance < amountDrops+mmm {
 		return TecUNFUNDED_PAYMENT
 	}
 
@@ -199,12 +208,19 @@ func (e *Engine) applyXRPPayment(payment *Payment, sender *AccountRoot, metadata
 	}
 
 	// Create new account
-	// With featureDeletableAccounts enabled (mainnet), new accounts start with
-	// sequence equal to the current ledger sequence (see rippled Payment.cpp:409-411)
+	// With featureDeletableAccounts enabled, new accounts start with sequence
+	// equal to the current ledger sequence. Otherwise, sequence starts at 1.
+	// (see rippled Payment.cpp:409-411)
+	var accountSequence uint32
+	if e.rules().DeletableAccountsEnabled() {
+		accountSequence = e.config.LedgerSequence
+	} else {
+		accountSequence = 1
+	}
 	newAccount := &AccountRoot{
 		Account:           payment.Destination,
 		Balance:           amountDrops,
-		Sequence:          e.config.LedgerSequence,
+		Sequence:          accountSequence,
 		Flags:             0,
 		PreviousTxnID:     e.currentTxHash,
 		PreviousTxnLgrSeq: e.config.LedgerSequence,
@@ -231,7 +247,7 @@ func (e *Engine) applyXRPPayment(payment *Payment, sender *AccountRoot, metadata
 		NewFields: map[string]any{
 			"Account":  payment.Destination,
 			"Balance":  strconv.FormatUint(amountDrops, 10),
-			"Sequence": e.config.LedgerSequence,
+			"Sequence": accountSequence,
 		},
 	})
 
@@ -243,6 +259,7 @@ func (e *Engine) applyXRPPayment(payment *Payment, sender *AccountRoot, metadata
 }
 
 // applyIOUPayment applies an IOU (issued currency) payment
+// Reference: rippled/src/xrpld/app/tx/detail/Payment.cpp
 func (e *Engine) applyIOUPayment(payment *Payment, sender *AccountRoot, metadata *Metadata) Result {
 	// Parse the amount
 	amount := NewIOUAmount(payment.Amount.Value, payment.Amount.Currency, payment.Amount.Issuer)
@@ -267,6 +284,53 @@ func (e *Engine) applyIOUPayment(payment *Payment, sender *AccountRoot, metadata
 	issuerAccountID, err := decodeAccountID(payment.Amount.Issuer)
 	if err != nil {
 		return TemBAD_ISSUER
+	}
+
+	// Detect payments that require RippleCalc (path finding)
+	// Reference: rippled Payment.cpp:435-436:
+	// bool const ripple = (hasPaths || sendMax || !dstAmount.native()) && !mptDirect;
+	//
+	// Payments that require path finding:
+	// 1. Explicit paths in the transaction
+	// 2. SendMax with different issuer than Amount (cross-issuer)
+	//
+	// Payments that DON'T require path finding (can be handled directly):
+	// - When sender == Amount.issuer (issue): issuer creates tokens for recipient
+	// - When dest == Amount.issuer AND no SendMax with different issuer (simple redemption)
+	//
+	// For now, we only support simple direct IOU payments (no path finding).
+	// Return tecPATH_DRY for payments that require RippleCalc.
+
+	// Determine payment type: is this a direct payment to/from issuer?
+	senderIsIssuer := senderAccountID == issuerAccountID
+	destIsIssuer := destAccountID == issuerAccountID
+
+	requiresPathFinding := false
+
+	// Check for explicit paths
+	if payment.Paths != nil && len(payment.Paths) > 0 {
+		requiresPathFinding = true
+	}
+
+	// Check for SendMax with cross-issuer
+	// When SendMax.issuer == sender, it means "use my trust line balance" - rippled
+	// determines the actual issuer from the sender's trust lines.
+	// When SendMax.issuer is explicitly a different third party (not sender, not Amount.issuer),
+	// that's a true cross-issuer payment requiring path finding.
+	if payment.SendMax != nil && !senderIsIssuer {
+		sendMaxIssuer := payment.SendMax.Issuer
+		// True cross-issuer: SendMax.issuer is a specific third-party issuer
+		// (not the sender, not the Amount.issuer)
+		if sendMaxIssuer != "" &&
+			sendMaxIssuer != payment.Amount.Issuer &&
+			sendMaxIssuer != payment.Common.Account {
+			requiresPathFinding = true
+		}
+	}
+
+	// For path-finding payments, return tecPATH_DRY since we don't have full RippleCalc
+	if requiresPathFinding {
+		return TecPATH_DRY
 	}
 
 	// Check destination exists
@@ -298,9 +362,6 @@ func (e *Engine) applyIOUPayment(payment *Payment, sender *AccountRoot, metadata
 	// 1. Sender is issuer - creating new tokens
 	// 2. Destination is issuer - redeeming tokens
 	// 3. Neither - transfer between accounts via trust lines
-
-	senderIsIssuer := senderAccountID == issuerAccountID
-	destIsIssuer := destAccountID == issuerAccountID
 
 	var result Result
 	var deliveredAmount IOUAmount
@@ -872,6 +933,118 @@ const (
 	qualityOne uint32 = 1000000000 // 1e9 = 100% (no fee)
 )
 
+// getTransferRate returns the transfer rate for an issuer account
+// Returns qualityOne (1e9) if no transfer rate is set
+func (e *Engine) getTransferRate(issuerAddress string) uint32 {
+	issuerID, err := decodeAccountID(issuerAddress)
+	if err != nil {
+		return qualityOne
+	}
+	issuerKey := keylet.Account(issuerID)
+	issuerData, err := e.view.Read(issuerKey)
+	if err != nil {
+		return qualityOne
+	}
+	issuerAccount, err := parseAccountRoot(issuerData)
+	if err != nil {
+		return qualityOne
+	}
+	if issuerAccount.TransferRate > 0 {
+		return issuerAccount.TransferRate
+	}
+	return qualityOne
+}
+
+// getAccountIOUBalance returns the IOU balance an account holds for a specific currency/issuer
+// Returns the balance from the trust line, accounting for which side is low/high
+func (e *Engine) getAccountIOUBalance(accountAddress string, currency string, issuerAddress string) IOUAmount {
+	accountID, err := decodeAccountID(accountAddress)
+	if err != nil {
+		return IOUAmount{Value: big.NewFloat(0), Currency: currency, Issuer: issuerAddress}
+	}
+	issuerID, err := decodeAccountID(issuerAddress)
+	if err != nil {
+		return IOUAmount{Value: big.NewFloat(0), Currency: currency, Issuer: issuerAddress}
+	}
+
+	trustLineKey := keylet.Line(accountID, issuerID, currency)
+	trustLineData, err := e.view.Read(trustLineKey)
+	if err != nil {
+		return IOUAmount{Value: big.NewFloat(0), Currency: currency, Issuer: issuerAddress}
+	}
+
+	rs, err := parseRippleState(trustLineData)
+	if err != nil {
+		return IOUAmount{Value: big.NewFloat(0), Currency: currency, Issuer: issuerAddress}
+	}
+
+	// Determine account's balance based on low/high position
+	// Balance is stored from low's perspective:
+	// - Negative balance = low owes high (high holds tokens)
+	// - Positive balance = high owes low (low holds tokens)
+	accountIsLow := compareAccountIDsForLine(accountID, issuerID) < 0
+
+	balance := rs.Balance
+	if !accountIsLow {
+		// Account is HIGH, negate to get their perspective
+		// If balance is negative (low owes high), account holds tokens
+		balance = balance.Negate()
+	}
+
+	// Positive balance means account holds tokens
+	balance.Currency = currency
+	balance.Issuer = issuerAddress
+	return balance
+}
+
+// applyTransferFee applies the transfer fee to an amount
+// Used when sending IOUs through offers
+func applyTransferFee(amount IOUAmount, transferRate uint32) IOUAmount {
+	if transferRate == qualityOne || transferRate == 0 {
+		return amount
+	}
+
+	// Transfer rate is expressed as fraction of 1e9
+	// Example: 1.01 (1% fee) = 1010000000
+	// To apply: multiply amount by (transferRate / 1e9)
+	// Use big.Float for full precision
+	rate := new(big.Float).SetPrec(128).SetUint64(uint64(transferRate))
+	one := new(big.Float).SetPrec(128).SetUint64(uint64(qualityOne))
+	rateRatio := new(big.Float).SetPrec(128).Quo(rate, one)
+
+	amountValue := new(big.Float).SetPrec(128).Set(amount.Value)
+	adjustedValue := new(big.Float).SetPrec(128).Mul(amountValue, rateRatio)
+
+	return IOUAmount{
+		Value:    adjustedValue,
+		Currency: amount.Currency,
+		Issuer:   amount.Issuer,
+	}
+}
+
+// removeTransferFee removes the transfer fee from an amount
+// Used to calculate the actual amount received after fees
+func removeTransferFee(amount IOUAmount, transferRate uint32) IOUAmount {
+	if transferRate == qualityOne || transferRate == 0 {
+		return amount
+	}
+
+	// To remove fee: divide amount by (transferRate / 1e9)
+	// Use big.Float for full precision
+	rate := new(big.Float).SetPrec(128).SetUint64(uint64(transferRate))
+	one := new(big.Float).SetPrec(128).SetUint64(uint64(qualityOne))
+	rateRatio := new(big.Float).SetPrec(128).Quo(rate, one)
+
+	amountValue := new(big.Float).SetPrec(128).Set(amount.Value)
+	adjustedValue := new(big.Float).SetPrec(128).Quo(amountValue, rateRatio)
+
+	return IOUAmount{
+		Value:    adjustedValue,
+		Currency: amount.Currency,
+		Issuer:   amount.Issuer,
+	}
+}
+
 // applyAccountSet applies an AccountSet transaction
 // Reference: rippled SetAccount.cpp doApply()
 func (e *Engine) applyAccountSet(accountSet *AccountSet, account *AccountRoot, metadata *Metadata) Result {
@@ -1191,6 +1364,8 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 	bClearNoRipple := (txFlags & TrustSetFlagClearNoRipple) != 0
 	bSetFreeze := (txFlags & TrustSetFlagSetFreeze) != 0
 	bClearFreeze := (txFlags & TrustSetFlagClearFreeze) != 0
+	bSetDeepFreeze := (txFlags & TrustSetFlagSetDeepFreeze) != 0
+	bClearDeepFreeze := (txFlags & TrustSetFlagClearDeepFreeze) != 0
 
 	// Validate tfSetfAuth - requires issuer to have lsfRequireAuth set
 	// Per rippled SetTrust.cpp preclaim: if bSetAuth && !(account.Flags & lsfRequireAuth) -> tefNO_AUTH_REQUIRED
@@ -1199,9 +1374,9 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 	}
 
 	// Validate freeze flags - cannot freeze if account has lsfNoFreeze set
-	// Per rippled SetTrust.cpp preclaim: if bNoFreeze && bSetFreeze -> tecNO_PERMISSION
+	// Per rippled SetTrust.cpp preclaim: if bNoFreeze && (bSetFreeze || bSetDeepFreeze) -> tecNO_PERMISSION
 	bNoFreeze := (account.Flags & lsfNoFreeze) != 0
-	if bNoFreeze && bSetFreeze {
+	if bNoFreeze && (bSetFreeze || bSetDeepFreeze) {
 		return TecNO_PERMISSION
 	}
 
@@ -1226,7 +1401,9 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 	}
 
 	// Parse the limit amount
-	limitAmount := NewIOUAmount(trustSet.LimitAmount.Value, trustSet.LimitAmount.Currency, trustSet.LimitAmount.Issuer)
+	// Per rippled SetTrust.cpp: saLimitAllow.setIssuer(account_)
+	// The issuer of the limit is the account setting the trust line, not the LimitAmount.Issuer
+	limitAmount := NewIOUAmount(trustSet.LimitAmount.Value, trustSet.LimitAmount.Currency, account.Account)
 
 	if !trustLineExists {
 		// Check if setting zero limit without existing trust line
@@ -1246,22 +1423,26 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 
 		// Create new RippleState
 		rs := &RippleState{
-			Balance:  NewIOUAmount("0", trustSet.LimitAmount.Currency, trustSet.LimitAmount.Issuer),
-			Flags:    0,
-			LowNode:  0,
-			HighNode: 0,
+			Balance:           NewIOUAmount("0", trustSet.LimitAmount.Currency, trustSet.LimitAmount.Issuer),
+			Flags:             0,
+			LowNode:           0,
+			HighNode:          0,
+			PreviousTxnID:     e.currentTxHash,
+			PreviousTxnLgrSeq: e.config.LedgerSequence,
 		}
 
 		// Set the limit based on which side this account is
+		// Per rippled trustCreate: limit issuers must be the respective account
+		// LowLimit issuer = LOW account, HighLimit issuer = HIGH account
 		if !bHigh {
-			// Account is LOW
-			rs.LowLimit = limitAmount
-			rs.HighLimit = NewIOUAmount("0", trustSet.LimitAmount.Currency, account.Account)
+			// Account is LOW, LimitAmount.Issuer is HIGH
+			rs.LowLimit = limitAmount // issuer = account.Account (LOW)
+			rs.HighLimit = NewIOUAmount("0", trustSet.LimitAmount.Currency, trustSet.LimitAmount.Issuer) // issuer = HIGH
 			rs.Flags |= lsfLowReserve
 		} else {
-			// Account is HIGH
-			rs.LowLimit = NewIOUAmount("0", trustSet.LimitAmount.Currency, trustSet.LimitAmount.Issuer)
-			rs.HighLimit = limitAmount
+			// Account is HIGH, LimitAmount.Issuer is LOW
+			rs.LowLimit = NewIOUAmount("0", trustSet.LimitAmount.Currency, trustSet.LimitAmount.Issuer) // issuer = LOW
+			rs.HighLimit = limitAmount // issuer = account.Account (HIGH)
 			rs.Flags |= lsfHighReserve
 		}
 
@@ -1284,11 +1465,24 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 		}
 
 		// Handle Freeze flag for new trust line
+		// Per rippled computeFreezeFlags:
+		//   if bSetFreeze && !bClearFreeze && !bNoFreeze -> set freeze
 		if bSetFreeze && !bClearFreeze && !bNoFreeze {
 			if bHigh {
 				rs.Flags |= lsfHighFreeze
 			} else {
 				rs.Flags |= lsfLowFreeze
+			}
+		}
+
+		// Handle DeepFreeze flag for new trust line
+		// Per rippled computeFreezeFlags:
+		//   if bSetDeepFreeze && !bClearDeepFreeze && !bNoFreeze -> set deep freeze
+		if bSetDeepFreeze && !bClearDeepFreeze && !bNoFreeze {
+			if bHigh {
+				rs.Flags |= lsfHighDeepFreeze
+			} else {
+				rs.Flags |= lsfLowDeepFreeze
 			}
 		}
 
@@ -1308,6 +1502,47 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 			}
 		}
 
+		// Determine the LOW and HIGH account IDs for directory operations
+		// Low account is the one with the smaller account ID
+		var lowAccountID, highAccountID [20]byte
+		var lowAccountAddr, highAccountAddr string
+		if !bHigh {
+			// Current account is LOW
+			lowAccountID = accountID
+			lowAccountAddr = account.Account
+			highAccountID = issuerAccountID
+			highAccountAddr = trustSet.LimitAmount.Issuer
+		} else {
+			// Current account is HIGH
+			lowAccountID = issuerAccountID
+			lowAccountAddr = trustSet.LimitAmount.Issuer
+			highAccountID = accountID
+			highAccountAddr = account.Account
+		}
+
+		// Add trust line to LOW account's owner directory
+		// Per rippled View.cpp trustCreate: insert into both accounts' directories
+		lowDirKey := keylet.OwnerDir(lowAccountID)
+		lowDirResult, err := e.dirInsert(lowDirKey, trustLineKey.Key, func(dir *DirectoryNode) {
+			dir.Owner = lowAccountID
+		})
+		if err != nil {
+			return TefINTERNAL
+		}
+
+		// Add trust line to HIGH account's owner directory
+		highDirKey := keylet.OwnerDir(highAccountID)
+		highDirResult, err := e.dirInsert(highDirKey, trustLineKey.Key, func(dir *DirectoryNode) {
+			dir.Owner = highAccountID
+		})
+		if err != nil {
+			return TefINTERNAL
+		}
+
+		// Set LowNode and HighNode on the RippleState (deletion hints)
+		rs.LowNode = lowDirResult.Page
+		rs.HighNode = highDirResult.Page
+
 		// Serialize and insert the trust line
 		trustLineData, err := serializeRippleState(rs)
 		if err != nil {
@@ -1318,10 +1553,48 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 			return TefINTERNAL
 		}
 
-		// Increment owner count
+		// Increment owner count for the transaction sender
 		account.OwnerCount++
 
-		// Build metadata for created node
+		// Generate directory metadata for LOW account's directory
+		lowDirSLE := NewSLEDirectoryNode(lowDirResult.DirKey)
+		if lowDirResult.Created {
+			lowDirSLE.MarkAsCreated()
+			lowDirSLE.SetAsOwnerDirectory(lowAccountAddr, lowDirKey.Key)
+		} else if lowDirResult.Modified {
+			if lowDirResult.PreviousState != nil {
+				lowDirSLE.LoadFromDirectoryNode(lowDirResult.PreviousState)
+			}
+			if lowDirResult.NewState != nil {
+				lowDirSLE.UpdateIndexes(lowDirResult.NewState.Indexes)
+			}
+		}
+		if lowDirResult.Created || lowDirResult.Modified {
+			if node := lowDirSLE.GenerateAffectedNode(); node != nil {
+				metadata.AffectedNodes = append(metadata.AffectedNodes, *node)
+			}
+		}
+
+		// Generate directory metadata for HIGH account's directory
+		highDirSLE := NewSLEDirectoryNode(highDirResult.DirKey)
+		if highDirResult.Created {
+			highDirSLE.MarkAsCreated()
+			highDirSLE.SetAsOwnerDirectory(highAccountAddr, highDirKey.Key)
+		} else if highDirResult.Modified {
+			if highDirResult.PreviousState != nil {
+				highDirSLE.LoadFromDirectoryNode(highDirResult.PreviousState)
+			}
+			if highDirResult.NewState != nil {
+				highDirSLE.UpdateIndexes(highDirResult.NewState.Indexes)
+			}
+		}
+		if highDirResult.Created || highDirResult.Modified {
+			if node := highDirSLE.GenerateAffectedNode(); node != nil {
+				metadata.AffectedNodes = append(metadata.AffectedNodes, *node)
+			}
+		}
+
+		// Build metadata for created RippleState node
 		newFields := map[string]any{
 			"Balance": map[string]any{
 				"currency": trustSet.LimitAmount.Currency,
@@ -1353,6 +1626,10 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 				"value":    formatIOUValue(rs.HighLimit.Value),
 			}
 		}
+		// Include LowNode if non-zero (rippled includes it in NewFields)
+		if rs.LowNode != 0 {
+			newFields["LowNode"] = formatUint64Hex(rs.LowNode)
+		}
 		if rs.LowQualityIn != 0 {
 			newFields["LowQualityIn"] = rs.LowQualityIn
 		}
@@ -1369,8 +1646,50 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
 			NodeType:        "CreatedNode",
 			LedgerEntryType: "RippleState",
-			LedgerIndex:     hex.EncodeToString(trustLineKey.Key[:]),
+			LedgerIndex:     strings.ToUpper(hex.EncodeToString(trustLineKey.Key[:])),
 			NewFields:       newFields,
+		})
+
+		// Update issuer account in ledger (it's "touched" because its directory was modified)
+		// Per rippled: when an account's owner directory is modified, the account's
+		// PreviousTxnID and PreviousTxnLgrSeq are updated to point to this transaction.
+		// Save old values for metadata
+		oldIssuerPreviousTxnID := issuerAccount.PreviousTxnID
+		oldIssuerPreviousTxnLgrSeq := issuerAccount.PreviousTxnLgrSeq
+
+		// Update issuer account threading
+		issuerAccount.PreviousTxnID = e.currentTxHash
+		issuerAccount.PreviousTxnLgrSeq = e.config.LedgerSequence
+
+		// Write updated issuer account back to ledger
+		issuerData, err := serializeAccountRoot(issuerAccount)
+		if err != nil {
+			return TefINTERNAL
+		}
+		if err := e.view.Update(issuerKey, issuerData); err != nil {
+			return TefINTERNAL
+		}
+
+		// Generate metadata for issuer account
+		// FinalFields shows current state, PreviousTxnID/LgrSeq show old values (threading info)
+		issuerFinalFields := map[string]any{
+			"Account":   issuerAccount.Account,
+			"Balance":   formatUint64(issuerAccount.Balance),
+			"Flags":     issuerAccount.Flags,
+			"OwnerCount": issuerAccount.OwnerCount,
+			"Sequence":  issuerAccount.Sequence,
+		}
+		if issuerAccount.TransferRate != 0 {
+			issuerFinalFields["TransferRate"] = issuerAccount.TransferRate
+		}
+
+		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
+			NodeType:          "ModifiedNode",
+			LedgerEntryType:   "AccountRoot",
+			LedgerIndex:       strings.ToUpper(hex.EncodeToString(issuerKey.Key[:])),
+			FinalFields:       issuerFinalFields,
+			PreviousTxnLgrSeq: oldIssuerPreviousTxnLgrSeq,
+			PreviousTxnID:     strings.ToUpper(hex.EncodeToString(oldIssuerPreviousTxnID[:])),
 		})
 	} else {
 		// Modify existing trust line
@@ -1412,12 +1731,35 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 		}
 
 		// Handle NoRipple flag
+		// Per rippled SetTrust.cpp:577-584:
+		// NoRipple can only be set if the balance from this account's perspective >= 0
+		// Balance is stored from LOW account's perspective:
+		//   - Positive balance means LOW owes HIGH
+		//   - Negative balance means HIGH owes LOW
+		// From HIGH's perspective: saHighBalance = -rs.Balance, so check rs.Balance <= 0
+		// From LOW's perspective: saLowBalance = rs.Balance, so check rs.Balance >= 0
 		if bSetNoRipple && !bClearNoRipple {
-			if bHigh {
-				rs.Flags |= lsfHighNoRipple
-			} else {
-				rs.Flags |= lsfLowNoRipple
+			// Check if balance from this account's perspective is >= 0
+			balanceFromPerspective := true // Assume can set
+			if rs.Balance.Value != nil {
+				if bHigh {
+					// HIGH account: balance from HIGH's perspective is >= 0 if stored balance <= 0
+					balanceFromPerspective = rs.Balance.Value.Sign() <= 0
+				} else {
+					// LOW account: balance from LOW's perspective is >= 0 if stored balance >= 0
+					balanceFromPerspective = rs.Balance.Value.Sign() >= 0
+				}
 			}
+			// Only set NoRipple if balance from our perspective is non-negative
+			if balanceFromPerspective {
+				if bHigh {
+					rs.Flags |= lsfHighNoRipple
+				} else {
+					rs.Flags |= lsfLowNoRipple
+				}
+			}
+			// Note: If fix1578 amendment is enabled and balance < 0, we should return tecNO_PERMISSION
+			// For now, we match pre-fix1578 behavior: silently don't set the flag
 		} else if bClearNoRipple && !bSetNoRipple {
 			if bHigh {
 				rs.Flags &^= lsfHighNoRipple
@@ -1440,6 +1782,24 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 				rs.Flags &^= lsfHighFreeze
 			} else {
 				rs.Flags &^= lsfLowFreeze
+			}
+		}
+
+		// Handle DeepFreeze flag
+		// Per rippled computeFreezeFlags:
+		//   if bSetDeepFreeze && !bClearDeepFreeze && !bNoFreeze -> set deep freeze
+		//   if bClearDeepFreeze && !bSetDeepFreeze -> clear deep freeze
+		if bSetDeepFreeze && !bClearDeepFreeze && !bNoFreeze {
+			if bHigh {
+				rs.Flags |= lsfHighDeepFreeze
+			} else {
+				rs.Flags |= lsfLowDeepFreeze
+			}
+		} else if bClearDeepFreeze && !bSetDeepFreeze {
+			if bHigh {
+				rs.Flags &^= lsfHighDeepFreeze
+			} else {
+				rs.Flags &^= lsfLowDeepFreeze
 			}
 		}
 
@@ -1675,16 +2035,33 @@ func (e *Engine) applyOfferCreate(offer *OfferCreate, account *AccountRoot, meta
 		}
 	}
 
+	// Get the amounts
+	takerGets := offer.TakerGets
+	takerPays := offer.TakerPays
+
+	// Check if account has funds to back the offer
+	// Reference: rippled CreateOffer.cpp:172-178 (preclaim)
+	// accountFunds checks if the account has ANY available funds for TakerGets
+	// For XRP: available = balance - current_reserve
+	// If available <= 0, return tecUNFUNDED_OFFER
+	if takerGets.IsNative() {
+		// For XRP offers, check if balance exceeds current reserve
+		currentReserve := e.config.ReserveBase + e.config.ReserveIncrement*uint64(account.OwnerCount)
+		if account.Balance <= currentReserve {
+			return TecUNFUNDED_OFFER
+		}
+	} else {
+		// For IOU offers, check if account has any of the token
+		// TODO: implement trust line balance check for IOU offers
+		// For now, we assume IOU offers are funded (this may need implementation)
+	}
+
 	// Check account has reserve for new offer
 	// Per rippled, first 2 objects don't need extra reserve
 	reserveCreate := e.ReserveForNewObject(account.OwnerCount)
 	if account.Balance < reserveCreate {
 		return TecINSUF_RESERVE_OFFER
 	}
-
-	// Get the amounts
-	takerGets := offer.TakerGets
-	takerPays := offer.TakerPays
 
 	// Check for ImmediateOrCancel or FillOrKill flags
 	flags := offer.GetFlags()
@@ -1693,27 +2070,60 @@ func (e *Engine) applyOfferCreate(offer *OfferCreate, account *AccountRoot, meta
 	isFOK := (flags & OfferCreateFlagFillOrKill) != 0
 
 	// Track how much was filled
-	var takerGotTotal, takerPaidTotal Amount
+	var takerGotTotal Amount
+	var takerPaidTotal Amount
 
 	// Simple order matching - look for crossing offers
 	// This is a simplified implementation that checks if there are any offers to match
 	if !isPassive {
 		takerGotTotal, takerPaidTotal = e.matchOffers(offer, account, metadata)
+		// Consolidate duplicate metadata entries after matching
+		consolidateMetadata(metadata)
 	}
 
 	// Check if fully filled
+	// XRPL semantics: TakerPays = what taker receives, TakerGets = what taker pays
+	// takerGotTotal is what we received from matching (should compare with TakerPays)
+	// takerPaidTotal is what we paid to matches (should compare with TakerGets)
 	fullyFilled := false
-	if takerGotTotal.Value != "" && takerGets.Value != "" {
-		// Compare amounts to check if fully filled
-		if takerGets.IsNative() {
+	if takerGotTotal.Value != "" && takerPays.Value != "" {
+		// Compare what we received with what we wanted to receive
+		if takerPays.IsNative() {
 			gotDrops, _ := parseDropsString(takerGotTotal.Value)
-			wantDrops, _ := parseDropsString(takerGets.Value)
+			wantDrops, _ := parseDropsString(takerPays.Value)
 			fullyFilled = gotDrops >= wantDrops
 		} else {
 			gotIOU := NewIOUAmount(takerGotTotal.Value, takerGotTotal.Currency, takerGotTotal.Issuer)
-			wantIOU := NewIOUAmount(takerGets.Value, takerGets.Currency, takerGets.Issuer)
+			wantIOU := NewIOUAmount(takerPays.Value, takerPays.Currency, takerPays.Issuer)
 			fullyFilled = gotIOU.Compare(wantIOU) >= 0
 		}
+	}
+
+	// Also check if we exhausted what we're selling (TakerGets)
+	// This can happen when transfer fees cause us to pay more than takerPaidTotal reports
+	// (takerPaidTotal is what makers received, not what taker actually sent including fees)
+	sellExhausted := false
+	if takerPaidTotal.Value != "" && takerGets.Value != "" {
+		if takerGets.IsNative() {
+			// XRP has no transfer fee
+			paidDrops, _ := parseDropsString(takerPaidTotal.Value)
+			sellDrops, _ := parseDropsString(takerGets.Value)
+			sellExhausted = paidDrops >= sellDrops
+		} else {
+			// IOU - need to account for transfer fee
+			// Taker sent = takerPaidTotal * transferRate
+			// If taker sent >= takerGets, we're exhausted
+			paidIOU := NewIOUAmount(takerPaidTotal.Value, takerPaidTotal.Currency, takerPaidTotal.Issuer)
+			sellIOU := NewIOUAmount(takerGets.Value, takerGets.Currency, takerGets.Issuer)
+			transferRate := e.getTransferRate(takerGets.Issuer)
+			takerSentIOU := applyTransferFee(paidIOU, transferRate)
+			sellExhausted = takerSentIOU.Compare(sellIOU) >= 0
+		}
+	}
+
+	// Fully filled if we got what we wanted OR exhausted what we're selling
+	if sellExhausted {
+		fullyFilled = true
 	}
 
 	// Handle FillOrKill - if not fully filled, fail
@@ -1741,12 +2151,50 @@ func (e *Engine) applyOfferCreate(offer *OfferCreate, account *AccountRoot, meta
 	offerKey := keylet.Offer(accountID, offerSequence)
 
 	// Calculate remaining amounts after partial fill
+	// XRPL semantics: TakerPays = what taker receives, TakerGets = what taker pays
+	// takerGotTotal = what we received (same currency as TakerPays)
+	// takerPaidTotal = what we paid (same currency as TakerGets)
+	// IMPORTANT: rippled calculates remainder at ORIGINAL quality to maintain consistency
+	// Reference: rippled CreateOffer.cpp - remainder uses original offer's exchange rate
 	remainingTakerGets := takerGets
 	remainingTakerPays := takerPays
 	if takerGotTotal.Value != "" {
-		// Subtract what was already obtained
-		remainingTakerGets = subtractAmount(takerGets, takerGotTotal)
-		remainingTakerPays = subtractAmount(takerPays, takerPaidTotal)
+		// Subtract what was already received from what we want to receive
+		remainingTakerPays = subtractAmount(takerPays, takerGotTotal)
+		// Calculate remaining TakerGets at original quality (not simple subtraction)
+		// Quality = TakerPays / TakerGets
+		// remainingTakerGets = remainingTakerPays / quality
+		originalQuality := calculateQuality(takerPays, takerGets)
+		if originalQuality > 0 {
+			if remainingTakerPays.IsNative() {
+				// XRP remaining
+				remainingDrops, _ := parseDropsString(remainingTakerPays.Value)
+				remainingGetsValue := float64(remainingDrops) / originalQuality
+				if takerGets.IsNative() {
+					remainingTakerGets = Amount{Value: formatDrops(uint64(remainingGetsValue))}
+				} else {
+					remainingTakerGets = Amount{
+						Value:    formatIOUValuePrecise(remainingGetsValue),
+						Currency: takerGets.Currency,
+						Issuer:   takerGets.Issuer,
+					}
+				}
+			} else {
+				// IOU remaining
+				remainingIOU := NewIOUAmount(remainingTakerPays.Value, remainingTakerPays.Currency, remainingTakerPays.Issuer)
+				remainingPaysVal, _ := remainingIOU.Value.Float64()
+				remainingGetsValue := remainingPaysVal / originalQuality
+				if takerGets.IsNative() {
+					remainingTakerGets = Amount{Value: formatDrops(uint64(remainingGetsValue))}
+				} else {
+					remainingTakerGets = Amount{
+						Value:    formatIOUValuePrecise(remainingGetsValue),
+						Currency: takerGets.Currency,
+						Issuer:   takerGets.Issuer,
+					}
+				}
+			}
+		}
 	}
 
 	// Calculate quality (exchange rate) for the book directory
@@ -1818,60 +2266,208 @@ func (e *Engine) applyOfferCreate(offer *OfferCreate, account *AccountRoot, meta
 	// Increment owner count
 	account.OwnerCount++
 
-	// Add owner directory metadata
+	// Add owner directory metadata using SLE
+	// Use ownerDirResult.DirKey which is the actual page that was modified (may be different from root)
+	ownerDirSLE := NewSLEDirectoryNode(ownerDirResult.DirKey)
 	if ownerDirResult.Created {
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "CreatedNode",
-			LedgerEntryType: "DirectoryNode",
-			LedgerIndex:     strings.ToUpper(hex.EncodeToString(ownerDirKey.Key[:])),
-			NewFields: map[string]any{
-				"Owner":     offer.Account,
-				"RootIndex": strings.ToUpper(hex.EncodeToString(ownerDirKey.Key[:])),
-			},
-		})
+		ownerDirSLE.MarkAsCreated()
+		ownerDirSLE.SetAsOwnerDirectory(offer.Account, ownerDirKey.Key)
 	} else if ownerDirResult.Modified {
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "ModifiedNode",
-			LedgerEntryType: "DirectoryNode",
-			LedgerIndex:     strings.ToUpper(hex.EncodeToString(ownerDirKey.Key[:])),
-			FinalFields: map[string]any{
-				"Flags":     uint32(0),
-				"Owner":     offer.Account,
-				"RootIndex": strings.ToUpper(hex.EncodeToString(ownerDirKey.Key[:])),
-			},
-		})
+		// Load previous state - do NOT call SetAsOwnerDirectory because that would add
+		// fields that may not exist in the original entry
+		if ownerDirResult.PreviousState != nil {
+			ownerDirSLE.LoadFromDirectoryNode(ownerDirResult.PreviousState)
+		}
+		// Update with new state - only update fields that actually change
+		if ownerDirResult.NewState != nil {
+			// Only track changes to Indexes (which have sMD_Never so won't appear in metadata)
+			ownerDirSLE.UpdateIndexes(ownerDirResult.NewState.Indexes)
+			// Track IndexNext change if it was set
+			if ownerDirResult.NewState.IndexNext != 0 {
+				ownerDirSLE.SetField("IndexNext", formatUint64Hex(ownerDirResult.NewState.IndexNext))
+			}
+		}
+	} else if ownerDirResult.NewPageCreated {
+		// A new page was created
+		ownerDirSLE.MarkAsCreated()
+		ownerDirSLE.SetAsOwnerDirectory(offer.Account, ownerDirKey.Key)
+	}
+	if ownerDirResult.Created || ownerDirResult.Modified || ownerDirResult.NewPageCreated {
+		if node := ownerDirSLE.GenerateAffectedNode(); node != nil {
+			metadata.AffectedNodes = append(metadata.AffectedNodes, *node)
+		}
+	}
+	// If root was also modified (for IndexPrevious update), add that too
+	if ownerDirResult.RootModified && ownerDirResult.DirKey != ownerDirKey.Key {
+		rootSLE := NewSLEDirectoryNode(ownerDirKey.Key)
+		if ownerDirResult.RootPrevState != nil {
+			rootSLE.LoadFromDirectoryNode(ownerDirResult.RootPrevState)
+		}
+		if ownerDirResult.RootNewState != nil {
+			rootSLE.SetField("IndexPrevious", formatUint64Hex(ownerDirResult.RootNewState.IndexPrevious))
+		}
+		if node := rootSLE.GenerateAffectedNode(); node != nil {
+			metadata.AffectedNodes = append(metadata.AffectedNodes, *node)
+		}
+	}
+	// If previous page was modified (for IndexNext update), add that too
+	if ownerDirResult.PrevPageModified {
+		prevPageSLE := NewSLEDirectoryNode(ownerDirResult.PrevPageKey)
+		if ownerDirResult.PrevPagePrevState != nil {
+			prevPageSLE.LoadFromDirectoryNode(ownerDirResult.PrevPagePrevState)
+		}
+		if ownerDirResult.PrevPageNewState != nil {
+			prevPageSLE.SetField("IndexNext", formatUint64Hex(ownerDirResult.PrevPageNewState.IndexNext))
+		}
+		if node := prevPageSLE.GenerateAffectedNode(); node != nil {
+			metadata.AffectedNodes = append(metadata.AffectedNodes, *node)
+		}
 	}
 
 	// Add book directory metadata
+	// Use bookDirResult.DirKey which is the actual page that was modified (may be different from root)
+	bookDirSLE := NewSLEDirectoryNode(bookDirResult.DirKey)
 	if bookDirResult.Created {
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "CreatedNode",
-			LedgerEntryType: "DirectoryNode",
-			LedgerIndex:     strings.ToUpper(hex.EncodeToString(bookDirKey.Key[:])),
-			NewFields: map[string]any{
-				"ExchangeRate":      formatUint64Hex(quality),
-				"RootIndex":         strings.ToUpper(hex.EncodeToString(bookDirKey.Key[:])),
-				"TakerGetsCurrency": strings.ToUpper(hex.EncodeToString(takerGetsCurrency[:])),
-				"TakerGetsIssuer":   strings.ToUpper(hex.EncodeToString(takerGetsIssuer[:])),
-			},
-		})
+		bookDirSLE.MarkAsCreated()
+		bookDirSLE.SetAsBookDirectory(
+			bookDirKey.Key,
+			quality,
+			takerPaysCurrency,
+			takerPaysIssuer,
+			takerGetsCurrency,
+			takerGetsIssuer,
+		)
+	} else if bookDirResult.Modified {
+		// Load previous state
+		if bookDirResult.PreviousState != nil {
+			bookDirSLE.LoadFromDirectoryNode(bookDirResult.PreviousState)
+		}
+		// Update with new state
+		if bookDirResult.NewState != nil {
+			bookDirSLE.SetAsBookDirectory(
+				bookDirKey.Key,
+				quality,
+				takerPaysCurrency,
+				takerPaysIssuer,
+				takerGetsCurrency,
+				takerGetsIssuer,
+			)
+			bookDirSLE.UpdateIndexes(bookDirResult.NewState.Indexes)
+			// Track IndexNext change if it was set
+			if bookDirResult.NewState.IndexNext != 0 {
+				bookDirSLE.SetField("IndexNext", formatUint64Hex(bookDirResult.NewState.IndexNext))
+			}
+		}
+	} else if bookDirResult.NewPageCreated {
+		// A new page was created
+		bookDirSLE.MarkAsCreated()
+		bookDirSLE.SetAsBookDirectory(
+			bookDirKey.Key,
+			quality,
+			takerPaysCurrency,
+			takerPaysIssuer,
+			takerGetsCurrency,
+			takerGetsIssuer,
+		)
+	}
+	if bookDirResult.Created || bookDirResult.Modified || bookDirResult.NewPageCreated {
+		if node := bookDirSLE.GenerateAffectedNode(); node != nil {
+			metadata.AffectedNodes = append(metadata.AffectedNodes, *node)
+		}
+	}
+	// If root was also modified (for IndexPrevious update), add that too
+	if bookDirResult.RootModified && bookDirResult.DirKey != bookDirKey.Key {
+		bookRootSLE := NewSLEDirectoryNode(bookDirKey.Key)
+		if bookDirResult.RootPrevState != nil {
+			bookRootSLE.LoadFromDirectoryNode(bookDirResult.RootPrevState)
+		}
+		if bookDirResult.RootNewState != nil {
+			bookRootSLE.SetField("IndexPrevious", formatUint64Hex(bookDirResult.RootNewState.IndexPrevious))
+		}
+		if node := bookRootSLE.GenerateAffectedNode(); node != nil {
+			metadata.AffectedNodes = append(metadata.AffectedNodes, *node)
+		}
+	}
+	// If previous page was modified (for IndexNext update), add that too
+	if bookDirResult.PrevPageModified {
+		bookPrevPageSLE := NewSLEDirectoryNode(bookDirResult.PrevPageKey)
+		if bookDirResult.PrevPagePrevState != nil {
+			bookPrevPageSLE.LoadFromDirectoryNode(bookDirResult.PrevPagePrevState)
+		}
+		if bookDirResult.PrevPageNewState != nil {
+			bookPrevPageSLE.SetField("IndexNext", formatUint64Hex(bookDirResult.PrevPageNewState.IndexNext))
+		}
+		if node := bookPrevPageSLE.GenerateAffectedNode(); node != nil {
+			metadata.AffectedNodes = append(metadata.AffectedNodes, *node)
+		}
 	}
 
-	// Add offer metadata with BookDirectory
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "CreatedNode",
-		LedgerEntryType: "Offer",
-		LedgerIndex:     strings.ToUpper(hex.EncodeToString(offerKey.Key[:])),
-		NewFields: map[string]any{
-			"Account":       offer.Account,
-			"BookDirectory": strings.ToUpper(hex.EncodeToString(bookDirKey.Key[:])),
-			"Sequence":      offerSequence,
-			"TakerGets":     flattenAmount(remainingTakerGets),
-			"TakerPays":     flattenAmount(remainingTakerPays),
-		},
-	})
+	// Add offer metadata using SLE
+	offerSLE := NewSLEOffer(offerKey.Key)
+	offerSLE.SetNewOffer(ledgerOffer)
+	if node := offerSLE.GenerateAffectedNode(); node != nil {
+		metadata.AffectedNodes = append(metadata.AffectedNodes, *node)
+	}
 
 	return TesSUCCESS
+}
+
+// consolidateMetadata merges duplicate AffectedNodes entries for the same ledger index
+// This is necessary because offer matching may update the same ledger entry multiple times
+// (e.g., same maker account selling multiple offers, or same trust line being debited twice)
+// Reference: rippled metadata should have one entry per modified object with overall change
+func consolidateMetadata(metadata *Metadata) {
+	if len(metadata.AffectedNodes) <= 1 {
+		return
+	}
+
+	// Map from ledger index to consolidated node
+	consolidated := make(map[string]*AffectedNode)
+	// Track order of first appearance
+	order := make([]string, 0)
+
+	for i := range metadata.AffectedNodes {
+		node := &metadata.AffectedNodes[i]
+		idx := node.LedgerIndex
+
+		existing, found := consolidated[idx]
+		if !found {
+			// First occurrence - add to map and order
+			copy := *node
+			consolidated[idx] = &copy
+			order = append(order, idx)
+			continue
+		}
+
+		// Merge: combine PreviousFields, update FinalFields
+		if node.NodeType == "ModifiedNode" && existing.NodeType == "ModifiedNode" {
+			// Merge PreviousFields: keep earliest value for each field
+			// This captures the original state before any modification
+			if node.PreviousFields != nil {
+				if existing.PreviousFields == nil {
+					existing.PreviousFields = make(map[string]any)
+				}
+				for k, v := range node.PreviousFields {
+					if _, found := existing.PreviousFields[k]; !found {
+						// Only add if not already present (keep earliest)
+						existing.PreviousFields[k] = v
+					}
+				}
+			}
+			// Update to latest FinalFields
+			if node.FinalFields != nil {
+				existing.FinalFields = node.FinalFields
+			}
+		}
+		// For DeletedNode, just keep the first one (they should be identical)
+		// For CreatedNode, just keep the first one (shouldn't have duplicates)
+	}
+
+	// Rebuild AffectedNodes in original order
+	metadata.AffectedNodes = make([]AffectedNode, 0, len(order))
+	for _, idx := range order {
+		metadata.AffectedNodes = append(metadata.AffectedNodes, *consolidated[idx])
+	}
 }
 
 // matchOffers attempts to match the new offer against existing offers
@@ -1880,17 +2476,27 @@ func (e *Engine) matchOffers(offer *OfferCreate, account *AccountRoot, metadata 
 	// Find matching offers by scanning the ledger
 	// This is a simplified implementation - production would use book directories
 
+	// XRPL Offer semantics (from offer CREATOR's perspective):
+	// - TakerGets = what creator is SELLING
+	// - TakerPays = what creator is BUYING
+	//
+	// Our offer: TakerGets=BTC (selling BTC), TakerPays=XRP (buying XRP)
+	// Their offer: TakerGets=XRP (selling XRP), TakerPays=BTC (buying BTC)
+	//
 	// We want to find offers where:
-	// - Their TakerGets matches our TakerPays (what we want to pay is what they want to get)
-	// - Their TakerPays matches our TakerGets (what we want to get is what they're paying)
-	wantCurrency := offer.TakerGets.Currency
-	wantIssuer := offer.TakerGets.Issuer
-	payCurrency := offer.TakerPays.Currency
-	payIssuer := offer.TakerPays.Issuer
+	// - Their TakerGets (what they're selling) matches our TakerPays (what we want to buy)
+	// - Their TakerPays (what they're buying) matches our TakerGets (what we're selling)
+
+	// What we want to BUY (receive)
+	wantCurrency := offer.TakerPays.Currency
+	wantIssuer := offer.TakerPays.Issuer
+	// What we're SELLING (paying)
+	payCurrency := offer.TakerGets.Currency
+	payIssuer := offer.TakerGets.Issuer
 
 	// Determine if matching native XRP
-	wantingXRP := offer.TakerGets.IsNative()
-	payingXRP := offer.TakerPays.IsNative()
+	wantingXRP := offer.TakerPays.IsNative()  // We want to receive XRP
+	payingXRP := offer.TakerGets.IsNative()   // We're paying XRP
 
 	// Collect matching offers
 	type matchOffer struct {
@@ -1928,26 +2534,26 @@ func (e *Engine) matchOffers(offer *OfferCreate, account *AccountRoot, metadata 
 			return true // continue
 		}
 
-		// Check if this offer is the inverse of what we want
-		// Their TakerGets = what we're paying
-		// Their TakerPays = what we're getting
-		theirGetsMatchesOurPays := false
-		if payingXRP && ledgerOffer.TakerGets.IsNative() {
-			theirGetsMatchesOurPays = true
-		} else if !payingXRP && !ledgerOffer.TakerGets.IsNative() {
-			theirGetsMatchesOurPays = ledgerOffer.TakerGets.Currency == payCurrency &&
-				ledgerOffer.TakerGets.Issuer == payIssuer
+		// Check if this offer crosses with ours:
+		// - Their TakerGets (what they're selling) = what we want to buy (our TakerPays)
+		// - Their TakerPays (what they're buying) = what we're selling (our TakerGets)
+		theirGetsMatchesWhatWeWant := false
+		if wantingXRP && ledgerOffer.TakerGets.IsNative() {
+			theirGetsMatchesWhatWeWant = true
+		} else if !wantingXRP && !ledgerOffer.TakerGets.IsNative() {
+			theirGetsMatchesWhatWeWant = ledgerOffer.TakerGets.Currency == wantCurrency &&
+				ledgerOffer.TakerGets.Issuer == wantIssuer
 		}
 
-		theirPaysMatchesOurGets := false
-		if wantingXRP && ledgerOffer.TakerPays.IsNative() {
-			theirPaysMatchesOurGets = true
-		} else if !wantingXRP && !ledgerOffer.TakerPays.IsNative() {
-			theirPaysMatchesOurGets = ledgerOffer.TakerPays.Currency == wantCurrency &&
-				ledgerOffer.TakerPays.Issuer == wantIssuer
+		theirPaysMatchesWhatWeSell := false
+		if payingXRP && ledgerOffer.TakerPays.IsNative() {
+			theirPaysMatchesWhatWeSell = true
+		} else if !payingXRP && !ledgerOffer.TakerPays.IsNative() {
+			theirPaysMatchesWhatWeSell = ledgerOffer.TakerPays.Currency == payCurrency &&
+				ledgerOffer.TakerPays.Issuer == payIssuer
 		}
 
-		if !theirGetsMatchesOurPays || !theirPaysMatchesOurGets {
+		if !theirGetsMatchesWhatWeWant || !theirPaysMatchesWhatWeSell {
 			return true // continue
 		}
 
@@ -1984,32 +2590,122 @@ func (e *Engine) matchOffers(offer *OfferCreate, account *AccountRoot, metadata 
 
 	// Match against offers
 	var totalGot, totalPaid Amount
-	remainingWant := offer.TakerGets
-	remainingPay := offer.TakerPays
+	remainingWant := offer.TakerPays  // How much we still want to BUY (receive)
+	remainingPay := offer.TakerGets   // How much we can still SELL (pay)
 
 	for _, match := range matches {
+
 		// Check if price crosses (their quality <= our inverse quality)
 		// For us: we want high TakerGets, low TakerPays
 		// For them: they want high TakerGets, low TakerPays
 		// Match if: their_price <= 1/our_price
-		if match.quality > 1.0/ourQuality {
+		// Use a small tolerance to account for floating-point precision issues
+		// rippled uses integer-based quality which avoids this problem
+		crossingThreshold := 1.0 / ourQuality
+		// Tolerance: allow up to 1e-14 relative error (about 15 decimal digits precision)
+		tolerance := crossingThreshold * 1e-10
+		if match.quality > crossingThreshold+tolerance {
 			continue // Price doesn't cross
 		}
 
 		// Calculate how much we can trade
-		theirGets := match.offer.TakerGets
-		theirPays := match.offer.TakerPays
+		// theirGets = what they're SELLING = what we RECEIVE
+		// theirPays = what they're BUYING = what we PAY
+		originalTheirGets := match.offer.TakerGets
+		originalTheirPays := match.offer.TakerPays
+		theirGets := originalTheirGets
+		theirPays := originalTheirPays
 
-		// We want to get as much as possible up to remainingWant
+		// IMPORTANT: Limit amounts by actual balances
+		// Reference: rippled OfferStream.cpp - checks ownerFunds to limit offers
+
+		// 1. Check maker's funds for what they're selling (theirGets)
+		// If maker is selling IOU, check their IOU balance
+		if !theirGets.IsNative() && match.offer.Account != theirGets.Issuer {
+			makerIOUBalance := e.getAccountIOUBalance(match.offer.Account, theirGets.Currency, theirGets.Issuer)
+			if makerIOUBalance.Value.Sign() > 0 {
+				offerGetsIOU := NewIOUAmount(theirGets.Value, theirGets.Currency, theirGets.Issuer)
+				if makerIOUBalance.Compare(offerGetsIOU) < 0 {
+					// Maker has less than offer amount - scale down proportionally
+					ratio := divideIOUAmounts(makerIOUBalance, offerGetsIOU)
+					theirGets = Amount{
+						Value:    formatIOUValue(makerIOUBalance.Value),
+						Currency: theirGets.Currency,
+						Issuer:   theirGets.Issuer,
+					}
+					// Scale theirPays proportionally
+					if theirPays.IsNative() {
+						theirPaysDrops, _ := parseDropsString(theirPays.Value)
+						scaledPays := uint64(float64(theirPaysDrops) * ratio)
+						theirPays = Amount{Value: formatDrops(scaledPays)}
+					} else {
+						theirPaysIOU := NewIOUAmount(theirPays.Value, theirPays.Currency, theirPays.Issuer)
+						scaledPays := multiplyIOUByRatio(theirPaysIOU, ratio)
+						theirPays = Amount{
+							Value:    formatIOUValue(scaledPays.Value),
+							Currency: theirPays.Currency,
+							Issuer:   theirPays.Issuer,
+						}
+					}
+				}
+			}
+		}
+
+		// 2. Check taker's funds for what they're paying (theirPays = what maker wants = what taker pays)
+		// If taker is paying IOU, check their IOU balance and apply transfer fee
+		// Reference: rippled applies transfer fee when IOUs move through issuer
+		if !theirPays.IsNative() && account.Account != theirPays.Issuer {
+			takerIOUBalance := e.getAccountIOUBalance(account.Account, theirPays.Currency, theirPays.Issuer)
+			if takerIOUBalance.Value.Sign() > 0 {
+				// Get the transfer rate for this IOU's issuer
+				transferRate := e.getTransferRate(theirPays.Issuer)
+
+				// Calculate effective amount maker will receive after transfer fee
+				// effective = taker_balance / transfer_rate
+				// This is the MAX the taker can deliver to the maker
+				effectiveBalance := removeTransferFee(takerIOUBalance, transferRate)
+
+				// The trade is limited by the taker's effective balance
+				// If effectiveBalance < theirPays (what maker's offer portion wants), scale down
+				offerPaysIOU := NewIOUAmount(theirPays.Value, theirPays.Currency, theirPays.Issuer)
+				if effectiveBalance.Compare(offerPaysIOU) < 0 {
+					// The maker will only receive effectiveBalance amount
+					// Scale the exchange proportionally
+					ratio := divideIOUAmounts(effectiveBalance, offerPaysIOU)
+					theirPays = Amount{
+						Value:    formatIOUValue(effectiveBalance.Value),
+						Currency: theirPays.Currency,
+						Issuer:   theirPays.Issuer,
+					}
+					// Scale theirGets proportionally (round up to match rippled's mulRound)
+					if theirGets.IsNative() {
+						theirGetsDrops, _ := parseDropsString(theirGets.Value)
+						scaledGetsFloat := float64(theirGetsDrops) * ratio
+						scaledGets := uint64(math.Ceil(scaledGetsFloat))
+						theirGets = Amount{Value: formatDrops(scaledGets)}
+					} else {
+						theirGetsIOU := NewIOUAmount(theirGets.Value, theirGets.Currency, theirGets.Issuer)
+						scaledGets := multiplyIOUByRatio(theirGetsIOU, ratio)
+						theirGets = Amount{
+							Value:    formatIOUValue(scaledGets.Value),
+							Currency: theirGets.Currency,
+							Issuer:   theirGets.Issuer,
+						}
+					}
+				}
+			}
+		}
+
+		// We want to receive as much as possible up to remainingWant (from their TakerGets)
 		// We'll pay proportionally based on their exchange rate
 		var gotAmount, paidAmount Amount
 
-		if theirPays.IsNative() {
-			// They're paying XRP
-			theirPaysDrops, _ := parseDropsString(theirPays.Value)
+		if theirGets.IsNative() {
+			// They're selling XRP (we receive XRP)
+			theirGetsDrops, _ := parseDropsString(theirGets.Value)
 			remainingWantDrops, _ := parseDropsString(remainingWant.Value)
 
-			takeDrops := theirPaysDrops
+			takeDrops := theirGetsDrops
 			if takeDrops > remainingWantDrops {
 				takeDrops = remainingWantDrops
 			}
@@ -2017,58 +2713,59 @@ func (e *Engine) matchOffers(offer *OfferCreate, account *AccountRoot, metadata 
 			gotAmount = Amount{Value: formatDrops(takeDrops)}
 
 			// Calculate what we pay based on their rate
-			if takeDrops == theirPaysDrops {
-				paidAmount = theirGets
+			// Rate: theirPays / theirGets (what they want per unit they sell)
+			if takeDrops == theirGetsDrops {
+				paidAmount = theirPays
 			} else {
 				// Partial fill - calculate proportionally
-				if theirGets.IsNative() {
-					theirGetsDrops, _ := parseDropsString(theirGets.Value)
-					payDrops := (takeDrops * theirGetsDrops) / theirPaysDrops
+				ratio := float64(takeDrops) / float64(theirGetsDrops)
+				if theirPays.IsNative() {
+					theirPaysDrops, _ := parseDropsString(theirPays.Value)
+					payDrops := uint64(float64(theirPaysDrops) * ratio)
 					paidAmount = Amount{Value: formatDrops(payDrops)}
 				} else {
-					theirGetsIOU := NewIOUAmount(theirGets.Value, theirGets.Currency, theirGets.Issuer)
-					ratio := float64(takeDrops) / float64(theirPaysDrops)
-					payValue := multiplyIOUByRatio(theirGetsIOU, ratio)
+					theirPaysIOU := NewIOUAmount(theirPays.Value, theirPays.Currency, theirPays.Issuer)
+					payValue := multiplyIOUByRatio(theirPaysIOU, ratio)
 					paidAmount = Amount{
 						Value:    formatIOUValue(payValue.Value),
-						Currency: theirGets.Currency,
-						Issuer:   theirGets.Issuer,
+						Currency: theirPays.Currency,
+						Issuer:   theirPays.Issuer,
 					}
 				}
 			}
 		} else {
-			// They're paying IOU
-			theirPaysIOU := NewIOUAmount(theirPays.Value, theirPays.Currency, theirPays.Issuer)
+			// They're selling IOU (we receive IOU)
+			theirGetsIOU := NewIOUAmount(theirGets.Value, theirGets.Currency, theirGets.Issuer)
 			remainingWantIOU := NewIOUAmount(remainingWant.Value, remainingWant.Currency, remainingWant.Issuer)
 
-			takeIOU := theirPaysIOU
+			takeIOU := theirGetsIOU
 			if takeIOU.Compare(remainingWantIOU) > 0 {
 				takeIOU = remainingWantIOU
 			}
 
 			gotAmount = Amount{
 				Value:    formatIOUValue(takeIOU.Value),
-				Currency: theirPays.Currency,
-				Issuer:   theirPays.Issuer,
+				Currency: theirGets.Currency,
+				Issuer:   theirGets.Issuer,
 			}
 
 			// Calculate what we pay
-			if takeIOU.Compare(theirPaysIOU) == 0 {
-				paidAmount = theirGets
+			if takeIOU.Compare(theirGetsIOU) == 0 {
+				paidAmount = theirPays
 			} else {
 				// Partial fill
-				ratio := divideIOUAmounts(takeIOU, theirPaysIOU)
-				if theirGets.IsNative() {
-					theirGetsDrops, _ := parseDropsString(theirGets.Value)
-					payDrops := uint64(float64(theirGetsDrops) * ratio)
+				ratio := divideIOUAmounts(takeIOU, theirGetsIOU)
+				if theirPays.IsNative() {
+					theirPaysDrops, _ := parseDropsString(theirPays.Value)
+					payDrops := uint64(float64(theirPaysDrops) * ratio)
 					paidAmount = Amount{Value: formatDrops(payDrops)}
 				} else {
-					theirGetsIOU := NewIOUAmount(theirGets.Value, theirGets.Currency, theirGets.Issuer)
-					payValue := multiplyIOUByRatio(theirGetsIOU, ratio)
+					theirPaysIOU := NewIOUAmount(theirPays.Value, theirPays.Currency, theirPays.Issuer)
+					payValue := multiplyIOUByRatio(theirPaysIOU, ratio)
 					paidAmount = Amount{
 						Value:    formatIOUValue(payValue.Value),
-						Currency: theirGets.Currency,
-						Issuer:   theirGets.Issuer,
+						Currency: theirPays.Currency,
+						Issuer:   theirPays.Issuer,
 					}
 				}
 			}
@@ -2076,8 +2773,11 @@ func (e *Engine) matchOffers(offer *OfferCreate, account *AccountRoot, metadata 
 
 		// Update the matched offer in the ledger
 		// Calculate remaining amounts for matched offer
-		matchRemainingGets := subtractAmount(theirGets, paidAmount)
-		matchRemainingPays := subtractAmount(theirPays, gotAmount)
+		// Their TakerGets decreases by what we took (gotAmount)
+		// Their TakerPays decreases by what we gave them (paidAmount)
+		// Use ORIGINAL amounts, not balance-limited effective amounts
+		matchRemainingGets := subtractAmount(originalTheirGets, gotAmount)
+		matchRemainingPays := subtractAmount(originalTheirPays, paidAmount)
 
 		matchKey := keylet.Keylet{Key: match.key}
 		matchKey.Type = 0x6F // Offer type
@@ -2095,44 +2795,185 @@ func (e *Engine) matchOffers(offer *OfferCreate, account *AccountRoot, metadata 
 				if err == nil {
 					makerAccount, err := parseAccountRoot(makerAccountData)
 					if err == nil && makerAccount.OwnerCount > 0 {
+						// Capture original OwnerCount before decrementing
+						originalOwnerCount := makerAccount.OwnerCount
 						makerAccount.OwnerCount--
 						updatedMakerData, err := serializeAccountRoot(makerAccount)
 						if err == nil {
 							e.view.Update(makerAccountKey, updatedMakerData)
+							// Add metadata entry with original OwnerCount in PreviousFields
+							// This will be consolidated with later modifications
+							metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
+								NodeType:        "ModifiedNode",
+								LedgerEntryType: "AccountRoot",
+								LedgerIndex:     strings.ToUpper(hex.EncodeToString(makerAccountKey.Key[:])),
+								FinalFields: map[string]any{
+									"Account":    makerAccount.Account,
+									"Balance":    formatDrops(makerAccount.Balance),
+									"Flags":      makerAccount.Flags,
+									"OwnerCount": makerAccount.OwnerCount,
+									"Sequence":   makerAccount.Sequence,
+								},
+								PreviousFields: map[string]any{
+									"OwnerCount": originalOwnerCount,
+								},
+								PreviousTxnID:     strings.ToUpper(hex.EncodeToString(makerAccount.PreviousTxnID[:])),
+								PreviousTxnLgrSeq: makerAccount.PreviousTxnLgrSeq,
+							})
 						}
 					}
 				}
 			}
 
+			// Remove offer from book directory and delete if empty
+			// Reference: rippled View.cpp offerDelete() calls dirRemove()
+			bookDirKey := keylet.Keylet{Key: match.offer.BookDirectory}
+			bookDirKey.Type = 0x64 // DirectoryNode type
+			bookDirData, err := e.view.Read(bookDirKey)
+			if err == nil {
+				bookDir, err := parseDirectoryNode(bookDirData)
+				if err == nil {
+					// Remove the offer from the directory's Indexes
+					newIndexes := make([][32]byte, 0, len(bookDir.Indexes))
+					for _, idx := range bookDir.Indexes {
+						if idx != match.key {
+							newIndexes = append(newIndexes, idx)
+						}
+					}
+					bookDir.Indexes = newIndexes
+
+					if len(bookDir.Indexes) == 0 {
+						// Directory is now empty - delete it
+						e.view.Erase(bookDirKey)
+						metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
+							NodeType:        "DeletedNode",
+							LedgerEntryType: "DirectoryNode",
+							LedgerIndex:     strings.ToUpper(hex.EncodeToString(bookDirKey.Key[:])),
+							FinalFields: map[string]any{
+								"Flags":             0,
+								"ExchangeRate":      fmt.Sprintf("%016X", bookDir.ExchangeRate),
+								"RootIndex":         strings.ToUpper(hex.EncodeToString(bookDir.RootIndex[:])),
+								"TakerPaysCurrency": hex.EncodeToString(bookDir.TakerPaysCurrency[:]),
+								"TakerPaysIssuer":   hex.EncodeToString(bookDir.TakerPaysIssuer[:]),
+								"TakerGetsCurrency": hex.EncodeToString(bookDir.TakerGetsCurrency[:]),
+								"TakerGetsIssuer":   hex.EncodeToString(bookDir.TakerGetsIssuer[:]),
+							},
+						})
+					} else {
+						// Directory still has entries - update it
+						updatedBookDirData, err := serializeDirectoryNode(bookDir, true) // true = book directory
+						if err == nil {
+							e.view.Update(bookDirKey, updatedBookDirData)
+						}
+					}
+				}
+			}
+
+			// Remove offer from owner directory
+			// Reference: rippled View.cpp offerDelete() removes from owner dir via dirRemove()
+			if makerID != [20]byte{} {
+				ownerDirKey := keylet.OwnerDir(makerID)
+				ownerDirData, err := e.view.Read(ownerDirKey)
+				if err == nil {
+					ownerDir, err := parseDirectoryNode(ownerDirData)
+					if err == nil {
+						// Remove the offer from the owner directory's Indexes
+						newOwnerIndexes := make([][32]byte, 0, len(ownerDir.Indexes))
+						for _, idx := range ownerDir.Indexes {
+							if idx != match.key {
+								newOwnerIndexes = append(newOwnerIndexes, idx)
+							}
+						}
+						ownerDir.Indexes = newOwnerIndexes
+
+						// Update owner directory (don't delete even if empty - owner dirs persist)
+						updatedOwnerDirData, err := serializeDirectoryNode(ownerDir, false) // false = owner directory
+						if err == nil {
+							e.view.Update(ownerDirKey, updatedOwnerDirData)
+							// Add metadata for owner directory modification
+							metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
+								NodeType:        "ModifiedNode",
+								LedgerEntryType: "DirectoryNode",
+								LedgerIndex:     strings.ToUpper(hex.EncodeToString(ownerDirKey.Key[:])),
+								FinalFields: map[string]any{
+									"Flags":     ownerDir.Flags,
+									"RootIndex": strings.ToUpper(hex.EncodeToString(ownerDir.RootIndex[:])),
+									"Owner":     match.offer.Account,
+								},
+							})
+						}
+					}
+				}
+			}
+
+			// For DeletedNode: FinalFields shows zero amounts (consumed), PreviousFields shows original
+			// PreviousTxnID/LgrSeq go in FinalFields for deleted offers
+			zeroGets := originalTheirGets
+			zeroPays := originalTheirPays
+			if originalTheirGets.IsNative() {
+				zeroGets = Amount{Value: "0"}
+			} else {
+				zeroGets = Amount{Value: "0", Currency: originalTheirGets.Currency, Issuer: originalTheirGets.Issuer}
+			}
+			if originalTheirPays.IsNative() {
+				zeroPays = Amount{Value: "0"}
+			} else {
+				zeroPays = Amount{Value: "0", Currency: originalTheirPays.Currency, Issuer: originalTheirPays.Issuer}
+			}
 			metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
 				NodeType:        "DeletedNode",
 				LedgerEntryType: "Offer",
-				LedgerIndex:     hex.EncodeToString(match.key[:]),
+				LedgerIndex:     strings.ToUpper(hex.EncodeToString(match.key[:])),
 				FinalFields: map[string]any{
-					"Account":   match.offer.Account,
-					"TakerGets": flattenAmount(theirGets),
-					"TakerPays": flattenAmount(theirPays),
+					"Flags":             match.offer.Flags,
+					"Sequence":          match.offer.Sequence,
+					"BookNode":          fmt.Sprintf("%016X", match.offer.BookNode),
+					"OwnerNode":         fmt.Sprintf("%016X", match.offer.OwnerNode),
+					"BookDirectory":     strings.ToUpper(hex.EncodeToString(match.offer.BookDirectory[:])),
+					"Account":           match.offer.Account,
+					"TakerGets":         flattenAmount(zeroGets),
+					"TakerPays":         flattenAmount(zeroPays),
+					"PreviousTxnID":     strings.ToUpper(hex.EncodeToString(match.offer.PreviousTxnID[:])),
+					"PreviousTxnLgrSeq": match.offer.PreviousTxnLgrSeq,
+				},
+				PreviousFields: map[string]any{
+					"TakerGets": flattenAmount(originalTheirGets),
+					"TakerPays": flattenAmount(originalTheirPays),
 				},
 			})
 		} else {
 			// Partially consumed - update offer
+			// Store old PreviousTxnID/LgrSeq before updating
+			oldPrevTxnID := match.offer.PreviousTxnID
+			oldPrevTxnLgrSeq := match.offer.PreviousTxnLgrSeq
+
 			match.offer.TakerGets = matchRemainingGets
 			match.offer.TakerPays = matchRemainingPays
+			match.offer.PreviousTxnID = e.currentTxHash
+			match.offer.PreviousTxnLgrSeq = e.config.LedgerSequence
+
 			updatedData, err := serializeLedgerOffer(match.offer)
 			if err == nil {
 				e.view.Update(matchKey, updatedData)
 				metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-					NodeType:        "ModifiedNode",
-					LedgerEntryType: "Offer",
-					LedgerIndex:     hex.EncodeToString(match.key[:]),
+					NodeType:          "ModifiedNode",
+					LedgerEntryType:   "Offer",
+					LedgerIndex:       strings.ToUpper(hex.EncodeToString(match.key[:])),
+					PreviousTxnLgrSeq: oldPrevTxnLgrSeq,
+					PreviousTxnID:     strings.ToUpper(hex.EncodeToString(oldPrevTxnID[:])),
 					FinalFields: map[string]any{
-						"Account":   match.offer.Account,
-						"TakerGets": flattenAmount(matchRemainingGets),
-						"TakerPays": flattenAmount(matchRemainingPays),
+						"Flags":         match.offer.Flags,
+						"Sequence":      match.offer.Sequence,
+						"BookNode":      fmt.Sprintf("%016X", match.offer.BookNode),
+						"OwnerNode":     fmt.Sprintf("%016X", match.offer.OwnerNode),
+						"BookDirectory": strings.ToUpper(hex.EncodeToString(match.offer.BookDirectory[:])),
+						"Account":       match.offer.Account,
+						"TakerGets":     flattenAmount(matchRemainingGets),
+						"TakerPays":     flattenAmount(matchRemainingPays),
 					},
 					PreviousFields: map[string]any{
-						"TakerGets": flattenAmount(theirGets),
-						"TakerPays": flattenAmount(theirPays),
+						"TakerGets": flattenAmount(originalTheirGets),
+						"TakerPays": flattenAmount(originalTheirPays),
 					},
 				})
 			}
@@ -2265,6 +3106,9 @@ func (e *Engine) executeOfferTrade(taker *AccountRoot, maker *LedgerOffer, taker
 		return err
 	}
 
+	// Store previous balance for metadata
+	makerPrevBalance := makerAccount.Balance
+
 	// Transfer takerGot from maker to taker
 	if takerGot.IsNative() {
 		drops, _ := parseDropsString(takerGot.Value)
@@ -2301,10 +3145,32 @@ func (e *Engine) executeOfferTrade(taker *AccountRoot, maker *LedgerOffer, taker
 		makerAccount.Balance += drops
 	} else {
 		// IOU transfer - update trust lines
-		if err := e.transferIOU(taker.Account, maker.Account, takerPaid, metadata); err != nil {
+		// Apply transfer fee: taker sends MORE than maker receives
+		// Reference: rippled applies transfer rate during offer crossing
+		transferRate := e.getTransferRate(takerPaid.Issuer)
+		takerPaidIOU := NewIOUAmount(takerPaid.Value, takerPaid.Currency, takerPaid.Issuer)
+
+		// Calculate what taker must send to deliver takerPaid to maker
+		takerSendsIOU := applyTransferFee(takerPaidIOU, transferRate)
+		takerSends := Amount{
+			Value:    formatIOUValue(takerSendsIOU.Value),
+			Currency: takerPaid.Currency,
+			Issuer:   takerPaid.Issuer,
+		}
+
+		// Transfer with fee: taker sends takerSends, maker receives takerPaid
+		if err := e.transferIOUWithFee(taker.Account, maker.Account, takerSends, takerPaid, metadata); err != nil {
 			return err
 		}
 	}
+
+	// Store old PreviousTxnID/LgrSeq for metadata before updating
+	oldMakerPrevTxnID := makerAccount.PreviousTxnID
+	oldMakerPrevTxnLgrSeq := makerAccount.PreviousTxnLgrSeq
+
+	// Update PreviousTxnID and LgrSeq for the maker account
+	makerAccount.PreviousTxnID = e.currentTxHash
+	makerAccount.PreviousTxnLgrSeq = e.config.LedgerSequence
 
 	// Update maker account
 	updatedMakerData, err := serializeAccountRoot(makerAccount)
@@ -2312,6 +3178,27 @@ func (e *Engine) executeOfferTrade(taker *AccountRoot, maker *LedgerOffer, taker
 		return err
 	}
 	e.view.Update(makerKey, updatedMakerData)
+
+	// Add metadata for maker's account if XRP was transferred (balance changed)
+	if takerGot.IsNative() || takerPaid.IsNative() {
+		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
+			NodeType:        "ModifiedNode",
+			LedgerEntryType: "AccountRoot",
+			LedgerIndex:     strings.ToUpper(hex.EncodeToString(makerKey.Key[:])),
+			FinalFields: map[string]any{
+				"Account":    makerAccount.Account,
+				"Balance":    formatDrops(makerAccount.Balance),
+				"Flags":      makerAccount.Flags,
+				"OwnerCount": makerAccount.OwnerCount,
+				"Sequence":   makerAccount.Sequence,
+			},
+			PreviousFields: map[string]any{
+				"Balance": formatDrops(makerPrevBalance),
+			},
+			PreviousTxnID:     strings.ToUpper(hex.EncodeToString(oldMakerPrevTxnID[:])),
+			PreviousTxnLgrSeq: oldMakerPrevTxnLgrSeq,
+		})
+	}
 
 	return nil
 }
@@ -2368,6 +3255,60 @@ func (e *Engine) transferIOU(fromAccount, toAccount string, amount Amount, metad
 	return nil
 }
 
+// transferIOUWithFee transfers IOU with transfer fee applied
+// senderAmount is what the sender pays (includes fee)
+// receiverAmount is what the receiver gets (after fee)
+// Reference: rippled applies transfer rate during IOU transfers
+func (e *Engine) transferIOUWithFee(fromAccount, toAccount string, senderAmount, receiverAmount Amount, metadata *Metadata) error {
+	fromID, err := decodeAccountID(fromAccount)
+	if err != nil {
+		return err
+	}
+	toID, err := decodeAccountID(toAccount)
+	if err != nil {
+		return err
+	}
+	issuerID, err := decodeAccountID(senderAmount.Issuer)
+	if err != nil {
+		return err
+	}
+
+	senderIOU := NewIOUAmount(senderAmount.Value, senderAmount.Currency, senderAmount.Issuer)
+	receiverIOU := NewIOUAmount(receiverAmount.Value, receiverAmount.Currency, receiverAmount.Issuer)
+
+	fromIsIssuer := fromAccount == senderAmount.Issuer
+	toIsIssuer := toAccount == senderAmount.Issuer
+
+	if fromIsIssuer {
+		// Issuer is sending - no transfer fee, increase to's trust line
+		trustLineKey := keylet.Line(toID, issuerID, senderAmount.Currency)
+		if err := e.updateTrustLineBalance(trustLineKey, toID, issuerID, receiverIOU, true, metadata); err != nil {
+			return err
+		}
+	} else if toIsIssuer {
+		// Sending to issuer - no transfer fee, decrease from's trust line
+		trustLineKey := keylet.Line(fromID, issuerID, senderAmount.Currency)
+		if err := e.updateTrustLineBalance(trustLineKey, fromID, issuerID, senderIOU, false, metadata); err != nil {
+			return err
+		}
+	} else {
+		// Transfer between non-issuers - apply transfer fee
+		// Sender pays senderAmount (includes fee)
+		fromTrustKey := keylet.Line(fromID, issuerID, senderAmount.Currency)
+		if err := e.updateTrustLineBalance(fromTrustKey, fromID, issuerID, senderIOU, false, metadata); err != nil {
+			return err
+		}
+
+		// Receiver gets receiverAmount (after fee)
+		toTrustKey := keylet.Line(toID, issuerID, senderAmount.Currency)
+		if err := e.updateTrustLineBalance(toTrustKey, toID, issuerID, receiverIOU, true, metadata); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // updateTrustLineBalance updates a trust line balance
 // RippleState balance semantics:
 // - Negative balance = LOW owes HIGH (HIGH holds tokens)
@@ -2382,6 +3323,9 @@ func (e *Engine) updateTrustLineBalance(key keylet.Keylet, accountID, issuerID [
 	if err != nil {
 		return fmt.Errorf("failed to parse trust line: %w", err)
 	}
+
+	// Store original balance for PreviousFields
+	oldBalance := rs.Balance
 
 	accountIsLow := compareAccountIDsForLine(accountID, issuerID) < 0
 
@@ -2406,7 +3350,15 @@ func (e *Engine) updateTrustLineBalance(key keylet.Keylet, accountID, issuerID [
 	// Ensure the new balance has the correct currency and issuer
 	newBalance.Currency = amount.Currency
 	newBalance.Issuer = amount.Issuer
+
+	// Store old PreviousTxnID/LgrSeq before updating
+	oldPrevTxnID := rs.PreviousTxnID
+	oldPrevTxnLgrSeq := rs.PreviousTxnLgrSeq
+
+	// Update the RippleState
 	rs.Balance = newBalance
+	rs.PreviousTxnID = e.currentTxHash
+	rs.PreviousTxnLgrSeq = e.config.LedgerSequence
 
 	updatedData, err := serializeRippleState(rs)
 	if err != nil {
@@ -2417,17 +3369,43 @@ func (e *Engine) updateTrustLineBalance(key keylet.Keylet, accountID, issuerID [
 		return fmt.Errorf("failed to update trust line: %w", err)
 	}
 
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "RippleState",
-		LedgerIndex:     hex.EncodeToString(key.Key[:]),
-		FinalFields: map[string]any{
+	// Build metadata with all required fields
+	node := AffectedNode{
+		NodeType:          "ModifiedNode",
+		LedgerEntryType:   "RippleState",
+		LedgerIndex:       strings.ToUpper(hex.EncodeToString(key.Key[:])),
+		PreviousTxnLgrSeq: oldPrevTxnLgrSeq,
+		PreviousTxnID:     strings.ToUpper(hex.EncodeToString(oldPrevTxnID[:])),
+		PreviousFields: map[string]any{
 			"Balance": map[string]any{
+				"value":    formatIOUValue(oldBalance.Value),
 				"currency": amount.Currency,
-				"value":    formatIOUValue(rs.Balance.Value),
+				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji", // ACCOUNT_ONE for Balance
 			},
 		},
-	})
+		FinalFields: map[string]any{
+			"Flags":    rs.Flags,
+			"LowNode":  fmt.Sprintf("%016X", rs.LowNode),
+			"HighNode": fmt.Sprintf("%016X", rs.HighNode),
+			"Balance": map[string]any{
+				"value":    formatIOUValue(rs.Balance.Value),
+				"currency": amount.Currency,
+				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji", // ACCOUNT_ONE for Balance
+			},
+			"LowLimit": map[string]any{
+				"value":    formatIOUValue(rs.LowLimit.Value),
+				"currency": amount.Currency,
+				"issuer":   rs.LowLimit.Issuer,
+			},
+			"HighLimit": map[string]any{
+				"value":    formatIOUValue(rs.HighLimit.Value),
+				"currency": amount.Currency,
+				"issuer":   rs.HighLimit.Issuer,
+			},
+		},
+	}
+
+	metadata.AffectedNodes = append(metadata.AffectedNodes, node)
 
 	return nil
 }
@@ -2458,7 +3436,7 @@ func subtractAmount(a, b Amount) Amount {
 
 // applyOfferCancel applies an OfferCancel transaction
 func (e *Engine) applyOfferCancel(cancel *OfferCancel, account *AccountRoot, metadata *Metadata) Result {
-	// Find and remove the offer
+	// Find the offer
 	accountID, _ := decodeAccountID(account.Account)
 	offerKey := keylet.Offer(accountID, cancel.OfferSequence)
 
@@ -2472,7 +3450,42 @@ func (e *Engine) applyOfferCancel(cancel *OfferCancel, account *AccountRoot, met
 		return TesSUCCESS
 	}
 
-	// Delete the offer
+	// Read the offer to get its details for metadata and directory removal
+	offerData, err := e.view.Read(offerKey)
+	if err != nil {
+		return TefINTERNAL
+	}
+	ledgerOffer, err := parseLedgerOffer(offerData)
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	// Create SLE for the offer for metadata tracking
+	sleOffer := NewSLEOffer(offerKey.Key)
+	sleOffer.LoadFromLedgerOffer(ledgerOffer)
+	sleOffer.MarkAsDeleted()
+
+	// Remove from owner directory (keepRoot = false since owner dir should persist)
+	ownerDirKey := keylet.OwnerDir(accountID)
+	ownerDirResult, err := e.dirRemove(ownerDirKey, ledgerOffer.OwnerNode, offerKey.Key, false)
+	if err != nil {
+		return TefINTERNAL
+	}
+	if !ownerDirResult.Success {
+		return TefBAD_LEDGER
+	}
+
+	// Remove from book directory (keepRoot = false - delete directory if empty)
+	bookDirKey := keylet.Keylet{Type: 100, Key: ledgerOffer.BookDirectory} // DirectoryNode type
+	bookDirResult, err := e.dirRemove(bookDirKey, ledgerOffer.BookNode, offerKey.Key, false)
+	if err != nil {
+		return TefINTERNAL
+	}
+	if !bookDirResult.Success {
+		return TefBAD_LEDGER
+	}
+
+	// Delete the offer from ledger
 	if err := e.view.Erase(offerKey); err != nil {
 		return TefINTERNAL
 	}
@@ -2482,11 +3495,65 @@ func (e *Engine) applyOfferCancel(cancel *OfferCancel, account *AccountRoot, met
 		account.OwnerCount--
 	}
 
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "DeletedNode",
-		LedgerEntryType: "Offer",
-		LedgerIndex:     hex.EncodeToString(offerKey.Key[:]),
-	})
+	// Generate metadata for book directory changes
+	for _, deleted := range bookDirResult.DeletedNodes {
+		sleDir := NewSLEDirectoryNode(deleted.Key)
+		sleDir.LoadFromDirectoryNode(deleted.FinalState)
+		sleDir.MarkAsDeleted()
+		if node := sleDir.GenerateAffectedNode(); node != nil {
+			metadata.AffectedNodes = append(metadata.AffectedNodes, *node)
+		}
+	}
+	for _, modified := range bookDirResult.ModifiedNodes {
+		sleDir := NewSLEDirectoryNode(modified.Key)
+		sleDir.LoadFromDirectoryNode(modified.PrevState)
+		// Apply the changes
+		if modified.NewState.IndexNext != modified.PrevState.IndexNext {
+			sleDir.SetField("IndexNext", formatUint64Hex(modified.NewState.IndexNext))
+		}
+		if modified.NewState.IndexPrevious != modified.PrevState.IndexPrevious {
+			sleDir.SetField("IndexPrevious", formatUint64Hex(modified.NewState.IndexPrevious))
+		}
+		// Even if only Indexes changed (which has FieldMetaNever), we still emit ModifiedNode
+		if len(modified.NewState.Indexes) != len(modified.PrevState.Indexes) {
+			sleDir.UpdateIndexes(modified.NewState.Indexes)
+		}
+		if node := sleDir.GenerateAffectedNode(); node != nil {
+			metadata.AffectedNodes = append(metadata.AffectedNodes, *node)
+		}
+	}
+
+	// Generate metadata for offer deletion
+	metadata.AffectedNodes = append(metadata.AffectedNodes, *sleOffer.GenerateAffectedNode())
+
+	// Generate metadata for owner directory changes
+	for _, modified := range ownerDirResult.ModifiedNodes {
+		sleDir := NewSLEDirectoryNode(modified.Key)
+		sleDir.LoadFromDirectoryNode(modified.PrevState)
+		// Apply the changes
+		if modified.NewState.IndexNext != modified.PrevState.IndexNext {
+			sleDir.SetField("IndexNext", formatUint64Hex(modified.NewState.IndexNext))
+		}
+		if modified.NewState.IndexPrevious != modified.PrevState.IndexPrevious {
+			sleDir.SetField("IndexPrevious", formatUint64Hex(modified.NewState.IndexPrevious))
+		}
+		// Even if only Indexes changed (which has FieldMetaNever), we still emit ModifiedNode
+		// because the node was touched. Force modify action if indexes changed.
+		if len(modified.NewState.Indexes) != len(modified.PrevState.Indexes) {
+			sleDir.UpdateIndexes(modified.NewState.Indexes)
+		}
+		if node := sleDir.GenerateAffectedNode(); node != nil {
+			metadata.AffectedNodes = append(metadata.AffectedNodes, *node)
+		}
+	}
+	for _, deleted := range ownerDirResult.DeletedNodes {
+		sleDir := NewSLEDirectoryNode(deleted.Key)
+		sleDir.LoadFromDirectoryNode(deleted.FinalState)
+		sleDir.MarkAsDeleted()
+		if node := sleDir.GenerateAffectedNode(); node != nil {
+			metadata.AffectedNodes = append(metadata.AffectedNodes, *node)
+		}
+	}
 
 	return TesSUCCESS
 }

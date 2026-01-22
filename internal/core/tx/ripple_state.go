@@ -71,6 +71,10 @@ const (
 	lsfLowFreeze uint32 = 0x00400000
 	// lsfHighFreeze - high side is frozen
 	lsfHighFreeze uint32 = 0x00800000
+	// lsfLowDeepFreeze - low side has deep freeze
+	lsfLowDeepFreeze uint32 = 0x02000000
+	// lsfHighDeepFreeze - high side has deep freeze
+	lsfHighDeepFreeze uint32 = 0x04000000
 
 	// Exported freeze constants for external use
 	LsfLowFreeze  uint32 = lsfLowFreeze
@@ -190,6 +194,18 @@ func formatIOUValue(value *big.Float) string {
 	}
 
 	return str
+}
+
+// formatIOUValuePrecise formats a float64 value with XRPL precision
+// Used for remainder calculations that use float64 arithmetic
+func formatIOUValuePrecise(value float64) string {
+	if value == 0 {
+		return "0"
+	}
+
+	// Convert to big.Float for precise formatting
+	bf := new(big.Float).SetPrec(128).SetFloat64(value)
+	return formatIOUValue(bf)
 }
 
 // parseRippleState parses a RippleState from binary data
@@ -329,18 +345,26 @@ func parseIOUAmount(data []byte) (IOUAmount, error) {
 	}
 
 	// First 8 bytes: value (mantissa + exponent)
-	// Bytes 8-28: currency code (160 bits)
-	// Bytes 28-48: issuer account ID (160 bits)
+	// Bytes 8-27: currency code (20 bytes / 160 bits)
+	// Bytes 28-47: issuer account ID (20 bytes / 160 bits)
 
-	// Parse currency (bytes 12-15 for standard 3-char codes)
+	// Parse currency from the 20-byte currency section (bytes 8-27)
+	// Standard 3-char codes format: [12 zero bytes][3-char code][5 zero bytes]
+	// So within the 48-byte array: bytes 8-19 are zeros, bytes 20-22 are the code
 	currency := ""
-	if data[8] == 0 && data[9] == 0 && data[10] == 0 && data[11] == 0 {
-		// Standard currency code
-		currency = string(data[12:15])
+	isStandardCode := true
+	for i := 8; i < 20; i++ {
+		if data[i] != 0 {
+			isStandardCode = false
+			break
+		}
+	}
+	if isStandardCode {
+		// Standard currency code at bytes 20-22 (offset 12-14 within currency section)
+		currency = string(data[20:23])
 	} else {
-		// Non-standard currency - hex encode
-		// For now, just use first 3 visible chars
-		currency = "???"
+		// Non-standard currency - hex encode the full 20 bytes
+		currency = strings.ToUpper(hex.EncodeToString(data[8:28]))
 	}
 
 	// Parse issuer (last 20 bytes)
@@ -413,7 +437,8 @@ func serializeRippleState(rs *RippleState) ([]byte, error) {
 	makeAmount := func(amount IOUAmount, useAccountOne bool) map[string]any {
 		valueStr := "0"
 		if amount.Value != nil && amount.Value.Sign() != 0 {
-			valueStr = amount.Value.Text('g', 15)
+			// XRPL uses 54-bit mantissa = up to 16 decimal digits
+			valueStr = amount.Value.Text('g', 16)
 		}
 		curr := currency
 		if curr == "" {

@@ -12,6 +12,7 @@ import (
 
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/header"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
@@ -357,6 +358,9 @@ func executeReplayVerbose(state *StateFixture, env *EnvFixture, txs *TxsFixture,
 	// Step 4: Apply transactions
 	fmt.Printf("[4/5] Applying %d transactions...\n", len(txs.Transactions))
 
+	// Build amendment rules from the amendments list in the fixture
+	rules := buildRulesFromAmendments(env.Amendments)
+
 	engineConfig := tx.EngineConfig{
 		BaseFee:                   env.Fees.BaseFee,
 		ReserveBase:               env.Fees.ReserveBase,
@@ -364,6 +368,7 @@ func executeReplayVerbose(state *StateFixture, env *EnvFixture, txs *TxsFixture,
 		LedgerSequence:            env.LedgerIndex,
 		SkipSignatureVerification: true,
 		Standalone:                true,
+		Rules:                     rules,
 	}
 
 	engine := tx.NewEngine(openLedger, engineConfig)
@@ -420,6 +425,7 @@ func executeReplayVerbose(state *StateFixture, env *EnvFixture, txs *TxsFixture,
 		}
 
 		applyResult := blockTxResult.ApplyResult
+		txInfo.Hash = hex.EncodeToString(blockTxResult.Hash[:])
 		txInfo.Result = applyResult.Result.String()
 		txInfo.ResultCode = int(applyResult.Result)
 		txInfo.Applied = applyResult.Applied
@@ -788,6 +794,35 @@ func decodeEntryData(hexData string) map[string]interface{} {
 		return nil
 	}
 	return decoded
+}
+
+// buildRulesFromAmendments creates amendment rules from a list of amendment names or IDs.
+// If the list is empty, returns empty rules (no amendments enabled).
+func buildRulesFromAmendments(amendments []string) *amendment.Rules {
+	if len(amendments) == 0 {
+		return amendment.EmptyRules()
+	}
+
+	builder := amendment.NewRulesBuilder()
+	for _, amendmentStr := range amendments {
+		// Try to find by name first
+		feature := amendment.GetFeatureByName(amendmentStr)
+		if feature != nil {
+			builder.Enable(feature.ID)
+			continue
+		}
+
+		// Try to parse as hex ID
+		if len(amendmentStr) == 64 {
+			var id [32]byte
+			decoded, err := hex.DecodeString(amendmentStr)
+			if err == nil && len(decoded) == 32 {
+				copy(id[:], decoded)
+				builder.Enable(id)
+			}
+		}
+	}
+	return builder.Build()
 }
 
 func hexToHash32(s string) ([32]byte, error) {

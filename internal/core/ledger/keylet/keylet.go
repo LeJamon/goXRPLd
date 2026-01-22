@@ -418,6 +418,25 @@ func VaultByID(vaultID [32]byte) Keylet {
 	}
 }
 
+// DirPage returns the keylet for a specific page of a directory.
+// Page 0 returns the root directory key unchanged.
+// Other pages use a hash of the root key and page number.
+// This works for any directory type (owner, book, etc.)
+func DirPage(rootKey [32]byte, page uint64) Keylet {
+	if page == 0 {
+		return Keylet{
+			Type: entry.TypeDirectoryNode,
+			Key:  rootKey,
+		}
+	}
+	pageBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(pageBytes, page)
+	return Keylet{
+		Type: entry.TypeDirectoryNode,
+		Key:  indexHash(spaceDirNode, rootKey[:], pageBytes),
+	}
+}
+
 // DID returns the keylet for a DID (Decentralized Identifier) entry.
 // Reference: rippled Indexes.cpp did(AccountID const& account)
 func DID(accountID [20]byte) Keylet {

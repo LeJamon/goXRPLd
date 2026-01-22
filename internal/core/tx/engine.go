@@ -10,6 +10,7 @@ import (
 
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
 )
@@ -143,6 +144,10 @@ type EngineConfig struct {
 	// ParentCloseTime is the close time of the parent ledger (in Ripple epoch seconds)
 	// This is used for checking offer/escrow expiration
 	ParentCloseTime uint32
+
+	// Rules contains the amendment rules for this ledger.
+	// If nil, defaults to all amendments enabled (for backwards compatibility).
+	Rules *amendment.Rules
 }
 
 // LedgerView provides read/write access to ledger state
@@ -316,6 +321,16 @@ func NewEngine(view LedgerView, config EngineConfig) *Engine {
 		view:   view,
 		config: config,
 	}
+}
+
+// rules returns the amendment rules, defaulting to all amendments enabled if nil.
+// This provides backwards compatibility for code that doesn't set Rules.
+func (e *Engine) rules() *amendment.Rules {
+	if e.config.Rules != nil {
+		return e.config.Rules
+	}
+	// Default to all supported amendments enabled for backwards compatibility
+	return amendment.AllSupportedRules()
 }
 
 // computeTransactionHash computes the hash of a transaction
