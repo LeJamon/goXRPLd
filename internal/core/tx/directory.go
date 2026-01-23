@@ -339,13 +339,13 @@ const dirNodeMaxEntries = 32
 // dirInsert adds an item to a directory, creating the directory if needed.
 // Returns the page number where the item was inserted.
 // Follows rippled's dirAdd algorithm for multi-page directory support.
-func (e *Engine) dirInsert(dirKey keylet.Keylet, itemKey [32]byte, setupFunc func(*DirectoryNode)) (*DirInsertResult, error) {
+func (e *Engine) dirInsert(view LedgerView, dirKey keylet.Keylet, itemKey [32]byte, setupFunc func(*DirectoryNode)) (*DirInsertResult, error) {
 	result := &DirInsertResult{
 		DirKey: dirKey.Key,
 	}
 
 	// Check if root directory exists
-	exists, err := e.view.Exists(dirKey)
+	exists, err := view.Exists(dirKey)
 	if err != nil {
 		return nil, err
 	}
@@ -377,14 +377,14 @@ func (e *Engine) dirInsert(dirKey keylet.Keylet, itemKey [32]byte, setupFunc fun
 		if err != nil {
 			return nil, err
 		}
-		if err := e.view.Insert(dirKey, data); err != nil {
+		if err := view.Insert(dirKey, data); err != nil {
 			return nil, err
 		}
 		return result, nil
 	}
 
 	// Root exists - read it
-	rootData, err := e.view.Read(dirKey)
+	rootData, err := view.Read(dirKey)
 	if err != nil {
 		return nil, err
 	}
@@ -402,7 +402,7 @@ func (e *Engine) dirInsert(dirKey keylet.Keylet, itemKey [32]byte, setupFunc fun
 	if page != 0 {
 		pageKeylet := keylet.DirPage(dirKey.Key, page)
 		nodeKey = pageKeylet.Key
-		pageData, err := e.view.Read(pageKeylet)
+		pageData, err := view.Read(pageKeylet)
 		if err != nil {
 			return nil, err
 		}
@@ -430,7 +430,7 @@ func (e *Engine) dirInsert(dirKey keylet.Keylet, itemKey [32]byte, setupFunc fun
 		if err != nil {
 			return nil, err
 		}
-		if err := e.view.Update(keylet.Keylet{Type: dirKey.Type, Key: nodeKey}, data); err != nil {
+		if err := view.Update(keylet.Keylet{Type: dirKey.Type, Key: nodeKey}, data); err != nil {
 			return nil, err
 		}
 		return result, nil
@@ -495,7 +495,7 @@ func (e *Engine) dirInsert(dirKey keylet.Keylet, itemKey [32]byte, setupFunc fun
 	if err != nil {
 		return nil, err
 	}
-	if err := e.view.Update(keylet.Keylet{Type: dirKey.Type, Key: nodeKey}, nodeData); err != nil {
+	if err := view.Update(keylet.Keylet{Type: dirKey.Type, Key: nodeKey}, nodeData); err != nil {
 		return nil, err
 	}
 
@@ -506,7 +506,7 @@ func (e *Engine) dirInsert(dirKey keylet.Keylet, itemKey [32]byte, setupFunc fun
 		if err != nil {
 			return nil, err
 		}
-		if err := e.view.Update(dirKey, rootData); err != nil {
+		if err := view.Update(dirKey, rootData); err != nil {
 			return nil, err
 		}
 	}
@@ -517,7 +517,7 @@ func (e *Engine) dirInsert(dirKey keylet.Keylet, itemKey [32]byte, setupFunc fun
 	if err != nil {
 		return nil, err
 	}
-	if err := e.view.Insert(newPageKeylet, newPageData); err != nil {
+	if err := view.Insert(newPageKeylet, newPageData); err != nil {
 		return nil, err
 	}
 
@@ -601,7 +601,7 @@ type DirRemoveDeletedNode struct {
 //   - page: the page number where the item is located (from OwnerNode/BookNode field)
 //   - key: the item key to remove
 //   - keepRoot: if true, don't delete the root even if empty
-func (e *Engine) dirRemove(directory keylet.Keylet, page uint64, itemKey [32]byte, keepRoot bool) (*DirRemoveResult, error) {
+func (e *Engine) dirRemove(view LedgerView, directory keylet.Keylet, page uint64, itemKey [32]byte, keepRoot bool) (*DirRemoveResult, error) {
 	result := &DirRemoveResult{
 		ModifiedNodes: make([]DirRemoveModifiedNode, 0),
 		DeletedNodes:  make([]DirRemoveDeletedNode, 0),
@@ -611,7 +611,7 @@ func (e *Engine) dirRemove(directory keylet.Keylet, page uint64, itemKey [32]byt
 
 	// Get the page where the item should be
 	pageKeylet := keylet.DirPage(directory.Key, page)
-	pageData, err := e.view.Read(pageKeylet)
+	pageData, err := view.Read(pageKeylet)
 	if err != nil {
 		return result, nil // Page not found, return success=false
 	}
@@ -654,7 +654,7 @@ func (e *Engine) dirRemove(directory keylet.Keylet, page uint64, itemKey [32]byt
 		if err != nil {
 			return nil, err
 		}
-		if err := e.view.Update(pageKeylet, data); err != nil {
+		if err := view.Update(pageKeylet, data); err != nil {
 			return nil, err
 		}
 		return result, nil
@@ -677,7 +677,7 @@ func (e *Engine) dirRemove(directory keylet.Keylet, page uint64, itemKey [32]byt
 		// Handle legacy empty trailing pages
 		if nextPage == prevPage && nextPage != page {
 			lastPageKeylet := keylet.DirPage(directory.Key, nextPage)
-			lastPageData, err := e.view.Read(lastPageKeylet)
+			lastPageData, err := view.Read(lastPageKeylet)
 			if err != nil {
 				return nil, fmt.Errorf("directory chain: fwd link broken")
 			}
@@ -710,12 +710,12 @@ func (e *Engine) dirRemove(directory keylet.Keylet, page uint64, itemKey [32]byt
 				if err != nil {
 					return nil, err
 				}
-				if err := e.view.Update(pageKeylet, data); err != nil {
+				if err := view.Update(pageKeylet, data); err != nil {
 					return nil, err
 				}
 
 				// Erase last page
-				if err := e.view.Erase(lastPageKeylet); err != nil {
+				if err := view.Erase(lastPageKeylet); err != nil {
 					return nil, err
 				}
 
@@ -742,7 +742,7 @@ func (e *Engine) dirRemove(directory keylet.Keylet, page uint64, itemKey [32]byt
 				if err != nil {
 					return nil, err
 				}
-				if err := e.view.Update(pageKeylet, data); err != nil {
+				if err := view.Update(pageKeylet, data); err != nil {
 					return nil, err
 				}
 			}
@@ -758,7 +758,7 @@ func (e *Engine) dirRemove(directory keylet.Keylet, page uint64, itemKey [32]byt
 				FinalState: &prevNode, // Use state before item removal
 			})
 
-			if err := e.view.Erase(pageKeylet); err != nil {
+			if err := view.Erase(pageKeylet); err != nil {
 				return nil, err
 			}
 		} else {
@@ -775,7 +775,7 @@ func (e *Engine) dirRemove(directory keylet.Keylet, page uint64, itemKey [32]byt
 			if err != nil {
 				return nil, err
 			}
-			if err := e.view.Update(pageKeylet, data); err != nil {
+			if err := view.Update(pageKeylet, data); err != nil {
 				return nil, err
 			}
 		}
@@ -795,7 +795,7 @@ func (e *Engine) dirRemove(directory keylet.Keylet, page uint64, itemKey [32]byt
 
 	// Get prev and next pages
 	prevPageKeylet := keylet.DirPage(directory.Key, prevPage)
-	prevPageData, err := e.view.Read(prevPageKeylet)
+	prevPageData, err := view.Read(prevPageKeylet)
 	if err != nil {
 		return nil, fmt.Errorf("directory chain: fwd link broken")
 	}
@@ -806,7 +806,7 @@ func (e *Engine) dirRemove(directory keylet.Keylet, page uint64, itemKey [32]byt
 	prevPrev := *prev
 
 	nextPageKeylet := keylet.DirPage(directory.Key, nextPage)
-	nextPageData, err := e.view.Read(nextPageKeylet)
+	nextPageData, err := view.Read(nextPageKeylet)
 	if err != nil {
 		return nil, fmt.Errorf("directory chain: rev link broken")
 	}
@@ -843,7 +843,7 @@ func (e *Engine) dirRemove(directory keylet.Keylet, page uint64, itemKey [32]byt
 	if err != nil {
 		return nil, err
 	}
-	if err := e.view.Update(prevPageKeylet, prevData); err != nil {
+	if err := view.Update(prevPageKeylet, prevData); err != nil {
 		return nil, err
 	}
 
@@ -854,7 +854,7 @@ func (e *Engine) dirRemove(directory keylet.Keylet, page uint64, itemKey [32]byt
 		if err != nil {
 			return nil, err
 		}
-		if err := e.view.Update(nextPageKeylet, nextData); err != nil {
+		if err := view.Update(nextPageKeylet, nextData); err != nil {
 			return nil, err
 		}
 	}
@@ -865,7 +865,7 @@ func (e *Engine) dirRemove(directory keylet.Keylet, page uint64, itemKey [32]byt
 		Key:        pageKeylet.Key,
 		FinalState: &prevNode,
 	})
-	if err := e.view.Erase(pageKeylet); err != nil {
+	if err := view.Erase(pageKeylet); err != nil {
 		return nil, err
 	}
 
@@ -876,7 +876,7 @@ func (e *Engine) dirRemove(directory keylet.Keylet, page uint64, itemKey [32]byt
 			Key:        nextPageKeylet.Key,
 			FinalState: &nextPrev,
 		})
-		if err := e.view.Erase(nextPageKeylet); err != nil {
+		if err := view.Erase(nextPageKeylet); err != nil {
 			return nil, err
 		}
 
@@ -887,13 +887,13 @@ func (e *Engine) dirRemove(directory keylet.Keylet, page uint64, itemKey [32]byt
 		if err != nil {
 			return nil, err
 		}
-		if err := e.view.Update(prevPageKeylet, prevData); err != nil {
+		if err := view.Update(prevPageKeylet, prevData); err != nil {
 			return nil, err
 		}
 
 		// Update root's IndexPrevious
 		rootKeylet := keylet.DirPage(directory.Key, rootPage)
-		rootData, err := e.view.Read(rootKeylet)
+		rootData, err := view.Read(rootKeylet)
 		if err != nil {
 			return nil, err
 		}
@@ -915,7 +915,7 @@ func (e *Engine) dirRemove(directory keylet.Keylet, page uint64, itemKey [32]byt
 		if err != nil {
 			return nil, err
 		}
-		if err := e.view.Update(rootKeylet, rootData); err != nil {
+		if err := view.Update(rootKeylet, rootData); err != nil {
 			return nil, err
 		}
 
@@ -931,7 +931,7 @@ func (e *Engine) dirRemove(directory keylet.Keylet, page uint64, itemKey [32]byt
 				Key:        prevPageKeylet.Key,
 				FinalState: &prevPrev,
 			})
-			if err := e.view.Erase(prevPageKeylet); err != nil {
+			if err := view.Erase(prevPageKeylet); err != nil {
 				return nil, err
 			}
 		}

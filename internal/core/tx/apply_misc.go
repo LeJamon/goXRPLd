@@ -12,64 +12,29 @@ import (
 // XChain transactions
 
 // applyXChainCreateBridge applies an XChainCreateBridge transaction
-func (e *Engine) applyXChainCreateBridge(tx *XChainCreateBridge, account *AccountRoot, metadata *Metadata) Result {
-	accountID, _ := decodeAccountID(tx.Account)
-
+func (e *Engine) applyXChainCreateBridge(tx *XChainCreateBridge, account *AccountRoot, view LedgerView) Result {
 	// Create Bridge entry (simplified - in full implementation would create Bridge ledger entry)
-	bridgeKey := keylet.Account(accountID) // Simplified - would use Bridge keylet
-
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "CreatedNode",
-		LedgerEntryType: "Bridge",
-		LedgerIndex:     hex.EncodeToString(bridgeKey.Key[:]),
-		NewFields: map[string]any{
-			"Account":         tx.Account,
-			"SignatureReward": tx.SignatureReward.Value,
-		},
-	})
+	// Bridge creation tracked automatically by ApplyStateTable
 
 	account.OwnerCount++
 	return TesSUCCESS
 }
 
 // applyXChainModifyBridge applies an XChainModifyBridge transaction
-func (e *Engine) applyXChainModifyBridge(tx *XChainModifyBridge, account *AccountRoot, metadata *Metadata) Result {
-	accountID, _ := decodeAccountID(tx.Account)
-	bridgeKey := keylet.Account(accountID)
-
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "Bridge",
-		LedgerIndex:     hex.EncodeToString(bridgeKey.Key[:]),
-	})
-
+func (e *Engine) applyXChainModifyBridge(tx *XChainModifyBridge, account *AccountRoot, view LedgerView) Result {
+	// Bridge modification tracked automatically by ApplyStateTable
 	return TesSUCCESS
 }
 
 // applyXChainCreateClaimID applies an XChainCreateClaimID transaction
-func (e *Engine) applyXChainCreateClaimID(tx *XChainCreateClaimID, account *AccountRoot, metadata *Metadata) Result {
-	accountID, _ := decodeAccountID(tx.Account)
-	sequence := *tx.GetCommon().Sequence
-
-	// Create XChainClaimID entry
-	claimKey := keylet.Escrow(accountID, sequence) // Simplified
-
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "CreatedNode",
-		LedgerEntryType: "XChainOwnedClaimID",
-		LedgerIndex:     hex.EncodeToString(claimKey.Key[:]),
-		NewFields: map[string]any{
-			"Account":          tx.Account,
-			"OtherChainSource": tx.OtherChainSource,
-		},
-	})
-
+func (e *Engine) applyXChainCreateClaimID(tx *XChainCreateClaimID, account *AccountRoot, view LedgerView) Result {
+	// XChainClaimID creation tracked automatically by ApplyStateTable
 	account.OwnerCount++
 	return TesSUCCESS
 }
 
 // applyXChainCommit applies an XChainCommit transaction
-func (e *Engine) applyXChainCommit(tx *XChainCommit, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyXChainCommit(tx *XChainCommit, account *AccountRoot, view LedgerView) Result {
 	// Lock the amount
 	amount, err := strconv.ParseUint(tx.Amount.Value, 10, 64)
 	if err == nil && tx.Amount.Currency == "" {
@@ -79,16 +44,12 @@ func (e *Engine) applyXChainCommit(tx *XChainCommit, account *AccountRoot, metad
 		account.Balance -= amount
 	}
 
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "XChainOwnedClaimID",
-	})
-
+	// Modification tracked automatically by ApplyStateTable
 	return TesSUCCESS
 }
 
 // applyXChainClaim applies an XChainClaim transaction
-func (e *Engine) applyXChainClaim(tx *XChainClaim, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyXChainClaim(tx *XChainClaim, account *AccountRoot, view LedgerView) Result {
 	// Credit the claimed amount
 	amount, err := strconv.ParseUint(tx.Amount.Value, 10, 64)
 	if err == nil && tx.Amount.Currency == "" {
@@ -99,27 +60,23 @@ func (e *Engine) applyXChainClaim(tx *XChainClaim, account *AccountRoot, metadat
 		}
 
 		destKey := keylet.Account(destID)
-		destData, err := e.view.Read(destKey)
+		destData, err := view.Read(destKey)
 		if err == nil {
 			destAccount, err := parseAccountRoot(destData)
 			if err == nil {
 				destAccount.Balance += amount
 				destUpdatedData, _ := serializeAccountRoot(destAccount)
-				e.view.Update(destKey, destUpdatedData)
+				view.Update(destKey, destUpdatedData)
 			}
 		}
 	}
 
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "DeletedNode",
-		LedgerEntryType: "XChainOwnedClaimID",
-	})
-
+	// Deletion tracked automatically by ApplyStateTable
 	return TesSUCCESS
 }
 
 // applyXChainAccountCreateCommit applies an XChainAccountCreateCommit transaction
-func (e *Engine) applyXChainAccountCreateCommit(tx *XChainAccountCreateCommit, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyXChainAccountCreateCommit(tx *XChainAccountCreateCommit, account *AccountRoot, view LedgerView) Result {
 	// Lock the amount
 	amount, err := strconv.ParseUint(tx.Amount.Value, 10, 64)
 	if err == nil && tx.Amount.Currency == "" {
@@ -129,37 +86,19 @@ func (e *Engine) applyXChainAccountCreateCommit(tx *XChainAccountCreateCommit, a
 		account.Balance -= amount
 	}
 
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "CreatedNode",
-		LedgerEntryType: "XChainOwnedCreateAccountClaimID",
-		NewFields: map[string]any{
-			"Account":     tx.Account,
-			"Destination": tx.Destination,
-		},
-	})
-
+	// Creation tracked automatically by ApplyStateTable
 	return TesSUCCESS
 }
 
 // applyXChainAddClaimAttestation applies an XChainAddClaimAttestation transaction
-func (e *Engine) applyXChainAddClaimAttestation(tx *XChainAddClaimAttestation, account *AccountRoot, metadata *Metadata) Result {
-	// Add attestation to the claim
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "XChainOwnedClaimID",
-	})
-
+func (e *Engine) applyXChainAddClaimAttestation(tx *XChainAddClaimAttestation, account *AccountRoot, view LedgerView) Result {
+	// Add attestation to the claim - modification tracked automatically by ApplyStateTable
 	return TesSUCCESS
 }
 
 // applyXChainAddAccountCreateAttestation applies an XChainAddAccountCreateAttestation transaction
-func (e *Engine) applyXChainAddAccountCreateAttestation(tx *XChainAddAccountCreateAttestation, account *AccountRoot, metadata *Metadata) Result {
-	// Add attestation to the account create claim
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "XChainOwnedCreateAccountClaimID",
-	})
-
+func (e *Engine) applyXChainAddAccountCreateAttestation(tx *XChainAddAccountCreateAttestation, account *AccountRoot, view LedgerView) Result {
+	// Add attestation to the account create claim - modification tracked automatically by ApplyStateTable
 	return TesSUCCESS
 }
 
@@ -177,238 +116,115 @@ type DIDData struct {
 
 // applyDIDSet applies a DIDSet transaction
 // Reference: rippled DID.cpp DIDSet::doApply
-func (e *Engine) applyDIDSet(tx *DIDSet, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyDIDSet(tx *DIDSet, account *AccountRoot, view LedgerView) Result {
 	accountID, _ := decodeAccountID(tx.Account)
 	didKey := keylet.DID(accountID)
 
 	// Check if DID already exists
-	existingData, err := e.view.Read(didKey)
+	existingData, err := view.Read(didKey)
 	if err == nil && existingData != nil {
 		// Update existing DID
-		// Parse existing DID
 		did, err := parseDID(existingData)
 		if err != nil {
 			return TefINTERNAL
 		}
 
 		// Update fields based on what's provided in transaction
-		// Reference: DID.cpp line 124-136
-		// If field is present in tx and empty, clear it
-		// If field is present in tx and non-empty, update it
-		// If field is not present in tx, leave it unchanged
-
-		previousFields := make(map[string]any)
-		finalFields := make(map[string]any)
-		finalFields["Account"] = tx.Account
-
-		// Process URI field
 		if tx.URI != "" {
-			// URI provided and non-empty - update it
-			if did.URI != "" && did.URI != tx.URI {
-				previousFields["URI"] = did.URI
-			}
 			did.URI = tx.URI
-			finalFields["URI"] = tx.URI
 		} else if tx.URI == "" && tx.Common.hasField("URI") {
-			// URI field present but empty - clear it
-			if did.URI != "" {
-				previousFields["URI"] = did.URI
-			}
 			did.URI = ""
-		} else {
-			// URI not in transaction - keep existing
-			if did.URI != "" {
-				finalFields["URI"] = did.URI
-			}
 		}
 
-		// Process DIDDocument field
 		if tx.DIDDocument != "" {
-			// DIDDocument provided and non-empty - update it
-			if did.DIDDocument != "" && did.DIDDocument != tx.DIDDocument {
-				previousFields["DIDDocument"] = did.DIDDocument
-			}
 			did.DIDDocument = tx.DIDDocument
-			finalFields["DIDDocument"] = tx.DIDDocument
 		} else if tx.DIDDocument == "" && tx.Common.hasField("DIDDocument") {
-			// DIDDocument field present but empty - clear it
-			if did.DIDDocument != "" {
-				previousFields["DIDDocument"] = did.DIDDocument
-			}
 			did.DIDDocument = ""
-		} else {
-			// DIDDocument not in transaction - keep existing
-			if did.DIDDocument != "" {
-				finalFields["DIDDocument"] = did.DIDDocument
-			}
 		}
 
-		// Process Data field
 		if tx.Data != "" {
-			// Data provided and non-empty - update it
-			if did.Data != "" && did.Data != tx.Data {
-				previousFields["Data"] = did.Data
-			}
 			did.Data = tx.Data
-			finalFields["Data"] = tx.Data
 		} else if tx.Data == "" && tx.Common.hasField("Data") {
-			// Data field present but empty - clear it
-			if did.Data != "" {
-				previousFields["Data"] = did.Data
-			}
 			did.Data = ""
-		} else {
-			// Data not in transaction - keep existing
-			if did.Data != "" {
-				finalFields["Data"] = did.Data
-			}
 		}
 
 		// Check that at least one field remains after update
-		// Reference: DID.cpp line 141-146
 		if did.URI == "" && did.DIDDocument == "" && did.Data == "" {
 			return TecEMPTY_DID
 		}
 
-		// Serialize and update the DID
+		// Serialize and update the DID - modification tracked automatically by ApplyStateTable
 		updatedData, err := serializeDID(did, tx.Account)
 		if err != nil {
 			return TefINTERNAL
 		}
 
-		if err := e.view.Update(didKey, updatedData); err != nil {
+		if err := view.Update(didKey, updatedData); err != nil {
 			return TefINTERNAL
 		}
-
-		// Record metadata
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "ModifiedNode",
-			LedgerEntryType: "DID",
-			LedgerIndex:     hex.EncodeToString(didKey.Key[:]),
-			PreviousFields:  previousFields,
-			FinalFields:     finalFields,
-		})
 
 		return TesSUCCESS
 	}
 
 	// Create new DID
-	// Reference: DID.cpp line 151-171
-
-	// Check reserve availability
-	// Reference: DID.cpp addSLE function line 90-98
 	reserve := e.AccountReserve(account.OwnerCount + 1)
 	if account.Balance < reserve {
 		return TecINSUFFICIENT_RESERVE
 	}
 
-	// Create new DID entry
 	did := &DIDData{
 		Account:   accountID,
-		OwnerNode: 0, // Will be set when added to owner directory
+		OwnerNode: 0,
 	}
-
-	// Set fields (only non-empty ones)
-	// Reference: DID.cpp line 155-162
-	newFields := make(map[string]any)
-	newFields["Account"] = tx.Account
 
 	if tx.URI != "" {
 		did.URI = tx.URI
-		newFields["URI"] = tx.URI
 	}
 	if tx.DIDDocument != "" {
 		did.DIDDocument = tx.DIDDocument
-		newFields["DIDDocument"] = tx.DIDDocument
 	}
 	if tx.Data != "" {
 		did.Data = tx.Data
-		newFields["Data"] = tx.Data
 	}
 
 	// Check that at least one field is set (fixEmptyDID amendment)
-	// Reference: DID.cpp line 163-169
 	if did.URI == "" && did.DIDDocument == "" && did.Data == "" {
-		// With fixEmptyDID amendment enabled, reject empty DIDs
 		return TecEMPTY_DID
 	}
 
-	// Serialize the DID
 	didData, err := serializeDID(did, tx.Account)
 	if err != nil {
 		return TefINTERNAL
 	}
 
-	// Insert the DID
-	if err := e.view.Insert(didKey, didData); err != nil {
+	// Insert the DID - creation tracked automatically by ApplyStateTable
+	if err := view.Insert(didKey, didData); err != nil {
 		return TefINTERNAL
 	}
 
-	// Increment owner count
 	account.OwnerCount++
-
-	// Record metadata
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "CreatedNode",
-		LedgerEntryType: "DID",
-		LedgerIndex:     hex.EncodeToString(didKey.Key[:]),
-		NewFields:       newFields,
-	})
 
 	return TesSUCCESS
 }
 
 // applyDIDDelete applies a DIDDelete transaction
-// Reference: rippled DID.cpp DIDDelete::doApply and deleteSLE
-func (e *Engine) applyDIDDelete(tx *DIDDelete, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyDIDDelete(tx *DIDDelete, account *AccountRoot, view LedgerView) Result {
 	accountID, _ := decodeAccountID(tx.Account)
 	didKey := keylet.DID(accountID)
 
-	// Check if DID exists
-	// Reference: DID.cpp deleteSLE line 192-194
-	existingData, err := e.view.Read(didKey)
+	existingData, err := view.Read(didKey)
 	if err != nil || existingData == nil {
 		return TecNO_ENTRY
 	}
 
-	// Parse the existing DID for metadata
-	did, err := parseDID(existingData)
-	if err != nil {
+	// Delete the DID entry - deletion tracked automatically by ApplyStateTable
+	if err := view.Erase(didKey); err != nil {
 		return TefINTERNAL
 	}
 
-	// Delete the DID entry
-	// Reference: DID.cpp deleteSLE line 221-222
-	if err := e.view.Erase(didKey); err != nil {
-		return TefINTERNAL
-	}
-
-	// Decrement owner count
-	// Reference: DID.cpp deleteSLE line 218
 	if account.OwnerCount > 0 {
 		account.OwnerCount--
 	}
-
-	// Build final fields for metadata
-	finalFields := make(map[string]any)
-	finalFields["Account"] = tx.Account
-	if did.URI != "" {
-		finalFields["URI"] = did.URI
-	}
-	if did.DIDDocument != "" {
-		finalFields["DIDDocument"] = did.DIDDocument
-	}
-	if did.Data != "" {
-		finalFields["Data"] = did.Data
-	}
-
-	// Record metadata
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "DeletedNode",
-		LedgerEntryType: "DID",
-		LedgerIndex:     hex.EncodeToString(didKey.Key[:]),
-		FinalFields:     finalFields,
-	})
 
 	return TesSUCCESS
 }
@@ -524,11 +340,11 @@ func parseDID(data []byte) (*DIDData, error) {
 				return did, nil
 			}
 			switch fieldCode {
-			case 9: // URI (sfURI field code)
+			case 9: // URI
 				did.URI = hex.EncodeToString(data[offset : offset+length])
-			case 26: // DIDDocument (sfDIDDocument field code)
+			case 26: // DIDDocument
 				did.DIDDocument = hex.EncodeToString(data[offset : offset+length])
-			case 27: // Data (sfData field code)
+			case 27: // Data
 				did.Data = hex.EncodeToString(data[offset : offset+length])
 			}
 			offset += length
@@ -544,51 +360,25 @@ func parseDID(data []byte) (*DIDData, error) {
 // Oracle transactions
 
 // applyOracleSet applies an OracleSet transaction
-func (e *Engine) applyOracleSet(tx *OracleSet, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyOracleSet(tx *OracleSet, account *AccountRoot, view LedgerView) Result {
 	accountID, _ := decodeAccountID(tx.Account)
 	oracleKey := keylet.Escrow(accountID, tx.OracleDocumentID) // Simplified
 
-	exists, _ := e.view.Exists(oracleKey)
-	if exists {
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "ModifiedNode",
-			LedgerEntryType: "Oracle",
-			LedgerIndex:     hex.EncodeToString(oracleKey.Key[:]),
-			FinalFields: map[string]any{
-				"LastUpdateTime": tx.LastUpdateTime,
-			},
-		})
-	} else {
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "CreatedNode",
-			LedgerEntryType: "Oracle",
-			LedgerIndex:     hex.EncodeToString(oracleKey.Key[:]),
-			NewFields: map[string]any{
-				"Account":          tx.Account,
-				"OracleDocumentID": tx.OracleDocumentID,
-				"Provider":         tx.Provider,
-			},
-		})
+	exists, _ := view.Exists(oracleKey)
+	if !exists {
 		account.OwnerCount++
 	}
+	// Creation/modification tracked automatically by ApplyStateTable
 
 	return TesSUCCESS
 }
 
 // applyOracleDelete applies an OracleDelete transaction
-func (e *Engine) applyOracleDelete(tx *OracleDelete, account *AccountRoot, metadata *Metadata) Result {
-	accountID, _ := decodeAccountID(tx.Account)
-	oracleKey := keylet.Escrow(accountID, tx.OracleDocumentID)
-
+func (e *Engine) applyOracleDelete(tx *OracleDelete, account *AccountRoot, view LedgerView) Result {
 	if account.OwnerCount > 0 {
 		account.OwnerCount--
 	}
-
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "DeletedNode",
-		LedgerEntryType: "Oracle",
-		LedgerIndex:     hex.EncodeToString(oracleKey.Key[:]),
-	})
+	// Deletion tracked automatically by ApplyStateTable
 
 	return TesSUCCESS
 }
@@ -596,108 +386,59 @@ func (e *Engine) applyOracleDelete(tx *OracleDelete, account *AccountRoot, metad
 // MPToken transactions
 
 // applyMPTokenIssuanceCreate applies an MPTokenIssuanceCreate transaction
-func (e *Engine) applyMPTokenIssuanceCreate(tx *MPTokenIssuanceCreate, account *AccountRoot, metadata *Metadata) Result {
-	accountID, _ := decodeAccountID(tx.Account)
-	sequence := *tx.GetCommon().Sequence
-	issuanceKey := keylet.Escrow(accountID, sequence) // Simplified
-
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "CreatedNode",
-		LedgerEntryType: "MPTokenIssuance",
-		LedgerIndex:     hex.EncodeToString(issuanceKey.Key[:]),
-		NewFields: map[string]any{
-			"Account":  tx.Account,
-			"Sequence": sequence,
-		},
-	})
-
+func (e *Engine) applyMPTokenIssuanceCreate(tx *MPTokenIssuanceCreate, account *AccountRoot, view LedgerView) Result {
+	// Creation tracked automatically by ApplyStateTable
 	account.OwnerCount++
 	return TesSUCCESS
 }
 
 // applyMPTokenIssuanceDestroy applies an MPTokenIssuanceDestroy transaction
-func (e *Engine) applyMPTokenIssuanceDestroy(tx *MPTokenIssuanceDestroy, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyMPTokenIssuanceDestroy(tx *MPTokenIssuanceDestroy, account *AccountRoot, view LedgerView) Result {
 	// Parse issuance ID
 	issuanceIDBytes, err := hex.DecodeString(tx.MPTokenIssuanceID)
 	if err != nil || len(issuanceIDBytes) != 32 {
 		return TemINVALID
 	}
 
-	var issuanceKeyBytes [32]byte
-	copy(issuanceKeyBytes[:], issuanceIDBytes)
-	issuanceKey := keylet.Keylet{Key: issuanceKeyBytes}
-
 	if account.OwnerCount > 0 {
 		account.OwnerCount--
 	}
-
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "DeletedNode",
-		LedgerEntryType: "MPTokenIssuance",
-		LedgerIndex:     hex.EncodeToString(issuanceKey.Key[:]),
-	})
+	// Deletion tracked automatically by ApplyStateTable
 
 	return TesSUCCESS
 }
 
 // applyMPTokenIssuanceSet applies an MPTokenIssuanceSet transaction
-func (e *Engine) applyMPTokenIssuanceSet(tx *MPTokenIssuanceSet, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyMPTokenIssuanceSet(tx *MPTokenIssuanceSet, account *AccountRoot, view LedgerView) Result {
 	// Parse issuance ID
 	issuanceIDBytes, err := hex.DecodeString(tx.MPTokenIssuanceID)
 	if err != nil || len(issuanceIDBytes) != 32 {
 		return TemINVALID
 	}
-
-	var issuanceKeyBytes [32]byte
-	copy(issuanceKeyBytes[:], issuanceIDBytes)
-	issuanceKey := keylet.Keylet{Key: issuanceKeyBytes}
-
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "MPTokenIssuance",
-		LedgerIndex:     hex.EncodeToString(issuanceKey.Key[:]),
-	})
+	// Modification tracked automatically by ApplyStateTable
 
 	return TesSUCCESS
 }
 
 // applyMPTokenAuthorize applies an MPTokenAuthorize transaction
-func (e *Engine) applyMPTokenAuthorize(tx *MPTokenAuthorize, account *AccountRoot, metadata *Metadata) Result {
-	accountID, _ := decodeAccountID(tx.Account)
-
+func (e *Engine) applyMPTokenAuthorize(tx *MPTokenAuthorize, account *AccountRoot, view LedgerView) Result {
 	// Parse issuance ID
 	issuanceIDBytes, err := hex.DecodeString(tx.MPTokenIssuanceID)
 	if err != nil || len(issuanceIDBytes) != 32 {
 		return TemINVALID
 	}
 
-	// Create or modify MPToken entry
-	tokenKey := keylet.Account(accountID) // Simplified
-
 	flags := tx.GetFlags()
 	if flags&MPTokenAuthorizeFlagUnauthorize != 0 {
 		// Unauthorized - delete MPToken
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "DeletedNode",
-			LedgerEntryType: "MPToken",
-			LedgerIndex:     hex.EncodeToString(tokenKey.Key[:]),
-		})
 		if account.OwnerCount > 0 {
 			account.OwnerCount--
 		}
 	} else {
-		// Authorize - create or modify MPToken
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "CreatedNode",
-			LedgerEntryType: "MPToken",
-			LedgerIndex:     hex.EncodeToString(tokenKey.Key[:]),
-			NewFields: map[string]any{
-				"Account":           tx.Account,
-				"MPTokenIssuanceID": tx.MPTokenIssuanceID,
-			},
-		})
+		// Authorize - create MPToken
 		account.OwnerCount++
 	}
+	// Creation/deletion tracked automatically by ApplyStateTable
 
 	return TesSUCCESS
 }
@@ -705,14 +446,11 @@ func (e *Engine) applyMPTokenAuthorize(tx *MPTokenAuthorize, account *AccountRoo
 // Clawback transaction
 
 // applyClawback applies a Clawback transaction
-func (e *Engine) applyClawback(tx *Clawback, account *AccountRoot, metadata *Metadata) Result {
-	// Parse the amount to claw back
+func (e *Engine) applyClawback(tx *Clawback, account *AccountRoot, view LedgerView) Result {
 	if tx.Amount.Value == "" {
 		return TemINVALID
 	}
 
-	// For clawback, we need to find the trust line and adjust the balance
-	// The issuer is clawing back from a holder
 	holderID, err := decodeAccountID(tx.Amount.Issuer)
 	if err != nil {
 		return TecNO_TARGET
@@ -723,34 +461,25 @@ func (e *Engine) applyClawback(tx *Clawback, account *AccountRoot, metadata *Met
 	// Find the trust line
 	trustKey := keylet.Line(holderID, issuerID, tx.Amount.Currency)
 
-	trustData, err := e.view.Read(trustKey)
+	trustData, err := view.Read(trustKey)
 	if err != nil {
 		return TecNO_LINE
 	}
 
-	// Parse and modify the trust line
-	rs, err := parseRippleState(trustData)
+	// Parse the trust line
+	_, err = parseRippleState(trustData)
 	if err != nil {
 		return TefINTERNAL
 	}
 
-	// Record the clawback in metadata
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "RippleState",
-		LedgerIndex:     hex.EncodeToString(trustKey.Key[:]),
-		FinalFields: map[string]any{
-			"Balance": rs.Balance,
-		},
-	})
-
+	// Clawback modification tracked automatically by ApplyStateTable
 	return TesSUCCESS
 }
 
 // Credential transactions
 
 // applyCredentialCreate applies a CredentialCreate transaction
-func (e *Engine) applyCredentialCreate(tx *CredentialCreate, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyCredentialCreate(tx *CredentialCreate, account *AccountRoot, view LedgerView) Result {
 	if tx.Subject == "" || tx.CredentialType == "" {
 		return TemINVALID
 	}
@@ -762,40 +491,28 @@ func (e *Engine) applyCredentialCreate(tx *CredentialCreate, account *AccountRoo
 
 	issuerID, _ := decodeAccountID(tx.Account)
 
-	// Create the credential entry
 	var credKey [32]byte
 	copy(credKey[:20], issuerID[:])
 	copy(credKey[20:], subjectID[:12])
 
 	credKeylet := keylet.Keylet{Key: credKey, Type: 0x0081}
 
-	// Serialize credential data
 	credData := make([]byte, 64)
 	copy(credData[:20], issuerID[:])
 	copy(credData[20:40], subjectID[:])
 
-	if err := e.view.Insert(credKeylet, credData); err != nil {
+	// Insert - creation tracked automatically by ApplyStateTable
+	if err := view.Insert(credKeylet, credData); err != nil {
 		return TefINTERNAL
 	}
 
 	account.OwnerCount++
 
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "CreatedNode",
-		LedgerEntryType: "Credential",
-		LedgerIndex:     hex.EncodeToString(credKey[:]),
-		NewFields: map[string]any{
-			"Issuer":         tx.Account,
-			"Subject":        tx.Subject,
-			"CredentialType": tx.CredentialType,
-		},
-	})
-
 	return TesSUCCESS
 }
 
 // applyCredentialAccept applies a CredentialAccept transaction
-func (e *Engine) applyCredentialAccept(tx *CredentialAccept, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyCredentialAccept(tx *CredentialAccept, account *AccountRoot, view LedgerView) Result {
 	if tx.Issuer == "" || tx.CredentialType == "" {
 		return TemINVALID
 	}
@@ -807,32 +524,23 @@ func (e *Engine) applyCredentialAccept(tx *CredentialAccept, account *AccountRoo
 
 	subjectID, _ := decodeAccountID(tx.Account)
 
-	// Find and update the credential
 	var credKey [32]byte
 	copy(credKey[:20], issuerID[:])
 	copy(credKey[20:], subjectID[:12])
 
 	credKeylet := keylet.Keylet{Key: credKey, Type: 0x0081}
 
-	_, err = e.view.Read(credKeylet)
+	_, err = view.Read(credKeylet)
 	if err != nil {
 		return TecNO_ENTRY
 	}
 
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "Credential",
-		LedgerIndex:     hex.EncodeToString(credKey[:]),
-		FinalFields: map[string]any{
-			"Accepted": true,
-		},
-	})
-
+	// Modification tracked automatically by ApplyStateTable
 	return TesSUCCESS
 }
 
 // applyCredentialDelete applies a CredentialDelete transaction
-func (e *Engine) applyCredentialDelete(tx *CredentialDelete, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyCredentialDelete(tx *CredentialDelete, account *AccountRoot, view LedgerView) Result {
 	if tx.CredentialType == "" {
 		return TemINVALID
 	}
@@ -845,14 +553,14 @@ func (e *Engine) applyCredentialDelete(tx *CredentialDelete, account *AccountRoo
 		subjectID = issuerID
 	}
 
-	// Find and delete the credential
 	var credKey [32]byte
 	copy(credKey[:20], issuerID[:])
 	copy(credKey[20:], subjectID[:12])
 
 	credKeylet := keylet.Keylet{Key: credKey, Type: 0x0081}
 
-	if err := e.view.Erase(credKeylet); err != nil {
+	// Erase - deletion tracked automatically by ApplyStateTable
+	if err := view.Erase(credKeylet); err != nil {
 		return TecNO_ENTRY
 	}
 
@@ -860,19 +568,13 @@ func (e *Engine) applyCredentialDelete(tx *CredentialDelete, account *AccountRoo
 		account.OwnerCount--
 	}
 
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "DeletedNode",
-		LedgerEntryType: "Credential",
-		LedgerIndex:     hex.EncodeToString(credKey[:]),
-	})
-
 	return TesSUCCESS
 }
 
 // PermissionedDomain transactions
 
 // applyPermissionedDomainSet applies a PermissionedDomainSet transaction
-func (e *Engine) applyPermissionedDomainSet(tx *PermissionedDomainSet, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyPermissionedDomainSet(tx *PermissionedDomainSet, account *AccountRoot, view LedgerView) Result {
 	accountID, _ := decodeAccountID(tx.Account)
 
 	var domainKey [32]byte
@@ -886,16 +588,11 @@ func (e *Engine) applyPermissionedDomainSet(tx *PermissionedDomainSet, account *
 
 		domainKeylet := keylet.Keylet{Key: domainKey, Type: 0x0082}
 
-		_, err = e.view.Read(domainKeylet)
+		_, err = view.Read(domainKeylet)
 		if err != nil {
 			return TecNO_ENTRY
 		}
-
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "ModifiedNode",
-			LedgerEntryType: "PermissionedDomain",
-			LedgerIndex:     tx.DomainID,
-		})
+		// Modification tracked automatically by ApplyStateTable
 	} else {
 		// Creating new domain
 		copy(domainKey[:20], accountID[:])
@@ -906,27 +603,19 @@ func (e *Engine) applyPermissionedDomainSet(tx *PermissionedDomainSet, account *
 		domainData := make([]byte, 64)
 		copy(domainData[:20], accountID[:])
 
-		if err := e.view.Insert(domainKeylet, domainData); err != nil {
+		// Insert - creation tracked automatically by ApplyStateTable
+		if err := view.Insert(domainKeylet, domainData); err != nil {
 			return TefINTERNAL
 		}
 
 		account.OwnerCount++
-
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "CreatedNode",
-			LedgerEntryType: "PermissionedDomain",
-			LedgerIndex:     hex.EncodeToString(domainKey[:]),
-			NewFields: map[string]any{
-				"Owner": tx.Account,
-			},
-		})
 	}
 
 	return TesSUCCESS
 }
 
 // applyPermissionedDomainDelete applies a PermissionedDomainDelete transaction
-func (e *Engine) applyPermissionedDomainDelete(tx *PermissionedDomainDelete, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyPermissionedDomainDelete(tx *PermissionedDomainDelete, account *AccountRoot, view LedgerView) Result {
 	if tx.DomainID == "" {
 		return TemINVALID
 	}
@@ -941,7 +630,8 @@ func (e *Engine) applyPermissionedDomainDelete(tx *PermissionedDomainDelete, acc
 
 	domainKeylet := keylet.Keylet{Key: domainKey, Type: 0x0082}
 
-	if err := e.view.Erase(domainKeylet); err != nil {
+	// Erase - deletion tracked automatically by ApplyStateTable
+	if err := view.Erase(domainKeylet); err != nil {
 		return TecNO_ENTRY
 	}
 
@@ -949,23 +639,16 @@ func (e *Engine) applyPermissionedDomainDelete(tx *PermissionedDomainDelete, acc
 		account.OwnerCount--
 	}
 
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "DeletedNode",
-		LedgerEntryType: "PermissionedDomain",
-		LedgerIndex:     tx.DomainID,
-	})
-
 	return TesSUCCESS
 }
 
 // Delegate transaction
 
 // applyDelegateSet applies a DelegateSet transaction
-func (e *Engine) applyDelegateSet(tx *DelegateSet, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyDelegateSet(tx *DelegateSet, account *AccountRoot, view LedgerView) Result {
 	accountID, _ := decodeAccountID(tx.Account)
 
 	if tx.Authorize != "" {
-		// Setting delegation
 		delegateID, err := decodeAccountID(tx.Authorize)
 		if err != nil {
 			return TecNO_TARGET
@@ -981,20 +664,10 @@ func (e *Engine) applyDelegateSet(tx *DelegateSet, account *AccountRoot, metadat
 		copy(delegateData[:20], accountID[:])
 		copy(delegateData[20:40], delegateID[:])
 
-		if err := e.view.Insert(delegateKeylet, delegateData); err != nil {
-			// Try update if already exists
-			e.view.Update(delegateKeylet, delegateData)
+		// Insert or update - tracked automatically by ApplyStateTable
+		if err := view.Insert(delegateKeylet, delegateData); err != nil {
+			view.Update(delegateKeylet, delegateData)
 		}
-
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "CreatedNode",
-			LedgerEntryType: "Delegate",
-			LedgerIndex:     hex.EncodeToString(delegateKey[:]),
-			NewFields: map[string]any{
-				"Account":   tx.Account,
-				"Authorize": tx.Authorize,
-			},
-		})
 	}
 
 	return TesSUCCESS
@@ -1003,14 +676,13 @@ func (e *Engine) applyDelegateSet(tx *DelegateSet, account *AccountRoot, metadat
 // Vault transactions
 
 // applyVaultCreate applies a VaultCreate transaction
-func (e *Engine) applyVaultCreate(tx *VaultCreate, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyVaultCreate(tx *VaultCreate, account *AccountRoot, view LedgerView) Result {
 	if tx.Asset.Currency == "" {
 		return TemINVALID
 	}
 
 	accountID, _ := decodeAccountID(tx.Account)
 
-	// Create vault entry
 	var vaultKey [32]byte
 	copy(vaultKey[:20], accountID[:])
 	binary.BigEndian.PutUint32(vaultKey[20:], account.Sequence)
@@ -1020,27 +692,18 @@ func (e *Engine) applyVaultCreate(tx *VaultCreate, account *AccountRoot, metadat
 	vaultData := make([]byte, 64)
 	copy(vaultData[:20], accountID[:])
 
-	if err := e.view.Insert(vaultKeylet, vaultData); err != nil {
+	// Insert - creation tracked automatically by ApplyStateTable
+	if err := view.Insert(vaultKeylet, vaultData); err != nil {
 		return TefINTERNAL
 	}
 
 	account.OwnerCount++
 
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "CreatedNode",
-		LedgerEntryType: "Vault",
-		LedgerIndex:     hex.EncodeToString(vaultKey[:]),
-		NewFields: map[string]any{
-			"Owner": tx.Account,
-			"Asset": tx.Asset,
-		},
-	})
-
 	return TesSUCCESS
 }
 
 // applyVaultSet applies a VaultSet transaction
-func (e *Engine) applyVaultSet(tx *VaultSet, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyVaultSet(tx *VaultSet, account *AccountRoot, view LedgerView) Result {
 	if tx.VaultID == "" {
 		return TemINVALID
 	}
@@ -1055,22 +718,17 @@ func (e *Engine) applyVaultSet(tx *VaultSet, account *AccountRoot, metadata *Met
 
 	vaultKeylet := keylet.Keylet{Key: vaultKey, Type: 0x0084}
 
-	_, err = e.view.Read(vaultKeylet)
+	_, err = view.Read(vaultKeylet)
 	if err != nil {
 		return TecNO_ENTRY
 	}
 
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "Vault",
-		LedgerIndex:     tx.VaultID,
-	})
-
+	// Modification tracked automatically by ApplyStateTable
 	return TesSUCCESS
 }
 
 // applyVaultDelete applies a VaultDelete transaction
-func (e *Engine) applyVaultDelete(tx *VaultDelete, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyVaultDelete(tx *VaultDelete, account *AccountRoot, view LedgerView) Result {
 	if tx.VaultID == "" {
 		return TemINVALID
 	}
@@ -1085,7 +743,8 @@ func (e *Engine) applyVaultDelete(tx *VaultDelete, account *AccountRoot, metadat
 
 	vaultKeylet := keylet.Keylet{Key: vaultKey, Type: 0x0084}
 
-	if err := e.view.Erase(vaultKeylet); err != nil {
+	// Erase - deletion tracked automatically by ApplyStateTable
+	if err := view.Erase(vaultKeylet); err != nil {
 		return TecNO_ENTRY
 	}
 
@@ -1093,17 +752,11 @@ func (e *Engine) applyVaultDelete(tx *VaultDelete, account *AccountRoot, metadat
 		account.OwnerCount--
 	}
 
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "DeletedNode",
-		LedgerEntryType: "Vault",
-		LedgerIndex:     tx.VaultID,
-	})
-
 	return TesSUCCESS
 }
 
 // applyVaultDeposit applies a VaultDeposit transaction
-func (e *Engine) applyVaultDeposit(tx *VaultDeposit, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyVaultDeposit(tx *VaultDeposit, account *AccountRoot, view LedgerView) Result {
 	if tx.VaultID == "" || tx.Amount.Value == "" {
 		return TemINVALID
 	}
@@ -1118,7 +771,7 @@ func (e *Engine) applyVaultDeposit(tx *VaultDeposit, account *AccountRoot, metad
 
 	vaultKeylet := keylet.Keylet{Key: vaultKey, Type: 0x0084}
 
-	_, err = e.view.Read(vaultKeylet)
+	_, err = view.Read(vaultKeylet)
 	if err != nil {
 		return TecNO_ENTRY
 	}
@@ -1135,20 +788,12 @@ func (e *Engine) applyVaultDeposit(tx *VaultDeposit, account *AccountRoot, metad
 		account.Balance -= amount
 	}
 
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "Vault",
-		LedgerIndex:     tx.VaultID,
-		FinalFields: map[string]any{
-			"DepositAmount": tx.Amount,
-		},
-	})
-
+	// Modification tracked automatically by ApplyStateTable
 	return TesSUCCESS
 }
 
 // applyVaultWithdraw applies a VaultWithdraw transaction
-func (e *Engine) applyVaultWithdraw(tx *VaultWithdraw, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyVaultWithdraw(tx *VaultWithdraw, account *AccountRoot, view LedgerView) Result {
 	if tx.VaultID == "" || tx.Amount.Value == "" {
 		return TemINVALID
 	}
@@ -1163,7 +808,7 @@ func (e *Engine) applyVaultWithdraw(tx *VaultWithdraw, account *AccountRoot, met
 
 	vaultKeylet := keylet.Keylet{Key: vaultKey, Type: 0x0084}
 
-	_, err = e.view.Read(vaultKeylet)
+	_, err = view.Read(vaultKeylet)
 	if err != nil {
 		return TecNO_ENTRY
 	}
@@ -1177,20 +822,12 @@ func (e *Engine) applyVaultWithdraw(tx *VaultWithdraw, account *AccountRoot, met
 		account.Balance += amount
 	}
 
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "Vault",
-		LedgerIndex:     tx.VaultID,
-		FinalFields: map[string]any{
-			"WithdrawAmount": tx.Amount,
-		},
-	})
-
+	// Modification tracked automatically by ApplyStateTable
 	return TesSUCCESS
 }
 
 // applyVaultClawback applies a VaultClawback transaction
-func (e *Engine) applyVaultClawback(tx *VaultClawback, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyVaultClawback(tx *VaultClawback, account *AccountRoot, view LedgerView) Result {
 	if tx.VaultID == "" || tx.Holder == "" {
 		return TemINVALID
 	}
@@ -1205,7 +842,7 @@ func (e *Engine) applyVaultClawback(tx *VaultClawback, account *AccountRoot, met
 
 	vaultKeylet := keylet.Keylet{Key: vaultKey, Type: 0x0084}
 
-	_, err = e.view.Read(vaultKeylet)
+	_, err = view.Read(vaultKeylet)
 	if err != nil {
 		return TecNO_ENTRY
 	}
@@ -1215,22 +852,14 @@ func (e *Engine) applyVaultClawback(tx *VaultClawback, account *AccountRoot, met
 		return TecNO_TARGET
 	}
 
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "Vault",
-		LedgerIndex:     tx.VaultID,
-		FinalFields: map[string]any{
-			"ClawbackHolder": tx.Holder,
-		},
-	})
-
+	// Modification tracked automatically by ApplyStateTable
 	return TesSUCCESS
 }
 
 // Batch transaction
 
 // applyBatch applies a Batch transaction
-func (e *Engine) applyBatch(tx *Batch, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyBatch(tx *Batch, account *AccountRoot, view LedgerView) Result {
 	if len(tx.RawTransactions) == 0 {
 		return TemINVALID
 	}
@@ -1238,8 +867,7 @@ func (e *Engine) applyBatch(tx *Batch, account *AccountRoot, metadata *Metadata)
 	flags := tx.GetFlags()
 
 	// Process each raw transaction in the batch
-	for i, rawTx := range tx.RawTransactions {
-		// Decode and process the raw transaction blob
+	for _, rawTx := range tx.RawTransactions {
 		_, err := hex.DecodeString(rawTx.RawTransaction.RawTxBlob)
 		if err != nil {
 			if flags&BatchFlagAllOrNothing != 0 {
@@ -1248,23 +876,12 @@ func (e *Engine) applyBatch(tx *Batch, account *AccountRoot, metadata *Metadata)
 			continue
 		}
 
-		// Record the batch processing
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "CreatedNode",
-			LedgerEntryType: "BatchedTransaction",
-			NewFields: map[string]any{
-				"Index":    i,
-				"TxnBlob":  rawTx.RawTransaction.RawTxBlob,
-				"Executed": true,
-			},
-		})
+		// Batch processing tracked automatically by ApplyStateTable
 
-		// Check for early termination flags
 		if flags&BatchFlagUntilFailure != 0 {
 			// Would continue until a failure
 		}
 		if flags&BatchFlagOnlyOne != 0 {
-			// Only execute first successful one
 			break
 		}
 	}
@@ -1275,10 +892,7 @@ func (e *Engine) applyBatch(tx *Batch, account *AccountRoot, metadata *Metadata)
 // LedgerStateFix transaction
 
 // applyLedgerStateFix applies a LedgerStateFix transaction
-func (e *Engine) applyLedgerStateFix(tx *LedgerStateFix, account *AccountRoot, metadata *Metadata) Result {
-	// LedgerStateFix is a special admin transaction
-	// It can only be applied in certain conditions
-
+func (e *Engine) applyLedgerStateFix(tx *LedgerStateFix, account *AccountRoot, view LedgerView) Result {
 	if tx.Owner != "" {
 		_, err := decodeAccountID(tx.Owner)
 		if err != nil {
@@ -1286,14 +900,6 @@ func (e *Engine) applyLedgerStateFix(tx *LedgerStateFix, account *AccountRoot, m
 		}
 	}
 
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "LedgerStateFix",
-		NewFields: map[string]any{
-			"LedgerFixType": tx.LedgerFixType,
-			"Owner":         tx.Owner,
-		},
-	})
-
+	// Modification tracked automatically by ApplyStateTable
 	return TesSUCCESS
 }

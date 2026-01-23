@@ -300,15 +300,42 @@ func isDefaultValue(value any) bool {
 		return v == 0
 	case uint64:
 		return v == 0
+	case float64:
+		return v == 0
 	case string:
-		return v == ""
+		if v == "" || v == "0" {
+			return true
+		}
+		// Check for all-zero hex strings (default values for Hash160, Hash256, UInt64 etc.)
+		if isAllZeroHex(v) {
+			return true
+		}
+		return false
 	case []byte:
 		return len(v) == 0
 	case [32]byte:
 		var zero [32]byte
 		return v == zero
+	case map[string]any:
+		// IOU amounts (maps with value/currency/issuer) are never default when present
+		// in serialized data - even zero-value amounts carry currency/issuer info.
+		// A field is "default" only if it's absent from the serialized data entirely.
+		return false
 	}
 	return false
+}
+
+// isAllZeroHex checks if a string is a hex representation of all zeros
+func isAllZeroHex(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for _, c := range s {
+		if c != '0' {
+			return false
+		}
+	}
+	return true
 }
 
 // SLETracker tracks all SLEs modified during transaction application

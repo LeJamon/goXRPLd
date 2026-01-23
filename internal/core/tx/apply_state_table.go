@@ -164,8 +164,9 @@ func (t *ApplyStateTable) Erase(k keylet.Keylet) error {
 			return nil
 		}
 		// Cache or Modify -> Erase
+		// Keep Current as the state before deletion (for metadata PreviousFields)
 		entry.Action = ActionErase
-		entry.Current = nil
+		// Note: entry.Current keeps its value (state before deletion)
 		return nil
 	}
 
@@ -175,11 +176,11 @@ func (t *ApplyStateTable) Erase(k keylet.Keylet) error {
 		return err
 	}
 
-	// Track as erased
+	// Track as erased - Current = Original since there were no modifications
 	t.items[k.Key] = &TrackedEntry{
 		Action:   ActionErase,
 		Original: original,
-		Current:  nil,
+		Current:  original, // Keep original as current (no modifications before deletion)
 	}
 
 	return nil
@@ -197,13 +198,19 @@ func (t *ApplyStateTable) ForEach(fn func(key [32]byte, data []byte) bool) error
 	return t.base.ForEach(fn)
 }
 
-// Apply commits all changes to the base view and returns generated metadata
+// Apply commits all changes to the base view and returns generated metadata.
+// Threading is applied first (PreviousTxnID/PreviousTxnLgrSeq updates),
+// then metadata is generated from the final state.
 func (t *ApplyStateTable) Apply() (*Metadata, error) {
+	// Phase 1: Apply threading to all entries
+	// This updates PreviousTxnID/PreviousTxnLgrSeq on entries and their owners
+	t.applyThreading()
+
+	// Phase 2: Generate metadata and apply to base
 	metadata := &Metadata{
 		AffectedNodes: make([]AffectedNode, 0),
 	}
 
-	// Process each tracked item
 	for key, entry := range t.items {
 		switch entry.Action {
 		case ActionCache:
@@ -240,7 +247,7 @@ func (t *ApplyStateTable) Apply() (*Metadata, error) {
 			}
 
 		case ActionErase:
-			node, err := t.buildDeletedNode(key, entry.Original)
+			node, err := t.buildDeletedNode(key, entry.Original, entry.Current)
 			if err != nil {
 				return nil, err
 			}
@@ -259,6 +266,102 @@ func (t *ApplyStateTable) Apply() (*Metadata, error) {
 	}
 
 	return metadata, nil
+}
+
+// applyThreading updates PreviousTxnID/PreviousTxnLgrSeq on affected entries
+// and their owner accounts. This matches rippled's ApplyStateTable threading logic.
+func (t *ApplyStateTable) applyThreading() {
+	// Collect keys to process (avoid modifying map during iteration)
+	type threadWork struct {
+		key   [32]byte
+		entry *TrackedEntry
+	}
+	var work []threadWork
+	for key, entry := range t.items {
+		if entry.Action == ActionInsert || entry.Action == ActionModify || entry.Action == ActionErase {
+			work = append(work, threadWork{key, entry})
+		}
+	}
+
+	for _, w := range work {
+		entryType := getLedgerEntryType(w.entry.Current)
+		if w.entry.Current == nil && w.entry.Original != nil {
+			entryType = getLedgerEntryType(w.entry.Original)
+		}
+
+		switch w.entry.Action {
+		case ActionInsert:
+			// Thread the created entry itself (set PreviousTxnID/PreviousTxnLgrSeq)
+			if isThreadedType(entryType, false) {
+				_, _, newData, changed := threadItem(w.entry.Current, t.txHash, t.txSeq)
+				if changed {
+					w.entry.Current = newData
+				}
+			}
+
+			// Thread owner accounts
+			t.threadOwners(w.entry.Current, entryType)
+
+		case ActionModify:
+			// Thread the modified entry itself
+			if isThreadedType(entryType, false) {
+				_, _, newData, changed := threadItem(w.entry.Current, t.txHash, t.txSeq)
+				if changed {
+					w.entry.Current = newData
+				}
+			}
+
+		case ActionErase:
+			// Thread owner accounts (the entry itself is being deleted)
+			data := w.entry.Current
+			if data == nil {
+				data = w.entry.Original
+			}
+			t.threadOwners(data, entryType)
+		}
+	}
+}
+
+// threadOwners updates PreviousTxnID/PreviousTxnLgrSeq on owner accounts
+// of a given ledger entry.
+func (t *ApplyStateTable) threadOwners(data []byte, entryType string) {
+	if data == nil {
+		return
+	}
+
+	owners := getOwnerAccounts(data, entryType)
+	for _, ownerID := range owners {
+		ownerKey := keylet.Account(ownerID)
+
+		// Check if already tracked
+		if entry, exists := t.items[ownerKey.Key]; exists {
+			if entry.Action == ActionErase {
+				continue // Don't thread deleted accounts
+			}
+			// Thread the existing tracked entry
+			_, _, newData, changed := threadItem(entry.Current, t.txHash, t.txSeq)
+			if changed {
+				entry.Current = newData
+				if entry.Action == ActionCache {
+					entry.Action = ActionModify
+				}
+			}
+		} else {
+			// Read from base and add to tracking
+			ownerData, err := t.base.Read(ownerKey)
+			if err != nil {
+				continue // Owner doesn't exist, skip
+			}
+			_, _, newData, changed := threadItem(ownerData, t.txHash, t.txSeq)
+			if changed {
+				t.items[ownerKey.Key] = &TrackedEntry{
+					Action:   ActionModify,
+					Original: ownerData,
+					Current:  newData,
+				}
+			}
+		}
+	}
 }
 
 // DropsDestroyed returns the amount of XRP destroyed
@@ -359,8 +462,10 @@ func (t *ApplyStateTable) buildModifiedNode(key [32]byte, original, current []by
 }
 
 // buildDeletedNode creates metadata for a deleted entry
-func (t *ApplyStateTable) buildDeletedNode(key [32]byte, original []byte) (AffectedNode, error) {
-	entryType := getLedgerEntryType(original)
+// original = state when first read, current = state just before deletion
+func (t *ApplyStateTable) buildDeletedNode(key [32]byte, original, current []byte) (AffectedNode, error) {
+	// Use current for entry type (it's the state just before deletion)
+	entryType := getLedgerEntryType(current)
 
 	node := AffectedNode{
 		NodeType:        "DeletedNode",
@@ -370,24 +475,48 @@ func (t *ApplyStateTable) buildDeletedNode(key [32]byte, original []byte) (Affec
 		PreviousFields:  make(map[string]any),
 	}
 
-	// Extract fields from original
+	// Extract fields from both original and current
 	origFields, err := extractLedgerFields(original, entryType)
 	if err != nil {
 		return node, err
 	}
 
-	// Extract PreviousTxnID and PreviousTxnLgrSeq
+	currFields, err := extractLedgerFields(current, entryType)
+	if err != nil {
+		return node, err
+	}
+
+	// Extract PreviousTxnID and PreviousTxnLgrSeq from original
 	if prevTxnID, ok := origFields["PreviousTxnID"]; ok {
 		node.PreviousTxnID = fmt.Sprintf("%v", prevTxnID)
 	}
 	if prevTxnLgrSeq, ok := origFields["PreviousTxnLgrSeq"]; ok {
 		if seq, ok := prevTxnLgrSeq.(uint32); ok {
 			node.PreviousTxnLgrSeq = seq
+		} else if seq, ok := prevTxnLgrSeq.(float64); ok {
+			node.PreviousTxnLgrSeq = uint32(seq)
+		} else if seq, ok := prevTxnLgrSeq.(int); ok {
+			node.PreviousTxnLgrSeq = uint32(seq)
 		}
 	}
 
-	// FinalFields: fields with sMD_Always | sMD_DeleteFinal
-	for name, value := range origFields {
+	// PreviousFields: fields that changed between original and current (sMD_ChangeOrig)
+	// This captures any modifications made before deletion
+	for name, origValue := range origFields {
+		if shouldIncludeInPreviousFields(name) {
+			if currValue, exists := currFields[name]; exists {
+				if !fieldsEqual(origValue, currValue) {
+					node.PreviousFields[name] = origValue
+				}
+			} else {
+				// Field was removed before deletion
+				node.PreviousFields[name] = origValue
+			}
+		}
+	}
+
+	// FinalFields: fields from current state with sMD_Always | sMD_DeleteFinal
+	for name, value := range currFields {
 		if shouldIncludeInDeleteFinal(name) {
 			node.FinalFields[name] = value
 		}
@@ -490,42 +619,70 @@ func getLedgerEntryType(data []byte) string {
 }
 
 // ledgerEntryTypeName converts entry type code to name
+// Based on rippled's ledger_entries.macro
 func ledgerEntryTypeName(code uint16) string {
 	switch code {
-	case 0x0061: // 'a'
-		return "AccountRoot"
-	case 0x0063: // 'c'
-		return "Contract"
-	case 0x0064: // 'd'
-		return "DirectoryNode"
-	case 0x0066: // 'f'
-		return "FeeSettings"
-	case 0x0068: // 'h'
-		return "LedgerHashes"
-	case 0x006E: // 'n'
-		return "NegativeUNL"
-	case 0x006F: // 'o'
-		return "Offer"
-	case 0x0072: // 'r'
-		return "RippleState"
-	case 0x0073: // 's'
-		return "SignerList"
-	case 0x0074: // 't'
-		return "Ticket"
-	case 0x0075: // 'u'
-		return "Escrow"
-	case 0x0078: // 'x'
-		return "PayChannel"
-	case 0x0079: // 'y'
-		return "Check"
-	case 0x007A: // 'z'
-		return "DepositPreauth"
-	case 0x0050: // 'P'
-		return "NFTokenPage"
-	case 0x0051: // 'Q'
+	// Active ledger entry types (from rippled ledger_entries.macro)
+	case 0x0037:
 		return "NFTokenOffer"
-	case 0x0041: // 'A'
+	case 0x0043:
+		return "Check"
+	case 0x0049:
+		return "DID"
+	case 0x004e:
+		return "NegativeUNL"
+	case 0x0050:
+		return "NFTokenPage"
+	case 0x0053:
+		return "SignerList"
+	case 0x0054:
+		return "Ticket"
+	case 0x0061:
+		return "AccountRoot"
+	case 0x0063:
+		return "Contract" // deprecated
+	case 0x0064:
+		return "DirectoryNode"
+	case 0x0066:
 		return "Amendments"
+	case 0x0068:
+		return "LedgerHashes"
+	case 0x0069:
+		return "Bridge"
+	case 0x006e:
+		return "Nickname" // deprecated
+	case 0x006f:
+		return "Offer"
+	case 0x0070:
+		return "DepositPreauth"
+	case 0x0071:
+		return "XChainOwnedClaimID"
+	case 0x0072:
+		return "RippleState"
+	case 0x0073:
+		return "FeeSettings"
+	case 0x0074:
+		return "XChainOwnedCreateAccountClaimID"
+	case 0x0075:
+		return "Escrow"
+	case 0x0078:
+		return "PayChannel"
+	case 0x0079:
+		return "AMM"
+	case 0x007e:
+		return "MPTokenIssuance"
+	case 0x007f:
+		return "MPToken"
+	case 0x0080:
+		return "Oracle"
+	case 0x0081:
+		return "Credential"
+	case 0x0082:
+		return "PermissionedDomain"
+	case 0x0083:
+		return "Delegate"
+	case 0x0084:
+		return "Vault"
 	default:
 		return fmt.Sprintf("Unknown(0x%04x)", code)
 	}

@@ -156,7 +156,7 @@ func generateAMMLPTCurrency(currency1, currency2 string) string {
 
 // applyAMMCreate applies an AMMCreate transaction
 // Reference: rippled AMMCreate.cpp doApply / applyCreate
-func (e *Engine) applyAMMCreate(tx *AMMCreate, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyAMMCreate(tx *AMMCreate, account *AccountRoot, view LedgerView) Result {
 	accountID, _ := decodeAccountID(tx.Account)
 
 	// Build assets for keylet computation
@@ -167,7 +167,7 @@ func (e *Engine) applyAMMCreate(tx *AMMCreate, account *AccountRoot, metadata *M
 	ammKey := computeAMMKeylet(asset1, asset2)
 
 	// Check if AMM already exists
-	exists, _ := e.view.Exists(ammKey)
+	exists, _ := view.Exists(ammKey)
 	if exists {
 		return TecDUPLICATE
 	}
@@ -178,7 +178,7 @@ func (e *Engine) applyAMMCreate(tx *AMMCreate, account *AccountRoot, metadata *M
 
 	// Check if AMM account already exists (should not happen)
 	ammAccountKey := keylet.Account(ammAccountID)
-	acctExists, _ := e.view.Exists(ammAccountKey)
+	acctExists, _ := view.Exists(ammAccountKey)
 	if acctExists {
 		return TecDUPLICATE
 	}
@@ -257,7 +257,7 @@ func (e *Engine) applyAMMCreate(tx *AMMCreate, account *AccountRoot, metadata *M
 	if err != nil {
 		return TefINTERNAL
 	}
-	if err := e.view.Insert(ammAccountKey, ammAccountBytes); err != nil {
+	if err := view.Insert(ammAccountKey, ammAccountBytes); err != nil {
 		return TefINTERNAL
 	}
 
@@ -266,7 +266,7 @@ func (e *Engine) applyAMMCreate(tx *AMMCreate, account *AccountRoot, metadata *M
 	if err != nil {
 		return TefINTERNAL
 	}
-	if err := e.view.Insert(ammKey, ammBytes); err != nil {
+	if err := view.Insert(ammKey, ammBytes); err != nil {
 		return TefINTERNAL
 	}
 
@@ -282,7 +282,7 @@ func (e *Engine) applyAMMCreate(tx *AMMCreate, account *AccountRoot, metadata *M
 
 	// For IOU transfers, update trustlines
 	if !isXRP1 {
-		if err := e.createOrUpdateAMMTrustline(ammAccountID, asset1, amount1); err != nil {
+		if err := e.createOrUpdateAMMTrustline(ammAccountID, asset1, amount1, view); err != nil {
 			return TecNO_LINE
 		}
 		// Debit from creator's trustline
@@ -291,7 +291,7 @@ func (e *Engine) applyAMMCreate(tx *AMMCreate, account *AccountRoot, metadata *M
 		}
 	}
 	if !isXRP2 {
-		if err := e.createOrUpdateAMMTrustline(ammAccountID, asset2, amount2); err != nil {
+		if err := e.createOrUpdateAMMTrustline(ammAccountID, asset2, amount2, view); err != nil {
 			return TecNO_LINE
 		}
 		if err := e.updateTrustlineBalance(accountID, asset2, -int64(amount2)); err != nil {
@@ -304,7 +304,7 @@ func (e *Engine) applyAMMCreate(tx *AMMCreate, account *AccountRoot, metadata *M
 		Currency: lptCurrency,
 		Issuer:   ammAccountAddr,
 	}
-	if err := e.createLPTokenTrustline(accountID, lptAsset, lpTokenBalance); err != nil {
+	if err := e.createLPTokenTrustline(accountID, lptAsset, lpTokenBalance, view); err != nil {
 		return TecINSUF_RESERVE_LINE
 	}
 
@@ -317,7 +317,7 @@ func (e *Engine) applyAMMCreate(tx *AMMCreate, account *AccountRoot, metadata *M
 	if err != nil {
 		return TefINTERNAL
 	}
-	if err := e.view.Update(accountKey, accountBytes); err != nil {
+	if err := view.Update(accountKey, accountBytes); err != nil {
 		return TefINTERNAL
 	}
 
@@ -326,39 +326,17 @@ func (e *Engine) applyAMMCreate(tx *AMMCreate, account *AccountRoot, metadata *M
 	if err != nil {
 		return TefINTERNAL
 	}
-	if err := e.view.Update(ammAccountKey, ammAccountBytes); err != nil {
+	if err := view.Update(ammAccountKey, ammAccountBytes); err != nil {
 		return TefINTERNAL
 	}
 
-	// Record metadata
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "CreatedNode",
-		LedgerEntryType: "AMM",
-		LedgerIndex:     strings.ToUpper(hex.EncodeToString(ammKey.Key[:])),
-		NewFields: map[string]any{
-			"Account":        ammAccountAddr,
-			"Asset":          formatAsset(asset1),
-			"Asset2":         formatAsset(asset2),
-			"LPTokenBalance": fmt.Sprintf("%d", lpTokenBalance),
-			"TradingFee":     tx.TradingFee,
-		},
-	})
-
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "CreatedNode",
-		LedgerEntryType: "AccountRoot",
-		LedgerIndex:     strings.ToUpper(hex.EncodeToString(ammAccountKey.Key[:])),
-		NewFields: map[string]any{
-			"Account": ammAccountAddr,
-			"Flags":   lsfAMM,
-		},
-	})
+	// Metadata for created AMM and AMM account tracked automatically by ApplyStateTable
 
 	return TesSUCCESS
 }
 
 // createOrUpdateAMMTrustline creates or updates a trustline for the AMM account
-func (e *Engine) createOrUpdateAMMTrustline(ammAccountID [20]byte, asset Asset, balance uint64) error {
+func (e *Engine) createOrUpdateAMMTrustline(ammAccountID [20]byte, asset Asset, balance uint64, view LedgerView) error {
 	if asset.Currency == "" || asset.Currency == "XRP" {
 		return nil
 	}
@@ -389,7 +367,7 @@ func (e *Engine) createOrUpdateAMMTrustline(ammAccountID [20]byte, asset Asset, 
 		return err
 	}
 
-	return e.view.Insert(lineKey, decoded)
+	return view.Insert(lineKey, decoded)
 }
 
 // updateTrustlineBalance updates a trustline balance
@@ -403,7 +381,7 @@ func (e *Engine) updateTrustlineBalance(accountID [20]byte, asset Asset, delta i
 }
 
 // createLPTokenTrustline creates an LP token trustline for a liquidity provider
-func (e *Engine) createLPTokenTrustline(accountID [20]byte, lptAsset Asset, balance uint64) error {
+func (e *Engine) createLPTokenTrustline(accountID [20]byte, lptAsset Asset, balance uint64, view LedgerView) error {
 	issuerID, err := decodeAccountID(lptAsset.Issuer)
 	if err != nil {
 		return err
@@ -430,7 +408,7 @@ func (e *Engine) createLPTokenTrustline(accountID [20]byte, lptAsset Asset, bala
 		return err
 	}
 
-	return e.view.Insert(lineKey, decoded)
+	return view.Insert(lineKey, decoded)
 }
 
 // formatAsset formats an asset for metadata
@@ -615,13 +593,13 @@ func serializeAMMData(amm *AMMData) ([]byte, error) {
 
 // applyAMMDeposit applies an AMMDeposit transaction
 // Reference: rippled AMMDeposit.cpp applyGuts
-func (e *Engine) applyAMMDeposit(tx *AMMDeposit, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyAMMDeposit(tx *AMMDeposit, account *AccountRoot, view LedgerView) Result {
 	accountID, _ := decodeAccountID(tx.Account)
 
 	// Find the AMM
 	ammKey := computeAMMKeylet(tx.Asset, tx.Asset2)
 
-	ammData, err := e.view.Read(ammKey)
+	ammData, err := view.Read(ammKey)
 	if err != nil {
 		return TerNO_AMM
 	}
@@ -635,7 +613,7 @@ func (e *Engine) applyAMMDeposit(tx *AMMDeposit, account *AccountRoot, metadata 
 	// Get AMM account
 	ammAccountID := computeAMMAccountID(ammKey.Key)
 	ammAccountKey := keylet.Account(ammAccountID)
-	ammAccountData, err := e.view.Read(ammAccountKey)
+	ammAccountData, err := view.Read(ammAccountKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -776,14 +754,16 @@ func (e *Engine) applyAMMDeposit(tx *AMMDeposit, account *AccountRoot, metadata 
 	ammAccountAddr, _ := encodeAccountID(ammAccountID)
 	lptCurrency := generateAMMLPTCurrency(tx.Asset.Currency, tx.Asset2.Currency)
 	lptAsset := Asset{Currency: lptCurrency, Issuer: ammAccountAddr}
-	e.createLPTokenTrustline(accountID, lptAsset, lpTokensToIssue)
+	if err := e.createLPTokenTrustline(accountID, lptAsset, lpTokensToIssue, view); err != nil {
+		return TecINSUF_RESERVE_LINE
+	}
 
 	// Persist updated AMM
 	ammBytes, err := serializeAMMData(amm)
 	if err != nil {
 		return TefINTERNAL
 	}
-	if err := e.view.Update(ammKey, ammBytes); err != nil {
+	if err := view.Update(ammKey, ammBytes); err != nil {
 		return TefINTERNAL
 	}
 
@@ -792,7 +772,7 @@ func (e *Engine) applyAMMDeposit(tx *AMMDeposit, account *AccountRoot, metadata 
 	if err != nil {
 		return TefINTERNAL
 	}
-	if err := e.view.Update(ammAccountKey, ammAccountBytes); err != nil {
+	if err := view.Update(ammAccountKey, ammAccountBytes); err != nil {
 		return TefINTERNAL
 	}
 
@@ -802,31 +782,23 @@ func (e *Engine) applyAMMDeposit(tx *AMMDeposit, account *AccountRoot, metadata 
 	if err != nil {
 		return TefINTERNAL
 	}
-	if err := e.view.Update(accountKey, accountBytes); err != nil {
+	// Update tracked automatically by ApplyStateTable
+	if err := view.Update(accountKey, accountBytes); err != nil {
 		return TefINTERNAL
 	}
-
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "AMM",
-		LedgerIndex:     strings.ToUpper(hex.EncodeToString(ammKey.Key[:])),
-		FinalFields: map[string]any{
-			"LPTokenBalance": fmt.Sprintf("%d", amm.LPTokenBalance),
-		},
-	})
 
 	return TesSUCCESS
 }
 
 // applyAMMWithdraw applies an AMMWithdraw transaction
 // Reference: rippled AMMWithdraw.cpp applyGuts
-func (e *Engine) applyAMMWithdraw(tx *AMMWithdraw, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyAMMWithdraw(tx *AMMWithdraw, account *AccountRoot, view LedgerView) Result {
 	accountID, _ := decodeAccountID(tx.Account)
 
 	// Find the AMM
 	ammKey := computeAMMKeylet(tx.Asset, tx.Asset2)
 
-	ammData, err := e.view.Read(ammKey)
+	ammData, err := view.Read(ammKey)
 	if err != nil {
 		return TerNO_AMM
 	}
@@ -840,7 +812,7 @@ func (e *Engine) applyAMMWithdraw(tx *AMMWithdraw, account *AccountRoot, metadat
 	// Get AMM account
 	ammAccountID := computeAMMAccountID(ammKey.Key)
 	ammAccountKey := keylet.Account(ammAccountID)
-	ammAccountData, err := e.view.Read(ammAccountKey)
+	ammAccountData, err := view.Read(ammAccountKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -1045,10 +1017,10 @@ func (e *Engine) applyAMMWithdraw(tx *AMMWithdraw, account *AccountRoot, metadat
 	ammDeleted := false
 	if newLPBalance == 0 {
 		// Delete AMM and AMM account
-		if err := e.view.Erase(ammKey); err != nil {
+		if err := view.Erase(ammKey); err != nil {
 			return TefINTERNAL
 		}
-		if err := e.view.Erase(ammAccountKey); err != nil {
+		if err := view.Erase(ammAccountKey); err != nil {
 			return TefINTERNAL
 		}
 		ammDeleted = true
@@ -1060,7 +1032,7 @@ func (e *Engine) applyAMMWithdraw(tx *AMMWithdraw, account *AccountRoot, metadat
 		if err != nil {
 			return TefINTERNAL
 		}
-		if err := e.view.Update(ammKey, ammBytes); err != nil {
+		if err := view.Update(ammKey, ammBytes); err != nil {
 			return TefINTERNAL
 		}
 
@@ -1069,7 +1041,7 @@ func (e *Engine) applyAMMWithdraw(tx *AMMWithdraw, account *AccountRoot, metadat
 		if err != nil {
 			return TefINTERNAL
 		}
-		if err := e.view.Update(ammAccountKey, ammAccountBytes); err != nil {
+		if err := view.Update(ammAccountKey, ammAccountBytes); err != nil {
 			return TefINTERNAL
 		}
 	}
@@ -1080,26 +1052,8 @@ func (e *Engine) applyAMMWithdraw(tx *AMMWithdraw, account *AccountRoot, metadat
 	if err != nil {
 		return TefINTERNAL
 	}
-	if err := e.view.Update(accountKey, accountBytes); err != nil {
+	if err := view.Update(accountKey, accountBytes); err != nil {
 		return TefINTERNAL
-	}
-
-	// Record metadata
-	if ammDeleted {
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "DeletedNode",
-			LedgerEntryType: "AMM",
-			LedgerIndex:     strings.ToUpper(hex.EncodeToString(ammKey.Key[:])),
-		})
-	} else {
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "ModifiedNode",
-			LedgerEntryType: "AMM",
-			LedgerIndex:     strings.ToUpper(hex.EncodeToString(ammKey.Key[:])),
-			FinalFields: map[string]any{
-				"LPTokenBalance": fmt.Sprintf("%d", amm.LPTokenBalance),
-			},
-		})
 	}
 
 	return TesSUCCESS
@@ -1115,13 +1069,13 @@ const (
 
 // applyAMMVote applies an AMMVote transaction
 // Reference: rippled AMMVote.cpp applyVote
-func (e *Engine) applyAMMVote(tx *AMMVote, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyAMMVote(tx *AMMVote, account *AccountRoot, view LedgerView) Result {
 	accountID, _ := decodeAccountID(tx.Account)
 
 	// Find the AMM
 	ammKey := computeAMMKeylet(tx.Asset, tx.Asset2)
 
-	ammData, err := e.view.Read(ammKey)
+	ammData, err := view.Read(ammKey)
 	if err != nil {
 		return TerNO_AMM
 	}
@@ -1250,23 +1204,14 @@ func (e *Engine) applyAMMVote(tx *AMMVote, account *AccountRoot, metadata *Metad
 		_ = discountedFee
 	}
 
-	// Persist updated AMM
+	// Persist updated AMM - update tracked automatically by ApplyStateTable
 	ammBytes, err := serializeAMMData(amm)
 	if err != nil {
 		return TefINTERNAL
 	}
-	if err := e.view.Update(ammKey, ammBytes); err != nil {
+	if err := view.Update(ammKey, ammBytes); err != nil {
 		return TefINTERNAL
 	}
-
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "AMM",
-		LedgerIndex:     strings.ToUpper(hex.EncodeToString(ammKey.Key[:])),
-		FinalFields: map[string]any{
-			"TradingFee": newTradingFee,
-		},
-	})
 
 	return TesSUCCESS
 }
@@ -1296,13 +1241,13 @@ const (
 
 // applyAMMBid applies an AMMBid transaction
 // Reference: rippled AMMBid.cpp applyBid
-func (e *Engine) applyAMMBid(tx *AMMBid, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyAMMBid(tx *AMMBid, account *AccountRoot, view LedgerView) Result {
 	accountID, _ := decodeAccountID(tx.Account)
 
 	// Find the AMM
 	ammKey := computeAMMKeylet(tx.Asset, tx.Asset2)
 
-	ammData, err := e.view.Read(ammKey)
+	ammData, err := view.Read(ammKey)
 	if err != nil {
 		return TerNO_AMM
 	}
@@ -1377,7 +1322,7 @@ func (e *Engine) applyAMMBid(tx *AMMBid, account *AccountRoot, metadata *Metadat
 		var zeroAccount [20]byte
 		if amm.AuctionSlot.Account != zeroAccount {
 			ownerKey := keylet.Account(amm.AuctionSlot.Account)
-			exists, _ := e.view.Exists(ownerKey)
+			exists, _ := view.Exists(ownerKey)
 			validOwner = exists
 		}
 	}
@@ -1483,54 +1428,35 @@ func (e *Engine) applyAMMBid(tx *AMMBid, account *AccountRoot, metadata *Metadat
 	if err != nil {
 		return TefINTERNAL
 	}
-	if err := e.view.Update(ammKey, ammBytes); err != nil {
+	// Update tracked automatically by ApplyStateTable
+	if err := view.Update(ammKey, ammBytes); err != nil {
 		return TefINTERNAL
 	}
-
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "AMM",
-		LedgerIndex:     strings.ToUpper(hex.EncodeToString(ammKey.Key[:])),
-		FinalFields: map[string]any{
-			"LPTokenBalance": fmt.Sprintf("%d", amm.LPTokenBalance),
-			"AuctionSlot": map[string]any{
-				"Account":    tx.Account,
-				"Expiration": amm.AuctionSlot.Expiration,
-				"Price":      amm.AuctionSlot.Price,
-			},
-		},
-	})
 
 	return TesSUCCESS
 }
 
 // applyAMMDelete applies an AMMDelete transaction
-func (e *Engine) applyAMMDelete(tx *AMMDelete, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyAMMDelete(tx *AMMDelete, account *AccountRoot, view LedgerView) Result {
 	// Find the AMM
 	ammKey := computeAMMKeylet(tx.Asset, tx.Asset2)
 
-	exists, _ := e.view.Exists(ammKey)
+	exists, _ := view.Exists(ammKey)
 	if !exists {
 		return TecNO_ENTRY
 	}
 
-	// Delete the AMM (only works if empty)
-	if err := e.view.Erase(ammKey); err != nil {
+	// Delete the AMM (only works if empty) - deletion tracked automatically by ApplyStateTable
+	if err := view.Erase(ammKey); err != nil {
 		return TefINTERNAL
 	}
-
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "DeletedNode",
-		LedgerEntryType: "AMM",
-		LedgerIndex:     hex.EncodeToString(ammKey.Key[:]),
-	})
 
 	return TesSUCCESS
 }
 
 // applyAMMClawback applies an AMMClawback transaction
 // Reference: rippled AMMClawback.cpp applyGuts
-func (e *Engine) applyAMMClawback(tx *AMMClawback, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyAMMClawback(tx *AMMClawback, account *AccountRoot, view LedgerView) Result {
 	issuerID, _ := decodeAccountID(tx.Account)
 
 	// Verify issuer has lsfAllowTrustLineClawback and NOT lsfNoFreeze
@@ -1549,7 +1475,7 @@ func (e *Engine) applyAMMClawback(tx *AMMClawback, account *AccountRoot, metadat
 	}
 
 	holderKey := keylet.Account(holderID)
-	holderData, err := e.view.Read(holderKey)
+	holderData, err := view.Read(holderKey)
 	if err != nil {
 		return TerNO_ACCOUNT
 	}
@@ -1560,7 +1486,7 @@ func (e *Engine) applyAMMClawback(tx *AMMClawback, account *AccountRoot, metadat
 
 	// Find the AMM
 	ammKey := computeAMMKeylet(tx.Asset, tx.Asset2)
-	ammData, err := e.view.Read(ammKey)
+	ammData, err := view.Read(ammKey)
 	if err != nil {
 		return TerNO_AMM
 	}
@@ -1574,7 +1500,7 @@ func (e *Engine) applyAMMClawback(tx *AMMClawback, account *AccountRoot, metadat
 	// Get AMM account
 	ammAccountID := computeAMMAccountID(ammKey.Key)
 	ammAccountKey := keylet.Account(ammAccountID)
-	ammAccountData, err := e.view.Read(ammAccountKey)
+	ammAccountData, err := view.Read(ammAccountKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -1690,10 +1616,10 @@ func (e *Engine) applyAMMClawback(tx *AMMClawback, account *AccountRoot, metadat
 	ammDeleted := false
 	if newLPBalance == 0 {
 		// Delete AMM and AMM account
-		if err := e.view.Erase(ammKey); err != nil {
+		if err := view.Erase(ammKey); err != nil {
 			return TefINTERNAL
 		}
-		if err := e.view.Erase(ammAccountKey); err != nil {
+		if err := view.Erase(ammAccountKey); err != nil {
 			return TefINTERNAL
 		}
 		ammDeleted = true
@@ -1705,7 +1631,7 @@ func (e *Engine) applyAMMClawback(tx *AMMClawback, account *AccountRoot, metadat
 		if err != nil {
 			return TefINTERNAL
 		}
-		if err := e.view.Update(ammKey, ammBytes); err != nil {
+		if err := view.Update(ammKey, ammBytes); err != nil {
 			return TefINTERNAL
 		}
 
@@ -1714,7 +1640,7 @@ func (e *Engine) applyAMMClawback(tx *AMMClawback, account *AccountRoot, metadat
 		if err != nil {
 			return TefINTERNAL
 		}
-		if err := e.view.Update(ammAccountKey, ammAccountBytes); err != nil {
+		if err := view.Update(ammAccountKey, ammAccountBytes); err != nil {
 			return TefINTERNAL
 		}
 	}
@@ -1725,7 +1651,7 @@ func (e *Engine) applyAMMClawback(tx *AMMClawback, account *AccountRoot, metadat
 	if err != nil {
 		return TefINTERNAL
 	}
-	if err := e.view.Update(accountKey, accountBytes); err != nil {
+	if err := view.Update(accountKey, accountBytes); err != nil {
 		return TefINTERNAL
 	}
 
@@ -1734,34 +1660,9 @@ func (e *Engine) applyAMMClawback(tx *AMMClawback, account *AccountRoot, metadat
 	if err != nil {
 		return TefINTERNAL
 	}
-	if err := e.view.Update(holderKey, holderBytes); err != nil {
+	if err := view.Update(holderKey, holderBytes); err != nil {
 		return TefINTERNAL
 	}
-
-	// Record metadata
-	if ammDeleted {
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "DeletedNode",
-			LedgerEntryType: "AMM",
-			LedgerIndex:     strings.ToUpper(hex.EncodeToString(ammKey.Key[:])),
-		})
-	} else {
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "ModifiedNode",
-			LedgerEntryType: "AMM",
-			LedgerIndex:     strings.ToUpper(hex.EncodeToString(ammKey.Key[:])),
-			FinalFields: map[string]any{
-				"LPTokenBalance": fmt.Sprintf("%d", amm.LPTokenBalance),
-			},
-		})
-	}
-
-	// Record holder account modification
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "AccountRoot",
-		LedgerIndex:     strings.ToUpper(hex.EncodeToString(holderKey.Key[:])),
-	})
 
 	return TesSUCCESS
 }

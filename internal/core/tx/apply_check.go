@@ -24,7 +24,7 @@ type CheckData struct {
 }
 
 // applyCheckCreate applies a CheckCreate transaction
-func (e *Engine) applyCheckCreate(tx *CheckCreate, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyCheckCreate(tx *CheckCreate, account *AccountRoot, view LedgerView) Result {
 	// Verify destination exists
 	destID, err := decodeAccountID(tx.Destination)
 	if err != nil {
@@ -32,7 +32,7 @@ func (e *Engine) applyCheckCreate(tx *CheckCreate, account *AccountRoot, metadat
 	}
 
 	destKey := keylet.Account(destID)
-	exists, _ := e.view.Exists(destKey)
+	exists, _ := view.Exists(destKey)
 	if !exists {
 		return TecNO_DST
 	}
@@ -63,31 +63,19 @@ func (e *Engine) applyCheckCreate(tx *CheckCreate, account *AccountRoot, metadat
 		return TefINTERNAL
 	}
 
-	// Insert check
-	if err := e.view.Insert(checkKey, checkData); err != nil {
+	// Insert check - creation tracked automatically by ApplyStateTable
+	if err := view.Insert(checkKey, checkData); err != nil {
 		return TefINTERNAL
 	}
 
 	// Increase owner count
 	account.OwnerCount++
 
-	// Record in metadata
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "CreatedNode",
-		LedgerEntryType: "Check",
-		LedgerIndex:     hex.EncodeToString(checkKey.Key[:]),
-		NewFields: map[string]any{
-			"Account":     tx.Account,
-			"Destination": tx.Destination,
-			"SendMax":     tx.SendMax.Value,
-		},
-	})
-
 	return TesSUCCESS
 }
 
 // applyCheckCash applies a CheckCash transaction
-func (e *Engine) applyCheckCash(tx *CheckCash, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyCheckCash(tx *CheckCash, account *AccountRoot, view LedgerView) Result {
 	// Parse check ID
 	checkID, err := hex.DecodeString(tx.CheckID)
 	if err != nil || len(checkID) != 32 {
@@ -99,7 +87,7 @@ func (e *Engine) applyCheckCash(tx *CheckCash, account *AccountRoot, metadata *M
 	checkKey := keylet.Keylet{Key: checkKeyBytes}
 
 	// Read check
-	checkData, err := e.view.Read(checkKey)
+	checkData, err := view.Read(checkKey)
 	if err != nil {
 		return TecNO_ENTRY
 	}
@@ -147,7 +135,7 @@ func (e *Engine) applyCheckCash(tx *CheckCash, account *AccountRoot, metadata *M
 
 	// Get the check creator's account
 	creatorKey := keylet.Account(check.Account)
-	creatorData, err := e.view.Read(creatorKey)
+	creatorData, err := view.Read(creatorKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -171,44 +159,26 @@ func (e *Engine) applyCheckCash(tx *CheckCash, account *AccountRoot, metadata *M
 		creatorAccount.OwnerCount--
 	}
 
-	// Update creator account
+	// Update creator account - modification tracked automatically by ApplyStateTable
 	creatorUpdatedData, err := serializeAccountRoot(creatorAccount)
 	if err != nil {
 		return TefINTERNAL
 	}
 
-	if err := e.view.Update(creatorKey, creatorUpdatedData); err != nil {
+	if err := view.Update(creatorKey, creatorUpdatedData); err != nil {
 		return TefINTERNAL
 	}
 
-	// Delete the check
-	if err := e.view.Erase(checkKey); err != nil {
+	// Delete the check - deletion tracked automatically by ApplyStateTable
+	if err := view.Erase(checkKey); err != nil {
 		return TefINTERNAL
 	}
-
-	// Record in metadata
-	creatorAddr, _ := encodeAccountID(check.Account)
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "DeletedNode",
-		LedgerEntryType: "Check",
-		LedgerIndex:     hex.EncodeToString(checkKey.Key[:]),
-	})
-
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "AccountRoot",
-		LedgerIndex:     hex.EncodeToString(creatorKey.Key[:]),
-		FinalFields: map[string]any{
-			"Account": creatorAddr,
-			"Balance": strconv.FormatUint(creatorAccount.Balance, 10),
-		},
-	})
 
 	return TesSUCCESS
 }
 
 // applyCheckCancel applies a CheckCancel transaction
-func (e *Engine) applyCheckCancel(tx *CheckCancel, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyCheckCancel(tx *CheckCancel, account *AccountRoot, view LedgerView) Result {
 	// Parse check ID
 	checkID, err := hex.DecodeString(tx.CheckID)
 	if err != nil || len(checkID) != 32 {
@@ -220,7 +190,7 @@ func (e *Engine) applyCheckCancel(tx *CheckCancel, account *AccountRoot, metadat
 	checkKey := keylet.Keylet{Key: checkKeyBytes}
 
 	// Read check
-	checkData, err := e.view.Read(checkKey)
+	checkData, err := view.Read(checkKey)
 	if err != nil {
 		return TecNO_ENTRY
 	}
@@ -245,8 +215,8 @@ func (e *Engine) applyCheckCancel(tx *CheckCancel, account *AccountRoot, metadat
 		// For standalone mode, allow anyone to cancel expired checks
 	}
 
-	// Delete the check
-	if err := e.view.Erase(checkKey); err != nil {
+	// Delete the check - deletion tracked automatically by ApplyStateTable
+	if err := view.Erase(checkKey); err != nil {
 		return TefINTERNAL
 	}
 
@@ -258,23 +228,16 @@ func (e *Engine) applyCheckCancel(tx *CheckCancel, account *AccountRoot, metadat
 	} else {
 		// Need to update the creator's owner count
 		creatorKey := keylet.Account(check.Account)
-		creatorData, err := e.view.Read(creatorKey)
+		creatorData, err := view.Read(creatorKey)
 		if err == nil {
 			creatorAccount, err := parseAccountRoot(creatorData)
 			if err == nil && creatorAccount.OwnerCount > 0 {
 				creatorAccount.OwnerCount--
 				creatorUpdatedData, _ := serializeAccountRoot(creatorAccount)
-				e.view.Update(creatorKey, creatorUpdatedData)
+				view.Update(creatorKey, creatorUpdatedData)
 			}
 		}
 	}
-
-	// Record in metadata
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "DeletedNode",
-		LedgerEntryType: "Check",
-		LedgerIndex:     hex.EncodeToString(checkKey.Key[:]),
-	})
 
 	return TesSUCCESS
 }
