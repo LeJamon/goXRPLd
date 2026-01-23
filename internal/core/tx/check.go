@@ -1,6 +1,16 @@
 package tx
 
-import "errors"
+import (
+	"encoding/binary"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"strconv"
+
+	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
+	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
+	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
+)
 
 func init() {
 	Register(TypeCheckCreate, func() Transaction {
@@ -196,4 +206,398 @@ func (c *CheckCancel) Flatten() (map[string]any, error) {
 // RequiredAmendments returns the amendments required for this transaction type
 func (c *CheckCancel) RequiredAmendments() []string {
 	return []string{AmendmentChecks}
+}
+
+// Apply applies the CheckCreate transaction to ledger state.
+func (c *CheckCreate) Apply(ctx *ApplyContext) Result {
+	// Verify destination exists
+	destID, err := decodeAccountID(c.Destination)
+	if err != nil {
+		return TemINVALID
+	}
+
+	destKey := keylet.Account(destID)
+	exists, _ := ctx.View.Exists(destKey)
+	if !exists {
+		return TecNO_DST
+	}
+
+	// Parse SendMax - only XRP supported for now
+	sendMax, err := strconv.ParseUint(c.SendMax.Value, 10, 64)
+	if err != nil {
+		// May be an IOU amount
+		sendMax = 0
+	}
+
+	// Check balance for XRP checks
+	if c.SendMax.Currency == "" && sendMax > 0 {
+		if ctx.Account.Balance < sendMax {
+			return TecUNFUNDED
+		}
+	}
+
+	// Create the check entry
+	accountID, _ := decodeAccountID(c.Account)
+	sequence := *c.GetCommon().Sequence
+
+	checkKey := keylet.Check(accountID, sequence)
+
+	// Serialize check
+	checkData, err := serializeCheck(c, accountID, destID, sequence, sendMax)
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	// Insert check - creation tracked automatically by ApplyStateTable
+	if err := ctx.View.Insert(checkKey, checkData); err != nil {
+		return TefINTERNAL
+	}
+
+	// Increase owner count
+	ctx.Account.OwnerCount++
+
+	return TesSUCCESS
+}
+
+// Apply applies the CheckCash transaction to ledger state.
+func (c *CheckCash) Apply(ctx *ApplyContext) Result {
+	// Parse check ID
+	checkID, err := hex.DecodeString(c.CheckID)
+	if err != nil || len(checkID) != 32 {
+		return TemINVALID
+	}
+
+	var checkKeyBytes [32]byte
+	copy(checkKeyBytes[:], checkID)
+	checkKey := keylet.Keylet{Key: checkKeyBytes}
+
+	// Read check
+	checkData, err := ctx.View.Read(checkKey)
+	if err != nil {
+		return TecNO_ENTRY
+	}
+
+	// Parse check
+	check, err := parseCheck(checkData)
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	// Verify the account is the destination
+	accountID, _ := decodeAccountID(c.Account)
+	if check.DestinationID != accountID {
+		return TecNO_PERMISSION
+	}
+
+	// Check expiration
+	if check.Expiration > 0 {
+		// In full implementation, check against close time
+		// For standalone mode, we'll allow it
+	}
+
+	// Determine amount to cash
+	var cashAmount uint64
+	if c.Amount != nil {
+		// Exact amount
+		cashAmount, err = strconv.ParseUint(c.Amount.Value, 10, 64)
+		if err != nil {
+			return TemINVALID
+		}
+		if cashAmount > check.SendMax {
+			return TecPATH_PARTIAL
+		}
+	} else if c.DeliverMin != nil {
+		// Minimum amount - use full SendMax for simplicity
+		deliverMin, err := strconv.ParseUint(c.DeliverMin.Value, 10, 64)
+		if err != nil {
+			return TemINVALID
+		}
+		if check.SendMax < deliverMin {
+			return TecPATH_PARTIAL
+		}
+		cashAmount = check.SendMax
+	}
+
+	// Get the check creator's account
+	creatorKey := keylet.Account(check.Account)
+	creatorData, err := ctx.View.Read(creatorKey)
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	creatorAccount, err := parseAccountRoot(creatorData)
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	// Check if creator has sufficient balance
+	if creatorAccount.Balance < cashAmount {
+		return TecUNFUNDED_PAYMENT
+	}
+
+	// Transfer the funds
+	creatorAccount.Balance -= cashAmount
+	ctx.Account.Balance += cashAmount
+
+	// Decrease creator's owner count
+	if creatorAccount.OwnerCount > 0 {
+		creatorAccount.OwnerCount--
+	}
+
+	// Update creator account - modification tracked automatically by ApplyStateTable
+	creatorUpdatedData, err := serializeAccountRoot(creatorAccount)
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	if err := ctx.View.Update(creatorKey, creatorUpdatedData); err != nil {
+		return TefINTERNAL
+	}
+
+	// Delete the check - deletion tracked automatically by ApplyStateTable
+	if err := ctx.View.Erase(checkKey); err != nil {
+		return TefINTERNAL
+	}
+
+	return TesSUCCESS
+}
+
+// Apply applies the CheckCancel transaction to ledger state.
+func (c *CheckCancel) Apply(ctx *ApplyContext) Result {
+	// Parse check ID
+	checkID, err := hex.DecodeString(c.CheckID)
+	if err != nil || len(checkID) != 32 {
+		return TemINVALID
+	}
+
+	var checkKeyBytes [32]byte
+	copy(checkKeyBytes[:], checkID)
+	checkKey := keylet.Keylet{Key: checkKeyBytes}
+
+	// Read check
+	checkData, err := ctx.View.Read(checkKey)
+	if err != nil {
+		return TecNO_ENTRY
+	}
+
+	// Parse check
+	check, err := parseCheck(checkData)
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	accountID, _ := decodeAccountID(c.Account)
+	isCreator := check.Account == accountID
+	isDestination := check.DestinationID == accountID
+
+	// Only creator or destination can cancel
+	if !isCreator && !isDestination {
+		// Unless the check is expired
+		if check.Expiration == 0 {
+			return TecNO_PERMISSION
+		}
+		// In full implementation, check if expired
+		// For standalone mode, allow anyone to cancel expired checks
+	}
+
+	// Delete the check - deletion tracked automatically by ApplyStateTable
+	if err := ctx.View.Erase(checkKey); err != nil {
+		return TefINTERNAL
+	}
+
+	// If the canceller is also the creator, decrease their owner count
+	if isCreator {
+		if ctx.Account.OwnerCount > 0 {
+			ctx.Account.OwnerCount--
+		}
+	} else {
+		// Need to update the creator's owner count
+		creatorKey := keylet.Account(check.Account)
+		creatorData, err := ctx.View.Read(creatorKey)
+		if err == nil {
+			creatorAccount, err := parseAccountRoot(creatorData)
+			if err == nil && creatorAccount.OwnerCount > 0 {
+				creatorAccount.OwnerCount--
+				creatorUpdatedData, _ := serializeAccountRoot(creatorAccount)
+				ctx.View.Update(creatorKey, creatorUpdatedData)
+			}
+		}
+	}
+
+	return TesSUCCESS
+}
+
+// CheckData represents a Check ledger entry
+type CheckData struct {
+	Account        [20]byte
+	DestinationID  [20]byte
+	SendMax        uint64 // For XRP checks; IOU checks would need more fields
+	Sequence       uint32
+	Expiration     uint32
+	InvoiceID      [32]byte
+	DestinationTag uint32
+	HasDestTag     bool
+}
+
+// serializeCheck serializes a Check ledger entry
+func serializeCheck(tx *CheckCreate, ownerID, destID [20]byte, sequence uint32, sendMax uint64) ([]byte, error) {
+	ownerAddress, err := addresscodec.EncodeAccountIDToClassicAddress(ownerID[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode owner address: %w", err)
+	}
+
+	destAddress, err := addresscodec.EncodeAccountIDToClassicAddress(destID[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode destination address: %w", err)
+	}
+
+	jsonObj := map[string]any{
+		"LedgerEntryType": "Check",
+		"Account":         ownerAddress,
+		"Destination":     destAddress,
+		"SendMax":         fmt.Sprintf("%d", sendMax),
+		"Sequence":        sequence,
+		"OwnerNode":       "0",
+		"Flags":           uint32(0),
+	}
+
+	if tx.Expiration != nil {
+		jsonObj["Expiration"] = *tx.Expiration
+	}
+
+	if tx.DestinationTag != nil {
+		jsonObj["DestinationTag"] = *tx.DestinationTag
+	}
+
+	if tx.InvoiceID != "" {
+		jsonObj["InvoiceID"] = tx.InvoiceID
+	}
+
+	hexStr, err := binarycodec.Encode(jsonObj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode Check: %w", err)
+	}
+
+	return hex.DecodeString(hexStr)
+}
+
+// parseCheck parses a Check ledger entry from binary data
+func parseCheck(data []byte) (*CheckData, error) {
+	check := &CheckData{}
+	offset := 0
+
+	for offset < len(data) {
+		if offset+1 > len(data) {
+			break
+		}
+
+		header := data[offset]
+		offset++
+
+		typeCode := (header >> 4) & 0x0F
+		fieldCode := header & 0x0F
+
+		if typeCode == 0 {
+			if offset >= len(data) {
+				break
+			}
+			typeCode = data[offset]
+			offset++
+		}
+
+		if fieldCode == 0 {
+			if offset >= len(data) {
+				break
+			}
+			fieldCode = data[offset]
+			offset++
+		}
+
+		switch typeCode {
+		case fieldTypeUInt16:
+			if offset+2 > len(data) {
+				return check, nil
+			}
+			offset += 2
+
+		case fieldTypeUInt32:
+			if offset+4 > len(data) {
+				return check, nil
+			}
+			value := binary.BigEndian.Uint32(data[offset : offset+4])
+			offset += 4
+			switch fieldCode {
+			case fieldCodeSequence:
+				check.Sequence = value
+			case 10: // Expiration
+				check.Expiration = value
+			case 14: // DestinationTag
+				check.DestinationTag = value
+				check.HasDestTag = true
+			}
+
+		case fieldTypeUInt64:
+			if offset+8 > len(data) {
+				return check, nil
+			}
+			offset += 8
+
+		case fieldTypeHash256:
+			if offset+32 > len(data) {
+				return check, nil
+			}
+			if fieldCode == 17 { // InvoiceID
+				copy(check.InvoiceID[:], data[offset:offset+32])
+			}
+			offset += 32
+
+		case fieldTypeAmount:
+			if offset+8 > len(data) {
+				return check, nil
+			}
+			if data[offset]&0x80 == 0 {
+				// XRP amount
+				rawAmount := binary.BigEndian.Uint64(data[offset : offset+8])
+				if fieldCode == 9 { // SendMax
+					check.SendMax = rawAmount & 0x3FFFFFFFFFFFFFFF
+				}
+				offset += 8
+			} else {
+				// IOU amount - skip 48 bytes
+				offset += 48
+			}
+
+		case fieldTypeAccountID:
+			if offset+21 > len(data) {
+				return check, nil
+			}
+			length := data[offset]
+			offset++
+			if length == 20 {
+				switch fieldCode {
+				case 1: // Account
+					copy(check.Account[:], data[offset:offset+20])
+				case 3: // Destination
+					copy(check.DestinationID[:], data[offset:offset+20])
+				}
+				offset += 20
+			}
+
+		case fieldTypeBlob:
+			if offset >= len(data) {
+				return check, nil
+			}
+			length := int(data[offset])
+			offset++
+			if offset+length > len(data) {
+				return check, nil
+			}
+			offset += length
+
+		default:
+			return check, nil
+		}
+	}
+
+	return check, nil
 }

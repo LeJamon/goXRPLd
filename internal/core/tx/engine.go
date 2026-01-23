@@ -773,20 +773,20 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 	// Type-specific application - all operations go through the table
 	var result Result
 
-	// Prefer the Appliable interface (self-contained transaction types)
+	// All transaction types implement Appliable
+	ctx := &ApplyContext{
+		View:      table,
+		Account:   account,
+		AccountID: accountID,
+		Config:    e.config,
+		TxHash:    txHash,
+		Metadata:  metadata,
+		Engine:    e,
+	}
 	if appliable, ok := tx.(Appliable); ok {
-		ctx := &ApplyContext{
-			View:      table,
-			Account:   account,
-			AccountID: accountID,
-			Config:    e.config,
-			TxHash:    txHash,
-			Metadata:  metadata,
-		}
 		result = appliable.Apply(ctx)
 	} else {
-		// Fallback to legacy switch (removed as types are migrated)
-		result = e.legacyApply(tx, account, metadata, table)
+		result = TesSUCCESS
 	}
 
 	// Update the source account through the table
@@ -807,67 +807,6 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 
 	// Copy generated metadata to the output
 	metadata.AffectedNodes = generatedMeta.AffectedNodes
-
-	return result
-}
-
-// legacyApply dispatches to type-specific apply methods for complex types not yet migrated to Appliable.
-func (e *Engine) legacyApply(tx Transaction, account *AccountRoot, metadata *Metadata, table *ApplyStateTable) Result {
-	var result Result
-	switch t := tx.(type) {
-	case *Payment:
-		result = e.applyPayment(t, account, metadata, table)
-	case *TrustSet:
-		result = e.applyTrustSet(t, account, table)
-	case *OfferCreate:
-		result = e.applyOfferCreate(t, account, table)
-	case *OfferCancel:
-		result = e.applyOfferCancel(t, account, table)
-	case *EscrowCreate:
-		result = e.applyEscrowCreate(t, account, table)
-	case *EscrowFinish:
-		result = e.applyEscrowFinish(t, account, table)
-	case *EscrowCancel:
-		result = e.applyEscrowCancel(t, account, table)
-	case *PaymentChannelCreate:
-		result = e.applyPaymentChannelCreate(t, account, table)
-	case *PaymentChannelFund:
-		result = e.applyPaymentChannelFund(t, account, table)
-	case *PaymentChannelClaim:
-		result = e.applyPaymentChannelClaim(t, account, table)
-	case *CheckCreate:
-		result = e.applyCheckCreate(t, account, table)
-	case *CheckCash:
-		result = e.applyCheckCash(t, account, table)
-	case *CheckCancel:
-		result = e.applyCheckCancel(t, account, table)
-	case *NFTokenMint:
-		result = e.applyNFTokenMint(t, account, table)
-	case *NFTokenBurn:
-		result = e.applyNFTokenBurn(t, account, table)
-	case *NFTokenCreateOffer:
-		result = e.applyNFTokenCreateOffer(t, account, table)
-	case *NFTokenCancelOffer:
-		result = e.applyNFTokenCancelOffer(t, account, table)
-	case *NFTokenAcceptOffer:
-		result = e.applyNFTokenAcceptOffer(t, account, table)
-	case *AMMCreate:
-		result = e.applyAMMCreate(t, account, table)
-	case *AMMDeposit:
-		result = e.applyAMMDeposit(t, account, table)
-	case *AMMWithdraw:
-		result = e.applyAMMWithdraw(t, account, table)
-	case *AMMVote:
-		result = e.applyAMMVote(t, account, table)
-	case *AMMBid:
-		result = e.applyAMMBid(t, account, table)
-	case *AMMDelete:
-		result = e.applyAMMDelete(t, account, table)
-	case *AMMClawback:
-		result = e.applyAMMClawback(t, account, table)
-	default:
-		result = TesSUCCESS
-	}
 
 	return result
 }

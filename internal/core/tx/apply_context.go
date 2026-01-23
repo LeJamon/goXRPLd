@@ -22,6 +22,9 @@ type ApplyContext struct {
 
 	// Metadata allows transactions to set DeliveredAmount (used by Payment)
 	Metadata *Metadata
+
+	// Engine provides access to shared helper methods (dirInsert, dirRemove, etc.)
+	Engine *Engine
 }
 
 // AccountReserve calculates the total reserve required for an account with the given owner count.

@@ -97,119 +97,6 @@ func generateNFTokenID(issuer [20]byte, taxon, sequence uint32, flags uint16, tr
 	return tokenID
 }
 
-// applyNFTokenMint applies an NFTokenMint transaction
-// Reference: rippled NFTokenMint.cpp doApply
-func (e *Engine) applyNFTokenMint(tx *NFTokenMint, account *AccountRoot, view LedgerView) Result {
-	accountID, _ := decodeAccountID(tx.Account)
-
-	// Determine the issuer
-	var issuerID [20]byte
-	var issuerAccount *AccountRoot
-	var issuerKey keylet.Keylet
-
-	if tx.Issuer != "" {
-		var err error
-		issuerID, err = decodeAccountID(tx.Issuer)
-		if err != nil {
-			return TemINVALID
-		}
-
-		// Read issuer account for MintedNFTokens tracking
-		issuerKey = keylet.Account(issuerID)
-		issuerData, err := view.Read(issuerKey)
-		if err != nil {
-			return TecNO_ISSUER
-		}
-		issuerAccount, err = parseAccountRoot(issuerData)
-		if err != nil {
-			return TefINTERNAL
-		}
-
-		// Verify that Account is authorized to mint for this issuer
-		// The issuer must have set Account as their NFTokenMinter
-		if issuerAccount.NFTokenMinter != tx.Account {
-			return TecNO_PERMISSION
-		}
-	} else {
-		issuerID = accountID
-		issuerAccount = account
-	}
-
-	// Get the token sequence from MintedNFTokens
-	tokenSeq := issuerAccount.MintedNFTokens
-
-	// Check for overflow
-	if tokenSeq+1 < tokenSeq {
-		return TecMAX_SEQUENCE_REACHED
-	}
-
-	// Get flags for the token from transaction flags
-	txFlags := tx.GetFlags()
-	var tokenFlags uint16
-	if txFlags&NFTokenMintFlagBurnable != 0 {
-		tokenFlags |= nftFlagBurnable
-	}
-	if txFlags&NFTokenMintFlagOnlyXRP != 0 {
-		tokenFlags |= nftFlagOnlyXRP
-	}
-	if txFlags&NFTokenMintFlagTrustLine != 0 {
-		tokenFlags |= nftFlagTrustLine
-	}
-	if txFlags&NFTokenMintFlagTransferable != 0 {
-		tokenFlags |= nftFlagTransferable
-	}
-	if txFlags&NFTokenMintFlagMutable != 0 {
-		tokenFlags |= nftFlagMutable
-	}
-
-	// Get transfer fee
-	var transferFee uint16
-	if tx.TransferFee != nil {
-		transferFee = *tx.TransferFee
-	}
-
-	// Generate the NFTokenID
-	tokenID := generateNFTokenID(issuerID, tx.NFTokenTaxon, tokenSeq, tokenFlags, transferFee)
-
-	// Insert the NFToken into the owner's token directory
-	// Reference: rippled NFTokenUtils.cpp insertToken
-	newToken := NFTokenData{
-		NFTokenID: tokenID,
-		URI:       tx.URI,
-	}
-
-	insertResult := e.insertNFToken(accountID, newToken, view)
-	if insertResult.Result != TesSUCCESS {
-		return insertResult.Result
-	}
-
-	// Update owner count based on pages created
-	account.OwnerCount += uint32(insertResult.PagesCreated)
-
-	// Update MintedNFTokens on the issuer account
-	issuerAccount.MintedNFTokens = tokenSeq + 1
-
-	// If issuer is different from minter, update the issuer account - tracked automatically
-	if tx.Issuer != "" {
-		issuerUpdatedData, err := serializeAccountRoot(issuerAccount)
-		if err != nil {
-			return TefINTERNAL
-		}
-		if err := view.Update(issuerKey, issuerUpdatedData); err != nil {
-			return TefINTERNAL
-		}
-	}
-
-	// Check reserve if pages were created (owner count increased)
-	if insertResult.PagesCreated > 0 {
-		reserve := e.AccountReserve(account.OwnerCount)
-		if account.Balance < reserve {
-			return TecINSUFFICIENT_RESERVE
-		}
-	}
-
-	return TesSUCCESS
-}
 
 // insertNFTokenSorted inserts an NFToken into the slice maintaining sorted order
 func insertNFTokenSorted(tokens []NFTokenData, newToken NFTokenData) []NFTokenData {
@@ -269,7 +156,7 @@ type insertNFTokenResult struct {
 // insertNFToken inserts an NFToken into the owner's token directory
 // Reference: rippled NFTokenUtils.cpp insertToken and getPageForToken
 // Returns the result and the number of new pages created (for owner count adjustment)
-func (e *Engine) insertNFToken(ownerID [20]byte, token NFTokenData, view LedgerView) insertNFTokenResult {
+func insertNFToken(ownerID [20]byte, token NFTokenData, view LedgerView) insertNFTokenResult {
 	// Find the appropriate page for this token
 	pageKey := keylet.NFTokenPage(ownerID, token.NFTokenID)
 
@@ -424,172 +311,11 @@ func (e *Engine) insertNFToken(ownerID [20]byte, token NFTokenData, view LedgerV
 	return insertNFTokenResult{Result: TesSUCCESS, PagesCreated: 1}
 }
 
-// applyNFTokenBurn applies an NFTokenBurn transaction
-// Reference: rippled NFTokenBurn.cpp doApply
-func (e *Engine) applyNFTokenBurn(tx *NFTokenBurn, account *AccountRoot, view LedgerView) Result {
-	accountID, _ := decodeAccountID(tx.Account)
-
-	// Parse the token ID
-	tokenIDBytes, err := hex.DecodeString(tx.NFTokenID)
-	if err != nil || len(tokenIDBytes) != 32 {
-		return TemINVALID
-	}
-
-	var tokenID [32]byte
-	copy(tokenID[:], tokenIDBytes)
-
-	// Determine the owner
-	var ownerID [20]byte
-	if tx.Owner != "" {
-		ownerID, err = decodeAccountID(tx.Owner)
-		if err != nil {
-			return TemINVALID
-		}
-	} else {
-		ownerID = accountID
-	}
-
-	// Find the NFToken page
-	pageKey := keylet.NFTokenPage(ownerID, tokenID)
-
-	pageData, err := view.Read(pageKey)
-	if err != nil {
-		return TecNO_ENTRY
-	}
-
-	// Parse the page
-	page, err := parseNFTokenPage(pageData)
-	if err != nil {
-		return TefINTERNAL
-	}
-
-	// Find the token
-	found := false
-	for _, token := range page.NFTokens {
-		if token.NFTokenID == tokenID {
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		return TecNO_ENTRY
-	}
-
-	// Verify burn authorization
-	// Owner can always burn, issuer can burn if flagBurnable is set
-	if ownerID != accountID {
-		nftFlags := getNFTFlagsFromID(tokenID)
-		if nftFlags&nftFlagBurnable == 0 {
-			return TecNO_PERMISSION
-		}
-
-		// Check if the account is the issuer or an authorized minter
-		issuerID := getNFTIssuer(tokenID)
-		if issuerID != accountID {
-			// Not the issuer, check if authorized minter
-			issuerKey := keylet.Account(issuerID)
-			issuerData, err := view.Read(issuerKey)
-			if err != nil {
-				return TecNO_PERMISSION
-			}
-			issuerAccount, err := parseAccountRoot(issuerData)
-			if err != nil {
-				return TefINTERNAL
-			}
-			if issuerAccount.NFTokenMinter != tx.Account {
-				return TecNO_PERMISSION
-			}
-		}
-	}
-
-	// Find and remove the token
-	for i, token := range page.NFTokens {
-		if token.NFTokenID == tokenID {
-			page.NFTokens = append(page.NFTokens[:i], page.NFTokens[i+1:]...)
-			break
-		}
-	}
-
-	// Get owner account for OwnerCount update (if different from transaction account)
-	var ownerAccount *AccountRoot
-	var ownerKey keylet.Keylet
-	if ownerID != accountID {
-		ownerKey = keylet.Account(ownerID)
-		ownerData, err := view.Read(ownerKey)
-		if err != nil {
-			return TefINTERNAL
-		}
-		ownerAccount, err = parseAccountRoot(ownerData)
-		if err != nil {
-			return TefINTERNAL
-		}
-	} else {
-		ownerAccount = account
-	}
-
-	// Update or delete the page - changes tracked automatically by ApplyStateTable
-	if len(page.NFTokens) == 0 {
-		// Delete empty page
-		if err := view.Erase(pageKey); err != nil {
-			return TefINTERNAL
-		}
-
-		if ownerAccount.OwnerCount > 0 {
-			ownerAccount.OwnerCount--
-		}
-	} else {
-		// Update page
-		updatedPageData, err := serializeNFTokenPage(page)
-		if err != nil {
-			return TefINTERNAL
-		}
-
-		if err := view.Update(pageKey, updatedPageData); err != nil {
-			return TefINTERNAL
-		}
-	}
-
-	// Update owner account if different from transaction sender
-	if ownerID != accountID {
-		ownerUpdatedData, err := serializeAccountRoot(ownerAccount)
-		if err != nil {
-			return TefINTERNAL
-		}
-		if err := view.Update(ownerKey, ownerUpdatedData); err != nil {
-			return TefINTERNAL
-		}
-	}
-
-	// Update BurnedNFTokens on the issuer - changes tracked automatically
-	issuerID := getNFTIssuer(tokenID)
-	issuerKey := keylet.Account(issuerID)
-	issuerData, err := view.Read(issuerKey)
-	if err == nil {
-		issuerAccount, err := parseAccountRoot(issuerData)
-		if err == nil {
-			issuerAccount.BurnedNFTokens++
-			issuerUpdatedData, err := serializeAccountRoot(issuerAccount)
-			if err == nil {
-				view.Update(issuerKey, issuerUpdatedData)
-			}
-		}
-	}
-
-	// Delete associated buy and sell offers (up to maxDeletableTokenOfferEntries)
-	// Reference: rippled NFTokenBurn.cpp:108-139
-	deletedCount := e.deleteNFTokenOffers(tokenID, true, maxDeletableTokenOfferEntries, view)
-	if deletedCount < maxDeletableTokenOfferEntries {
-		e.deleteNFTokenOffers(tokenID, false, maxDeletableTokenOfferEntries-deletedCount, view)
-	}
-
-	return TesSUCCESS
-}
 
 // deleteNFTokenOffers deletes offers for an NFToken (sell or buy offers)
 // Reference: rippled NFTokenUtils.cpp removeTokenOffersWithLimit
 // Returns the number of offers deleted
-func (e *Engine) deleteNFTokenOffers(tokenID [32]byte, sellOffers bool, limit int, view LedgerView) int {
+func deleteNFTokenOffers(tokenID [32]byte, sellOffers bool, limit int, view LedgerView) int {
 	if limit <= 0 {
 		return 0
 	}
@@ -809,319 +535,13 @@ func parseDirectoryIndexes(data []byte) [][32]byte {
 	return indexes
 }
 
-// applyNFTokenCreateOffer applies an NFTokenCreateOffer transaction
-// Reference: rippled NFTokenCreateOffer.cpp doApply
-func (e *Engine) applyNFTokenCreateOffer(tx *NFTokenCreateOffer, account *AccountRoot, view LedgerView) Result {
-	accountID, _ := decodeAccountID(tx.Account)
 
-	// Parse token ID
-	tokenIDBytes, err := hex.DecodeString(tx.NFTokenID)
-	if err != nil || len(tokenIDBytes) != 32 {
-		return TemINVALID
-	}
 
-	var tokenID [32]byte
-	copy(tokenID[:], tokenIDBytes)
-
-	// Check expiration
-	if tx.Expiration != nil && *tx.Expiration <= e.config.ParentCloseTime {
-		return TecEXPIRED
-	}
-
-	// Check if this is a sell offer
-	isSellOffer := tx.GetFlags()&NFTokenCreateOfferFlagSellNFToken != 0
-
-	// Verify token ownership
-	if isSellOffer {
-		// For sell offers, verify the sender owns the token
-		pageKey := keylet.NFTokenPage(accountID, tokenID)
-		pageData, err := view.Read(pageKey)
-		if err != nil {
-			return TecNO_ENTRY
-		}
-		// Verify token is on the page
-		page, err := parseNFTokenPage(pageData)
-		if err != nil {
-			return TefINTERNAL
-		}
-		found := false
-		for _, t := range page.NFTokens {
-			if t.NFTokenID == tokenID {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return TecNO_ENTRY
-		}
-	} else {
-		// For buy offers, verify the owner has the token
-		var ownerID [20]byte
-		ownerID, err = decodeAccountID(tx.Owner)
-		if err != nil {
-			return TemINVALID
-		}
-		pageKey := keylet.NFTokenPage(ownerID, tokenID)
-		pageData, err := view.Read(pageKey)
-		if err != nil {
-			return TecNO_ENTRY
-		}
-		// Verify token is on the page
-		page, err := parseNFTokenPage(pageData)
-		if err != nil {
-			return TefINTERNAL
-		}
-		found := false
-		for _, t := range page.NFTokens {
-			if t.NFTokenID == tokenID {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return TecNO_ENTRY
-		}
-	}
-
-	// Parse amount
-	var amountXRP uint64
-	if tx.Amount.Currency == "" {
-		// XRP amount
-		amountXRP, err = strconv.ParseUint(tx.Amount.Value, 10, 64)
-		if err != nil {
-			return TemMALFORMED
-		}
-	}
-
-	// For buy offers, escrow the funds
-	if !isSellOffer {
-		if tx.Amount.Currency == "" && amountXRP > 0 {
-			// Check if account has enough balance (including reserve)
-			reserve := e.AccountReserve(account.OwnerCount + 1)
-			if account.Balance < amountXRP+reserve {
-				return TecINSUFFICIENT_FUNDS
-			}
-			// Escrow the funds (deduct from balance)
-			account.Balance -= amountXRP
-		}
-		// For IOU buy offers, don't escrow but verify funds exist
-	}
-
-	// Create the offer using keylet based on account + sequence
-	sequence := *tx.GetCommon().Sequence
-	offerKey := keylet.NFTokenOffer(accountID, sequence)
-
-	offerData, err := serializeNFTokenOffer(tx, accountID, tokenID, amountXRP, sequence)
-	if err != nil {
-		return TefINTERNAL
-	}
-
-	if err := view.Insert(offerKey, offerData); err != nil {
-		return TefINTERNAL
-	}
-
-	// Increase owner count
-	account.OwnerCount++
-
-	// Check reserve
-	reserve := e.AccountReserve(account.OwnerCount)
-	if account.Balance < reserve {
-		return TecINSUFFICIENT_RESERVE
-	}
-
-	// Creation tracked automatically by ApplyStateTable
-
-	return TesSUCCESS
-}
-
-// applyNFTokenCancelOffer applies an NFTokenCancelOffer transaction
-// Reference: rippled NFTokenCancelOffer.cpp doApply and preclaim
-func (e *Engine) applyNFTokenCancelOffer(tx *NFTokenCancelOffer, account *AccountRoot, view LedgerView) Result {
-	accountID, _ := decodeAccountID(tx.Account)
-
-	for _, offerIDHex := range tx.NFTokenOffers {
-		// Parse offer ID
-		offerIDBytes, err := hex.DecodeString(offerIDHex)
-		if err != nil || len(offerIDBytes) != 32 {
-			continue
-		}
-
-		var offerKeyBytes [32]byte
-		copy(offerKeyBytes[:], offerIDBytes)
-		offerKey := keylet.Keylet{Key: offerKeyBytes}
-
-		// Read the offer
-		offerData, err := view.Read(offerKey)
-		if err != nil {
-			// Offer doesn't exist - already consumed, skip silently
-			continue
-		}
-
-		// Parse the offer
-		offer, err := parseNFTokenOffer(offerData)
-		if err != nil {
-			continue
-		}
-
-		// Check authorization to cancel
-		// Reference: rippled NFTokenCancelOffer.cpp preclaim
-		isExpired := offer.Expiration != 0 && offer.Expiration <= e.config.ParentCloseTime
-		isOwner := offer.Owner == accountID
-		isDestination := offer.HasDestination && offer.Destination == accountID
-
-		// Must be owner, destination, or expired
-		if !isOwner && !isDestination && !isExpired {
-			return TecNO_PERMISSION
-		}
-
-		// Get the offer owner's account to update their owner count and potentially refund
-		var ownerAccount *AccountRoot
-		var ownerKey keylet.Keylet
-
-		if offer.Owner == accountID {
-			ownerAccount = account
-		} else {
-			ownerKey = keylet.Account(offer.Owner)
-			ownerData, err := view.Read(ownerKey)
-			if err != nil {
-				return TefINTERNAL
-			}
-			ownerAccount, err = parseAccountRoot(ownerData)
-			if err != nil {
-				return TefINTERNAL
-			}
-		}
-
-		// If this was a buy offer, refund the escrowed amount to the owner
-		if offer.Flags&lsfSellNFToken == 0 {
-			// Buy offer - refund escrowed XRP to owner
-			ownerAccount.Balance += offer.Amount
-		}
-
-		// Decrease owner count for the deleted offer
-		if ownerAccount.OwnerCount > 0 {
-			ownerAccount.OwnerCount--
-		}
-
-		// Update owner account if different from transaction sender - tracked automatically
-		if offer.Owner != accountID {
-			ownerUpdatedData, err := serializeAccountRoot(ownerAccount)
-			if err != nil {
-				return TefINTERNAL
-			}
-			if err := view.Update(ownerKey, ownerUpdatedData); err != nil {
-				return TefINTERNAL
-			}
-		}
-
-		// Delete the offer - tracked automatically by ApplyStateTable
-		if err := view.Erase(offerKey); err != nil {
-			return TefBAD_LEDGER
-		}
-	}
-
-	return TesSUCCESS
-}
-
-// applyNFTokenAcceptOffer applies an NFTokenAcceptOffer transaction
-// Reference: rippled NFTokenAcceptOffer.cpp doApply
-func (e *Engine) applyNFTokenAcceptOffer(tx *NFTokenAcceptOffer, account *AccountRoot, view LedgerView) Result {
-	accountID, _ := decodeAccountID(tx.Account)
-
-	// Load offers
-	var buyOffer, sellOffer *NFTokenOfferData
-	var buyOfferKey, sellOfferKey keylet.Keylet
-
-	if tx.NFTokenBuyOffer != "" {
-		buyOfferIDBytes, err := hex.DecodeString(tx.NFTokenBuyOffer)
-		if err != nil || len(buyOfferIDBytes) != 32 {
-			return TemINVALID
-		}
-		var buyOfferKeyBytes [32]byte
-		copy(buyOfferKeyBytes[:], buyOfferIDBytes)
-		buyOfferKey = keylet.Keylet{Key: buyOfferKeyBytes}
-
-		buyOfferData, err := view.Read(buyOfferKey)
-		if err != nil {
-			return TecOBJECT_NOT_FOUND
-		}
-		buyOffer, err = parseNFTokenOffer(buyOfferData)
-		if err != nil {
-			return TefINTERNAL
-		}
-
-		// Check expiration
-		if buyOffer.Expiration != 0 && buyOffer.Expiration <= e.config.ParentCloseTime {
-			return TecEXPIRED
-		}
-
-		// Verify it's a buy offer (flag not set)
-		if buyOffer.Flags&lsfSellNFToken != 0 {
-			return TecNFTOKEN_OFFER_TYPE_MISMATCH
-		}
-
-		// Cannot accept your own offer
-		if buyOffer.Owner == accountID {
-			return TecCANT_ACCEPT_OWN_NFTOKEN_OFFER
-		}
-	}
-
-	if tx.NFTokenSellOffer != "" {
-		sellOfferIDBytes, err := hex.DecodeString(tx.NFTokenSellOffer)
-		if err != nil || len(sellOfferIDBytes) != 32 {
-			return TemINVALID
-		}
-		var sellOfferKeyBytes [32]byte
-		copy(sellOfferKeyBytes[:], sellOfferIDBytes)
-		sellOfferKey = keylet.Keylet{Key: sellOfferKeyBytes}
-
-		sellOfferData, err := view.Read(sellOfferKey)
-		if err != nil {
-			return TecOBJECT_NOT_FOUND
-		}
-		sellOffer, err = parseNFTokenOffer(sellOfferData)
-		if err != nil {
-			return TefINTERNAL
-		}
-
-		// Check expiration
-		if sellOffer.Expiration != 0 && sellOffer.Expiration <= e.config.ParentCloseTime {
-			return TecEXPIRED
-		}
-
-		// Verify it's a sell offer (flag set)
-		if sellOffer.Flags&lsfSellNFToken == 0 {
-			return TecNFTOKEN_OFFER_TYPE_MISMATCH
-		}
-
-		// Cannot accept your own offer
-		if sellOffer.Owner == accountID {
-			return TecCANT_ACCEPT_OWN_NFTOKEN_OFFER
-		}
-	}
-
-	// Brokered mode (both offers)
-	if buyOffer != nil && sellOffer != nil {
-		return e.acceptNFTokenBrokeredMode(tx, account, accountID, buyOffer, sellOffer, buyOfferKey, sellOfferKey, view)
-	}
-
-	// Direct mode - sell offer only
-	if sellOffer != nil {
-		return e.acceptNFTokenSellOfferDirect(tx, account, accountID, sellOffer, sellOfferKey, view)
-	}
-
-	// Direct mode - buy offer only
-	if buyOffer != nil {
-		return e.acceptNFTokenBuyOfferDirect(tx, account, accountID, buyOffer, buyOfferKey, view)
-	}
-
-	return TemINVALID
-}
 
 // acceptNFTokenBrokeredMode handles brokered NFToken sales
 // Reference: rippled NFTokenAcceptOffer.cpp doApply (brokered mode) and preclaim
-func (e *Engine) acceptNFTokenBrokeredMode(tx *NFTokenAcceptOffer, account *AccountRoot, accountID [20]byte,
-	buyOffer, sellOffer *NFTokenOfferData, buyOfferKey, sellOfferKey keylet.Keylet, view LedgerView) Result {
+func (n *NFTokenAcceptOffer) acceptNFTokenBrokeredMode(ctx *ApplyContext, accountID [20]byte,
+	buyOffer, sellOffer *NFTokenOfferData, buyOfferKey, sellOfferKey keylet.Keylet) Result {
 
 	// Verify both offers are for the same token
 	// Reference: rippled NFTokenAcceptOffer.cpp:103
@@ -1154,7 +574,7 @@ func (e *Engine) acceptNFTokenBrokeredMode(tx *NFTokenAcceptOffer, account *Acco
 	// Verify the seller owns the token
 	sellerID := sellOffer.Owner
 	pageKey := keylet.NFTokenPage(sellerID, sellOffer.NFTokenID)
-	if _, err := view.Read(pageKey); err != nil {
+	if _, err := ctx.View.Read(pageKey); err != nil {
 		return TecNO_PERMISSION
 	}
 
@@ -1179,17 +599,17 @@ func (e *Engine) acceptNFTokenBrokeredMode(tx *NFTokenAcceptOffer, account *Acco
 	// Calculate broker fee
 	// Reference: rippled NFTokenAcceptOffer.cpp:153-163
 	var brokerFee uint64
-	if tx.NFTokenBrokerFee != nil {
+	if n.NFTokenBrokerFee != nil {
 		// Verify broker fee is in same currency as offers
 		// Reference: rippled NFTokenAcceptOffer.cpp:155
-		brokerFeeIsXRP := tx.NFTokenBrokerFee.Currency == ""
+		brokerFeeIsXRP := n.NFTokenBrokerFee.Currency == ""
 		if brokerFeeIsXRP != buyIsXRP {
 			return TecNFTOKEN_BUY_SELL_MISMATCH
 		}
 
 		if brokerFeeIsXRP {
 			var err error
-			brokerFee, err = strconv.ParseUint(tx.NFTokenBrokerFee.Value, 10, 64)
+			brokerFee, err = strconv.ParseUint(n.NFTokenBrokerFee.Value, 10, 64)
 			if err != nil {
 				return TemMALFORMED
 			}
@@ -1226,20 +646,20 @@ func (e *Engine) acceptNFTokenBrokeredMode(tx *NFTokenAcceptOffer, account *Acco
 
 	// Pay broker fee
 	if brokerFee > 0 {
-		account.Balance += brokerFee
+		ctx.Account.Balance += brokerFee
 		amount -= brokerFee
 	}
 
 	// Pay issuer cut - update tracked automatically by ApplyStateTable
 	if issuerCut > 0 {
 		issuerKey := keylet.Account(issuerID)
-		issuerData, err := view.Read(issuerKey)
+		issuerData, err := ctx.View.Read(issuerKey)
 		if err == nil {
 			issuerAccount, err := parseAccountRoot(issuerData)
 			if err == nil {
 				issuerAccount.Balance += issuerCut
 				issuerUpdatedData, _ := serializeAccountRoot(issuerAccount)
-				view.Update(issuerKey, issuerUpdatedData)
+				ctx.View.Update(issuerKey, issuerUpdatedData)
 			}
 		}
 		amount -= issuerCut
@@ -1247,7 +667,7 @@ func (e *Engine) acceptNFTokenBrokeredMode(tx *NFTokenAcceptOffer, account *Acco
 
 	// Pay seller
 	sellerKey := keylet.Account(sellerID)
-	sellerData, err := view.Read(sellerKey)
+	sellerData, err := ctx.View.Read(sellerKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -1263,32 +683,32 @@ func (e *Engine) acceptNFTokenBrokeredMode(tx *NFTokenAcceptOffer, account *Acco
 	if err != nil {
 		return TefINTERNAL
 	}
-	if err := view.Update(sellerKey, sellerUpdatedData); err != nil {
+	if err := ctx.View.Update(sellerKey, sellerUpdatedData); err != nil {
 		return TefINTERNAL
 	}
 
 	// Update buyer's owner count
 	buyerKey := keylet.Account(buyerID)
-	buyerData, err := view.Read(buyerKey)
+	buyerData, err := ctx.View.Read(buyerKey)
 	if err == nil {
 		buyerAccount, err := parseAccountRoot(buyerData)
 		if err == nil && buyerAccount.OwnerCount > 0 {
 			buyerAccount.OwnerCount-- // For buy offer being deleted
 			buyerUpdatedData, _ := serializeAccountRoot(buyerAccount)
-			view.Update(buyerKey, buyerUpdatedData)
+			ctx.View.Update(buyerKey, buyerUpdatedData)
 		}
 	}
 
 	// Transfer the NFToken from seller to buyer
-	if result := e.transferNFToken(sellerID, buyerID, sellOffer.NFTokenID, view); result != TesSUCCESS {
+	if result := transferNFToken(sellerID, buyerID, sellOffer.NFTokenID, ctx.View); result != TesSUCCESS {
 		return result
 	}
 
 	// Delete both offers - deletions tracked automatically by ApplyStateTable
-	if err := view.Erase(buyOfferKey); err != nil {
+	if err := ctx.View.Erase(buyOfferKey); err != nil {
 		return TefINTERNAL
 	}
-	if err := view.Erase(sellOfferKey); err != nil {
+	if err := ctx.View.Erase(sellOfferKey); err != nil {
 		return TefINTERNAL
 	}
 
@@ -1296,8 +716,8 @@ func (e *Engine) acceptNFTokenBrokeredMode(tx *NFTokenAcceptOffer, account *Acco
 }
 
 // acceptNFTokenSellOfferDirect handles direct sell offer acceptance
-func (e *Engine) acceptNFTokenSellOfferDirect(tx *NFTokenAcceptOffer, account *AccountRoot, accountID [20]byte,
-	sellOffer *NFTokenOfferData, sellOfferKey keylet.Keylet, view LedgerView) Result {
+func (n *NFTokenAcceptOffer) acceptNFTokenSellOfferDirect(ctx *ApplyContext, accountID [20]byte,
+	sellOffer *NFTokenOfferData, sellOfferKey keylet.Keylet) Result {
 
 	// Check destination constraint
 	if sellOffer.HasDestination && sellOffer.Destination != accountID {
@@ -1307,7 +727,7 @@ func (e *Engine) acceptNFTokenSellOfferDirect(tx *NFTokenAcceptOffer, account *A
 	// Verify seller owns the token
 	sellerID := sellOffer.Owner
 	pageKey := keylet.NFTokenPage(sellerID, sellOffer.NFTokenID)
-	if _, err := view.Read(pageKey); err != nil {
+	if _, err := ctx.View.Read(pageKey); err != nil {
 		return TecNO_PERMISSION
 	}
 
@@ -1326,21 +746,21 @@ func (e *Engine) acceptNFTokenSellOfferDirect(tx *NFTokenAcceptOffer, account *A
 
 	// Buyer pays
 	totalCost := amount
-	if account.Balance < totalCost {
+	if ctx.Account.Balance < totalCost {
 		return TecINSUFFICIENT_FUNDS
 	}
-	account.Balance -= totalCost
+	ctx.Account.Balance -= totalCost
 
 	// Pay issuer cut
 	if issuerCut > 0 {
 		issuerKey := keylet.Account(issuerID)
-		issuerData, err := view.Read(issuerKey)
+		issuerData, err := ctx.View.Read(issuerKey)
 		if err == nil {
 			issuerAccount, err := parseAccountRoot(issuerData)
 			if err == nil {
 				issuerAccount.Balance += issuerCut
 				issuerUpdatedData, _ := serializeAccountRoot(issuerAccount)
-				view.Update(issuerKey, issuerUpdatedData)
+				ctx.View.Update(issuerKey, issuerUpdatedData)
 			}
 		}
 		amount -= issuerCut
@@ -1348,7 +768,7 @@ func (e *Engine) acceptNFTokenSellOfferDirect(tx *NFTokenAcceptOffer, account *A
 
 	// Pay seller
 	sellerKey := keylet.Account(sellerID)
-	sellerData, err := view.Read(sellerKey)
+	sellerData, err := ctx.View.Read(sellerKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -1364,17 +784,17 @@ func (e *Engine) acceptNFTokenSellOfferDirect(tx *NFTokenAcceptOffer, account *A
 	if err != nil {
 		return TefINTERNAL
 	}
-	if err := view.Update(sellerKey, sellerUpdatedData); err != nil {
+	if err := ctx.View.Update(sellerKey, sellerUpdatedData); err != nil {
 		return TefINTERNAL
 	}
 
 	// Transfer the NFToken
-	if result := e.transferNFToken(sellerID, accountID, sellOffer.NFTokenID, view); result != TesSUCCESS {
+	if result := transferNFToken(sellerID, accountID, sellOffer.NFTokenID, ctx.View); result != TesSUCCESS {
 		return result
 	}
 
 	// Delete offer - tracked automatically by ApplyStateTable
-	if err := view.Erase(sellOfferKey); err != nil {
+	if err := ctx.View.Erase(sellOfferKey); err != nil {
 		return TefINTERNAL
 	}
 
@@ -1382,12 +802,12 @@ func (e *Engine) acceptNFTokenSellOfferDirect(tx *NFTokenAcceptOffer, account *A
 }
 
 // acceptNFTokenBuyOfferDirect handles direct buy offer acceptance
-func (e *Engine) acceptNFTokenBuyOfferDirect(tx *NFTokenAcceptOffer, account *AccountRoot, accountID [20]byte,
-	buyOffer *NFTokenOfferData, buyOfferKey keylet.Keylet, view LedgerView) Result {
+func (n *NFTokenAcceptOffer) acceptNFTokenBuyOfferDirect(ctx *ApplyContext, accountID [20]byte,
+	buyOffer *NFTokenOfferData, buyOfferKey keylet.Keylet) Result {
 
 	// Verify account owns the token
 	pageKey := keylet.NFTokenPage(accountID, buyOffer.NFTokenID)
-	if _, err := view.Read(pageKey); err != nil {
+	if _, err := ctx.View.Read(pageKey); err != nil {
 		return TecNO_PERMISSION
 	}
 
@@ -1413,40 +833,40 @@ func (e *Engine) acceptNFTokenBuyOfferDirect(tx *NFTokenAcceptOffer, account *Ac
 	// Pay issuer cut
 	if issuerCut > 0 {
 		issuerKey := keylet.Account(issuerID)
-		issuerData, err := view.Read(issuerKey)
+		issuerData, err := ctx.View.Read(issuerKey)
 		if err == nil {
 			issuerAccount, err := parseAccountRoot(issuerData)
 			if err == nil {
 				issuerAccount.Balance += issuerCut
 				issuerUpdatedData, _ := serializeAccountRoot(issuerAccount)
-				view.Update(issuerKey, issuerUpdatedData)
+				ctx.View.Update(issuerKey, issuerUpdatedData)
 			}
 		}
 		amount -= issuerCut
 	}
 
 	// Pay seller (the account accepting the buy offer)
-	account.Balance += amount
+	ctx.Account.Balance += amount
 
 	// Update buyer's owner count
 	buyerKey := keylet.Account(buyerID)
-	buyerData, err := view.Read(buyerKey)
+	buyerData, err := ctx.View.Read(buyerKey)
 	if err == nil {
 		buyerAccount, err := parseAccountRoot(buyerData)
 		if err == nil && buyerAccount.OwnerCount > 0 {
 			buyerAccount.OwnerCount--
 			buyerUpdatedData, _ := serializeAccountRoot(buyerAccount)
-			view.Update(buyerKey, buyerUpdatedData)
+			ctx.View.Update(buyerKey, buyerUpdatedData)
 		}
 	}
 
 	// Transfer the NFToken
-	if result := e.transferNFToken(accountID, buyerID, buyOffer.NFTokenID, view); result != TesSUCCESS {
+	if result := transferNFToken(accountID, buyerID, buyOffer.NFTokenID, ctx.View); result != TesSUCCESS {
 		return result
 	}
 
 	// Delete offer - tracked automatically by ApplyStateTable
-	if err := view.Erase(buyOfferKey); err != nil {
+	if err := ctx.View.Erase(buyOfferKey); err != nil {
 		return TefINTERNAL
 	}
 
@@ -1454,7 +874,7 @@ func (e *Engine) acceptNFTokenBuyOfferDirect(tx *NFTokenAcceptOffer, account *Ac
 }
 
 // transferNFToken transfers an NFToken from one account to another
-func (e *Engine) transferNFToken(from, to [20]byte, tokenID [32]byte, view LedgerView) Result {
+func transferNFToken(from, to [20]byte, tokenID [32]byte, view LedgerView) Result {
 	// Remove from sender's page
 	fromPageKey := keylet.NFTokenPage(from, tokenID)
 	fromPageData, err := view.Read(fromPageKey)
@@ -1553,102 +973,6 @@ func (e *Engine) transferNFToken(from, to [20]byte, tokenID [32]byte, view Ledge
 	return TesSUCCESS
 }
 
-// applyNFTokenModify applies an NFTokenModify transaction
-// Reference: rippled NFTokenModify.cpp doApply
-func (e *Engine) applyNFTokenModify(tx *NFTokenModify, account *AccountRoot, view LedgerView) Result {
-	// Parse the token ID
-	tokenIDBytes, err := hex.DecodeString(tx.NFTokenID)
-	if err != nil || len(tokenIDBytes) != 32 {
-		return TemINVALID
-	}
-
-	var tokenID [32]byte
-	copy(tokenID[:], tokenIDBytes)
-
-	accountID, _ := decodeAccountID(tx.Account)
-
-	// Determine the owner
-	var ownerID [20]byte
-	if tx.Owner != "" {
-		ownerID, err = decodeAccountID(tx.Owner)
-		if err != nil {
-			return TemINVALID
-		}
-	} else {
-		ownerID = accountID
-	}
-
-	// Verify the token is mutable
-	nftFlags := getNFTFlagsFromID(tokenID)
-	if nftFlags&nftFlagMutable == 0 {
-		return TecNO_PERMISSION
-	}
-
-	// Verify permissions - must be issuer or authorized minter
-	issuerID := getNFTIssuer(tokenID)
-	if issuerID != accountID {
-		// Not the issuer, check if authorized minter
-		issuerKey := keylet.Account(issuerID)
-		issuerData, err := view.Read(issuerKey)
-		if err != nil {
-			return TefINTERNAL
-		}
-		issuerAccount, err := parseAccountRoot(issuerData)
-		if err != nil {
-			return TefINTERNAL
-		}
-		if issuerAccount.NFTokenMinter != tx.Account {
-			return TecNO_PERMISSION
-		}
-	}
-
-	// Find the NFToken page
-	pageKey := keylet.NFTokenPage(ownerID, tokenID)
-
-	pageData, err := view.Read(pageKey)
-	if err != nil {
-		return TecNO_ENTRY
-	}
-
-	// Parse the page
-	page, err := parseNFTokenPage(pageData)
-	if err != nil {
-		return TefINTERNAL
-	}
-
-	// Find and update the token's URI
-	found := false
-	for i, token := range page.NFTokens {
-		if token.NFTokenID == tokenID {
-			found = true
-			// Update the URI
-			if tx.URI != "" {
-				page.NFTokens[i].URI = tx.URI
-			} else {
-				// Clear the URI if empty string provided
-				page.NFTokens[i].URI = ""
-			}
-			break
-		}
-	}
-
-	if !found {
-		return TecNO_ENTRY
-	}
-
-	// Serialize and update the page
-	updatedPageData, err := serializeNFTokenPage(page)
-	if err != nil {
-		return TefINTERNAL
-	}
-
-	// Update tracked automatically by ApplyStateTable
-	if err := view.Update(pageKey, updatedPageData); err != nil {
-		return TefINTERNAL
-	}
-
-	return TesSUCCESS
-}
 
 // serializeNFTokenPage serializes an NFToken page ledger entry
 func serializeNFTokenPage(page *NFTokenPageData) ([]byte, error) {
