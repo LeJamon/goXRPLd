@@ -7,22 +7,37 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/entry"
 )
 
+func init() {
+	Register(TypeMPTokenIssuanceCreate, func() Transaction {
+		return &MPTokenIssuanceCreate{BaseTx: *NewBaseTx(TypeMPTokenIssuanceCreate, "")}
+	})
+	Register(TypeMPTokenIssuanceDestroy, func() Transaction {
+		return &MPTokenIssuanceDestroy{BaseTx: *NewBaseTx(TypeMPTokenIssuanceDestroy, "")}
+	})
+	Register(TypeMPTokenIssuanceSet, func() Transaction {
+		return &MPTokenIssuanceSet{BaseTx: *NewBaseTx(TypeMPTokenIssuanceSet, "")}
+	})
+	Register(TypeMPTokenAuthorize, func() Transaction {
+		return &MPTokenAuthorize{BaseTx: *NewBaseTx(TypeMPTokenAuthorize, "")}
+	})
+}
+
 // MPTokenIssuanceCreate creates a new multi-purpose token issuance.
 type MPTokenIssuanceCreate struct {
 	BaseTx
 
 	// AssetScale is the scale for the token (0-10, decimal places)
-	AssetScale *uint8 `json:"AssetScale,omitempty"`
+	AssetScale *uint8 `json:"AssetScale,omitempty" xrpl:"AssetScale,omitempty"`
 
 	// MaximumAmount is the maximum amount that can be issued (optional)
 	// Must be within unsigned 63-bit range (0x7FFFFFFFFFFFFFFF)
-	MaximumAmount *uint64 `json:"MaximumAmount,omitempty"`
+	MaximumAmount *uint64 `json:"MaximumAmount,omitempty" xrpl:"MaximumAmount,omitempty"`
 
 	// TransferFee is the fee for transfers (0-50000, where 50000 = 50%)
-	TransferFee *uint16 `json:"TransferFee,omitempty"`
+	TransferFee *uint16 `json:"TransferFee,omitempty" xrpl:"TransferFee,omitempty"`
 
 	// MPTokenMetadata is metadata for the token (optional, 1-1024 bytes as hex)
-	MPTokenMetadata string `json:"MPTokenMetadata,omitempty"`
+	MPTokenMetadata string `json:"MPTokenMetadata,omitempty" xrpl:"MPTokenMetadata,omitempty"`
 }
 
 // MPTokenIssuanceCreate flags (transaction flags, tf prefix)
@@ -117,22 +132,7 @@ func (m *MPTokenIssuanceCreate) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (m *MPTokenIssuanceCreate) Flatten() (map[string]any, error) {
-	result := m.Common.ToMap()
-
-	if m.AssetScale != nil {
-		result["AssetScale"] = *m.AssetScale
-	}
-	if m.MaximumAmount != nil {
-		result["MaximumAmount"] = *m.MaximumAmount
-	}
-	if m.TransferFee != nil {
-		result["TransferFee"] = *m.TransferFee
-	}
-	if m.MPTokenMetadata != "" {
-		result["MPTokenMetadata"] = m.MPTokenMetadata
-	}
-
-	return result, nil
+	return ReflectFlatten(m)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -146,7 +146,7 @@ type MPTokenIssuanceDestroy struct {
 
 	// MPTokenIssuanceID is the ID of the issuance to destroy (required)
 	// 64-character hex string (32 bytes)
-	MPTokenIssuanceID string `json:"MPTokenIssuanceID"`
+	MPTokenIssuanceID string `json:"MPTokenIssuanceID" xrpl:"MPTokenIssuanceID"`
 }
 
 // MPTokenIssuanceDestroy flag mask (only universal flags allowed)
@@ -199,9 +199,7 @@ func (m *MPTokenIssuanceDestroy) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (m *MPTokenIssuanceDestroy) Flatten() (map[string]any, error) {
-	result := m.Common.ToMap()
-	result["MPTokenIssuanceID"] = m.MPTokenIssuanceID
-	return result, nil
+	return ReflectFlatten(m)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -214,11 +212,11 @@ type MPTokenIssuanceSet struct {
 	BaseTx
 
 	// MPTokenIssuanceID is the ID of the issuance (required)
-	MPTokenIssuanceID string `json:"MPTokenIssuanceID"`
+	MPTokenIssuanceID string `json:"MPTokenIssuanceID" xrpl:"MPTokenIssuanceID"`
 
 	// Holder is the holder account (optional)
 	// When set, the issuer is modifying a specific holder's MPToken
-	Holder string `json:"Holder,omitempty"`
+	Holder string `json:"Holder,omitempty" xrpl:"Holder,omitempty"`
 }
 
 // MPTokenIssuanceSet flags (transaction flags, tf prefix)
@@ -291,15 +289,7 @@ func (m *MPTokenIssuanceSet) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (m *MPTokenIssuanceSet) Flatten() (map[string]any, error) {
-	result := m.Common.ToMap()
-
-	result["MPTokenIssuanceID"] = m.MPTokenIssuanceID
-
-	if m.Holder != "" {
-		result["Holder"] = m.Holder
-	}
-
-	return result, nil
+	return ReflectFlatten(m)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -312,12 +302,12 @@ type MPTokenAuthorize struct {
 	BaseTx
 
 	// MPTokenIssuanceID is the ID of the issuance (required)
-	MPTokenIssuanceID string `json:"MPTokenIssuanceID"`
+	MPTokenIssuanceID string `json:"MPTokenIssuanceID" xrpl:"MPTokenIssuanceID"`
 
 	// Holder is the holder account (optional)
 	// When the issuer submits: Holder specifies which account to authorize/unauthorize
 	// When a holder submits: Holder should not be set (or set to own account to delete)
-	Holder string `json:"Holder,omitempty"`
+	Holder string `json:"Holder,omitempty" xrpl:"Holder,omitempty"`
 }
 
 // MPTokenAuthorize flags (transaction flags, tf prefix)
@@ -381,18 +371,54 @@ func (m *MPTokenAuthorize) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (m *MPTokenAuthorize) Flatten() (map[string]any, error) {
-	result := m.Common.ToMap()
-
-	result["MPTokenIssuanceID"] = m.MPTokenIssuanceID
-
-	if m.Holder != "" {
-		result["Holder"] = m.Holder
-	}
-
-	return result, nil
+	return ReflectFlatten(m)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
 func (m *MPTokenAuthorize) RequiredAmendments() []string {
 	return []string{AmendmentMPTokensV1}
+}
+
+// Apply applies the MPTokenIssuanceCreate transaction to ledger state.
+func (m *MPTokenIssuanceCreate) Apply(ctx *ApplyContext) Result {
+	ctx.Account.OwnerCount++
+	return TesSUCCESS
+}
+
+// Apply applies the MPTokenIssuanceDestroy transaction to ledger state.
+func (m *MPTokenIssuanceDestroy) Apply(ctx *ApplyContext) Result {
+	issuanceIDBytes, err := hex.DecodeString(m.MPTokenIssuanceID)
+	if err != nil || len(issuanceIDBytes) != 32 {
+		return TemINVALID
+	}
+	if ctx.Account.OwnerCount > 0 {
+		ctx.Account.OwnerCount--
+	}
+	return TesSUCCESS
+}
+
+// Apply applies the MPTokenIssuanceSet transaction to ledger state.
+func (m *MPTokenIssuanceSet) Apply(ctx *ApplyContext) Result {
+	issuanceIDBytes, err := hex.DecodeString(m.MPTokenIssuanceID)
+	if err != nil || len(issuanceIDBytes) != 32 {
+		return TemINVALID
+	}
+	return TesSUCCESS
+}
+
+// Apply applies the MPTokenAuthorize transaction to ledger state.
+func (m *MPTokenAuthorize) Apply(ctx *ApplyContext) Result {
+	issuanceIDBytes, err := hex.DecodeString(m.MPTokenIssuanceID)
+	if err != nil || len(issuanceIDBytes) != 32 {
+		return TemINVALID
+	}
+	flags := m.GetFlags()
+	if flags&MPTokenAuthorizeFlagUnauthorize != 0 {
+		if ctx.Account.OwnerCount > 0 {
+			ctx.Account.OwnerCount--
+		}
+	} else {
+		ctx.Account.OwnerCount++
+	}
+	return TesSUCCESS
 }

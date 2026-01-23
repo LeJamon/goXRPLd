@@ -4,31 +4,37 @@ import (
 	"errors"
 )
 
+func init() {
+	Register(TypePayment, func() Transaction {
+		return &Payment{BaseTx: *NewBaseTx(TypePayment, "")}
+	})
+}
+
 // Payment transaction moves value from one account to another.
 // It is the most fundamental transaction type in the XRPL.
 type Payment struct {
 	BaseTx
 
 	// Amount is the amount of currency to deliver (required)
-	Amount Amount `json:"Amount"`
+	Amount Amount `json:"Amount" xrpl:"Amount,amount"`
 
 	// Destination is the account receiving the payment (required)
-	Destination string `json:"Destination"`
+	Destination string `json:"Destination" xrpl:"Destination"`
 
 	// DestinationTag is an arbitrary tag for the destination (optional)
-	DestinationTag *uint32 `json:"DestinationTag,omitempty"`
+	DestinationTag *uint32 `json:"DestinationTag,omitempty" xrpl:"DestinationTag,omitempty"`
 
 	// InvoiceID is a 256-bit hash for identifying this payment (optional)
-	InvoiceID string `json:"InvoiceID,omitempty"`
+	InvoiceID string `json:"InvoiceID,omitempty" xrpl:"InvoiceID,omitempty"`
 
 	// Paths for cross-currency payments (optional)
-	Paths [][]PathStep `json:"Paths,omitempty"`
+	Paths [][]PathStep `json:"Paths,omitempty" xrpl:"Paths,omitempty"`
 
 	// SendMax is the maximum amount to send (optional, for cross-currency)
-	SendMax *Amount `json:"SendMax,omitempty"`
+	SendMax *Amount `json:"SendMax,omitempty" xrpl:"SendMax,omitempty,amount"`
 
 	// DeliverMin is the minimum amount to deliver (optional, for partial payments)
-	DeliverMin *Amount `json:"DeliverMin,omitempty"`
+	DeliverMin *Amount `json:"DeliverMin,omitempty" xrpl:"DeliverMin,omitempty,amount"`
 }
 
 // PathStep represents a single step in a payment path
@@ -148,28 +154,7 @@ func (p *Payment) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (p *Payment) Flatten() (map[string]any, error) {
-	m := p.Common.ToMap()
-
-	m["Amount"] = flattenAmount(p.Amount)
-	m["Destination"] = p.Destination
-
-	if p.DestinationTag != nil {
-		m["DestinationTag"] = *p.DestinationTag
-	}
-	if p.InvoiceID != "" {
-		m["InvoiceID"] = p.InvoiceID
-	}
-	if len(p.Paths) > 0 {
-		m["Paths"] = p.Paths
-	}
-	if p.SendMax != nil {
-		m["SendMax"] = flattenAmount(*p.SendMax)
-	}
-	if p.DeliverMin != nil {
-		m["DeliverMin"] = flattenAmount(*p.DeliverMin)
-	}
-
-	return m, nil
+	return ReflectFlatten(p)
 }
 
 // SetPartialPayment enables partial payment flag

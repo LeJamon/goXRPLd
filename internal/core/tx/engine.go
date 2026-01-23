@@ -772,27 +772,57 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 
 	// Type-specific application - all operations go through the table
 	var result Result
+
+	// Prefer the Appliable interface (self-contained transaction types)
+	if appliable, ok := tx.(Appliable); ok {
+		ctx := &ApplyContext{
+			View:      table,
+			Account:   account,
+			AccountID: accountID,
+			Config:    e.config,
+			TxHash:    txHash,
+			Metadata:  metadata,
+		}
+		result = appliable.Apply(ctx)
+	} else {
+		// Fallback to legacy switch (removed as types are migrated)
+		result = e.legacyApply(tx, account, metadata, table)
+	}
+
+	// Update the source account through the table
+	updatedData, err := serializeAccountRoot(account)
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	if err := table.Update(accountKey, updatedData); err != nil {
+		return TefINTERNAL
+	}
+
+	// Apply all tracked changes to the base view and generate metadata automatically
+	generatedMeta, err := table.Apply()
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	// Copy generated metadata to the output
+	metadata.AffectedNodes = generatedMeta.AffectedNodes
+
+	return result
+}
+
+// legacyApply dispatches to type-specific apply methods for complex types not yet migrated to Appliable.
+func (e *Engine) legacyApply(tx Transaction, account *AccountRoot, metadata *Metadata, table *ApplyStateTable) Result {
+	var result Result
 	switch t := tx.(type) {
 	case *Payment:
 		result = e.applyPayment(t, account, metadata, table)
-	case *AccountSet:
-		result = e.applyAccountSet(t, account, table)
 	case *TrustSet:
 		result = e.applyTrustSet(t, account, table)
 	case *OfferCreate:
 		result = e.applyOfferCreate(t, account, table)
 	case *OfferCancel:
 		result = e.applyOfferCancel(t, account, table)
-	case *SetRegularKey:
-		result = e.applySetRegularKey(t, account, table)
-	case *SignerListSet:
-		result = e.applySignerListSet(t, account, table)
-	case *TicketCreate:
-		result = e.applyTicketCreate(t, account, table)
-	case *DepositPreauth:
-		result = e.applyDepositPreauth(t, account, table)
-	case *AccountDelete:
-		result = e.applyAccountDelete(t, account, table)
 	case *EscrowCreate:
 		result = e.applyEscrowCreate(t, account, table)
 	case *EscrowFinish:
@@ -835,93 +865,9 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 		result = e.applyAMMDelete(t, account, table)
 	case *AMMClawback:
 		result = e.applyAMMClawback(t, account, table)
-	case *XChainCreateBridge:
-		result = e.applyXChainCreateBridge(t, account, table)
-	case *XChainModifyBridge:
-		result = e.applyXChainModifyBridge(t, account, table)
-	case *XChainCreateClaimID:
-		result = e.applyXChainCreateClaimID(t, account, table)
-	case *XChainCommit:
-		result = e.applyXChainCommit(t, account, table)
-	case *XChainClaim:
-		result = e.applyXChainClaim(t, account, table)
-	case *XChainAccountCreateCommit:
-		result = e.applyXChainAccountCreateCommit(t, account, table)
-	case *XChainAddClaimAttestation:
-		result = e.applyXChainAddClaimAttestation(t, account, table)
-	case *XChainAddAccountCreateAttestation:
-		result = e.applyXChainAddAccountCreateAttestation(t, account, table)
-	case *DIDSet:
-		result = e.applyDIDSet(t, account, table)
-	case *DIDDelete:
-		result = e.applyDIDDelete(t, account, table)
-	case *OracleSet:
-		result = e.applyOracleSet(t, account, table)
-	case *OracleDelete:
-		result = e.applyOracleDelete(t, account, table)
-	case *MPTokenIssuanceCreate:
-		result = e.applyMPTokenIssuanceCreate(t, account, table)
-	case *MPTokenIssuanceDestroy:
-		result = e.applyMPTokenIssuanceDestroy(t, account, table)
-	case *MPTokenIssuanceSet:
-		result = e.applyMPTokenIssuanceSet(t, account, table)
-	case *MPTokenAuthorize:
-		result = e.applyMPTokenAuthorize(t, account, table)
-	case *Clawback:
-		result = e.applyClawback(t, account, table)
-	case *NFTokenModify:
-		result = e.applyNFTokenModify(t, account, table)
-	case *CredentialCreate:
-		result = e.applyCredentialCreate(t, account, table)
-	case *CredentialAccept:
-		result = e.applyCredentialAccept(t, account, table)
-	case *CredentialDelete:
-		result = e.applyCredentialDelete(t, account, table)
-	case *PermissionedDomainSet:
-		result = e.applyPermissionedDomainSet(t, account, table)
-	case *PermissionedDomainDelete:
-		result = e.applyPermissionedDomainDelete(t, account, table)
-	case *DelegateSet:
-		result = e.applyDelegateSet(t, account, table)
-	case *VaultCreate:
-		result = e.applyVaultCreate(t, account, table)
-	case *VaultSet:
-		result = e.applyVaultSet(t, account, table)
-	case *VaultDelete:
-		result = e.applyVaultDelete(t, account, table)
-	case *VaultDeposit:
-		result = e.applyVaultDeposit(t, account, table)
-	case *VaultWithdraw:
-		result = e.applyVaultWithdraw(t, account, table)
-	case *VaultClawback:
-		result = e.applyVaultClawback(t, account, table)
-	case *Batch:
-		result = e.applyBatch(t, account, table)
-	case *LedgerStateFix:
-		result = e.applyLedgerStateFix(t, account, table)
 	default:
-		// For unimplemented transaction types, just update the account
 		result = TesSUCCESS
 	}
-
-	// Update the source account through the table
-	updatedData, err := serializeAccountRoot(account)
-	if err != nil {
-		return TefINTERNAL
-	}
-
-	if err := table.Update(accountKey, updatedData); err != nil {
-		return TefINTERNAL
-	}
-
-	// Apply all tracked changes to the base view and generate metadata automatically
-	generatedMeta, err := table.Apply()
-	if err != nil {
-		return TefINTERNAL
-	}
-
-	// Copy generated metadata to the output
-	metadata.AffectedNodes = generatedMeta.AffectedNodes
 
 	return result
 }

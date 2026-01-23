@@ -10,21 +10,30 @@ import (
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 )
 
+func init() {
+	Register(TypeOfferCreate, func() Transaction {
+		return &OfferCreate{BaseTx: *NewBaseTx(TypeOfferCreate, "")}
+	})
+	Register(TypeOfferCancel, func() Transaction {
+		return &OfferCancel{BaseTx: *NewBaseTx(TypeOfferCancel, "")}
+	})
+}
+
 // OfferCreate places an offer on the decentralized exchange.
 type OfferCreate struct {
 	BaseTx
 
 	// TakerGets is the amount and currency the offer creator receives (required)
-	TakerGets Amount `json:"TakerGets"`
+	TakerGets Amount `json:"TakerGets" xrpl:"TakerGets,amount"`
 
 	// TakerPays is the amount and currency the offer creator pays (required)
-	TakerPays Amount `json:"TakerPays"`
+	TakerPays Amount `json:"TakerPays" xrpl:"TakerPays,amount"`
 
 	// Expiration is the time when the offer expires (optional)
-	Expiration *uint32 `json:"Expiration,omitempty"`
+	Expiration *uint32 `json:"Expiration,omitempty" xrpl:"Expiration,omitempty"`
 
 	// OfferSequence is the sequence number of an offer to cancel (optional)
-	OfferSequence *uint32 `json:"OfferSequence,omitempty"`
+	OfferSequence *uint32 `json:"OfferSequence,omitempty" xrpl:"OfferSequence,omitempty"`
 }
 
 // OfferCreate flags
@@ -115,19 +124,7 @@ func (o *OfferCreate) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (o *OfferCreate) Flatten() (map[string]any, error) {
-	m := o.Common.ToMap()
-
-	m["TakerGets"] = flattenAmount(o.TakerGets)
-	m["TakerPays"] = flattenAmount(o.TakerPays)
-
-	if o.Expiration != nil {
-		m["Expiration"] = *o.Expiration
-	}
-	if o.OfferSequence != nil {
-		m["OfferSequence"] = *o.OfferSequence
-	}
-
-	return m, nil
+	return ReflectFlatten(o)
 }
 
 // SetPassive makes the offer passive
@@ -153,7 +150,7 @@ type OfferCancel struct {
 	BaseTx
 
 	// OfferSequence is the sequence number of the offer to cancel (required)
-	OfferSequence uint32 `json:"OfferSequence"`
+	OfferSequence uint32 `json:"OfferSequence" xrpl:"OfferSequence"`
 }
 
 // NewOfferCancel creates a new OfferCancel transaction
@@ -184,9 +181,7 @@ func (o *OfferCancel) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (o *OfferCancel) Flatten() (map[string]any, error) {
-	m := o.Common.ToMap()
-	m["OfferSequence"] = o.OfferSequence
-	return m, nil
+	return ReflectFlatten(o)
 }
 
 // LedgerOffer represents an offer stored in the ledger

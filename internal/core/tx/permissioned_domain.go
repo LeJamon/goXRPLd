@@ -1,9 +1,21 @@
 package tx
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
+
+	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 )
+
+func init() {
+	Register(TypePermissionedDomainSet, func() Transaction {
+		return &PermissionedDomainSet{BaseTx: *NewBaseTx(TypePermissionedDomainSet, "")}
+	})
+	Register(TypePermissionedDomainDelete, func() Transaction {
+		return &PermissionedDomainDelete{BaseTx: *NewBaseTx(TypePermissionedDomainDelete, "")}
+	})
+}
 
 // Permissioned domain constants
 const (
@@ -28,10 +40,10 @@ type PermissionedDomainSet struct {
 	BaseTx
 
 	// DomainID is the ID of the domain (optional, omit for creation)
-	DomainID string `json:"DomainID,omitempty"`
+	DomainID string `json:"DomainID,omitempty" xrpl:"DomainID,omitempty"`
 
 	// AcceptedCredentials defines the credentials accepted by this domain (required)
-	AcceptedCredentials []AcceptedCredential `json:"AcceptedCredentials"`
+	AcceptedCredentials []AcceptedCredential `json:"AcceptedCredentials" xrpl:"AcceptedCredentials,omitempty"`
 }
 
 // AcceptedCredential defines an accepted credential type (wrapper for XRPL STArray format)
@@ -136,16 +148,7 @@ func (p *PermissionedDomainSet) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (p *PermissionedDomainSet) Flatten() (map[string]any, error) {
-	m := p.Common.ToMap()
-
-	if p.DomainID != "" {
-		m["DomainID"] = p.DomainID
-	}
-	if len(p.AcceptedCredentials) > 0 {
-		m["AcceptedCredentials"] = p.AcceptedCredentials
-	}
-
-	return m, nil
+	return ReflectFlatten(p)
 }
 
 // AddAcceptedCredential adds an accepted credential
@@ -169,7 +172,7 @@ type PermissionedDomainDelete struct {
 	BaseTx
 
 	// DomainID is the ID of the domain to delete (required)
-	DomainID string `json:"DomainID"`
+	DomainID string `json:"DomainID" xrpl:"DomainID"`
 }
 
 // NewPermissionedDomainDelete creates a new PermissionedDomainDelete transaction
@@ -227,12 +230,59 @@ func (p *PermissionedDomainDelete) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (p *PermissionedDomainDelete) Flatten() (map[string]any, error) {
-	m := p.Common.ToMap()
-	m["DomainID"] = p.DomainID
-	return m, nil
+	return ReflectFlatten(p)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
 func (p *PermissionedDomainDelete) RequiredAmendments() []string {
 	return []string{AmendmentPermissionedDomains}
+}
+
+// Apply applies the PermissionedDomainSet transaction to the ledger.
+func (p *PermissionedDomainSet) Apply(ctx *ApplyContext) Result {
+	var domainKey [32]byte
+	if p.DomainID != "" {
+		domainBytes, err := hex.DecodeString(p.DomainID)
+		if err != nil || len(domainBytes) != 32 {
+			return TemINVALID
+		}
+		copy(domainKey[:], domainBytes)
+		domainKeylet := keylet.Keylet{Key: domainKey, Type: 0x0082}
+		_, err = ctx.View.Read(domainKeylet)
+		if err != nil {
+			return TecNO_ENTRY
+		}
+	} else {
+		copy(domainKey[:20], ctx.AccountID[:])
+		binary.BigEndian.PutUint32(domainKey[20:], ctx.Account.Sequence)
+		domainKeylet := keylet.Keylet{Key: domainKey, Type: 0x0082}
+		domainData := make([]byte, 64)
+		copy(domainData[:20], ctx.AccountID[:])
+		if err := ctx.View.Insert(domainKeylet, domainData); err != nil {
+			return TefINTERNAL
+		}
+		ctx.Account.OwnerCount++
+	}
+	return TesSUCCESS
+}
+
+// Apply applies the PermissionedDomainDelete transaction to the ledger.
+func (p *PermissionedDomainDelete) Apply(ctx *ApplyContext) Result {
+	if p.DomainID == "" {
+		return TemINVALID
+	}
+	domainBytes, err := hex.DecodeString(p.DomainID)
+	if err != nil || len(domainBytes) != 32 {
+		return TemINVALID
+	}
+	var domainKey [32]byte
+	copy(domainKey[:], domainBytes)
+	domainKeylet := keylet.Keylet{Key: domainKey, Type: 0x0082}
+	if err := ctx.View.Erase(domainKeylet); err != nil {
+		return TecNO_ENTRY
+	}
+	if ctx.Account.OwnerCount > 0 {
+		ctx.Account.OwnerCount--
+	}
+	return TesSUCCESS
 }

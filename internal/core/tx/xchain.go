@@ -1,6 +1,38 @@
 package tx
 
-import "errors"
+import (
+	"errors"
+	"strconv"
+
+	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
+)
+
+func init() {
+	Register(TypeXChainCreateBridge, func() Transaction {
+		return &XChainCreateBridge{BaseTx: *NewBaseTx(TypeXChainCreateBridge, "")}
+	})
+	Register(TypeXChainModifyBridge, func() Transaction {
+		return &XChainModifyBridge{BaseTx: *NewBaseTx(TypeXChainModifyBridge, "")}
+	})
+	Register(TypeXChainCreateClaimID, func() Transaction {
+		return &XChainCreateClaimID{BaseTx: *NewBaseTx(TypeXChainCreateClaimID, "")}
+	})
+	Register(TypeXChainCommit, func() Transaction {
+		return &XChainCommit{BaseTx: *NewBaseTx(TypeXChainCommit, "")}
+	})
+	Register(TypeXChainClaim, func() Transaction {
+		return &XChainClaim{BaseTx: *NewBaseTx(TypeXChainClaim, "")}
+	})
+	Register(TypeXChainAccountCreateCommit, func() Transaction {
+		return &XChainAccountCreateCommit{BaseTx: *NewBaseTx(TypeXChainAccountCreateCommit, "")}
+	})
+	Register(TypeXChainAddClaimAttestation, func() Transaction {
+		return &XChainAddClaimAttestation{BaseTx: *NewBaseTx(TypeXChainAddClaimAttestation, "")}
+	})
+	Register(TypeXChainAddAccountCreateAttest, func() Transaction {
+		return &XChainAddAccountCreateAttestation{BaseTx: *NewBaseTx(TypeXChainAddAccountCreateAttest, "")}
+	})
+}
 
 // XChainBridge identifies a cross-chain bridge
 type XChainBridge struct {
@@ -15,13 +47,13 @@ type XChainCreateBridge struct {
 	BaseTx
 
 	// XChainBridge identifies the bridge (required)
-	XChainBridge XChainBridge `json:"XChainBridge"`
+	XChainBridge XChainBridge `json:"XChainBridge" xrpl:"XChainBridge"`
 
 	// SignatureReward is the reward for witnesses (required)
-	SignatureReward Amount `json:"SignatureReward"`
+	SignatureReward Amount `json:"SignatureReward" xrpl:"SignatureReward,amount"`
 
 	// MinAccountCreateAmount is the min amount for account creation (optional)
-	MinAccountCreateAmount *Amount `json:"MinAccountCreateAmount,omitempty"`
+	MinAccountCreateAmount *Amount `json:"MinAccountCreateAmount,omitempty" xrpl:"MinAccountCreateAmount,omitempty,amount"`
 }
 
 // NewXChainCreateBridge creates a new XChainCreateBridge transaction
@@ -53,16 +85,7 @@ func (x *XChainCreateBridge) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (x *XChainCreateBridge) Flatten() (map[string]any, error) {
-	m := x.Common.ToMap()
-
-	m["XChainBridge"] = x.XChainBridge
-	m["SignatureReward"] = flattenAmount(x.SignatureReward)
-
-	if x.MinAccountCreateAmount != nil {
-		m["MinAccountCreateAmount"] = flattenAmount(*x.MinAccountCreateAmount)
-	}
-
-	return m, nil
+	return ReflectFlatten(x)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -75,13 +98,13 @@ type XChainModifyBridge struct {
 	BaseTx
 
 	// XChainBridge identifies the bridge (required)
-	XChainBridge XChainBridge `json:"XChainBridge"`
+	XChainBridge XChainBridge `json:"XChainBridge" xrpl:"XChainBridge"`
 
 	// SignatureReward is the new reward for witnesses (optional)
-	SignatureReward *Amount `json:"SignatureReward,omitempty"`
+	SignatureReward *Amount `json:"SignatureReward,omitempty" xrpl:"SignatureReward,omitempty,amount"`
 
 	// MinAccountCreateAmount is the new min amount (optional)
-	MinAccountCreateAmount *Amount `json:"MinAccountCreateAmount,omitempty"`
+	MinAccountCreateAmount *Amount `json:"MinAccountCreateAmount,omitempty" xrpl:"MinAccountCreateAmount,omitempty,amount"`
 }
 
 // XChainModifyBridge flags
@@ -110,18 +133,7 @@ func (x *XChainModifyBridge) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (x *XChainModifyBridge) Flatten() (map[string]any, error) {
-	m := x.Common.ToMap()
-
-	m["XChainBridge"] = x.XChainBridge
-
-	if x.SignatureReward != nil {
-		m["SignatureReward"] = flattenAmount(*x.SignatureReward)
-	}
-	if x.MinAccountCreateAmount != nil {
-		m["MinAccountCreateAmount"] = flattenAmount(*x.MinAccountCreateAmount)
-	}
-
-	return m, nil
+	return ReflectFlatten(x)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -134,13 +146,13 @@ type XChainCreateClaimID struct {
 	BaseTx
 
 	// XChainBridge identifies the bridge (required)
-	XChainBridge XChainBridge `json:"XChainBridge"`
+	XChainBridge XChainBridge `json:"XChainBridge" xrpl:"XChainBridge"`
 
 	// SignatureReward is the reward for witnesses (required)
-	SignatureReward Amount `json:"SignatureReward"`
+	SignatureReward Amount `json:"SignatureReward" xrpl:"SignatureReward,amount"`
 
 	// OtherChainSource is the source account on the other chain (required)
-	OtherChainSource string `json:"OtherChainSource"`
+	OtherChainSource string `json:"OtherChainSource" xrpl:"OtherChainSource"`
 }
 
 // NewXChainCreateClaimID creates a new XChainCreateClaimID transaction
@@ -173,13 +185,7 @@ func (x *XChainCreateClaimID) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (x *XChainCreateClaimID) Flatten() (map[string]any, error) {
-	m := x.Common.ToMap()
-
-	m["XChainBridge"] = x.XChainBridge
-	m["SignatureReward"] = flattenAmount(x.SignatureReward)
-	m["OtherChainSource"] = x.OtherChainSource
-
-	return m, nil
+	return ReflectFlatten(x)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -192,16 +198,16 @@ type XChainCommit struct {
 	BaseTx
 
 	// XChainBridge identifies the bridge (required)
-	XChainBridge XChainBridge `json:"XChainBridge"`
+	XChainBridge XChainBridge `json:"XChainBridge" xrpl:"XChainBridge"`
 
 	// XChainClaimID is the claim ID (required)
-	XChainClaimID uint64 `json:"XChainClaimID"`
+	XChainClaimID uint64 `json:"XChainClaimID" xrpl:"XChainClaimID"`
 
 	// Amount is the amount to transfer (required)
-	Amount Amount `json:"Amount"`
+	Amount Amount `json:"Amount" xrpl:"Amount,amount"`
 
 	// OtherChainDestination is the destination on the other chain (optional)
-	OtherChainDestination string `json:"OtherChainDestination,omitempty"`
+	OtherChainDestination string `json:"OtherChainDestination,omitempty" xrpl:"OtherChainDestination,omitempty"`
 }
 
 // NewXChainCommit creates a new XChainCommit transaction
@@ -234,17 +240,7 @@ func (x *XChainCommit) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (x *XChainCommit) Flatten() (map[string]any, error) {
-	m := x.Common.ToMap()
-
-	m["XChainBridge"] = x.XChainBridge
-	m["XChainClaimID"] = x.XChainClaimID
-	m["Amount"] = flattenAmount(x.Amount)
-
-	if x.OtherChainDestination != "" {
-		m["OtherChainDestination"] = x.OtherChainDestination
-	}
-
-	return m, nil
+	return ReflectFlatten(x)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -257,19 +253,19 @@ type XChainClaim struct {
 	BaseTx
 
 	// XChainBridge identifies the bridge (required)
-	XChainBridge XChainBridge `json:"XChainBridge"`
+	XChainBridge XChainBridge `json:"XChainBridge" xrpl:"XChainBridge"`
 
 	// XChainClaimID is the claim ID (required)
-	XChainClaimID uint64 `json:"XChainClaimID"`
+	XChainClaimID uint64 `json:"XChainClaimID" xrpl:"XChainClaimID"`
 
 	// Destination is the account to receive the assets (required)
-	Destination string `json:"Destination"`
+	Destination string `json:"Destination" xrpl:"Destination"`
 
 	// DestinationTag is an arbitrary tag (optional)
-	DestinationTag *uint32 `json:"DestinationTag,omitempty"`
+	DestinationTag *uint32 `json:"DestinationTag,omitempty" xrpl:"DestinationTag,omitempty"`
 
 	// Amount is the amount to claim (required)
-	Amount Amount `json:"Amount"`
+	Amount Amount `json:"Amount" xrpl:"Amount,amount"`
 }
 
 // NewXChainClaim creates a new XChainClaim transaction
@@ -307,18 +303,7 @@ func (x *XChainClaim) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (x *XChainClaim) Flatten() (map[string]any, error) {
-	m := x.Common.ToMap()
-
-	m["XChainBridge"] = x.XChainBridge
-	m["XChainClaimID"] = x.XChainClaimID
-	m["Destination"] = x.Destination
-	m["Amount"] = flattenAmount(x.Amount)
-
-	if x.DestinationTag != nil {
-		m["DestinationTag"] = *x.DestinationTag
-	}
-
-	return m, nil
+	return ReflectFlatten(x)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -331,16 +316,16 @@ type XChainAccountCreateCommit struct {
 	BaseTx
 
 	// XChainBridge identifies the bridge (required)
-	XChainBridge XChainBridge `json:"XChainBridge"`
+	XChainBridge XChainBridge `json:"XChainBridge" xrpl:"XChainBridge"`
 
 	// Destination is the account to create (required)
-	Destination string `json:"Destination"`
+	Destination string `json:"Destination" xrpl:"Destination"`
 
 	// Amount is the amount to send (required)
-	Amount Amount `json:"Amount"`
+	Amount Amount `json:"Amount" xrpl:"Amount,amount"`
 
 	// SignatureReward is the reward for witnesses (required)
-	SignatureReward Amount `json:"SignatureReward"`
+	SignatureReward Amount `json:"SignatureReward" xrpl:"SignatureReward,amount"`
 }
 
 // NewXChainAccountCreateCommit creates a new XChainAccountCreateCommit transaction
@@ -378,14 +363,7 @@ func (x *XChainAccountCreateCommit) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (x *XChainAccountCreateCommit) Flatten() (map[string]any, error) {
-	m := x.Common.ToMap()
-
-	m["XChainBridge"] = x.XChainBridge
-	m["Destination"] = x.Destination
-	m["Amount"] = flattenAmount(x.Amount)
-	m["SignatureReward"] = flattenAmount(x.SignatureReward)
-
-	return m, nil
+	return ReflectFlatten(x)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -398,34 +376,34 @@ type XChainAddClaimAttestation struct {
 	BaseTx
 
 	// XChainBridge identifies the bridge (required)
-	XChainBridge XChainBridge `json:"XChainBridge"`
+	XChainBridge XChainBridge `json:"XChainBridge" xrpl:"XChainBridge"`
 
 	// XChainClaimID is the claim ID (required)
-	XChainClaimID uint64 `json:"XChainClaimID"`
+	XChainClaimID uint64 `json:"XChainClaimID" xrpl:"XChainClaimID"`
 
 	// OtherChainSource is the source on the other chain (required)
-	OtherChainSource string `json:"OtherChainSource"`
+	OtherChainSource string `json:"OtherChainSource" xrpl:"OtherChainSource"`
 
 	// Amount is the amount attested (required)
-	Amount Amount `json:"Amount"`
+	Amount Amount `json:"Amount" xrpl:"Amount,amount"`
 
 	// AttestationRewardAccount receives the reward (required)
-	AttestationRewardAccount string `json:"AttestationRewardAccount"`
+	AttestationRewardAccount string `json:"AttestationRewardAccount" xrpl:"AttestationRewardAccount"`
 
 	// AttestationSignerAccount is the signer account (required)
-	AttestationSignerAccount string `json:"AttestationSignerAccount"`
+	AttestationSignerAccount string `json:"AttestationSignerAccount" xrpl:"AttestationSignerAccount"`
 
 	// Destination is the destination account (optional)
-	Destination string `json:"Destination,omitempty"`
+	Destination string `json:"Destination,omitempty" xrpl:"Destination,omitempty"`
 
 	// PublicKey is the signer's public key (required)
-	PublicKey string `json:"PublicKey"`
+	PublicKey string `json:"PublicKey" xrpl:"PublicKey"`
 
 	// Signature is the attestation signature (required)
-	Signature string `json:"Signature"`
+	Signature string `json:"Signature" xrpl:"Signature"`
 
 	// WasLockingChainSend indicates if this was a locking chain send (required)
-	WasLockingChainSend bool `json:"WasLockingChainSend"`
+	WasLockingChainSend bool `json:"WasLockingChainSend" xrpl:"WasLockingChainSend,boolint"`
 }
 
 // NewXChainAddClaimAttestation creates a new XChainAddClaimAttestation transaction
@@ -473,29 +451,7 @@ func (x *XChainAddClaimAttestation) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (x *XChainAddClaimAttestation) Flatten() (map[string]any, error) {
-	m := x.Common.ToMap()
-
-	m["XChainBridge"] = x.XChainBridge
-	m["XChainClaimID"] = x.XChainClaimID
-	m["OtherChainSource"] = x.OtherChainSource
-	m["Amount"] = flattenAmount(x.Amount)
-	m["AttestationRewardAccount"] = x.AttestationRewardAccount
-	m["AttestationSignerAccount"] = x.AttestationSignerAccount
-	m["PublicKey"] = x.PublicKey
-	m["Signature"] = x.Signature
-
-	// Convert bool to int (0 or 1)
-	if x.WasLockingChainSend {
-		m["WasLockingChainSend"] = 1
-	} else {
-		m["WasLockingChainSend"] = 0
-	}
-
-	if x.Destination != "" {
-		m["Destination"] = x.Destination
-	}
-
-	return m, nil
+	return ReflectFlatten(x)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -508,37 +464,37 @@ type XChainAddAccountCreateAttestation struct {
 	BaseTx
 
 	// XChainBridge identifies the bridge (required)
-	XChainBridge XChainBridge `json:"XChainBridge"`
+	XChainBridge XChainBridge `json:"XChainBridge" xrpl:"XChainBridge"`
 
 	// OtherChainSource is the source on the other chain (required)
-	OtherChainSource string `json:"OtherChainSource"`
+	OtherChainSource string `json:"OtherChainSource" xrpl:"OtherChainSource"`
 
 	// Destination is the destination account (required)
-	Destination string `json:"Destination"`
+	Destination string `json:"Destination" xrpl:"Destination"`
 
 	// Amount is the amount attested (required)
-	Amount Amount `json:"Amount"`
+	Amount Amount `json:"Amount" xrpl:"Amount,amount"`
 
 	// SignatureReward is the signature reward (required)
-	SignatureReward Amount `json:"SignatureReward"`
+	SignatureReward Amount `json:"SignatureReward" xrpl:"SignatureReward,amount"`
 
 	// AttestationRewardAccount receives the reward (required)
-	AttestationRewardAccount string `json:"AttestationRewardAccount"`
+	AttestationRewardAccount string `json:"AttestationRewardAccount" xrpl:"AttestationRewardAccount"`
 
 	// AttestationSignerAccount is the signer account (required)
-	AttestationSignerAccount string `json:"AttestationSignerAccount"`
+	AttestationSignerAccount string `json:"AttestationSignerAccount" xrpl:"AttestationSignerAccount"`
 
 	// PublicKey is the signer's public key (required)
-	PublicKey string `json:"PublicKey"`
+	PublicKey string `json:"PublicKey" xrpl:"PublicKey"`
 
 	// Signature is the attestation signature (required)
-	Signature string `json:"Signature"`
+	Signature string `json:"Signature" xrpl:"Signature"`
 
 	// WasLockingChainSend indicates if this was a locking chain send (required)
-	WasLockingChainSend bool `json:"WasLockingChainSend"`
+	WasLockingChainSend bool `json:"WasLockingChainSend" xrpl:"WasLockingChainSend,boolint"`
 
 	// XChainAccountCreateCount is the create count (required)
-	XChainAccountCreateCount uint64 `json:"XChainAccountCreateCount"`
+	XChainAccountCreateCount uint64 `json:"XChainAccountCreateCount" xrpl:"XChainAccountCreateCount"`
 }
 
 // NewXChainAddAccountCreateAttestation creates a new XChainAddAccountCreateAttestation transaction
@@ -573,29 +529,83 @@ func (x *XChainAddAccountCreateAttestation) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (x *XChainAddAccountCreateAttestation) Flatten() (map[string]any, error) {
-	m := x.Common.ToMap()
-
-	m["XChainBridge"] = x.XChainBridge
-	m["OtherChainSource"] = x.OtherChainSource
-	m["Destination"] = x.Destination
-	m["Amount"] = flattenAmount(x.Amount)
-	m["SignatureReward"] = flattenAmount(x.SignatureReward)
-	m["AttestationRewardAccount"] = x.AttestationRewardAccount
-	m["AttestationSignerAccount"] = x.AttestationSignerAccount
-	m["PublicKey"] = x.PublicKey
-	m["Signature"] = x.Signature
-	m["XChainAccountCreateCount"] = x.XChainAccountCreateCount
-
-	if x.WasLockingChainSend {
-		m["WasLockingChainSend"] = 1
-	} else {
-		m["WasLockingChainSend"] = 0
-	}
-
-	return m, nil
+	return ReflectFlatten(x)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
 func (x *XChainAddAccountCreateAttestation) RequiredAmendments() []string {
 	return []string{AmendmentXChainBridge}
+}
+
+// Apply applies the XChainCreateBridge transaction to the ledger.
+func (x *XChainCreateBridge) Apply(ctx *ApplyContext) Result {
+	ctx.Account.OwnerCount++
+	return TesSUCCESS
+}
+
+// Apply applies the XChainModifyBridge transaction to the ledger.
+func (x *XChainModifyBridge) Apply(ctx *ApplyContext) Result {
+	return TesSUCCESS
+}
+
+// Apply applies the XChainCreateClaimID transaction to the ledger.
+func (x *XChainCreateClaimID) Apply(ctx *ApplyContext) Result {
+	ctx.Account.OwnerCount++
+	return TesSUCCESS
+}
+
+// Apply applies the XChainCommit transaction to the ledger.
+func (x *XChainCommit) Apply(ctx *ApplyContext) Result {
+	amount, err := strconv.ParseUint(x.Amount.Value, 10, 64)
+	if err == nil && x.Amount.Currency == "" {
+		if ctx.Account.Balance < amount {
+			return TecUNFUNDED
+		}
+		ctx.Account.Balance -= amount
+	}
+	return TesSUCCESS
+}
+
+// Apply applies the XChainClaim transaction to the ledger.
+func (x *XChainClaim) Apply(ctx *ApplyContext) Result {
+	amount, err := strconv.ParseUint(x.Amount.Value, 10, 64)
+	if err == nil && x.Amount.Currency == "" {
+		destID, err := decodeAccountID(x.Destination)
+		if err != nil {
+			return TemINVALID
+		}
+		destKey := keylet.Account(destID)
+		destData, err := ctx.View.Read(destKey)
+		if err == nil {
+			destAccount, err := parseAccountRoot(destData)
+			if err == nil {
+				destAccount.Balance += amount
+				destUpdatedData, _ := serializeAccountRoot(destAccount)
+				ctx.View.Update(destKey, destUpdatedData)
+			}
+		}
+	}
+	return TesSUCCESS
+}
+
+// Apply applies the XChainAccountCreateCommit transaction to the ledger.
+func (x *XChainAccountCreateCommit) Apply(ctx *ApplyContext) Result {
+	amount, err := strconv.ParseUint(x.Amount.Value, 10, 64)
+	if err == nil && x.Amount.Currency == "" {
+		if ctx.Account.Balance < amount {
+			return TecUNFUNDED
+		}
+		ctx.Account.Balance -= amount
+	}
+	return TesSUCCESS
+}
+
+// Apply applies the XChainAddClaimAttestation transaction to the ledger.
+func (x *XChainAddClaimAttestation) Apply(ctx *ApplyContext) Result {
+	return TesSUCCESS
+}
+
+// Apply applies the XChainAddAccountCreateAttestation transaction to the ledger.
+func (x *XChainAddAccountCreateAttestation) Apply(ctx *ApplyContext) Result {
+	return TesSUCCESS
 }

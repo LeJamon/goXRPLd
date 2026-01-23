@@ -3,7 +3,21 @@ package tx
 import (
 	"encoding/hex"
 	"errors"
+
+	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 )
+
+func init() {
+	Register(TypeCredentialCreate, func() Transaction {
+		return &CredentialCreate{BaseTx: *NewBaseTx(TypeCredentialCreate, "")}
+	})
+	Register(TypeCredentialAccept, func() Transaction {
+		return &CredentialAccept{BaseTx: *NewBaseTx(TypeCredentialAccept, "")}
+	})
+	Register(TypeCredentialDelete, func() Transaction {
+		return &CredentialDelete{BaseTx: *NewBaseTx(TypeCredentialDelete, "")}
+	})
+}
 
 // Credential constants matching rippled Protocol.h
 const (
@@ -31,16 +45,16 @@ type CredentialCreate struct {
 	BaseTx
 
 	// Subject is the account the credential is about (required)
-	Subject string `json:"Subject"`
+	Subject string `json:"Subject" xrpl:"Subject"`
 
 	// CredentialType is the type of credential (required, hex-encoded)
-	CredentialType string `json:"CredentialType"`
+	CredentialType string `json:"CredentialType" xrpl:"CredentialType"`
 
 	// Expiration is when the credential expires (optional)
-	Expiration *uint32 `json:"Expiration,omitempty"`
+	Expiration *uint32 `json:"Expiration,omitempty" xrpl:"Expiration,omitempty"`
 
 	// URI is the URI for credential details (optional)
-	URI string `json:"URI,omitempty"`
+	URI string `json:"URI,omitempty" xrpl:"URI,omitempty"`
 }
 
 // NewCredentialCreate creates a new CredentialCreate transaction
@@ -112,19 +126,7 @@ func (c *CredentialCreate) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (c *CredentialCreate) Flatten() (map[string]any, error) {
-	m := c.Common.ToMap()
-
-	m["Subject"] = c.Subject
-	m["CredentialType"] = c.CredentialType
-
-	if c.Expiration != nil {
-		m["Expiration"] = *c.Expiration
-	}
-	if c.URI != "" {
-		m["URI"] = c.URI
-	}
-
-	return m, nil
+	return ReflectFlatten(c)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -137,10 +139,10 @@ type CredentialAccept struct {
 	BaseTx
 
 	// Issuer is the account that issued the credential (required)
-	Issuer string `json:"Issuer"`
+	Issuer string `json:"Issuer" xrpl:"Issuer"`
 
 	// CredentialType is the type of credential (required, hex-encoded)
-	CredentialType string `json:"CredentialType"`
+	CredentialType string `json:"CredentialType" xrpl:"CredentialType"`
 }
 
 // NewCredentialAccept creates a new CredentialAccept transaction
@@ -197,12 +199,7 @@ func (c *CredentialAccept) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (c *CredentialAccept) Flatten() (map[string]any, error) {
-	m := c.Common.ToMap()
-
-	m["Issuer"] = c.Issuer
-	m["CredentialType"] = c.CredentialType
-
-	return m, nil
+	return ReflectFlatten(c)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -215,13 +212,13 @@ type CredentialDelete struct {
 	BaseTx
 
 	// Subject is the account the credential is about (optional, defaults to Account)
-	Subject string `json:"Subject,omitempty"`
+	Subject string `json:"Subject,omitempty" xrpl:"Subject,omitempty"`
 
 	// Issuer is the account that issued the credential (optional, defaults to Account)
-	Issuer string `json:"Issuer,omitempty"`
+	Issuer string `json:"Issuer,omitempty" xrpl:"Issuer,omitempty"`
 
 	// CredentialType is the type of credential (required, hex-encoded)
-	CredentialType string `json:"CredentialType"`
+	CredentialType string `json:"CredentialType" xrpl:"CredentialType"`
 }
 
 // NewCredentialDelete creates a new CredentialDelete transaction
@@ -281,21 +278,77 @@ func (c *CredentialDelete) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (c *CredentialDelete) Flatten() (map[string]any, error) {
-	m := c.Common.ToMap()
-
-	m["CredentialType"] = c.CredentialType
-
-	if c.Subject != "" {
-		m["Subject"] = c.Subject
-	}
-	if c.Issuer != "" {
-		m["Issuer"] = c.Issuer
-	}
-
-	return m, nil
+	return ReflectFlatten(c)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
 func (c *CredentialDelete) RequiredAmendments() []string {
 	return []string{AmendmentCredentials}
+}
+
+// Apply applies the CredentialCreate transaction to ledger state.
+func (c *CredentialCreate) Apply(ctx *ApplyContext) Result {
+	if c.Subject == "" || c.CredentialType == "" {
+		return TemINVALID
+	}
+	subjectID, err := decodeAccountID(c.Subject)
+	if err != nil {
+		return TecNO_TARGET
+	}
+	var credKey [32]byte
+	copy(credKey[:20], ctx.AccountID[:])
+	copy(credKey[20:], subjectID[:12])
+	credKeylet := keylet.Keylet{Key: credKey, Type: 0x0081}
+	credData := make([]byte, 64)
+	copy(credData[:20], ctx.AccountID[:])
+	copy(credData[20:40], subjectID[:])
+	if err := ctx.View.Insert(credKeylet, credData); err != nil {
+		return TefINTERNAL
+	}
+	ctx.Account.OwnerCount++
+	return TesSUCCESS
+}
+
+// Apply applies the CredentialAccept transaction to ledger state.
+func (c *CredentialAccept) Apply(ctx *ApplyContext) Result {
+	if c.Issuer == "" || c.CredentialType == "" {
+		return TemINVALID
+	}
+	issuerID, err := decodeAccountID(c.Issuer)
+	if err != nil {
+		return TecNO_TARGET
+	}
+	var credKey [32]byte
+	copy(credKey[:20], issuerID[:])
+	copy(credKey[20:], ctx.AccountID[:12])
+	credKeylet := keylet.Keylet{Key: credKey, Type: 0x0081}
+	_, err = ctx.View.Read(credKeylet)
+	if err != nil {
+		return TecNO_ENTRY
+	}
+	return TesSUCCESS
+}
+
+// Apply applies the CredentialDelete transaction to ledger state.
+func (c *CredentialDelete) Apply(ctx *ApplyContext) Result {
+	if c.CredentialType == "" {
+		return TemINVALID
+	}
+	var subjectID [20]byte
+	if c.Subject != "" {
+		subjectID, _ = decodeAccountID(c.Subject)
+	} else {
+		subjectID = ctx.AccountID
+	}
+	var credKey [32]byte
+	copy(credKey[:20], ctx.AccountID[:])
+	copy(credKey[20:], subjectID[:12])
+	credKeylet := keylet.Keylet{Key: credKey, Type: 0x0081}
+	if err := ctx.View.Erase(credKeylet); err != nil {
+		return TecNO_ENTRY
+	}
+	if ctx.Account.OwnerCount > 0 {
+		ctx.Account.OwnerCount--
+	}
+	return TesSUCCESS
 }

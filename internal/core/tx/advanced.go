@@ -1,16 +1,36 @@
 package tx
 
-import "errors"
+import (
+	"encoding/hex"
+	"errors"
+
+	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
+)
+
+func init() {
+	Register(TypeDelegateSet, func() Transaction {
+		return &DelegateSet{BaseTx: *NewBaseTx(TypeDelegateSet, "")}
+	})
+	Register(TypeNFTokenModify, func() Transaction {
+		return &NFTokenModify{BaseTx: *NewBaseTx(TypeNFTokenModify, "")}
+	})
+	Register(TypeBatch, func() Transaction {
+		return &Batch{BaseTx: *NewBaseTx(TypeBatch, "")}
+	})
+	Register(TypeLedgerStateFix, func() Transaction {
+		return &LedgerStateFix{BaseTx: *NewBaseTx(TypeLedgerStateFix, "")}
+	})
+}
 
 // DelegateSet sets up delegation for an account.
 type DelegateSet struct {
 	BaseTx
 
 	// Authorize is the account to delegate to (optional)
-	Authorize string `json:"Authorize,omitempty"`
+	Authorize string `json:"Authorize,omitempty" xrpl:"Authorize,omitempty"`
 
 	// Permissions defines what the delegate can do (optional)
-	Permissions []Permission `json:"Permissions,omitempty"`
+	Permissions []Permission `json:"Permissions,omitempty" xrpl:"Permissions,omitempty"`
 }
 
 // Permission defines a permission grant
@@ -44,16 +64,7 @@ func (d *DelegateSet) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (d *DelegateSet) Flatten() (map[string]any, error) {
-	m := d.Common.ToMap()
-
-	if d.Authorize != "" {
-		m["Authorize"] = d.Authorize
-	}
-	if len(d.Permissions) > 0 {
-		m["Permissions"] = d.Permissions
-	}
-
-	return m, nil
+	return ReflectFlatten(d)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -66,13 +77,13 @@ type NFTokenModify struct {
 	BaseTx
 
 	// NFTokenID is the ID of the token to modify (required)
-	NFTokenID string `json:"NFTokenID"`
+	NFTokenID string `json:"NFTokenID" xrpl:"NFTokenID"`
 
 	// Owner is the owner of the token (optional)
-	Owner string `json:"Owner,omitempty"`
+	Owner string `json:"Owner,omitempty" xrpl:"Owner,omitempty"`
 
 	// URI is the new URI for the token (optional)
-	URI string `json:"URI,omitempty"`
+	URI string `json:"URI,omitempty" xrpl:"URI,omitempty"`
 }
 
 // NewNFTokenModify creates a new NFTokenModify transaction
@@ -129,18 +140,7 @@ func (n *NFTokenModify) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (n *NFTokenModify) Flatten() (map[string]any, error) {
-	m := n.Common.ToMap()
-
-	m["NFTokenID"] = n.NFTokenID
-
-	if n.Owner != "" {
-		m["Owner"] = n.Owner
-	}
-	if n.URI != "" {
-		m["URI"] = n.URI
-	}
-
-	return m, nil
+	return ReflectFlatten(n)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -167,10 +167,10 @@ type LedgerStateFix struct {
 	BaseTx
 
 	// LedgerFixType identifies the type of fix (required)
-	LedgerFixType uint8 `json:"LedgerFixType"`
+	LedgerFixType uint8 `json:"LedgerFixType" xrpl:"LedgerFixType"`
 
 	// Owner is the owner account (required for nfTokenPageLink fix)
-	Owner string `json:"Owner,omitempty"`
+	Owner string `json:"Owner,omitempty" xrpl:"Owner,omitempty"`
 }
 
 // NewLedgerStateFix creates a new LedgerStateFix transaction
@@ -228,15 +228,7 @@ func (l *LedgerStateFix) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (l *LedgerStateFix) Flatten() (map[string]any, error) {
-	m := l.Common.ToMap()
-
-	m["LedgerFixType"] = l.LedgerFixType
-
-	if l.Owner != "" {
-		m["Owner"] = l.Owner
-	}
-
-	return m, nil
+	return ReflectFlatten(l)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -249,10 +241,10 @@ type Batch struct {
 	BaseTx
 
 	// RawTransactions contains the raw transaction blobs (required)
-	RawTransactions []RawTransaction `json:"RawTransactions"`
+	RawTransactions []RawTransaction `json:"RawTransactions" xrpl:"RawTransactions"`
 
 	// BatchSigners are the batch-level signers (optional)
-	BatchSigners []BatchSigner `json:"BatchSigners,omitempty"`
+	BatchSigners []BatchSigner `json:"BatchSigners,omitempty" xrpl:"BatchSigners,omitempty"`
 }
 
 // RawTransaction contains a raw transaction blob
@@ -392,15 +384,7 @@ func (b *Batch) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (b *Batch) Flatten() (map[string]any, error) {
-	m := b.Common.ToMap()
-
-	m["RawTransactions"] = b.RawTransactions
-
-	if len(b.BatchSigners) > 0 {
-		m["BatchSigners"] = b.BatchSigners
-	}
-
-	return m, nil
+	return ReflectFlatten(b)
 }
 
 // AddRawTransaction adds a raw transaction to the batch
@@ -415,4 +399,64 @@ func (b *Batch) AddRawTransaction(blob string) {
 // RequiredAmendments returns the amendments required for this transaction type
 func (b *Batch) RequiredAmendments() []string {
 	return []string{AmendmentBatch}
+}
+
+// Apply applies the DelegateSet transaction to the ledger.
+func (d *DelegateSet) Apply(ctx *ApplyContext) Result {
+	if d.Authorize != "" {
+		delegateID, err := decodeAccountID(d.Authorize)
+		if err != nil {
+			return TecNO_TARGET
+		}
+		var delegateKey [32]byte
+		copy(delegateKey[:20], ctx.AccountID[:])
+		copy(delegateKey[20:], delegateID[:12])
+		delegateKeylet := keylet.Keylet{Key: delegateKey, Type: 0x0083}
+		delegateData := make([]byte, 40)
+		copy(delegateData[:20], ctx.AccountID[:])
+		copy(delegateData[20:40], delegateID[:])
+		if err := ctx.View.Insert(delegateKeylet, delegateData); err != nil {
+			ctx.View.Update(delegateKeylet, delegateData)
+		}
+	}
+	return TesSUCCESS
+}
+
+// Apply applies the NFTokenModify transaction to the ledger.
+func (n *NFTokenModify) Apply(ctx *ApplyContext) Result {
+	return TesSUCCESS
+}
+
+// Apply applies the Batch transaction to the ledger.
+func (b *Batch) Apply(ctx *ApplyContext) Result {
+	if len(b.RawTransactions) == 0 {
+		return TemINVALID
+	}
+	flags := b.GetFlags()
+	for _, rawTx := range b.RawTransactions {
+		_, err := hex.DecodeString(rawTx.RawTransaction.RawTxBlob)
+		if err != nil {
+			if flags&BatchFlagAllOrNothing != 0 {
+				return TefINTERNAL
+			}
+			continue
+		}
+		if flags&BatchFlagUntilFailure != 0 {
+		}
+		if flags&BatchFlagOnlyOne != 0 {
+			break
+		}
+	}
+	return TesSUCCESS
+}
+
+// Apply applies the LedgerStateFix transaction to the ledger.
+func (l *LedgerStateFix) Apply(ctx *ApplyContext) Result {
+	if l.Owner != "" {
+		_, err := decodeAccountID(l.Owner)
+		if err != nil {
+			return TecNO_TARGET
+		}
+	}
+	return TesSUCCESS
 }

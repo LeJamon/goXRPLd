@@ -6,6 +6,18 @@ import (
 	"strconv"
 )
 
+func init() {
+	Register(TypePaymentChannelCreate, func() Transaction {
+		return &PaymentChannelCreate{BaseTx: *NewBaseTx(TypePaymentChannelCreate, "")}
+	})
+	Register(TypePaymentChannelFund, func() Transaction {
+		return &PaymentChannelFund{BaseTx: *NewBaseTx(TypePaymentChannelFund, "")}
+	})
+	Register(TypePaymentChannelClaim, func() Transaction {
+		return &PaymentChannelClaim{BaseTx: *NewBaseTx(TypePaymentChannelClaim, "")}
+	})
+}
+
 // Payment channel constants
 const (
 	// MaxPayChanPublicKeyLength is the maximum length of a public key (33 bytes compressed)
@@ -36,25 +48,25 @@ type PaymentChannelCreate struct {
 	BaseTx
 
 	// Amount is the amount of XRP to lock in the channel (required)
-	Amount Amount `json:"Amount"`
+	Amount Amount `json:"Amount" xrpl:"Amount,amount"`
 
 	// Destination is the account to receive channel payments (required)
-	Destination string `json:"Destination"`
+	Destination string `json:"Destination" xrpl:"Destination"`
 
 	// SettleDelay is the time in seconds to wait after close (required)
-	SettleDelay uint32 `json:"SettleDelay"`
+	SettleDelay uint32 `json:"SettleDelay" xrpl:"SettleDelay"`
 
 	// PublicKey is the public key for verifying claims (required)
-	PublicKey string `json:"PublicKey"`
+	PublicKey string `json:"PublicKey" xrpl:"PublicKey"`
 
 	// CancelAfter is the time when the channel expires (optional)
-	CancelAfter *uint32 `json:"CancelAfter,omitempty"`
+	CancelAfter *uint32 `json:"CancelAfter,omitempty" xrpl:"CancelAfter,omitempty"`
 
 	// DestinationTag is an arbitrary tag for the destination (optional)
-	DestinationTag *uint32 `json:"DestinationTag,omitempty"`
+	DestinationTag *uint32 `json:"DestinationTag,omitempty" xrpl:"DestinationTag,omitempty"`
 
 	// SourceTag is an optional tag for the source (optional)
-	SourceTag *uint32 `json:"SourceTag,omitempty"`
+	SourceTag *uint32 `json:"SourceTag,omitempty" xrpl:"SourceTag,omitempty"`
 }
 
 // NewPaymentChannelCreate creates a new PaymentChannelCreate transaction
@@ -134,24 +146,7 @@ func (p *PaymentChannelCreate) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (p *PaymentChannelCreate) Flatten() (map[string]any, error) {
-	m := p.Common.ToMap()
-
-	m["Amount"] = p.Amount.Value
-	m["Destination"] = p.Destination
-	m["SettleDelay"] = p.SettleDelay
-	m["PublicKey"] = p.PublicKey
-
-	if p.CancelAfter != nil {
-		m["CancelAfter"] = *p.CancelAfter
-	}
-	if p.DestinationTag != nil {
-		m["DestinationTag"] = *p.DestinationTag
-	}
-	if p.SourceTag != nil {
-		m["SourceTag"] = *p.SourceTag
-	}
-
-	return m, nil
+	return ReflectFlatten(p)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -165,13 +160,13 @@ type PaymentChannelFund struct {
 	BaseTx
 
 	// Channel is the channel ID (required)
-	Channel string `json:"Channel"`
+	Channel string `json:"Channel" xrpl:"Channel"`
 
 	// Amount is the amount of XRP to add (required)
-	Amount Amount `json:"Amount"`
+	Amount Amount `json:"Amount" xrpl:"Amount,amount"`
 
 	// Expiration is the new expiration time (optional)
-	Expiration *uint32 `json:"Expiration,omitempty"`
+	Expiration *uint32 `json:"Expiration,omitempty" xrpl:"Expiration,omitempty"`
 }
 
 // NewPaymentChannelFund creates a new PaymentChannelFund transaction
@@ -233,16 +228,7 @@ func (p *PaymentChannelFund) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (p *PaymentChannelFund) Flatten() (map[string]any, error) {
-	m := p.Common.ToMap()
-
-	m["Channel"] = p.Channel
-	m["Amount"] = p.Amount.Value
-
-	if p.Expiration != nil {
-		m["Expiration"] = *p.Expiration
-	}
-
-	return m, nil
+	return ReflectFlatten(p)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -256,19 +242,19 @@ type PaymentChannelClaim struct {
 	BaseTx
 
 	// Channel is the channel ID (required)
-	Channel string `json:"Channel"`
+	Channel string `json:"Channel" xrpl:"Channel"`
 
 	// Balance is the total amount delivered by this channel (optional)
-	Balance *Amount `json:"Balance,omitempty"`
+	Balance *Amount `json:"Balance,omitempty" xrpl:"Balance,omitempty,amount"`
 
 	// Amount is the amount of XRP authorized by the signature (optional)
-	Amount *Amount `json:"Amount,omitempty"`
+	Amount *Amount `json:"Amount,omitempty" xrpl:"Amount,omitempty,amount"`
 
 	// Signature is the signature for this claim (optional)
-	Signature string `json:"Signature,omitempty"`
+	Signature string `json:"Signature,omitempty" xrpl:"Signature,omitempty"`
 
 	// PublicKey is the public key for verifying the signature (optional)
-	PublicKey string `json:"PublicKey,omitempty"`
+	PublicKey string `json:"PublicKey,omitempty" xrpl:"PublicKey,omitempty"`
 }
 
 // PaymentChannelClaim flags
@@ -390,24 +376,7 @@ func (p *PaymentChannelClaim) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (p *PaymentChannelClaim) Flatten() (map[string]any, error) {
-	m := p.Common.ToMap()
-
-	m["Channel"] = p.Channel
-
-	if p.Balance != nil {
-		m["Balance"] = p.Balance.Value
-	}
-	if p.Amount != nil {
-		m["Amount"] = p.Amount.Value
-	}
-	if p.Signature != "" {
-		m["Signature"] = p.Signature
-	}
-	if p.PublicKey != "" {
-		m["PublicKey"] = p.PublicKey
-	}
-
-	return m, nil
+	return ReflectFlatten(p)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type

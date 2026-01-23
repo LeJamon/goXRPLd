@@ -42,6 +42,12 @@ type Transaction interface {
 	RequiredAmendments() []string
 }
 
+// Appliable is implemented by transaction types that can apply themselves to ledger state.
+// This replaces the central switch statement in Engine.doApply().
+type Appliable interface {
+	Apply(ctx *ApplyContext) Result
+}
+
 // Amount represents either XRP (as drops string) or an issued currency amount
 type Amount struct {
 	// For XRP amounts, only Value is set (as drops string)

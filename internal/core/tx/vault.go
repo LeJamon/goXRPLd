@@ -1,10 +1,34 @@
 package tx
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"strconv"
+
+	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 )
+
+func init() {
+	Register(TypeVaultCreate, func() Transaction {
+		return &VaultCreate{BaseTx: *NewBaseTx(TypeVaultCreate, "")}
+	})
+	Register(TypeVaultSet, func() Transaction {
+		return &VaultSet{BaseTx: *NewBaseTx(TypeVaultSet, "")}
+	})
+	Register(TypeVaultDelete, func() Transaction {
+		return &VaultDelete{BaseTx: *NewBaseTx(TypeVaultDelete, "")}
+	})
+	Register(TypeVaultDeposit, func() Transaction {
+		return &VaultDeposit{BaseTx: *NewBaseTx(TypeVaultDeposit, "")}
+	})
+	Register(TypeVaultWithdraw, func() Transaction {
+		return &VaultWithdraw{BaseTx: *NewBaseTx(TypeVaultWithdraw, "")}
+	})
+	Register(TypeVaultClawback, func() Transaction {
+		return &VaultClawback{BaseTx: *NewBaseTx(TypeVaultClawback, "")}
+	})
+}
 
 // Vault constants
 const (
@@ -58,22 +82,22 @@ type VaultCreate struct {
 	BaseTx
 
 	// Asset is the asset the vault holds (required)
-	Asset Asset `json:"Asset"`
+	Asset Asset `json:"Asset" xrpl:"Asset"`
 
 	// Data is arbitrary data (optional)
-	Data string `json:"Data,omitempty"`
+	Data string `json:"Data,omitempty" xrpl:"Data,omitempty"`
 
 	// DomainID is the permissioned domain ID (optional)
-	DomainID string `json:"DomainID,omitempty"`
+	DomainID string `json:"DomainID,omitempty" xrpl:"DomainID,omitempty"`
 
 	// AssetsMaximum is the maximum assets the vault can hold (optional)
-	AssetsMaximum *int64 `json:"AssetsMaximum,omitempty"`
+	AssetsMaximum *int64 `json:"AssetsMaximum,omitempty" xrpl:"AssetsMaximum,omitempty"`
 
 	// MPTokenMetadata is metadata for the vault shares (optional)
-	MPTokenMetadata string `json:"MPTokenMetadata,omitempty"`
+	MPTokenMetadata string `json:"MPTokenMetadata,omitempty" xrpl:"MPTokenMetadata,omitempty"`
 
 	// WithdrawalPolicy configures withdrawal rules (optional)
-	WithdrawalPolicy *uint8 `json:"WithdrawalPolicy,omitempty"`
+	WithdrawalPolicy *uint8 `json:"WithdrawalPolicy,omitempty" xrpl:"WithdrawalPolicy,omitempty"`
 }
 
 // NewVaultCreate creates a new VaultCreate transaction
@@ -166,27 +190,7 @@ func (v *VaultCreate) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (v *VaultCreate) Flatten() (map[string]any, error) {
-	m := v.Common.ToMap()
-
-	m["Asset"] = v.Asset
-
-	if v.Data != "" {
-		m["Data"] = v.Data
-	}
-	if v.DomainID != "" {
-		m["DomainID"] = v.DomainID
-	}
-	if v.AssetsMaximum != nil {
-		m["AssetsMaximum"] = *v.AssetsMaximum
-	}
-	if v.MPTokenMetadata != "" {
-		m["MPTokenMetadata"] = v.MPTokenMetadata
-	}
-	if v.WithdrawalPolicy != nil {
-		m["WithdrawalPolicy"] = *v.WithdrawalPolicy
-	}
-
-	return m, nil
+	return ReflectFlatten(v)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -199,16 +203,16 @@ type VaultSet struct {
 	BaseTx
 
 	// VaultID is the ID of the vault to modify (required)
-	VaultID string `json:"VaultID"`
+	VaultID string `json:"VaultID" xrpl:"VaultID"`
 
 	// Data is arbitrary data (optional)
-	Data string `json:"Data,omitempty"`
+	Data string `json:"Data,omitempty" xrpl:"Data,omitempty"`
 
 	// DomainID is the permissioned domain ID (optional)
-	DomainID string `json:"DomainID,omitempty"`
+	DomainID string `json:"DomainID,omitempty" xrpl:"DomainID,omitempty"`
 
 	// AssetsMaximum is the maximum assets (optional)
-	AssetsMaximum *int64 `json:"AssetsMaximum,omitempty"`
+	AssetsMaximum *int64 `json:"AssetsMaximum,omitempty" xrpl:"AssetsMaximum,omitempty"`
 }
 
 // NewVaultSet creates a new VaultSet transaction
@@ -282,21 +286,7 @@ func (v *VaultSet) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (v *VaultSet) Flatten() (map[string]any, error) {
-	m := v.Common.ToMap()
-
-	m["VaultID"] = v.VaultID
-
-	if v.Data != "" {
-		m["Data"] = v.Data
-	}
-	if v.DomainID != "" {
-		m["DomainID"] = v.DomainID
-	}
-	if v.AssetsMaximum != nil {
-		m["AssetsMaximum"] = *v.AssetsMaximum
-	}
-
-	return m, nil
+	return ReflectFlatten(v)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -309,7 +299,7 @@ type VaultDelete struct {
 	BaseTx
 
 	// VaultID is the ID of the vault to delete (required)
-	VaultID string `json:"VaultID"`
+	VaultID string `json:"VaultID" xrpl:"VaultID"`
 }
 
 // NewVaultDelete creates a new VaultDelete transaction
@@ -363,9 +353,7 @@ func (v *VaultDelete) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (v *VaultDelete) Flatten() (map[string]any, error) {
-	m := v.Common.ToMap()
-	m["VaultID"] = v.VaultID
-	return m, nil
+	return ReflectFlatten(v)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -378,10 +366,10 @@ type VaultDeposit struct {
 	BaseTx
 
 	// VaultID is the ID of the vault (required)
-	VaultID string `json:"VaultID"`
+	VaultID string `json:"VaultID" xrpl:"VaultID"`
 
 	// Amount is the amount to deposit (required)
-	Amount Amount `json:"Amount"`
+	Amount Amount `json:"Amount" xrpl:"Amount,amount"`
 }
 
 // NewVaultDeposit creates a new VaultDeposit transaction
@@ -446,12 +434,7 @@ func (v *VaultDeposit) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (v *VaultDeposit) Flatten() (map[string]any, error) {
-	m := v.Common.ToMap()
-
-	m["VaultID"] = v.VaultID
-	m["Amount"] = flattenAmount(v.Amount)
-
-	return m, nil
+	return ReflectFlatten(v)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -464,16 +447,16 @@ type VaultWithdraw struct {
 	BaseTx
 
 	// VaultID is the ID of the vault (required)
-	VaultID string `json:"VaultID"`
+	VaultID string `json:"VaultID" xrpl:"VaultID"`
 
 	// Amount is the amount to withdraw (required)
-	Amount Amount `json:"Amount"`
+	Amount Amount `json:"Amount" xrpl:"Amount,amount"`
 
 	// Destination is the destination account (optional)
-	Destination string `json:"Destination,omitempty"`
+	Destination string `json:"Destination,omitempty" xrpl:"Destination,omitempty"`
 
 	// DestinationTag is the destination tag (optional)
-	DestinationTag *uint32 `json:"DestinationTag,omitempty"`
+	DestinationTag *uint32 `json:"DestinationTag,omitempty" xrpl:"DestinationTag,omitempty"`
 }
 
 // NewVaultWithdraw creates a new VaultWithdraw transaction
@@ -552,19 +535,7 @@ func (v *VaultWithdraw) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (v *VaultWithdraw) Flatten() (map[string]any, error) {
-	m := v.Common.ToMap()
-
-	m["VaultID"] = v.VaultID
-	m["Amount"] = flattenAmount(v.Amount)
-
-	if v.Destination != "" {
-		m["Destination"] = v.Destination
-	}
-	if v.DestinationTag != nil {
-		m["DestinationTag"] = *v.DestinationTag
-	}
-
-	return m, nil
+	return ReflectFlatten(v)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -577,13 +548,13 @@ type VaultClawback struct {
 	BaseTx
 
 	// VaultID is the ID of the vault (required)
-	VaultID string `json:"VaultID"`
+	VaultID string `json:"VaultID" xrpl:"VaultID"`
 
 	// Holder is the holder to claw back from (required)
-	Holder string `json:"Holder"`
+	Holder string `json:"Holder" xrpl:"Holder"`
 
 	// Amount is the amount to claw back (optional)
-	Amount *Amount `json:"Amount,omitempty"`
+	Amount *Amount `json:"Amount,omitempty" xrpl:"Amount,omitempty,amount"`
 }
 
 // NewVaultClawback creates a new VaultClawback transaction
@@ -670,19 +641,146 @@ func (v *VaultClawback) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (v *VaultClawback) Flatten() (map[string]any, error) {
-	m := v.Common.ToMap()
-
-	m["VaultID"] = v.VaultID
-	m["Holder"] = v.Holder
-
-	if v.Amount != nil {
-		m["Amount"] = flattenAmount(*v.Amount)
-	}
-
-	return m, nil
+	return ReflectFlatten(v)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
 func (v *VaultClawback) RequiredAmendments() []string {
 	return []string{AmendmentSingleAssetVault}
+}
+
+// Apply applies the VaultCreate transaction to the ledger.
+func (v *VaultCreate) Apply(ctx *ApplyContext) Result {
+	if v.Asset.Currency == "" {
+		return TemINVALID
+	}
+	var vaultKey [32]byte
+	copy(vaultKey[:20], ctx.AccountID[:])
+	binary.BigEndian.PutUint32(vaultKey[20:], ctx.Account.Sequence)
+	vaultKeylet := keylet.Keylet{Key: vaultKey, Type: 0x0084}
+	vaultData := make([]byte, 64)
+	copy(vaultData[:20], ctx.AccountID[:])
+	if err := ctx.View.Insert(vaultKeylet, vaultData); err != nil {
+		return TefINTERNAL
+	}
+	ctx.Account.OwnerCount++
+	return TesSUCCESS
+}
+
+// Apply applies the VaultSet transaction to the ledger.
+func (v *VaultSet) Apply(ctx *ApplyContext) Result {
+	if v.VaultID == "" {
+		return TemINVALID
+	}
+	vaultBytes, err := hex.DecodeString(v.VaultID)
+	if err != nil || len(vaultBytes) != 32 {
+		return TemINVALID
+	}
+	var vaultKey [32]byte
+	copy(vaultKey[:], vaultBytes)
+	vaultKeylet := keylet.Keylet{Key: vaultKey, Type: 0x0084}
+	_, err = ctx.View.Read(vaultKeylet)
+	if err != nil {
+		return TecNO_ENTRY
+	}
+	return TesSUCCESS
+}
+
+// Apply applies the VaultDelete transaction to the ledger.
+func (v *VaultDelete) Apply(ctx *ApplyContext) Result {
+	if v.VaultID == "" {
+		return TemINVALID
+	}
+	vaultBytes, err := hex.DecodeString(v.VaultID)
+	if err != nil || len(vaultBytes) != 32 {
+		return TemINVALID
+	}
+	var vaultKey [32]byte
+	copy(vaultKey[:], vaultBytes)
+	vaultKeylet := keylet.Keylet{Key: vaultKey, Type: 0x0084}
+	if err := ctx.View.Erase(vaultKeylet); err != nil {
+		return TecNO_ENTRY
+	}
+	if ctx.Account.OwnerCount > 0 {
+		ctx.Account.OwnerCount--
+	}
+	return TesSUCCESS
+}
+
+// Apply applies the VaultDeposit transaction to the ledger.
+func (v *VaultDeposit) Apply(ctx *ApplyContext) Result {
+	if v.VaultID == "" || v.Amount.Value == "" {
+		return TemINVALID
+	}
+	vaultBytes, err := hex.DecodeString(v.VaultID)
+	if err != nil || len(vaultBytes) != 32 {
+		return TemINVALID
+	}
+	var vaultKey [32]byte
+	copy(vaultKey[:], vaultBytes)
+	vaultKeylet := keylet.Keylet{Key: vaultKey, Type: 0x0084}
+	_, err = ctx.View.Read(vaultKeylet)
+	if err != nil {
+		return TecNO_ENTRY
+	}
+	if v.Amount.Currency == "" || v.Amount.Currency == "XRP" {
+		amount, err := strconv.ParseUint(v.Amount.Value, 10, 64)
+		if err != nil {
+			return TemINVALID
+		}
+		if ctx.Account.Balance < amount {
+			return TecINSUFFICIENT_FUNDS
+		}
+		ctx.Account.Balance -= amount
+	}
+	return TesSUCCESS
+}
+
+// Apply applies the VaultWithdraw transaction to the ledger.
+func (v *VaultWithdraw) Apply(ctx *ApplyContext) Result {
+	if v.VaultID == "" || v.Amount.Value == "" {
+		return TemINVALID
+	}
+	vaultBytes, err := hex.DecodeString(v.VaultID)
+	if err != nil || len(vaultBytes) != 32 {
+		return TemINVALID
+	}
+	var vaultKey [32]byte
+	copy(vaultKey[:], vaultBytes)
+	vaultKeylet := keylet.Keylet{Key: vaultKey, Type: 0x0084}
+	_, err = ctx.View.Read(vaultKeylet)
+	if err != nil {
+		return TecNO_ENTRY
+	}
+	if v.Amount.Currency == "" || v.Amount.Currency == "XRP" {
+		amount, err := strconv.ParseUint(v.Amount.Value, 10, 64)
+		if err != nil {
+			return TemINVALID
+		}
+		ctx.Account.Balance += amount
+	}
+	return TesSUCCESS
+}
+
+// Apply applies the VaultClawback transaction to the ledger.
+func (v *VaultClawback) Apply(ctx *ApplyContext) Result {
+	if v.VaultID == "" || v.Holder == "" {
+		return TemINVALID
+	}
+	vaultBytes, err := hex.DecodeString(v.VaultID)
+	if err != nil || len(vaultBytes) != 32 {
+		return TemINVALID
+	}
+	var vaultKey [32]byte
+	copy(vaultKey[:], vaultBytes)
+	vaultKeylet := keylet.Keylet{Key: vaultKey, Type: 0x0084}
+	_, err = ctx.View.Read(vaultKeylet)
+	if err != nil {
+		return TecNO_ENTRY
+	}
+	_, err = decodeAccountID(v.Holder)
+	if err != nil {
+		return TecNO_TARGET
+	}
+	return TesSUCCESS
 }

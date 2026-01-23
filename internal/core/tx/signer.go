@@ -1,6 +1,19 @@
 package tx
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
+)
+
+func init() {
+	Register(TypeSignerListSet, func() Transaction {
+		return &SignerListSet{BaseTx: *NewBaseTx(TypeSignerListSet, "")}
+	})
+	Register(TypeRegularKeySet, func() Transaction {
+		return &SetRegularKey{BaseTx: *NewBaseTx(TypeRegularKeySet, "")}
+	})
+}
 
 // SignerListSet sets or clears a list of signers for multi-signing.
 type SignerListSet struct {
@@ -8,10 +21,10 @@ type SignerListSet struct {
 
 	// SignerQuorum is the target number of signer weights (required)
 	// Set to 0 to delete the signer list
-	SignerQuorum uint32 `json:"SignerQuorum"`
+	SignerQuorum uint32 `json:"SignerQuorum" xrpl:"SignerQuorum"`
 
 	// SignerEntries is the list of signers (optional if deleting)
-	SignerEntries []SignerEntry `json:"SignerEntries,omitempty"`
+	SignerEntries []SignerEntry `json:"SignerEntries,omitempty" xrpl:"SignerEntries,omitempty"`
 }
 
 // SignerEntry represents an entry in a signer list
@@ -97,15 +110,7 @@ func (s *SignerListSet) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (s *SignerListSet) Flatten() (map[string]any, error) {
-	m := s.Common.ToMap()
-
-	m["SignerQuorum"] = s.SignerQuorum
-
-	if len(s.SignerEntries) > 0 {
-		m["SignerEntries"] = s.SignerEntries
-	}
-
-	return m, nil
+	return ReflectFlatten(s)
 }
 
 // AddSigner adds a signer to the list
@@ -123,7 +128,7 @@ type SetRegularKey struct {
 	BaseTx
 
 	// RegularKey is the regular key to set (optional, omit to clear)
-	RegularKey string `json:"RegularKey,omitempty"`
+	RegularKey string `json:"RegularKey,omitempty" xrpl:"RegularKey,omitempty"`
 }
 
 // NewSetRegularKey creates a new SetRegularKey transaction
@@ -145,13 +150,7 @@ func (s *SetRegularKey) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (s *SetRegularKey) Flatten() (map[string]any, error) {
-	m := s.Common.ToMap()
-
-	if s.RegularKey != "" {
-		m["RegularKey"] = s.RegularKey
-	}
-
-	return m, nil
+	return ReflectFlatten(s)
 }
 
 // SetKey sets the regular key
@@ -162,4 +161,53 @@ func (s *SetRegularKey) SetKey(key string) {
 // ClearKey clears the regular key
 func (s *SetRegularKey) ClearKey() {
 	s.RegularKey = ""
+}
+
+// Apply applies the SetRegularKey transaction to ledger state.
+func (s *SetRegularKey) Apply(ctx *ApplyContext) Result {
+	ctx.Account.RegularKey = s.RegularKey
+
+	if s.RegularKey != "" {
+		if _, err := decodeAccountID(s.RegularKey); err != nil {
+			return TemINVALID
+		}
+	}
+
+	return TesSUCCESS
+}
+
+// Apply applies the SignerListSet transaction to ledger state.
+func (sl *SignerListSet) Apply(ctx *ApplyContext) Result {
+	signerListKey := keylet.SignerList(ctx.AccountID)
+
+	if sl.SignerQuorum == 0 {
+		exists, _ := ctx.View.Exists(signerListKey)
+		if exists {
+			if err := ctx.View.Erase(signerListKey); err != nil {
+				return TefINTERNAL
+			}
+			if ctx.Account.OwnerCount > 0 {
+				ctx.Account.OwnerCount--
+			}
+		}
+	} else {
+		signerListData, err := serializeSignerList(sl, ctx.AccountID)
+		if err != nil {
+			return TefINTERNAL
+		}
+
+		exists, _ := ctx.View.Exists(signerListKey)
+		if exists {
+			if err := ctx.View.Update(signerListKey, signerListData); err != nil {
+				return TefINTERNAL
+			}
+		} else {
+			if err := ctx.View.Insert(signerListKey, signerListData); err != nil {
+				return TefINTERNAL
+			}
+			ctx.Account.OwnerCount++
+		}
+	}
+
+	return TesSUCCESS
 }

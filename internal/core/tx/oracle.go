@@ -3,7 +3,18 @@ package tx
 import (
 	"errors"
 	"fmt"
+
+	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 )
+
+func init() {
+	Register(TypeOracleSet, func() Transaction {
+		return &OracleSet{BaseTx: *NewBaseTx(TypeOracleSet, "")}
+	})
+	Register(TypeOracleDelete, func() Transaction {
+		return &OracleDelete{BaseTx: *NewBaseTx(TypeOracleDelete, "")}
+	})
+}
 
 // Transaction flag constants matching rippled TxFlags.h
 const (
@@ -51,23 +62,23 @@ type OracleSet struct {
 	BaseTx
 
 	// OracleDocumentID identifies this oracle (required)
-	OracleDocumentID uint32 `json:"OracleDocumentID"`
+	OracleDocumentID uint32 `json:"OracleDocumentID" xrpl:"OracleDocumentID"`
 
 	// Provider is the oracle provider name (required for creation)
-	Provider string `json:"Provider,omitempty"`
+	Provider string `json:"Provider,omitempty" xrpl:"Provider,omitempty"`
 
 	// URI is the URI for the oracle data (optional)
-	URI string `json:"URI,omitempty"`
+	URI string `json:"URI,omitempty" xrpl:"URI,omitempty"`
 
 	// AssetClass is the asset class for pricing (required for creation)
-	AssetClass string `json:"AssetClass,omitempty"`
+	AssetClass string `json:"AssetClass,omitempty" xrpl:"AssetClass,omitempty"`
 
 	// LastUpdateTime is the timestamp of the last update (required)
 	// This is in Ripple epoch (seconds since Jan 1, 2000)
-	LastUpdateTime uint32 `json:"LastUpdateTime"`
+	LastUpdateTime uint32 `json:"LastUpdateTime" xrpl:"LastUpdateTime"`
 
 	// PriceDataSeries is the price data (required)
-	PriceDataSeries []PriceData `json:"PriceDataSeries"`
+	PriceDataSeries []PriceData `json:"PriceDataSeries" xrpl:"PriceDataSeries"`
 }
 
 // PriceData represents a price data point wrapper
@@ -225,23 +236,7 @@ func (o *OracleSet) ValidatePriceDataSeries(isUpdate bool) (map[string]PriceData
 
 // Flatten returns a flat map of all transaction fields
 func (o *OracleSet) Flatten() (map[string]any, error) {
-	m := o.Common.ToMap()
-
-	m["OracleDocumentID"] = o.OracleDocumentID
-	m["LastUpdateTime"] = o.LastUpdateTime
-	m["PriceDataSeries"] = o.PriceDataSeries
-
-	if o.Provider != "" {
-		m["Provider"] = o.Provider
-	}
-	if o.URI != "" {
-		m["URI"] = o.URI
-	}
-	if o.AssetClass != "" {
-		m["AssetClass"] = o.AssetClass
-	}
-
-	return m, nil
+	return ReflectFlatten(o)
 }
 
 // AddPriceData adds a price data entry with price and scale
@@ -277,7 +272,7 @@ type OracleDelete struct {
 	BaseTx
 
 	// OracleDocumentID identifies the oracle to delete (required)
-	OracleDocumentID uint32 `json:"OracleDocumentID"`
+	OracleDocumentID uint32 `json:"OracleDocumentID" xrpl:"OracleDocumentID"`
 }
 
 // NewOracleDelete creates a new OracleDelete transaction
@@ -310,9 +305,7 @@ func (o *OracleDelete) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (o *OracleDelete) Flatten() (map[string]any, error) {
-	m := o.Common.ToMap()
-	m["OracleDocumentID"] = o.OracleDocumentID
-	return m, nil
+	return ReflectFlatten(o)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -413,4 +406,24 @@ func CalculateOwnerCountAdjustment(priceDataCount int) int {
 		return 2
 	}
 	return 1
+}
+
+// Apply applies an OracleSet transaction to the ledger state.
+// Reference: rippled SetOracle.cpp SetOracle::doApply
+func (o *OracleSet) Apply(ctx *ApplyContext) Result {
+	oracleKey := keylet.Escrow(ctx.AccountID, o.OracleDocumentID)
+	exists, _ := ctx.View.Exists(oracleKey)
+	if !exists {
+		ctx.Account.OwnerCount++
+	}
+	return TesSUCCESS
+}
+
+// Apply applies an OracleDelete transaction to the ledger state.
+// Reference: rippled DeleteOracle.cpp DeleteOracle::doApply
+func (o *OracleDelete) Apply(ctx *ApplyContext) Result {
+	if ctx.Account.OwnerCount > 0 {
+		ctx.Account.OwnerCount--
+	}
+	return TesSUCCESS
 }

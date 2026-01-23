@@ -2,6 +2,24 @@ package tx
 
 import "errors"
 
+func init() {
+	Register(TypeNFTokenMint, func() Transaction {
+		return &NFTokenMint{BaseTx: *NewBaseTx(TypeNFTokenMint, "")}
+	})
+	Register(TypeNFTokenBurn, func() Transaction {
+		return &NFTokenBurn{BaseTx: *NewBaseTx(TypeNFTokenBurn, "")}
+	})
+	Register(TypeNFTokenCreateOffer, func() Transaction {
+		return &NFTokenCreateOffer{BaseTx: *NewBaseTx(TypeNFTokenCreateOffer, "")}
+	})
+	Register(TypeNFTokenCancelOffer, func() Transaction {
+		return &NFTokenCancelOffer{BaseTx: *NewBaseTx(TypeNFTokenCancelOffer, "")}
+	})
+	Register(TypeNFTokenAcceptOffer, func() Transaction {
+		return &NFTokenAcceptOffer{BaseTx: *NewBaseTx(TypeNFTokenAcceptOffer, "")}
+	})
+}
+
 // NFToken constants matching rippled
 const (
 	// maxTransferFee is the maximum transfer fee (50000 = 50%)
@@ -46,25 +64,25 @@ type NFTokenMint struct {
 	BaseTx
 
 	// NFTokenTaxon is the taxon for this token (required)
-	NFTokenTaxon uint32 `json:"NFTokenTaxon"`
+	NFTokenTaxon uint32 `json:"NFTokenTaxon" xrpl:"NFTokenTaxon"`
 
 	// Issuer is the issuer of the token (optional, defaults to Account)
-	Issuer string `json:"Issuer,omitempty"`
+	Issuer string `json:"Issuer,omitempty" xrpl:"Issuer,omitempty"`
 
 	// TransferFee is the fee for secondary sales (0-50000, where 50000 = 50%)
-	TransferFee *uint16 `json:"TransferFee,omitempty"`
+	TransferFee *uint16 `json:"TransferFee,omitempty" xrpl:"TransferFee,omitempty"`
 
 	// URI is the URI for the token metadata (optional)
-	URI string `json:"URI,omitempty"`
+	URI string `json:"URI,omitempty" xrpl:"URI,omitempty"`
 
 	// Amount is the minting price (optional)
-	Amount *Amount `json:"Amount,omitempty"`
+	Amount *Amount `json:"Amount,omitempty" xrpl:"Amount,omitempty,amount"`
 
 	// Destination is the account to receive the minted token (optional)
-	Destination string `json:"Destination,omitempty"`
+	Destination string `json:"Destination,omitempty" xrpl:"Destination,omitempty"`
 
 	// Expiration is when the mint offer expires (optional)
-	Expiration *uint32 `json:"Expiration,omitempty"`
+	Expiration *uint32 `json:"Expiration,omitempty" xrpl:"Expiration,omitempty"`
 }
 
 // NFTokenMint flags
@@ -157,30 +175,7 @@ func (n *NFTokenMint) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (n *NFTokenMint) Flatten() (map[string]any, error) {
-	m := n.Common.ToMap()
-
-	m["NFTokenTaxon"] = n.NFTokenTaxon
-
-	if n.Issuer != "" {
-		m["Issuer"] = n.Issuer
-	}
-	if n.TransferFee != nil {
-		m["TransferFee"] = *n.TransferFee
-	}
-	if n.URI != "" {
-		m["URI"] = n.URI
-	}
-	if n.Amount != nil {
-		m["Amount"] = flattenAmount(*n.Amount)
-	}
-	if n.Destination != "" {
-		m["Destination"] = n.Destination
-	}
-	if n.Expiration != nil {
-		m["Expiration"] = *n.Expiration
-	}
-
-	return m, nil
+	return ReflectFlatten(n)
 }
 
 // SetBurnable makes the token burnable by the issuer
@@ -205,10 +200,10 @@ type NFTokenBurn struct {
 	BaseTx
 
 	// NFTokenID is the ID of the token to burn (required)
-	NFTokenID string `json:"NFTokenID"`
+	NFTokenID string `json:"NFTokenID" xrpl:"NFTokenID"`
 
 	// Owner is the owner of the token (optional, for authorized burns)
-	Owner string `json:"Owner,omitempty"`
+	Owner string `json:"Owner,omitempty" xrpl:"Owner,omitempty"`
 }
 
 // NewNFTokenBurn creates a new NFTokenBurn transaction
@@ -239,15 +234,7 @@ func (n *NFTokenBurn) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (n *NFTokenBurn) Flatten() (map[string]any, error) {
-	m := n.Common.ToMap()
-
-	m["NFTokenID"] = n.NFTokenID
-
-	if n.Owner != "" {
-		m["Owner"] = n.Owner
-	}
-
-	return m, nil
+	return ReflectFlatten(n)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -260,19 +247,19 @@ type NFTokenCreateOffer struct {
 	BaseTx
 
 	// NFTokenID is the ID of the token (required)
-	NFTokenID string `json:"NFTokenID"`
+	NFTokenID string `json:"NFTokenID" xrpl:"NFTokenID"`
 
 	// Amount is the price for the offer (required)
-	Amount Amount `json:"Amount"`
+	Amount Amount `json:"Amount" xrpl:"Amount,amount"`
 
 	// Owner is the owner of the token (required for buy offers)
-	Owner string `json:"Owner,omitempty"`
+	Owner string `json:"Owner,omitempty" xrpl:"Owner,omitempty"`
 
 	// Destination is who can accept this offer (optional)
-	Destination string `json:"Destination,omitempty"`
+	Destination string `json:"Destination,omitempty" xrpl:"Destination,omitempty"`
 
 	// Expiration is when the offer expires (optional)
-	Expiration *uint32 `json:"Expiration,omitempty"`
+	Expiration *uint32 `json:"Expiration,omitempty" xrpl:"Expiration,omitempty"`
 }
 
 // NFTokenCreateOffer flags
@@ -389,22 +376,7 @@ func getNFTokenFlags(nftokenID string) uint16 {
 
 // Flatten returns a flat map of all transaction fields
 func (n *NFTokenCreateOffer) Flatten() (map[string]any, error) {
-	m := n.Common.ToMap()
-
-	m["NFTokenID"] = n.NFTokenID
-	m["Amount"] = flattenAmount(n.Amount)
-
-	if n.Owner != "" {
-		m["Owner"] = n.Owner
-	}
-	if n.Destination != "" {
-		m["Destination"] = n.Destination
-	}
-	if n.Expiration != nil {
-		m["Expiration"] = *n.Expiration
-	}
-
-	return m, nil
+	return ReflectFlatten(n)
 }
 
 // SetSellOffer marks this as a sell offer
@@ -423,7 +395,7 @@ type NFTokenCancelOffer struct {
 	BaseTx
 
 	// NFTokenOffers is the list of offer IDs to cancel (required)
-	NFTokenOffers []string `json:"NFTokenOffers"`
+	NFTokenOffers []string `json:"NFTokenOffers" xrpl:"NFTokenOffers"`
 }
 
 // NewNFTokenCancelOffer creates a new NFTokenCancelOffer transaction
@@ -475,9 +447,7 @@ func (n *NFTokenCancelOffer) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (n *NFTokenCancelOffer) Flatten() (map[string]any, error) {
-	m := n.Common.ToMap()
-	m["NFTokenOffers"] = n.NFTokenOffers
-	return m, nil
+	return ReflectFlatten(n)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -490,13 +460,13 @@ type NFTokenAcceptOffer struct {
 	BaseTx
 
 	// NFTokenSellOffer is the sell offer to accept (optional)
-	NFTokenSellOffer string `json:"NFTokenSellOffer,omitempty"`
+	NFTokenSellOffer string `json:"NFTokenSellOffer,omitempty" xrpl:"NFTokenSellOffer,omitempty"`
 
 	// NFTokenBuyOffer is the buy offer to accept (optional)
-	NFTokenBuyOffer string `json:"NFTokenBuyOffer,omitempty"`
+	NFTokenBuyOffer string `json:"NFTokenBuyOffer,omitempty" xrpl:"NFTokenBuyOffer,omitempty"`
 
 	// NFTokenBrokerFee is the broker fee for brokered sales (optional)
-	NFTokenBrokerFee *Amount `json:"NFTokenBrokerFee,omitempty"`
+	NFTokenBrokerFee *Amount `json:"NFTokenBrokerFee,omitempty" xrpl:"NFTokenBrokerFee,omitempty,amount"`
 }
 
 // NFTokenAcceptOffer has no transaction flags
@@ -559,19 +529,7 @@ func (n *NFTokenAcceptOffer) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (n *NFTokenAcceptOffer) Flatten() (map[string]any, error) {
-	m := n.Common.ToMap()
-
-	if n.NFTokenSellOffer != "" {
-		m["NFTokenSellOffer"] = n.NFTokenSellOffer
-	}
-	if n.NFTokenBuyOffer != "" {
-		m["NFTokenBuyOffer"] = n.NFTokenBuyOffer
-	}
-	if n.NFTokenBrokerFee != nil {
-		m["NFTokenBrokerFee"] = flattenAmount(*n.NFTokenBrokerFee)
-	}
-
-	return m, nil
+	return ReflectFlatten(n)
 }
 
 // SetSellOffer sets the sell offer to accept

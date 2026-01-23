@@ -3,17 +3,34 @@ package tx
 import (
 	"errors"
 	"strconv"
+
+	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 )
+
+func init() {
+	Register(TypeDepositPreauth, func() Transaction {
+		return &DepositPreauth{BaseTx: *NewBaseTx(TypeDepositPreauth, "")}
+	})
+	Register(TypeAccountDelete, func() Transaction {
+		return &AccountDelete{BaseTx: *NewBaseTx(TypeAccountDelete, "")}
+	})
+	Register(TypeTicketCreate, func() Transaction {
+		return &TicketCreate{BaseTx: *NewBaseTx(TypeTicketCreate, "")}
+	})
+	Register(TypeClawback, func() Transaction {
+		return &Clawback{BaseTx: *NewBaseTx(TypeClawback, "")}
+	})
+}
 
 // DepositPreauth preauthorizes an account for direct deposits.
 type DepositPreauth struct {
 	BaseTx
 
 	// Authorize is the account to preauthorize (mutually exclusive with Unauthorize)
-	Authorize string `json:"Authorize,omitempty"`
+	Authorize string `json:"Authorize,omitempty" xrpl:"Authorize,omitempty"`
 
 	// Unauthorize is the account to remove preauthorization (mutually exclusive with Authorize)
-	Unauthorize string `json:"Unauthorize,omitempty"`
+	Unauthorize string `json:"Unauthorize,omitempty" xrpl:"Unauthorize,omitempty"`
 }
 
 // NewDepositPreauth creates a new DepositPreauth transaction
@@ -56,16 +73,7 @@ func (d *DepositPreauth) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (d *DepositPreauth) Flatten() (map[string]any, error) {
-	m := d.Common.ToMap()
-
-	if d.Authorize != "" {
-		m["Authorize"] = d.Authorize
-	}
-	if d.Unauthorize != "" {
-		m["Unauthorize"] = d.Unauthorize
-	}
-
-	return m, nil
+	return ReflectFlatten(d)
 }
 
 // SetAuthorize sets the account to authorize
@@ -85,10 +93,10 @@ type AccountDelete struct {
 	BaseTx
 
 	// Destination is the account to receive remaining XRP (required)
-	Destination string `json:"Destination"`
+	Destination string `json:"Destination" xrpl:"Destination"`
 
 	// DestinationTag is an arbitrary tag for the destination (optional)
-	DestinationTag *uint32 `json:"DestinationTag,omitempty"`
+	DestinationTag *uint32 `json:"DestinationTag,omitempty" xrpl:"DestinationTag,omitempty"`
 }
 
 // NewAccountDelete creates a new AccountDelete transaction
@@ -124,15 +132,7 @@ func (a *AccountDelete) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (a *AccountDelete) Flatten() (map[string]any, error) {
-	m := a.Common.ToMap()
-
-	m["Destination"] = a.Destination
-
-	if a.DestinationTag != nil {
-		m["DestinationTag"] = *a.DestinationTag
-	}
-
-	return m, nil
+	return ReflectFlatten(a)
 }
 
 // TicketCreate creates tickets for future transactions.
@@ -140,7 +140,7 @@ type TicketCreate struct {
 	BaseTx
 
 	// TicketCount is the number of tickets to create (required, 1-250)
-	TicketCount uint32 `json:"TicketCount"`
+	TicketCount uint32 `json:"TicketCount" xrpl:"TicketCount"`
 }
 
 // NewTicketCreate creates a new TicketCreate transaction
@@ -171,9 +171,7 @@ func (t *TicketCreate) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (t *TicketCreate) Flatten() (map[string]any, error) {
-	m := t.Common.ToMap()
-	m["TicketCount"] = t.TicketCount
-	return m, nil
+	return ReflectFlatten(t)
 }
 
 // Clawback flag mask
@@ -198,10 +196,10 @@ type Clawback struct {
 
 	// Amount is the amount to claw back (required)
 	// For IOU clawback, the issuer field specifies the holder
-	Amount Amount `json:"Amount"`
+	Amount Amount `json:"Amount" xrpl:"Amount,amount"`
 
 	// Holder is the MPToken holder (optional, for MPToken clawback only)
-	Holder string `json:"Holder,omitempty"`
+	Holder string `json:"Holder,omitempty" xrpl:"Holder,omitempty"`
 }
 
 // NewClawback creates a new Clawback transaction for IOU tokens
@@ -288,12 +286,7 @@ func parseAmountValue(value string) (float64, error) {
 
 // Flatten returns a flat map of all transaction fields
 func (c *Clawback) Flatten() (map[string]any, error) {
-	m := c.Common.ToMap()
-	m["Amount"] = flattenAmount(c.Amount)
-	if c.Holder != "" {
-		m["Holder"] = c.Holder
-	}
-	return m, nil
+	return ReflectFlatten(c)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -303,4 +296,156 @@ func (c *Clawback) RequiredAmendments() []string {
 		return []string{AmendmentClawback, AmendmentMPTokensV1}
 	}
 	return []string{AmendmentClawback}
+}
+
+// Apply applies the DepositPreauth transaction to ledger state.
+func (d *DepositPreauth) Apply(ctx *ApplyContext) Result {
+	if d.Authorize != "" {
+		authorizedID, err := decodeAccountID(d.Authorize)
+		if err != nil {
+			return TemINVALID
+		}
+
+		authorizedKey := keylet.Account(authorizedID)
+		exists, _ := ctx.View.Exists(authorizedKey)
+		if !exists {
+			return TecNO_TARGET
+		}
+
+		preauthKey := keylet.DepositPreauth(ctx.AccountID, authorizedID)
+
+		exists, _ = ctx.View.Exists(preauthKey)
+		if exists {
+			return TecDUPLICATE
+		}
+
+		preauthData, err := serializeDepositPreauth(ctx.AccountID, authorizedID)
+		if err != nil {
+			return TefINTERNAL
+		}
+
+		if err := ctx.View.Insert(preauthKey, preauthData); err != nil {
+			return TefINTERNAL
+		}
+
+		ctx.Account.OwnerCount++
+	} else if d.Unauthorize != "" {
+		unauthorizedID, err := decodeAccountID(d.Unauthorize)
+		if err != nil {
+			return TemINVALID
+		}
+
+		preauthKey := keylet.DepositPreauth(ctx.AccountID, unauthorizedID)
+
+		exists, _ := ctx.View.Exists(preauthKey)
+		if !exists {
+			return TecNO_ENTRY
+		}
+
+		if err := ctx.View.Erase(preauthKey); err != nil {
+			return TefINTERNAL
+		}
+
+		if ctx.Account.OwnerCount > 0 {
+			ctx.Account.OwnerCount--
+		}
+	}
+
+	return TesSUCCESS
+}
+
+// Apply applies the AccountDelete transaction to ledger state.
+func (a *AccountDelete) Apply(ctx *ApplyContext) Result {
+	if ctx.Account.OwnerCount > 0 {
+		return TecHAS_OBLIGATIONS
+	}
+
+	if !ctx.Config.Standalone && ctx.Account.Sequence < 256 {
+		return TefTOO_BIG
+	}
+
+	destID, err := decodeAccountID(a.Destination)
+	if err != nil {
+		return TemINVALID
+	}
+
+	destKey := keylet.Account(destID)
+	destData, err := ctx.View.Read(destKey)
+	if err != nil {
+		return TecNO_DST
+	}
+
+	destAccount, err := parseAccountRoot(destData)
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	destAccount.Balance += ctx.Account.Balance
+
+	destUpdatedData, err := serializeAccountRoot(destAccount)
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	if err := ctx.View.Update(destKey, destUpdatedData); err != nil {
+		return TefINTERNAL
+	}
+
+	srcKey := keylet.Account(ctx.AccountID)
+	if err := ctx.View.Erase(srcKey); err != nil {
+		return TefINTERNAL
+	}
+
+	ctx.Account.Balance = 0
+
+	return TesSUCCESS
+}
+
+// Apply applies the TicketCreate transaction to ledger state.
+func (t *TicketCreate) Apply(ctx *ApplyContext) Result {
+	for i := uint32(0); i < t.TicketCount; i++ {
+		ticketSeq := ctx.Account.Sequence + i
+
+		ticketKey := keylet.Ticket(ctx.AccountID, ticketSeq)
+
+		ticketData, err := serializeTicket(ctx.AccountID, ticketSeq)
+		if err != nil {
+			return TefINTERNAL
+		}
+
+		if err := ctx.View.Insert(ticketKey, ticketData); err != nil {
+			return TefINTERNAL
+		}
+	}
+
+	ctx.Account.OwnerCount += t.TicketCount
+	ctx.Account.Sequence += t.TicketCount
+
+	return TesSUCCESS
+}
+
+// Apply applies the Clawback transaction to ledger state.
+func (c *Clawback) Apply(ctx *ApplyContext) Result {
+	if c.Amount.Value == "" {
+		return TemINVALID
+	}
+
+	holderID, err := decodeAccountID(c.Amount.Issuer)
+	if err != nil {
+		return TecNO_TARGET
+	}
+
+	trustKey := keylet.Line(holderID, ctx.AccountID, c.Amount.Currency)
+
+	trustData, err := ctx.View.Read(trustKey)
+	if err != nil {
+		return TecNO_LINE
+	}
+
+	_, err = parseRippleState(trustData)
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	return TesSUCCESS
 }

@@ -2,39 +2,45 @@ package tx
 
 import "errors"
 
+func init() {
+	Register(TypeAccountSet, func() Transaction {
+		return &AccountSet{BaseTx: *NewBaseTx(TypeAccountSet, "")}
+	})
+}
+
 // AccountSet modifies the properties of an account in the XRP Ledger.
 type AccountSet struct {
 	BaseTx
 
 	// ClearFlag is a flag to disable for this account
-	ClearFlag *uint32 `json:"ClearFlag,omitempty"`
+	ClearFlag *uint32 `json:"ClearFlag,omitempty" xrpl:"ClearFlag,omitempty"`
 
 	// Domain is the domain associated with this account (hex-encoded)
-	Domain string `json:"Domain,omitempty"`
+	Domain string `json:"Domain,omitempty" xrpl:"Domain,omitempty"`
 
 	// EmailHash is MD5 hash of email for Gravatar (deprecated)
-	EmailHash string `json:"EmailHash,omitempty"`
+	EmailHash string `json:"EmailHash,omitempty" xrpl:"EmailHash,omitempty"`
 
 	// MessageKey is a public key for sending encrypted messages
-	MessageKey string `json:"MessageKey,omitempty"`
+	MessageKey string `json:"MessageKey,omitempty" xrpl:"MessageKey,omitempty"`
 
 	// NFTokenMinter is the account allowed to mint NFTokens for this account
-	NFTokenMinter string `json:"NFTokenMinter,omitempty"`
+	NFTokenMinter string `json:"NFTokenMinter,omitempty" xrpl:"NFTokenMinter,omitempty"`
 
 	// SetFlag is a flag to enable for this account
-	SetFlag *uint32 `json:"SetFlag,omitempty"`
+	SetFlag *uint32 `json:"SetFlag,omitempty" xrpl:"SetFlag,omitempty"`
 
 	// TransferRate is the fee for transferring issued currencies (1e9 = 100%)
-	TransferRate *uint32 `json:"TransferRate,omitempty"`
+	TransferRate *uint32 `json:"TransferRate,omitempty" xrpl:"TransferRate,omitempty"`
 
 	// TickSize is the tick size for offers involving this account's currencies
-	TickSize *uint8 `json:"TickSize,omitempty"`
+	TickSize *uint8 `json:"TickSize,omitempty" xrpl:"TickSize,omitempty"`
 
 	// WalletLocator is arbitrary hex data (deprecated)
-	WalletLocator string `json:"WalletLocator,omitempty"`
+	WalletLocator string `json:"WalletLocator,omitempty" xrpl:"WalletLocator,omitempty"`
 
 	// WalletSize is arbitrary data (deprecated)
-	WalletSize *uint32 `json:"WalletSize,omitempty"`
+	WalletSize *uint32 `json:"WalletSize,omitempty" xrpl:"WalletSize,omitempty"`
 }
 
 // Common transaction flags
@@ -218,40 +224,7 @@ func (a *AccountSet) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (a *AccountSet) Flatten() (map[string]any, error) {
-	m := a.Common.ToMap()
-
-	if a.ClearFlag != nil {
-		m["ClearFlag"] = *a.ClearFlag
-	}
-	if a.Domain != "" {
-		m["Domain"] = a.Domain
-	}
-	if a.EmailHash != "" {
-		m["EmailHash"] = a.EmailHash
-	}
-	if a.MessageKey != "" {
-		m["MessageKey"] = a.MessageKey
-	}
-	if a.NFTokenMinter != "" {
-		m["NFTokenMinter"] = a.NFTokenMinter
-	}
-	if a.SetFlag != nil {
-		m["SetFlag"] = *a.SetFlag
-	}
-	if a.TransferRate != nil {
-		m["TransferRate"] = *a.TransferRate
-	}
-	if a.TickSize != nil {
-		m["TickSize"] = *a.TickSize
-	}
-	if a.WalletLocator != "" {
-		m["WalletLocator"] = a.WalletLocator
-	}
-	if a.WalletSize != nil {
-		m["WalletSize"] = *a.WalletSize
-	}
-
-	return m, nil
+	return ReflectFlatten(a)
 }
 
 // EnableRequireDest enables the require destination tag flag
@@ -270,4 +243,195 @@ func (a *AccountSet) EnableDepositAuth() {
 func (a *AccountSet) EnableDefaultRipple() {
 	flag := AccountSetFlagDefaultRipple
 	a.SetFlag = &flag
+}
+
+// Apply applies the AccountSet transaction to ledger state.
+func (a *AccountSet) Apply(ctx *ApplyContext) Result {
+	account := ctx.Account
+	uFlagsIn := account.Flags
+	uFlagsOut := uFlagsIn
+
+	var uSetFlag, uClearFlag uint32
+	if a.SetFlag != nil {
+		uSetFlag = *a.SetFlag
+	}
+	if a.ClearFlag != nil {
+		uClearFlag = *a.ClearFlag
+	}
+
+	// RequireAuth
+	if uSetFlag == AccountSetFlagRequireAuth && (uFlagsIn&lsfRequireAuth) == 0 {
+		uFlagsOut |= lsfRequireAuth
+	}
+	if uClearFlag == AccountSetFlagRequireAuth && (uFlagsIn&lsfRequireAuth) != 0 {
+		uFlagsOut &^= lsfRequireAuth
+	}
+
+	// RequireDestTag
+	if uSetFlag == AccountSetFlagRequireDest && (uFlagsIn&lsfRequireDestTag) == 0 {
+		uFlagsOut |= lsfRequireDestTag
+	}
+	if uClearFlag == AccountSetFlagRequireDest && (uFlagsIn&lsfRequireDestTag) != 0 {
+		uFlagsOut &^= lsfRequireDestTag
+	}
+
+	// DisallowXRP
+	if uSetFlag == AccountSetFlagDisallowXRP && (uFlagsIn&lsfDisallowXRP) == 0 {
+		uFlagsOut |= lsfDisallowXRP
+	}
+	if uClearFlag == AccountSetFlagDisallowXRP && (uFlagsIn&lsfDisallowXRP) != 0 {
+		uFlagsOut &^= lsfDisallowXRP
+	}
+
+	// DisableMaster
+	if uSetFlag == AccountSetFlagDisableMaster && (uFlagsIn&lsfDisableMaster) == 0 {
+		if account.RegularKey == "" {
+			return TecNO_ALTERNATIVE_KEY
+		}
+		uFlagsOut |= lsfDisableMaster
+	}
+	if uClearFlag == AccountSetFlagDisableMaster && (uFlagsIn&lsfDisableMaster) != 0 {
+		uFlagsOut &^= lsfDisableMaster
+	}
+
+	// DefaultRipple
+	if uSetFlag == AccountSetFlagDefaultRipple {
+		uFlagsOut |= lsfDefaultRipple
+	} else if uClearFlag == AccountSetFlagDefaultRipple {
+		uFlagsOut &^= lsfDefaultRipple
+	}
+
+	// NoFreeze (cannot be cleared once set)
+	if uSetFlag == AccountSetFlagNoFreeze {
+		uFlagsOut |= lsfNoFreeze
+	}
+
+	// GlobalFreeze
+	if uSetFlag == AccountSetFlagGlobalFreeze {
+		uFlagsOut |= lsfGlobalFreeze
+	}
+	if uSetFlag != AccountSetFlagGlobalFreeze && uClearFlag == AccountSetFlagGlobalFreeze {
+		if (uFlagsOut & lsfNoFreeze) == 0 {
+			uFlagsOut &^= lsfGlobalFreeze
+		}
+	}
+
+	// AccountTxnID
+	if uSetFlag == AccountSetFlagAccountTxnID {
+		var zeroHash [32]byte
+		if account.AccountTxnID == zeroHash {
+			account.AccountTxnID = ctx.TxHash
+		}
+	}
+	if uClearFlag == AccountSetFlagAccountTxnID {
+		account.AccountTxnID = [32]byte{}
+	}
+
+	// DepositAuth
+	if uSetFlag == AccountSetFlagDepositAuth {
+		uFlagsOut |= lsfDepositAuth
+	} else if uClearFlag == AccountSetFlagDepositAuth {
+		uFlagsOut &^= lsfDepositAuth
+	}
+
+	// AuthorizedNFTokenMinter
+	if uSetFlag == AccountSetFlagAuthorizedNFTokenMinter {
+		if a.NFTokenMinter != "" {
+			account.NFTokenMinter = a.NFTokenMinter
+		}
+	}
+	if uClearFlag == AccountSetFlagAuthorizedNFTokenMinter {
+		account.NFTokenMinter = ""
+	}
+
+	// Disallow Incoming flags
+	if uSetFlag == AccountSetFlagDisallowIncomingNFTokenOffer {
+		uFlagsOut |= lsfDisallowIncomingNFTokenOffer
+	} else if uClearFlag == AccountSetFlagDisallowIncomingNFTokenOffer {
+		uFlagsOut &^= lsfDisallowIncomingNFTokenOffer
+	}
+
+	if uSetFlag == AccountSetFlagDisallowIncomingCheck {
+		uFlagsOut |= lsfDisallowIncomingCheck
+	} else if uClearFlag == AccountSetFlagDisallowIncomingCheck {
+		uFlagsOut &^= lsfDisallowIncomingCheck
+	}
+
+	if uSetFlag == AccountSetFlagDisallowIncomingPayChan {
+		uFlagsOut |= lsfDisallowIncomingPayChan
+	} else if uClearFlag == AccountSetFlagDisallowIncomingPayChan {
+		uFlagsOut &^= lsfDisallowIncomingPayChan
+	}
+
+	if uSetFlag == AccountSetFlagDisallowIncomingTrustline {
+		uFlagsOut |= lsfDisallowIncomingTrustline
+	} else if uClearFlag == AccountSetFlagDisallowIncomingTrustline {
+		uFlagsOut &^= lsfDisallowIncomingTrustline
+	}
+
+	// AllowTrustLineClawback (cannot be cleared once set)
+	if uSetFlag == AccountSetFlagAllowTrustLineClawback {
+		uFlagsOut |= lsfAllowTrustLineClawback
+	}
+
+	// Domain
+	if a.Domain != "" {
+		account.Domain = a.Domain
+	}
+
+	// EmailHash
+	if a.EmailHash != "" {
+		if a.EmailHash == "00000000000000000000000000000000" {
+			account.EmailHash = ""
+		} else {
+			account.EmailHash = a.EmailHash
+		}
+	}
+
+	// MessageKey
+	if a.MessageKey != "" {
+		account.MessageKey = a.MessageKey
+	}
+
+	// WalletLocator
+	if a.WalletLocator != "" {
+		if isZeroHash256(a.WalletLocator) {
+			account.WalletLocator = ""
+		} else {
+			account.WalletLocator = a.WalletLocator
+		}
+	}
+
+	// TransferRate
+	if a.TransferRate != nil {
+		rate := *a.TransferRate
+		if rate != 0 && rate < qualityOne {
+			return TemBAD_TRANSFER_RATE
+		}
+		if rate > 2*qualityOne {
+			return TemBAD_TRANSFER_RATE
+		}
+		if rate == 0 || rate == qualityOne {
+			account.TransferRate = 0
+		} else {
+			account.TransferRate = rate
+		}
+	}
+
+	// TickSize
+	if a.TickSize != nil {
+		tickSize := *a.TickSize
+		if tickSize == 0 || tickSize == 15 {
+			account.TickSize = 0
+		} else {
+			account.TickSize = tickSize
+		}
+	}
+
+	// Update flags if changed
+	if uFlagsIn != uFlagsOut {
+		account.Flags = uFlagsOut
+	}
+
+	return TesSUCCESS
 }

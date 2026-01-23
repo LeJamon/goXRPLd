@@ -2,6 +2,30 @@ package tx
 
 import "errors"
 
+func init() {
+	Register(TypeAMMCreate, func() Transaction {
+		return &AMMCreate{BaseTx: *NewBaseTx(TypeAMMCreate, "")}
+	})
+	Register(TypeAMMDeposit, func() Transaction {
+		return &AMMDeposit{BaseTx: *NewBaseTx(TypeAMMDeposit, "")}
+	})
+	Register(TypeAMMWithdraw, func() Transaction {
+		return &AMMWithdraw{BaseTx: *NewBaseTx(TypeAMMWithdraw, "")}
+	})
+	Register(TypeAMMVote, func() Transaction {
+		return &AMMVote{BaseTx: *NewBaseTx(TypeAMMVote, "")}
+	})
+	Register(TypeAMMBid, func() Transaction {
+		return &AMMBid{BaseTx: *NewBaseTx(TypeAMMBid, "")}
+	})
+	Register(TypeAMMDelete, func() Transaction {
+		return &AMMDelete{BaseTx: *NewBaseTx(TypeAMMDelete, "")}
+	})
+	Register(TypeAMMClawback, func() Transaction {
+		return &AMMClawback{BaseTx: *NewBaseTx(TypeAMMClawback, "")}
+	})
+}
+
 // AMM constants matching rippled
 const (
 	// TRADING_FEE_THRESHOLD is the maximum trading fee (1000 = 1%)
@@ -54,13 +78,13 @@ type AMMCreate struct {
 	BaseTx
 
 	// Amount is the first asset to deposit (required)
-	Amount Amount `json:"Amount"`
+	Amount Amount `json:"Amount" xrpl:"Amount,amount"`
 
 	// Amount2 is the second asset to deposit (required)
-	Amount2 Amount `json:"Amount2"`
+	Amount2 Amount `json:"Amount2" xrpl:"Amount2,amount"`
 
 	// TradingFee is the fee in basis points (0-1000, where 1000 = 1%)
-	TradingFee uint16 `json:"TradingFee"`
+	TradingFee uint16 `json:"TradingFee" xrpl:"TradingFee"`
 }
 
 // NewAMMCreate creates a new AMMCreate transaction
@@ -143,13 +167,7 @@ func validateAMMAmount(amt Amount) error {
 
 // Flatten returns a flat map of all transaction fields
 func (a *AMMCreate) Flatten() (map[string]any, error) {
-	m := a.Common.ToMap()
-
-	m["Amount"] = flattenAmount(a.Amount)
-	m["Amount2"] = flattenAmount(a.Amount2)
-	m["TradingFee"] = a.TradingFee
-
-	return m, nil
+	return ReflectFlatten(a)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -162,26 +180,26 @@ type AMMDeposit struct {
 	BaseTx
 
 	// Asset identifies the first asset of the AMM (required)
-	Asset Asset `json:"Asset"`
+	Asset Asset `json:"Asset" xrpl:"Asset"`
 
 	// Asset2 identifies the second asset of the AMM (required)
-	Asset2 Asset `json:"Asset2"`
+	Asset2 Asset `json:"Asset2" xrpl:"Asset2"`
 
 	// Amount is the amount of first asset to deposit (optional)
-	Amount *Amount `json:"Amount,omitempty"`
+	Amount *Amount `json:"Amount,omitempty" xrpl:"Amount,omitempty,amount"`
 
 	// Amount2 is the amount of second asset to deposit (optional)
-	Amount2 *Amount `json:"Amount2,omitempty"`
+	Amount2 *Amount `json:"Amount2,omitempty" xrpl:"Amount2,omitempty,amount"`
 
 	// EPrice is the effective price limit (optional)
-	EPrice *Amount `json:"EPrice,omitempty"`
+	EPrice *Amount `json:"EPrice,omitempty" xrpl:"EPrice,omitempty,amount"`
 
 	// LPTokenOut is the LP tokens to receive (optional)
-	LPTokenOut *Amount `json:"LPTokenOut,omitempty"`
+	LPTokenOut *Amount `json:"LPTokenOut,omitempty" xrpl:"LPTokenOut,omitempty,amount"`
 
 	// TradingFee is the trading fee for tfTwoAssetIfEmpty mode (optional)
 	// Only used when depositing into an empty AMM
-	TradingFee uint16 `json:"TradingFee,omitempty"`
+	TradingFee uint16 `json:"TradingFee,omitempty" xrpl:"TradingFee,omitempty"`
 }
 
 // Asset identifies an asset in an AMM
@@ -268,25 +286,7 @@ func (a *AMMDeposit) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (a *AMMDeposit) Flatten() (map[string]any, error) {
-	m := a.Common.ToMap()
-
-	m["Asset"] = a.Asset
-	m["Asset2"] = a.Asset2
-
-	if a.Amount != nil {
-		m["Amount"] = flattenAmount(*a.Amount)
-	}
-	if a.Amount2 != nil {
-		m["Amount2"] = flattenAmount(*a.Amount2)
-	}
-	if a.EPrice != nil {
-		m["EPrice"] = flattenAmount(*a.EPrice)
-	}
-	if a.LPTokenOut != nil {
-		m["LPTokenOut"] = flattenAmount(*a.LPTokenOut)
-	}
-
-	return m, nil
+	return ReflectFlatten(a)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -299,22 +299,22 @@ type AMMWithdraw struct {
 	BaseTx
 
 	// Asset identifies the first asset of the AMM (required)
-	Asset Asset `json:"Asset"`
+	Asset Asset `json:"Asset" xrpl:"Asset"`
 
 	// Asset2 identifies the second asset of the AMM (required)
-	Asset2 Asset `json:"Asset2"`
+	Asset2 Asset `json:"Asset2" xrpl:"Asset2"`
 
 	// Amount is the amount of first asset to withdraw (optional)
-	Amount *Amount `json:"Amount,omitempty"`
+	Amount *Amount `json:"Amount,omitempty" xrpl:"Amount,omitempty,amount"`
 
 	// Amount2 is the amount of second asset to withdraw (optional)
-	Amount2 *Amount `json:"Amount2,omitempty"`
+	Amount2 *Amount `json:"Amount2,omitempty" xrpl:"Amount2,omitempty,amount"`
 
 	// EPrice is the effective price limit (optional)
-	EPrice *Amount `json:"EPrice,omitempty"`
+	EPrice *Amount `json:"EPrice,omitempty" xrpl:"EPrice,omitempty,amount"`
 
 	// LPTokenIn is the LP tokens to burn (optional)
-	LPTokenIn *Amount `json:"LPTokenIn,omitempty"`
+	LPTokenIn *Amount `json:"LPTokenIn,omitempty" xrpl:"LPTokenIn,omitempty,amount"`
 }
 
 // NewAMMWithdraw creates a new AMMWithdraw transaction
@@ -445,25 +445,7 @@ func (a *AMMWithdraw) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (a *AMMWithdraw) Flatten() (map[string]any, error) {
-	m := a.Common.ToMap()
-
-	m["Asset"] = a.Asset
-	m["Asset2"] = a.Asset2
-
-	if a.Amount != nil {
-		m["Amount"] = flattenAmount(*a.Amount)
-	}
-	if a.Amount2 != nil {
-		m["Amount2"] = flattenAmount(*a.Amount2)
-	}
-	if a.EPrice != nil {
-		m["EPrice"] = flattenAmount(*a.EPrice)
-	}
-	if a.LPTokenIn != nil {
-		m["LPTokenIn"] = flattenAmount(*a.LPTokenIn)
-	}
-
-	return m, nil
+	return ReflectFlatten(a)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -476,13 +458,13 @@ type AMMVote struct {
 	BaseTx
 
 	// Asset identifies the first asset of the AMM (required)
-	Asset Asset `json:"Asset"`
+	Asset Asset `json:"Asset" xrpl:"Asset"`
 
 	// Asset2 identifies the second asset of the AMM (required)
-	Asset2 Asset `json:"Asset2"`
+	Asset2 Asset `json:"Asset2" xrpl:"Asset2"`
 
 	// TradingFee is the proposed fee in basis points (0-1000)
-	TradingFee uint16 `json:"TradingFee"`
+	TradingFee uint16 `json:"TradingFee" xrpl:"TradingFee"`
 }
 
 // NewAMMVote creates a new AMMVote transaction
@@ -531,13 +513,7 @@ func (a *AMMVote) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (a *AMMVote) Flatten() (map[string]any, error) {
-	m := a.Common.ToMap()
-
-	m["Asset"] = a.Asset
-	m["Asset2"] = a.Asset2
-	m["TradingFee"] = a.TradingFee
-
-	return m, nil
+	return ReflectFlatten(a)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -550,19 +526,19 @@ type AMMBid struct {
 	BaseTx
 
 	// Asset identifies the first asset of the AMM (required)
-	Asset Asset `json:"Asset"`
+	Asset Asset `json:"Asset" xrpl:"Asset"`
 
 	// Asset2 identifies the second asset of the AMM (required)
-	Asset2 Asset `json:"Asset2"`
+	Asset2 Asset `json:"Asset2" xrpl:"Asset2"`
 
 	// BidMin is the minimum bid amount (optional)
-	BidMin *Amount `json:"BidMin,omitempty"`
+	BidMin *Amount `json:"BidMin,omitempty" xrpl:"BidMin,omitempty,amount"`
 
 	// BidMax is the maximum bid amount (optional)
-	BidMax *Amount `json:"BidMax,omitempty"`
+	BidMax *Amount `json:"BidMax,omitempty" xrpl:"BidMax,omitempty,amount"`
 
 	// AuthAccounts are accounts to authorize for discounted trading (optional)
-	AuthAccounts []AuthAccount `json:"AuthAccounts,omitempty"`
+	AuthAccounts []AuthAccount `json:"AuthAccounts,omitempty" xrpl:"AuthAccounts,omitempty"`
 }
 
 // AuthAccount is an authorized account for AMM slot trading
@@ -651,22 +627,7 @@ func (a *AMMBid) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (a *AMMBid) Flatten() (map[string]any, error) {
-	m := a.Common.ToMap()
-
-	m["Asset"] = a.Asset
-	m["Asset2"] = a.Asset2
-
-	if a.BidMin != nil {
-		m["BidMin"] = flattenAmount(*a.BidMin)
-	}
-	if a.BidMax != nil {
-		m["BidMax"] = flattenAmount(*a.BidMax)
-	}
-	if len(a.AuthAccounts) > 0 {
-		m["AuthAccounts"] = a.AuthAccounts
-	}
-
-	return m, nil
+	return ReflectFlatten(a)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -679,10 +640,10 @@ type AMMDelete struct {
 	BaseTx
 
 	// Asset identifies the first asset of the AMM (required)
-	Asset Asset `json:"Asset"`
+	Asset Asset `json:"Asset" xrpl:"Asset"`
 
 	// Asset2 identifies the second asset of the AMM (required)
-	Asset2 Asset `json:"Asset2"`
+	Asset2 Asset `json:"Asset2" xrpl:"Asset2"`
 }
 
 // NewAMMDelete creates a new AMMDelete transaction
@@ -725,12 +686,7 @@ func (a *AMMDelete) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (a *AMMDelete) Flatten() (map[string]any, error) {
-	m := a.Common.ToMap()
-
-	m["Asset"] = a.Asset
-	m["Asset2"] = a.Asset2
-
-	return m, nil
+	return ReflectFlatten(a)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -743,16 +699,16 @@ type AMMClawback struct {
 	BaseTx
 
 	// Holder is the account holding LP tokens (required)
-	Holder string `json:"Holder"`
+	Holder string `json:"Holder" xrpl:"Holder"`
 
 	// Asset identifies the first asset of the AMM (required)
-	Asset Asset `json:"Asset"`
+	Asset Asset `json:"Asset" xrpl:"Asset"`
 
 	// Asset2 identifies the second asset of the AMM (required)
-	Asset2 Asset `json:"Asset2"`
+	Asset2 Asset `json:"Asset2" xrpl:"Asset2"`
 
 	// Amount is the amount to claw back (optional)
-	Amount *Amount `json:"Amount,omitempty"`
+	Amount *Amount `json:"Amount,omitempty" xrpl:"Amount,omitempty,amount"`
 }
 
 // NewAMMClawback creates a new AMMClawback transaction
@@ -835,17 +791,7 @@ func (a *AMMClawback) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (a *AMMClawback) Flatten() (map[string]any, error) {
-	m := a.Common.ToMap()
-
-	m["Holder"] = a.Holder
-	m["Asset"] = a.Asset
-	m["Asset2"] = a.Asset2
-
-	if a.Amount != nil {
-		m["Amount"] = flattenAmount(*a.Amount)
-	}
-
-	return m, nil
+	return ReflectFlatten(a)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type

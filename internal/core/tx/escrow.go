@@ -2,27 +2,39 @@ package tx
 
 import "errors"
 
+func init() {
+	Register(TypeEscrowCreate, func() Transaction {
+		return &EscrowCreate{BaseTx: *NewBaseTx(TypeEscrowCreate, "")}
+	})
+	Register(TypeEscrowFinish, func() Transaction {
+		return &EscrowFinish{BaseTx: *NewBaseTx(TypeEscrowFinish, "")}
+	})
+	Register(TypeEscrowCancel, func() Transaction {
+		return &EscrowCancel{BaseTx: *NewBaseTx(TypeEscrowCancel, "")}
+	})
+}
+
 // EscrowCreate creates an escrow that holds XRP until certain conditions are met.
 type EscrowCreate struct {
 	BaseTx
 
 	// Amount is the amount of XRP to escrow (required)
-	Amount Amount `json:"Amount"`
+	Amount Amount `json:"Amount" xrpl:"Amount,amount"`
 
 	// Destination is the account to receive the XRP (required)
-	Destination string `json:"Destination"`
+	Destination string `json:"Destination" xrpl:"Destination"`
 
 	// DestinationTag is an arbitrary tag for the destination (optional)
-	DestinationTag *uint32 `json:"DestinationTag,omitempty"`
+	DestinationTag *uint32 `json:"DestinationTag,omitempty" xrpl:"DestinationTag,omitempty"`
 
 	// CancelAfter is the time after which the escrow can be cancelled (optional)
-	CancelAfter *uint32 `json:"CancelAfter,omitempty"`
+	CancelAfter *uint32 `json:"CancelAfter,omitempty" xrpl:"CancelAfter,omitempty"`
 
 	// FinishAfter is the time after which the escrow can be finished (optional)
-	FinishAfter *uint32 `json:"FinishAfter,omitempty"`
+	FinishAfter *uint32 `json:"FinishAfter,omitempty" xrpl:"FinishAfter,omitempty"`
 
 	// Condition is the crypto-condition that must be fulfilled (optional)
-	Condition string `json:"Condition,omitempty"`
+	Condition string `json:"Condition,omitempty" xrpl:"Condition,omitempty"`
 }
 
 // NewEscrowCreate creates a new EscrowCreate transaction
@@ -94,25 +106,7 @@ func (e *EscrowCreate) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (e *EscrowCreate) Flatten() (map[string]any, error) {
-	m := e.Common.ToMap()
-
-	m["Amount"] = e.Amount.Value // XRP only, so just the drops string
-	m["Destination"] = e.Destination
-
-	if e.DestinationTag != nil {
-		m["DestinationTag"] = *e.DestinationTag
-	}
-	if e.CancelAfter != nil {
-		m["CancelAfter"] = *e.CancelAfter
-	}
-	if e.FinishAfter != nil {
-		m["FinishAfter"] = *e.FinishAfter
-	}
-	if e.Condition != "" {
-		m["Condition"] = e.Condition
-	}
-
-	return m, nil
+	return ReflectFlatten(e)
 }
 
 // EscrowFinish completes an escrow, releasing the escrowed XRP.
@@ -120,16 +114,16 @@ type EscrowFinish struct {
 	BaseTx
 
 	// Owner is the account that created the escrow (required)
-	Owner string `json:"Owner"`
+	Owner string `json:"Owner" xrpl:"Owner"`
 
 	// OfferSequence is the sequence number of the EscrowCreate (required)
-	OfferSequence uint32 `json:"OfferSequence"`
+	OfferSequence uint32 `json:"OfferSequence" xrpl:"OfferSequence"`
 
 	// Condition is the crypto-condition that was fulfilled (optional)
-	Condition string `json:"Condition,omitempty"`
+	Condition string `json:"Condition,omitempty" xrpl:"Condition,omitempty"`
 
 	// Fulfillment is the fulfillment for the condition (optional)
-	Fulfillment string `json:"Fulfillment,omitempty"`
+	Fulfillment string `json:"Fulfillment,omitempty" xrpl:"Fulfillment,omitempty"`
 }
 
 // NewEscrowFinish creates a new EscrowFinish transaction
@@ -170,19 +164,7 @@ func (e *EscrowFinish) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (e *EscrowFinish) Flatten() (map[string]any, error) {
-	m := e.Common.ToMap()
-
-	m["Owner"] = e.Owner
-	m["OfferSequence"] = e.OfferSequence
-
-	if e.Condition != "" {
-		m["Condition"] = e.Condition
-	}
-	if e.Fulfillment != "" {
-		m["Fulfillment"] = e.Fulfillment
-	}
-
-	return m, nil
+	return ReflectFlatten(e)
 }
 
 // EscrowCancel cancels an escrow, returning the escrowed XRP to the creator.
@@ -190,10 +172,10 @@ type EscrowCancel struct {
 	BaseTx
 
 	// Owner is the account that created the escrow (required)
-	Owner string `json:"Owner"`
+	Owner string `json:"Owner" xrpl:"Owner"`
 
 	// OfferSequence is the sequence number of the EscrowCreate (required)
-	OfferSequence uint32 `json:"OfferSequence"`
+	OfferSequence uint32 `json:"OfferSequence" xrpl:"OfferSequence"`
 }
 
 // NewEscrowCancel creates a new EscrowCancel transaction
@@ -226,10 +208,5 @@ func (e *EscrowCancel) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (e *EscrowCancel) Flatten() (map[string]any, error) {
-	m := e.Common.ToMap()
-
-	m["Owner"] = e.Owner
-	m["OfferSequence"] = e.OfferSequence
-
-	return m, nil
+	return ReflectFlatten(e)
 }

@@ -2,19 +2,25 @@ package tx
 
 import "errors"
 
+func init() {
+	Register(TypeTrustSet, func() Transaction {
+		return &TrustSet{BaseTx: *NewBaseTx(TypeTrustSet, "")}
+	})
+}
+
 // TrustSet creates or modifies a trust line between two accounts.
 type TrustSet struct {
 	BaseTx
 
 	// LimitAmount defines the trust line (required)
 	// The issuer field is the account to trust
-	LimitAmount Amount `json:"LimitAmount"`
+	LimitAmount Amount `json:"LimitAmount" xrpl:"LimitAmount,amount"`
 
 	// QualityIn is the quality in (1e9 = 1:1) - optional
-	QualityIn *uint32 `json:"QualityIn,omitempty"`
+	QualityIn *uint32 `json:"QualityIn,omitempty" xrpl:"QualityIn,omitempty"`
 
 	// QualityOut is the quality out (1e9 = 1:1) - optional
-	QualityOut *uint32 `json:"QualityOut,omitempty"`
+	QualityOut *uint32 `json:"QualityOut,omitempty" xrpl:"QualityOut,omitempty"`
 }
 
 // TrustSet transaction flags
@@ -134,18 +140,7 @@ func (t *TrustSet) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (t *TrustSet) Flatten() (map[string]any, error) {
-	m := t.Common.ToMap()
-
-	m["LimitAmount"] = flattenAmount(t.LimitAmount)
-
-	if t.QualityIn != nil {
-		m["QualityIn"] = *t.QualityIn
-	}
-	if t.QualityOut != nil {
-		m["QualityOut"] = *t.QualityOut
-	}
-
-	return m, nil
+	return ReflectFlatten(t)
 }
 
 // SetNoRipple sets the no ripple flag on this trust line

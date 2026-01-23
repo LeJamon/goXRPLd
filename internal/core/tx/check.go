@@ -2,24 +2,36 @@ package tx
 
 import "errors"
 
+func init() {
+	Register(TypeCheckCreate, func() Transaction {
+		return &CheckCreate{BaseTx: *NewBaseTx(TypeCheckCreate, "")}
+	})
+	Register(TypeCheckCash, func() Transaction {
+		return &CheckCash{BaseTx: *NewBaseTx(TypeCheckCash, "")}
+	})
+	Register(TypeCheckCancel, func() Transaction {
+		return &CheckCancel{BaseTx: *NewBaseTx(TypeCheckCancel, "")}
+	})
+}
+
 // CheckCreate creates a Check that can be cashed by the destination.
 type CheckCreate struct {
 	BaseTx
 
 	// Destination is the account that can cash the check (required)
-	Destination string `json:"Destination"`
+	Destination string `json:"Destination" xrpl:"Destination"`
 
 	// SendMax is the maximum amount that can be debited from the sender (required)
-	SendMax Amount `json:"SendMax"`
+	SendMax Amount `json:"SendMax" xrpl:"SendMax,amount"`
 
 	// DestinationTag is an arbitrary tag for the destination (optional)
-	DestinationTag *uint32 `json:"DestinationTag,omitempty"`
+	DestinationTag *uint32 `json:"DestinationTag,omitempty" xrpl:"DestinationTag,omitempty"`
 
 	// Expiration is the time when the check expires (optional)
-	Expiration *uint32 `json:"Expiration,omitempty"`
+	Expiration *uint32 `json:"Expiration,omitempty" xrpl:"Expiration,omitempty"`
 
 	// InvoiceID is a 256-bit hash for identifying this check (optional)
-	InvoiceID string `json:"InvoiceID,omitempty"`
+	InvoiceID string `json:"InvoiceID,omitempty" xrpl:"InvoiceID,omitempty"`
 }
 
 // NewCheckCreate creates a new CheckCreate transaction
@@ -60,22 +72,7 @@ func (c *CheckCreate) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (c *CheckCreate) Flatten() (map[string]any, error) {
-	m := c.Common.ToMap()
-
-	m["Destination"] = c.Destination
-	m["SendMax"] = flattenAmount(c.SendMax)
-
-	if c.DestinationTag != nil {
-		m["DestinationTag"] = *c.DestinationTag
-	}
-	if c.Expiration != nil {
-		m["Expiration"] = *c.Expiration
-	}
-	if c.InvoiceID != "" {
-		m["InvoiceID"] = c.InvoiceID
-	}
-
-	return m, nil
+	return ReflectFlatten(c)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
@@ -88,13 +85,13 @@ type CheckCash struct {
 	BaseTx
 
 	// CheckID is the ID of the check to cash (required)
-	CheckID string `json:"CheckID"`
+	CheckID string `json:"CheckID" xrpl:"CheckID"`
 
 	// Amount is the exact amount to receive (optional, mutually exclusive with DeliverMin)
-	Amount *Amount `json:"Amount,omitempty"`
+	Amount *Amount `json:"Amount,omitempty" xrpl:"Amount,omitempty,amount"`
 
 	// DeliverMin is the minimum amount to receive (optional, mutually exclusive with Amount)
-	DeliverMin *Amount `json:"DeliverMin,omitempty"`
+	DeliverMin *Amount `json:"DeliverMin,omitempty" xrpl:"DeliverMin,omitempty,amount"`
 }
 
 // NewCheckCash creates a new CheckCash transaction
@@ -137,18 +134,7 @@ func (c *CheckCash) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (c *CheckCash) Flatten() (map[string]any, error) {
-	m := c.Common.ToMap()
-
-	m["CheckID"] = c.CheckID
-
-	if c.Amount != nil {
-		m["Amount"] = flattenAmount(*c.Amount)
-	}
-	if c.DeliverMin != nil {
-		m["DeliverMin"] = flattenAmount(*c.DeliverMin)
-	}
-
-	return m, nil
+	return ReflectFlatten(c)
 }
 
 // SetExactAmount sets the exact amount to receive
@@ -173,7 +159,7 @@ type CheckCancel struct {
 	BaseTx
 
 	// CheckID is the ID of the check to cancel (required)
-	CheckID string `json:"CheckID"`
+	CheckID string `json:"CheckID" xrpl:"CheckID"`
 }
 
 // NewCheckCancel creates a new CheckCancel transaction
@@ -204,9 +190,7 @@ func (c *CheckCancel) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (c *CheckCancel) Flatten() (map[string]any, error) {
-	m := c.Common.ToMap()
-	m["CheckID"] = c.CheckID
-	return m, nil
+	return ReflectFlatten(c)
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
