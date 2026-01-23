@@ -205,6 +205,13 @@ func ParseFromBinary(blob []byte) (Transaction, error) {
 		return nil, errors.New("failed to decode binary transaction: " + err.Error())
 	}
 
+	// Extract present fields from the decoded map
+	// This is used to distinguish between absent fields and empty values
+	presentFields := make(map[string]bool)
+	for key := range jsonMap {
+		presentFields[key] = true
+	}
+
 	// Convert map to JSON bytes
 	jsonBytes, err := json.Marshal(jsonMap)
 	if err != nil {
@@ -212,5 +219,13 @@ func ParseFromBinary(blob []byte) (Transaction, error) {
 	}
 
 	// Parse the JSON into a transaction
-	return ParseJSON(jsonBytes)
+	tx, err := ParseJSON(jsonBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	// Set the present fields on the parsed transaction
+	tx.GetCommon().SetPresentFields(presentFields)
+
+	return tx, nil
 }

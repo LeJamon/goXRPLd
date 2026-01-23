@@ -262,6 +262,8 @@ func (r Result) String() string {
 		return "tecARRAY_EMPTY"
 	case TecARRAY_TOO_LARGE:
 		return "tecARRAY_TOO_LARGE"
+	case TemEMPTY_DID:
+		return "temEMPTY_DID"
 	case TefFAILURE:
 		return "tefFAILURE"
 	case TefALREADY:

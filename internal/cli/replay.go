@@ -12,6 +12,7 @@ import (
 
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/header"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
@@ -357,6 +358,9 @@ func executeReplayVerbose(state *StateFixture, env *EnvFixture, txs *TxsFixture,
 	// Step 4: Apply transactions
 	fmt.Printf("[4/5] Applying %d transactions...\n", len(txs.Transactions))
 
+	// Build amendment rules from the amendments list in the fixture
+	rules := buildRulesFromAmendments(env.Amendments)
+
 	engineConfig := tx.EngineConfig{
 		BaseFee:                   env.Fees.BaseFee,
 		ReserveBase:               env.Fees.ReserveBase,
@@ -364,6 +368,7 @@ func executeReplayVerbose(state *StateFixture, env *EnvFixture, txs *TxsFixture,
 		LedgerSequence:            env.LedgerIndex,
 		SkipSignatureVerification: true,
 		Standalone:                true,
+		Rules:                     rules,
 	}
 
 	engine := tx.NewEngine(openLedger, engineConfig)
@@ -420,6 +425,7 @@ func executeReplayVerbose(state *StateFixture, env *EnvFixture, txs *TxsFixture,
 		}
 
 		applyResult := blockTxResult.ApplyResult
+		txInfo.Hash = hex.EncodeToString(blockTxResult.Hash[:])
 		txInfo.Result = applyResult.Result.String()
 		txInfo.ResultCode = int(applyResult.Result)
 		txInfo.Applied = applyResult.Applied
@@ -790,6 +796,35 @@ func decodeEntryData(hexData string) map[string]interface{} {
 	return decoded
 }
 
+// buildRulesFromAmendments creates amendment rules from a list of amendment names or IDs.
+// If the list is empty, returns empty rules (no amendments enabled).
+func buildRulesFromAmendments(amendments []string) *amendment.Rules {
+	if len(amendments) == 0 {
+		return amendment.EmptyRules()
+	}
+
+	builder := amendment.NewRulesBuilder()
+	for _, amendmentStr := range amendments {
+		// Try to find by name first
+		feature := amendment.GetFeatureByName(amendmentStr)
+		if feature != nil {
+			builder.Enable(feature.ID)
+			continue
+		}
+
+		// Try to parse as hex ID
+		if len(amendmentStr) == 64 {
+			var id [32]byte
+			decoded, err := hex.DecodeString(amendmentStr)
+			if err == nil && len(decoded) == 32 {
+				copy(id[:], decoded)
+				builder.Enable(id)
+			}
+		}
+	}
+	return builder.Build()
+}
+
 func hexToHash32(s string) ([32]byte, error) {
 	var hash [32]byte
 	decoded, err := hex.DecodeString(s)
@@ -831,9 +866,13 @@ func writeResultJSON(path string, result *ReplayResult) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// updateSkipList updates the LedgerHashes entry (skip list) with the parent hash.
+// updateSkipList updates the LedgerHashes entries (skip lists) with the parent hash.
 // This mirrors rippled's Ledger::updateSkipList() function.
-// It maintains a rolling list of up to 256 recent ledger hashes.
+// There are TWO skip lists:
+// 1. "Every 256th ledger" skip list: Updated only when (prevIndex & 0xff) == 0,
+//    using keylet::skip(prevIndex). Records a hash of every 256th ledger.
+// 2. "Rolling 256" skip list: Always updated, using keylet::skip().
+//    Maintains a rolling window of the most recent 256 ledger hashes.
 func updateSkipList(l *ledger.Ledger, parentHash [32]byte, currentSeq uint32) error {
 	if currentSeq == 0 {
 		// Genesis ledger has no parent
@@ -842,14 +881,31 @@ func updateSkipList(l *ledger.Ledger, parentHash [32]byte, currentSeq uint32) er
 
 	prevIndex := currentSeq - 1
 
-	// Get the LedgerHashes keylet
-	k := keylet.LedgerHashes()
+	// 1. Update record of every 256th ledger (only when prevIndex is a multiple of 256)
+	if (prevIndex & 0xff) == 0 {
+		k := keylet.LedgerHashesForSeq(prevIndex)
+		if err := updateOrCreateSkipListEntry(l, k, parentHash, prevIndex, false); err != nil {
+			return fmt.Errorf("updating every-256th skip list: %w", err)
+		}
+	}
 
+	// 2. Update record of past 256 ledgers (always)
+	k := keylet.LedgerHashes()
+	if err := updateOrCreateSkipListEntry(l, k, parentHash, prevIndex, true); err != nil {
+		return fmt.Errorf("updating rolling-256 skip list: %w", err)
+	}
+
+	return nil
+}
+
+// updateOrCreateSkipListEntry updates or creates a skip list entry.
+// If rolling is true, it removes the oldest hash when at 256 hashes (rolling window).
+// If rolling is false, it just appends (for the every-256th ledger skip list).
+func updateOrCreateSkipListEntry(l *ledger.Ledger, k keylet.Keylet, parentHash [32]byte, prevIndex uint32, rolling bool) error {
 	// Read the existing entry
 	data, err := l.Read(k)
 	if err != nil {
-		// Entry doesn't exist - this shouldn't happen in a proper state
-		// but we can handle it by creating a new entry
+		// Entry doesn't exist - create a new one
 		return createSkipListEntry(l, k, parentHash, prevIndex)
 	}
 
@@ -878,8 +934,8 @@ func updateSkipList(l *ledger.Ledger, parentHash [32]byte, currentSeq uint32) er
 		}
 	}
 
-	// If we have 256 hashes, remove the oldest (first)
-	if len(hashes) >= 256 {
+	// If rolling and we have 256 hashes, remove the oldest (first)
+	if rolling && len(hashes) >= 256 {
 		hashes = hashes[1:]
 	}
 

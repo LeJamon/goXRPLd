@@ -28,7 +28,7 @@ type PayChannelData struct {
 }
 
 // applyPaymentChannelCreate applies a PaymentChannelCreate transaction
-func (e *Engine) applyPaymentChannelCreate(tx *PaymentChannelCreate, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyPaymentChannelCreate(tx *PaymentChannelCreate, account *AccountRoot, view LedgerView) Result {
 	// Parse the amount
 	amount, err := strconv.ParseUint(tx.Amount.Value, 10, 64)
 	if err != nil {
@@ -47,7 +47,7 @@ func (e *Engine) applyPaymentChannelCreate(tx *PaymentChannelCreate, account *Ac
 	}
 
 	destKey := keylet.Account(destID)
-	exists, _ := e.view.Exists(destKey)
+	exists, _ := view.Exists(destKey)
 	if !exists {
 		return TecNO_DST
 	}
@@ -67,34 +67,19 @@ func (e *Engine) applyPaymentChannelCreate(tx *PaymentChannelCreate, account *Ac
 		return TefINTERNAL
 	}
 
-	// Insert channel
-	if err := e.view.Insert(channelKey, channelData); err != nil {
+	// Insert channel - creation tracked automatically by ApplyStateTable
+	if err := view.Insert(channelKey, channelData); err != nil {
 		return TefINTERNAL
 	}
 
 	// Increase owner count
 	account.OwnerCount++
 
-	// Record in metadata
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "CreatedNode",
-		LedgerEntryType: "PayChannel",
-		LedgerIndex:     hex.EncodeToString(channelKey.Key[:]),
-		NewFields: map[string]any{
-			"Account":     tx.Account,
-			"Destination": tx.Destination,
-			"Amount":      tx.Amount.Value,
-			"Balance":     "0",
-			"SettleDelay": tx.SettleDelay,
-			"PublicKey":   tx.PublicKey,
-		},
-	})
-
 	return TesSUCCESS
 }
 
 // applyPaymentChannelFund applies a PaymentChannelFund transaction
-func (e *Engine) applyPaymentChannelFund(tx *PaymentChannelFund, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyPaymentChannelFund(tx *PaymentChannelFund, account *AccountRoot, view LedgerView) Result {
 	// Parse channel ID
 	channelID, err := hex.DecodeString(tx.Channel)
 	if err != nil || len(channelID) != 32 {
@@ -106,7 +91,7 @@ func (e *Engine) applyPaymentChannelFund(tx *PaymentChannelFund, account *Accoun
 	channelKey := keylet.Keylet{Key: channelKeyBytes}
 
 	// Read channel
-	channelData, err := e.view.Read(channelKey)
+	channelData, err := view.Read(channelKey)
 	if err != nil {
 		return TecNO_TARGET
 	}
@@ -145,31 +130,21 @@ func (e *Engine) applyPaymentChannelFund(tx *PaymentChannelFund, account *Accoun
 		channel.Expiration = *tx.Expiration
 	}
 
-	// Serialize updated channel
+	// Serialize updated channel - modification tracked automatically by ApplyStateTable
 	updatedChannelData, err := serializePayChannelFromData(channel)
 	if err != nil {
 		return TefINTERNAL
 	}
 
-	if err := e.view.Update(channelKey, updatedChannelData); err != nil {
+	if err := view.Update(channelKey, updatedChannelData); err != nil {
 		return TefINTERNAL
 	}
-
-	// Record in metadata
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "PayChannel",
-		LedgerIndex:     hex.EncodeToString(channelKey.Key[:]),
-		FinalFields: map[string]any{
-			"Amount": strconv.FormatUint(channel.Amount, 10),
-		},
-	})
 
 	return TesSUCCESS
 }
 
 // applyPaymentChannelClaim applies a PaymentChannelClaim transaction
-func (e *Engine) applyPaymentChannelClaim(tx *PaymentChannelClaim, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyPaymentChannelClaim(tx *PaymentChannelClaim, account *AccountRoot, view LedgerView) Result {
 	// Parse channel ID
 	channelID, err := hex.DecodeString(tx.Channel)
 	if err != nil || len(channelID) != 32 {
@@ -181,7 +156,7 @@ func (e *Engine) applyPaymentChannelClaim(tx *PaymentChannelClaim, account *Acco
 	channelKey := keylet.Keylet{Key: channelKeyBytes}
 
 	// Read channel
-	channelData, err := e.view.Read(channelKey)
+	channelData, err := view.Read(channelKey)
 	if err != nil {
 		return TecNO_TARGET
 	}
@@ -222,7 +197,7 @@ func (e *Engine) applyPaymentChannelClaim(tx *PaymentChannelClaim, account *Acco
 
 		// Transfer to destination
 		destKey := keylet.Account(channel.DestinationID)
-		destData, err := e.view.Read(destKey)
+		destData, err := view.Read(destKey)
 		if err != nil {
 			return TecNO_DST
 		}
@@ -235,25 +210,15 @@ func (e *Engine) applyPaymentChannelClaim(tx *PaymentChannelClaim, account *Acco
 		destAccount.Balance += transferAmount
 		channel.Balance = claimBalance
 
+		// Update destination - modification tracked automatically by ApplyStateTable
 		destUpdatedData, err := serializeAccountRoot(destAccount)
 		if err != nil {
 			return TefINTERNAL
 		}
 
-		if err := e.view.Update(destKey, destUpdatedData); err != nil {
+		if err := view.Update(destKey, destUpdatedData); err != nil {
 			return TefINTERNAL
 		}
-
-		destAddr, _ := encodeAccountID(channel.DestinationID)
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "ModifiedNode",
-			LedgerEntryType: "AccountRoot",
-			LedgerIndex:     hex.EncodeToString(destKey.Key[:]),
-			FinalFields: map[string]any{
-				"Account": destAddr,
-				"Balance": strconv.FormatUint(destAccount.Balance, 10),
-			},
-		})
 	}
 
 	// Handle close flag
@@ -265,7 +230,7 @@ func (e *Engine) applyPaymentChannelClaim(tx *PaymentChannelClaim, account *Acco
 		remaining := channel.Amount - channel.Balance
 		if remaining > 0 {
 			ownerKey := keylet.Account(channel.Account)
-			ownerData, err := e.view.Read(ownerKey)
+			ownerData, err := view.Read(ownerKey)
 			if err == nil {
 				ownerAccount, err := parseAccountRoot(ownerData)
 				if err == nil {
@@ -274,40 +239,25 @@ func (e *Engine) applyPaymentChannelClaim(tx *PaymentChannelClaim, account *Acco
 						ownerAccount.OwnerCount--
 					}
 					ownerUpdatedData, _ := serializeAccountRoot(ownerAccount)
-					e.view.Update(ownerKey, ownerUpdatedData)
+					view.Update(ownerKey, ownerUpdatedData)
 				}
 			}
 		}
 
-		// Delete channel
-		if err := e.view.Erase(channelKey); err != nil {
+		// Delete channel - deletion tracked automatically by ApplyStateTable
+		if err := view.Erase(channelKey); err != nil {
 			return TefINTERNAL
 		}
-
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "DeletedNode",
-			LedgerEntryType: "PayChannel",
-			LedgerIndex:     hex.EncodeToString(channelKey.Key[:]),
-		})
 	} else {
-		// Update channel
+		// Update channel - modification tracked automatically by ApplyStateTable
 		updatedChannelData, err := serializePayChannelFromData(channel)
 		if err != nil {
 			return TefINTERNAL
 		}
 
-		if err := e.view.Update(channelKey, updatedChannelData); err != nil {
+		if err := view.Update(channelKey, updatedChannelData); err != nil {
 			return TefINTERNAL
 		}
-
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "ModifiedNode",
-			LedgerEntryType: "PayChannel",
-			LedgerIndex:     hex.EncodeToString(channelKey.Key[:]),
-			FinalFields: map[string]any{
-				"Balance": strconv.FormatUint(channel.Balance, 10),
-			},
-		})
 	}
 
 	return TesSUCCESS

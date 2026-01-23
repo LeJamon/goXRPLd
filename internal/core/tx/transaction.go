@@ -164,6 +164,10 @@ type Common struct {
 
 	// RawBytes stores the original serialized bytes for hash computation
 	RawBytes []byte `json:"-"`
+
+	// PresentFields tracks which fields were present in the original parsed data.
+	// This is used to distinguish between a field being absent vs explicitly set to empty.
+	PresentFields map[string]bool `json:"-"`
 }
 
 // Validate validates the common fields
@@ -175,6 +179,21 @@ func (c *Common) Validate() error {
 		return errors.New("TransactionType is required")
 	}
 	return nil
+}
+
+// hasField checks if a field was present in the original parsed data.
+// This is used to distinguish between a field being absent vs explicitly set to empty.
+// For example, in DIDSet, an empty URI means "clear the field" while absent means "keep existing".
+func (c *Common) hasField(name string) bool {
+	if c.PresentFields == nil {
+		return false
+	}
+	return c.PresentFields[name]
+}
+
+// SetPresentFields sets the map of fields that were present in the original parsed data.
+func (c *Common) SetPresentFields(fields map[string]bool) {
+	c.PresentFields = fields
 }
 
 // GetRawBytes returns the original serialized bytes

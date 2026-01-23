@@ -6,7 +6,6 @@ import (
 	"errors"
 	"sort"
 	"strconv"
-	"strings"
 
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
@@ -145,8 +144,8 @@ type EngineConfig struct {
 	// This is used for checking offer/escrow expiration
 	ParentCloseTime uint32
 
-	// Rules contains the amendment rules for this ledger
-	// Used to check if transactions' required amendments are enabled
+	// Rules contains the amendment rules for this ledger.
+	// If nil, defaults to all amendments enabled (for backwards compatibility).
 	Rules *amendment.Rules
 }
 
@@ -323,6 +322,16 @@ func NewEngine(view LedgerView, config EngineConfig) *Engine {
 	}
 }
 
+// rules returns the amendment rules, defaulting to all amendments enabled if nil.
+// This provides backwards compatibility for code that doesn't set Rules.
+func (e *Engine) rules() *amendment.Rules {
+	if e.config.Rules != nil {
+		return e.config.Rules
+	}
+	// Default to all supported amendments enabled for backwards compatibility
+	return amendment.AllSupportedRules()
+}
+
 // computeTransactionHash computes the hash of a transaction
 // The hash is SHA512Half of the "TXN\x00" prefix + serialized transaction
 func computeTransactionHash(tx Transaction) ([32]byte, error) {
@@ -423,22 +432,6 @@ func (e *Engine) Apply(tx Transaction) ApplyResult {
 
 // preflight performs initial validation on the transaction
 func (e *Engine) preflight(tx Transaction) Result {
-	// Check amendment requirements first (before any other validation)
-	// This matches rippled's behavior where amendment checks are done early
-	if e.config.Rules != nil {
-		requiredAmendments := tx.RequiredAmendments()
-		for _, amendmentName := range requiredAmendments {
-			feature := amendment.GetFeatureByName(amendmentName)
-			if feature == nil {
-				// Unknown amendment - this shouldn't happen but handle gracefully
-				continue
-			}
-			if !e.config.Rules.Enabled(feature.ID) {
-				return TemDISABLED
-			}
-		}
-	}
-
 	// Validate common fields
 	common := tx.GetCommon()
 
@@ -746,12 +739,16 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 	// Store txHash for use by apply functions
 	e.currentTxHash = txHash
 
+	// Create ApplyStateTable to track all changes and auto-generate metadata
+	table := NewApplyStateTable(e.view, txHash, e.config.LedgerSequence)
+
 	// Deduct fee from sender
 	common := tx.GetCommon()
 	accountID, _ := decodeAccountID(common.Account)
 	accountKey := keylet.Account(accountID)
 
-	accountData, err := e.view.Read(accountKey)
+	// Read sender account through the table (tracks it for metadata)
+	accountData, err := table.Read(accountKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -762,11 +759,6 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 	}
 
 	fee := e.calculateFee(tx)
-	previousBalance := account.Balance
-	previousSequence := account.Sequence
-	previousOwnerCount := account.OwnerCount
-	previousTxnID := account.PreviousTxnID
-	previousTxnLgrSeq := account.PreviousTxnLgrSeq
 
 	// Deduct fee and increment sequence
 	account.Balance -= fee
@@ -778,179 +770,158 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 	account.PreviousTxnID = txHash
 	account.PreviousTxnLgrSeq = e.config.LedgerSequence
 
-	// Type-specific application
+	// Type-specific application - all operations go through the table
 	var result Result
 	switch t := tx.(type) {
 	case *Payment:
-		result = e.applyPayment(t, account, metadata)
+		result = e.applyPayment(t, account, metadata, table)
 	case *AccountSet:
-		result = e.applyAccountSet(t, account, metadata)
+		result = e.applyAccountSet(t, account, table)
 	case *TrustSet:
-		result = e.applyTrustSet(t, account, metadata)
+		result = e.applyTrustSet(t, account, table)
 	case *OfferCreate:
-		result = e.applyOfferCreate(t, account, metadata)
+		result = e.applyOfferCreate(t, account, table)
 	case *OfferCancel:
-		result = e.applyOfferCancel(t, account, metadata)
+		result = e.applyOfferCancel(t, account, table)
 	case *SetRegularKey:
-		result = e.applySetRegularKey(t, account, metadata)
+		result = e.applySetRegularKey(t, account, table)
 	case *SignerListSet:
-		result = e.applySignerListSet(t, account, metadata)
+		result = e.applySignerListSet(t, account, table)
 	case *TicketCreate:
-		result = e.applyTicketCreate(t, account, metadata)
+		result = e.applyTicketCreate(t, account, table)
 	case *DepositPreauth:
-		result = e.applyDepositPreauth(t, account, metadata)
+		result = e.applyDepositPreauth(t, account, table)
 	case *AccountDelete:
-		result = e.applyAccountDelete(t, account, metadata)
+		result = e.applyAccountDelete(t, account, table)
 	case *EscrowCreate:
-		result = e.applyEscrowCreate(t, account, metadata)
+		result = e.applyEscrowCreate(t, account, table)
 	case *EscrowFinish:
-		result = e.applyEscrowFinish(t, account, metadata)
+		result = e.applyEscrowFinish(t, account, table)
 	case *EscrowCancel:
-		result = e.applyEscrowCancel(t, account, metadata)
+		result = e.applyEscrowCancel(t, account, table)
 	case *PaymentChannelCreate:
-		result = e.applyPaymentChannelCreate(t, account, metadata)
+		result = e.applyPaymentChannelCreate(t, account, table)
 	case *PaymentChannelFund:
-		result = e.applyPaymentChannelFund(t, account, metadata)
+		result = e.applyPaymentChannelFund(t, account, table)
 	case *PaymentChannelClaim:
-		result = e.applyPaymentChannelClaim(t, account, metadata)
+		result = e.applyPaymentChannelClaim(t, account, table)
 	case *CheckCreate:
-		result = e.applyCheckCreate(t, account, metadata)
+		result = e.applyCheckCreate(t, account, table)
 	case *CheckCash:
-		result = e.applyCheckCash(t, account, metadata)
+		result = e.applyCheckCash(t, account, table)
 	case *CheckCancel:
-		result = e.applyCheckCancel(t, account, metadata)
+		result = e.applyCheckCancel(t, account, table)
 	case *NFTokenMint:
-		result = e.applyNFTokenMint(t, account, metadata)
+		result = e.applyNFTokenMint(t, account, table)
 	case *NFTokenBurn:
-		result = e.applyNFTokenBurn(t, account, metadata)
+		result = e.applyNFTokenBurn(t, account, table)
 	case *NFTokenCreateOffer:
-		result = e.applyNFTokenCreateOffer(t, account, metadata)
+		result = e.applyNFTokenCreateOffer(t, account, table)
 	case *NFTokenCancelOffer:
-		result = e.applyNFTokenCancelOffer(t, account, metadata)
+		result = e.applyNFTokenCancelOffer(t, account, table)
 	case *NFTokenAcceptOffer:
-		result = e.applyNFTokenAcceptOffer(t, account, metadata)
+		result = e.applyNFTokenAcceptOffer(t, account, table)
 	case *AMMCreate:
-		result = e.applyAMMCreate(t, account, metadata)
+		result = e.applyAMMCreate(t, account, table)
 	case *AMMDeposit:
-		result = e.applyAMMDeposit(t, account, metadata)
+		result = e.applyAMMDeposit(t, account, table)
 	case *AMMWithdraw:
-		result = e.applyAMMWithdraw(t, account, metadata)
+		result = e.applyAMMWithdraw(t, account, table)
 	case *AMMVote:
-		result = e.applyAMMVote(t, account, metadata)
+		result = e.applyAMMVote(t, account, table)
 	case *AMMBid:
-		result = e.applyAMMBid(t, account, metadata)
+		result = e.applyAMMBid(t, account, table)
 	case *AMMDelete:
-		result = e.applyAMMDelete(t, account, metadata)
+		result = e.applyAMMDelete(t, account, table)
 	case *AMMClawback:
-		result = e.applyAMMClawback(t, account, metadata)
+		result = e.applyAMMClawback(t, account, table)
 	case *XChainCreateBridge:
-		result = e.applyXChainCreateBridge(t, account, metadata)
+		result = e.applyXChainCreateBridge(t, account, table)
 	case *XChainModifyBridge:
-		result = e.applyXChainModifyBridge(t, account, metadata)
+		result = e.applyXChainModifyBridge(t, account, table)
 	case *XChainCreateClaimID:
-		result = e.applyXChainCreateClaimID(t, account, metadata)
+		result = e.applyXChainCreateClaimID(t, account, table)
 	case *XChainCommit:
-		result = e.applyXChainCommit(t, account, metadata)
+		result = e.applyXChainCommit(t, account, table)
 	case *XChainClaim:
-		result = e.applyXChainClaim(t, account, metadata)
+		result = e.applyXChainClaim(t, account, table)
 	case *XChainAccountCreateCommit:
-		result = e.applyXChainAccountCreateCommit(t, account, metadata)
+		result = e.applyXChainAccountCreateCommit(t, account, table)
 	case *XChainAddClaimAttestation:
-		result = e.applyXChainAddClaimAttestation(t, account, metadata)
+		result = e.applyXChainAddClaimAttestation(t, account, table)
 	case *XChainAddAccountCreateAttestation:
-		result = e.applyXChainAddAccountCreateAttestation(t, account, metadata)
+		result = e.applyXChainAddAccountCreateAttestation(t, account, table)
 	case *DIDSet:
-		result = e.applyDIDSet(t, account, metadata)
+		result = e.applyDIDSet(t, account, table)
 	case *DIDDelete:
-		result = e.applyDIDDelete(t, account, metadata)
+		result = e.applyDIDDelete(t, account, table)
 	case *OracleSet:
-		result = e.applyOracleSet(t, account, metadata)
+		result = e.applyOracleSet(t, account, table)
 	case *OracleDelete:
-		result = e.applyOracleDelete(t, account, metadata)
+		result = e.applyOracleDelete(t, account, table)
 	case *MPTokenIssuanceCreate:
-		result = e.applyMPTokenIssuanceCreate(t, account, metadata)
+		result = e.applyMPTokenIssuanceCreate(t, account, table)
 	case *MPTokenIssuanceDestroy:
-		result = e.applyMPTokenIssuanceDestroy(t, account, metadata)
+		result = e.applyMPTokenIssuanceDestroy(t, account, table)
 	case *MPTokenIssuanceSet:
-		result = e.applyMPTokenIssuanceSet(t, account, metadata)
+		result = e.applyMPTokenIssuanceSet(t, account, table)
 	case *MPTokenAuthorize:
-		result = e.applyMPTokenAuthorize(t, account, metadata)
+		result = e.applyMPTokenAuthorize(t, account, table)
 	case *Clawback:
-		result = e.applyClawback(t, account, metadata)
+		result = e.applyClawback(t, account, table)
 	case *NFTokenModify:
-		result = e.applyNFTokenModify(t, account, metadata)
+		result = e.applyNFTokenModify(t, account, table)
 	case *CredentialCreate:
-		result = e.applyCredentialCreate(t, account, metadata)
+		result = e.applyCredentialCreate(t, account, table)
 	case *CredentialAccept:
-		result = e.applyCredentialAccept(t, account, metadata)
+		result = e.applyCredentialAccept(t, account, table)
 	case *CredentialDelete:
-		result = e.applyCredentialDelete(t, account, metadata)
+		result = e.applyCredentialDelete(t, account, table)
 	case *PermissionedDomainSet:
-		result = e.applyPermissionedDomainSet(t, account, metadata)
+		result = e.applyPermissionedDomainSet(t, account, table)
 	case *PermissionedDomainDelete:
-		result = e.applyPermissionedDomainDelete(t, account, metadata)
+		result = e.applyPermissionedDomainDelete(t, account, table)
 	case *DelegateSet:
-		result = e.applyDelegateSet(t, account, metadata)
+		result = e.applyDelegateSet(t, account, table)
 	case *VaultCreate:
-		result = e.applyVaultCreate(t, account, metadata)
+		result = e.applyVaultCreate(t, account, table)
 	case *VaultSet:
-		result = e.applyVaultSet(t, account, metadata)
+		result = e.applyVaultSet(t, account, table)
 	case *VaultDelete:
-		result = e.applyVaultDelete(t, account, metadata)
+		result = e.applyVaultDelete(t, account, table)
 	case *VaultDeposit:
-		result = e.applyVaultDeposit(t, account, metadata)
+		result = e.applyVaultDeposit(t, account, table)
 	case *VaultWithdraw:
-		result = e.applyVaultWithdraw(t, account, metadata)
+		result = e.applyVaultWithdraw(t, account, table)
 	case *VaultClawback:
-		result = e.applyVaultClawback(t, account, metadata)
+		result = e.applyVaultClawback(t, account, table)
 	case *Batch:
-		result = e.applyBatch(t, account, metadata)
+		result = e.applyBatch(t, account, table)
 	case *LedgerStateFix:
-		result = e.applyLedgerStateFix(t, account, metadata)
+		result = e.applyLedgerStateFix(t, account, table)
 	default:
 		// For unimplemented transaction types, just update the account
 		result = TesSUCCESS
 	}
 
-	// Update the source account
+	// Update the source account through the table
 	updatedData, err := serializeAccountRoot(account)
 	if err != nil {
 		return TefINTERNAL
 	}
 
-	if err := e.view.Update(accountKey, updatedData); err != nil {
+	if err := table.Update(accountKey, updatedData); err != nil {
 		return TefINTERNAL
 	}
 
-	// Record account modification in metadata
-	// Include all fields that rippled marks with sMD_Always (Flags, OwnerCount)
-	// and the previous transaction threading info
-	// IMPORTANT: Sender's node should be FIRST in the list (prepend)
-	prevFields := map[string]any{
-		"Balance":  strconv.FormatUint(previousBalance, 10),
-		"Sequence": previousSequence,
+	// Apply all tracked changes to the base view and generate metadata automatically
+	generatedMeta, err := table.Apply()
+	if err != nil {
+		return TefINTERNAL
 	}
-	// Only include OwnerCount in PreviousFields if it changed
-	if account.OwnerCount != previousOwnerCount {
-		prevFields["OwnerCount"] = previousOwnerCount
-	}
-	senderNode := AffectedNode{
-		NodeType:          "ModifiedNode",
-		LedgerEntryType:   "AccountRoot",
-		LedgerIndex:       strings.ToUpper(hex.EncodeToString(accountKey.Key[:])),
-		PreviousTxnLgrSeq: previousTxnLgrSeq,
-		PreviousTxnID:     strings.ToUpper(hex.EncodeToString(previousTxnID[:])),
-		FinalFields: map[string]any{
-			"Account":    common.Account,
-			"Balance":    strconv.FormatUint(account.Balance, 10),
-			"Flags":      account.Flags,
-			"OwnerCount": account.OwnerCount,
-			"Sequence":   account.Sequence,
-		},
-		PreviousFields: prevFields,
-	}
-	// Prepend sender node (sender should be first in AffectedNodes, like rippled does)
-	metadata.AffectedNodes = append([]AffectedNode{senderNode}, metadata.AffectedNodes...)
+
+	// Copy generated metadata to the output
+	metadata.AffectedNodes = generatedMeta.AffectedNodes
 
 	return result
 }

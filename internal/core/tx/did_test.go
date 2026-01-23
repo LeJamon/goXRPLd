@@ -430,7 +430,7 @@ func TestDIDEntryHelpers(t *testing.T) {
 // TestDIDSetInvalidFlags tests that invalid flags are rejected.
 func TestDIDSetInvalidFlags(t *testing.T) {
 	t.Run("DIDSet with invalid flags", func(t *testing.T) {
-		flags := uint32(0x80000000) // tfUniversal
+		flags := uint32(0x00000001) // non-universal flag
 		did := &DIDSet{
 			BaseTx: BaseTx{
 				Common: Common{
@@ -451,7 +451,7 @@ func TestDIDSetInvalidFlags(t *testing.T) {
 	})
 
 	t.Run("DIDDelete with invalid flags", func(t *testing.T) {
-		flags := uint32(0x80000000) // tfUniversal
+		flags := uint32(0x00000001) // non-universal flag
 		did := &DIDDelete{
 			BaseTx: BaseTx{
 				Common: Common{

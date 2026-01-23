@@ -90,10 +90,25 @@ func Amendments() Keylet {
 }
 
 // LedgerHashes returns the keylet for the skip list / ledger hashes entry.
+// This is the "rolling 256" skip list that tracks the most recent 256 ledger hashes.
 func LedgerHashes() Keylet {
 	return Keylet{
 		Type: entry.TypeLedgerHashes,
 		Key:  indexHash(spaceSkip),
+	}
+}
+
+// LedgerHashesForSeq returns the keylet for a skip list entry that records
+// every 256th ledger hash. This is updated only when (prevIndex & 0xff) == 0.
+// The key is computed using (ledgerSeq >> 16) to group ledgers into chunks of 65536.
+// Reference: rippled Indexes.cpp skip(LedgerIndex ledger)
+func LedgerHashesForSeq(ledgerSeq uint32) Keylet {
+	// Include ledgerSeq >> 16 in the hash
+	seqBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(seqBytes, ledgerSeq>>16)
+	return Keylet{
+		Type: entry.TypeLedgerHashes,
+		Key:  indexHash(spaceSkip, seqBytes),
 	}
 }
 
@@ -403,6 +418,25 @@ func VaultByID(vaultID [32]byte) Keylet {
 	}
 }
 
+// DirPage returns the keylet for a specific page of a directory.
+// Page 0 returns the root directory key unchanged.
+// Other pages use a hash of the root key and page number.
+// This works for any directory type (owner, book, etc.)
+func DirPage(rootKey [32]byte, page uint64) Keylet {
+	if page == 0 {
+		return Keylet{
+			Type: entry.TypeDirectoryNode,
+			Key:  rootKey,
+		}
+	}
+	pageBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(pageBytes, page)
+	return Keylet{
+		Type: entry.TypeDirectoryNode,
+		Key:  indexHash(spaceDirNode, rootKey[:], pageBytes),
+	}
+}
+
 // MakeMPTID creates an MPTokenIssuanceID from sequence and account.
 // The ID is the sequence (big-endian 4 bytes) concatenated with the account ID (20 bytes).
 // Reference: rippled Indexes.cpp makeMptID
@@ -448,9 +482,8 @@ func MPTokenByID(mptID [24]byte, holder [20]byte) Keylet {
 	return MPToken(issuanceKey, holder)
 }
 
-// DID returns the keylet for a DID entry.
+// DID returns the keylet for a DID (Decentralized Identifier) entry.
 // Reference: rippled Indexes.cpp did(AccountID const& account)
-// Each account can have at most one DID entry.
 func DID(accountID [20]byte) Keylet {
 	return Keylet{
 		Type: entry.TypeDID,

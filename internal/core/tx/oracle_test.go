@@ -534,22 +534,22 @@ func TestOracleConstants(t *testing.T) {
 func TestOracleOwnerCountReserve(t *testing.T) {
 	// Owner count is 1 for ≤5 pairs, 2 for >5 pairs
 	t.Run("reserve count for 1 pair", func(t *testing.T) {
-		count := calculateOracleReserveCount(1)
+		count := CalculateOwnerCountAdjustment(1)
 		assert.Equal(t, 1, count)
 	})
 
 	t.Run("reserve count for 5 pairs", func(t *testing.T) {
-		count := calculateOracleReserveCount(5)
+		count := CalculateOwnerCountAdjustment(5)
 		assert.Equal(t, 1, count)
 	})
 
 	t.Run("reserve count for 6 pairs", func(t *testing.T) {
-		count := calculateOracleReserveCount(6)
+		count := CalculateOwnerCountAdjustment(6)
 		assert.Equal(t, 2, count)
 	})
 
 	t.Run("reserve count for 10 pairs", func(t *testing.T) {
-		count := calculateOracleReserveCount(10)
+		count := CalculateOwnerCountAdjustment(10)
 		assert.Equal(t, 2, count)
 	})
 }

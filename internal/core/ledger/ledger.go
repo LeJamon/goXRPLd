@@ -521,6 +521,16 @@ func (l *Ledger) ForEachTransaction(fn func(txHash [32]byte, txData []byte) bool
 	})
 }
 
+// StateMapSnapshot returns a mutable snapshot of the state map.
+// This is useful for continuous replay where the state from one block
+// becomes the input for the next block.
+func (l *Ledger) StateMapSnapshot() (*shamap.SHAMap, error) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	return l.stateMap.Snapshot(true)
+}
+
 // SerializeHeader returns the serialized ledger header bytes
 func (l *Ledger) SerializeHeader() []byte {
 	l.mu.RLock()

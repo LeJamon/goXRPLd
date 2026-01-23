@@ -270,7 +270,7 @@ type EscrowData struct {
 }
 
 // applyEscrowCreate applies an EscrowCreate transaction
-func (e *Engine) applyEscrowCreate(tx *EscrowCreate, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyEscrowCreate(tx *EscrowCreate, account *AccountRoot, view LedgerView) Result {
 	// Parse the amount to escrow
 	amount, err := strconv.ParseUint(tx.Amount.Value, 10, 64)
 	if err != nil {
@@ -289,7 +289,7 @@ func (e *Engine) applyEscrowCreate(tx *EscrowCreate, account *AccountRoot, metad
 	}
 
 	destKey := keylet.Account(destID)
-	exists, _ := e.view.Exists(destKey)
+	exists, _ := view.Exists(destKey)
 	if !exists {
 		return TecNO_DST
 	}
@@ -309,31 +309,19 @@ func (e *Engine) applyEscrowCreate(tx *EscrowCreate, account *AccountRoot, metad
 		return TefINTERNAL
 	}
 
-	// Insert escrow
-	if err := e.view.Insert(escrowKey, escrowData); err != nil {
+	// Insert escrow - creation tracked automatically by ApplyStateTable
+	if err := view.Insert(escrowKey, escrowData); err != nil {
 		return TefINTERNAL
 	}
 
 	// Increase owner count
 	account.OwnerCount++
 
-	// Record in metadata
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "CreatedNode",
-		LedgerEntryType: "Escrow",
-		LedgerIndex:     hex.EncodeToString(escrowKey.Key[:]),
-		NewFields: map[string]any{
-			"Account":     tx.Account,
-			"Destination": tx.Destination,
-			"Amount":      tx.Amount.Value,
-		},
-	})
-
 	return TesSUCCESS
 }
 
 // applyEscrowFinish applies an EscrowFinish transaction
-func (e *Engine) applyEscrowFinish(tx *EscrowFinish, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyEscrowFinish(tx *EscrowFinish, account *AccountRoot, view LedgerView) Result {
 	// Get the escrow owner's account ID
 	ownerID, err := decodeAccountID(tx.Owner)
 	if err != nil {
@@ -342,7 +330,7 @@ func (e *Engine) applyEscrowFinish(tx *EscrowFinish, account *AccountRoot, metad
 
 	// Find the escrow
 	escrowKey := keylet.Escrow(ownerID, tx.OfferSequence)
-	escrowData, err := e.view.Read(escrowKey)
+	escrowData, err := view.Read(escrowKey)
 	if err != nil {
 		return TecNO_TARGET
 	}
@@ -379,7 +367,7 @@ func (e *Engine) applyEscrowFinish(tx *EscrowFinish, account *AccountRoot, metad
 
 	// Get destination account
 	destKey := keylet.Account(escrow.DestinationID)
-	destData, err := e.view.Read(destKey)
+	destData, err := view.Read(destKey)
 	if err != nil {
 		return TecNO_DST
 	}
@@ -392,18 +380,18 @@ func (e *Engine) applyEscrowFinish(tx *EscrowFinish, account *AccountRoot, metad
 	// Transfer the escrowed amount to destination
 	destAccount.Balance += escrow.Amount
 
-	// Update destination
+	// Update destination - modification tracked automatically by ApplyStateTable
 	destUpdatedData, err := serializeAccountRoot(destAccount)
 	if err != nil {
 		return TefINTERNAL
 	}
 
-	if err := e.view.Update(destKey, destUpdatedData); err != nil {
+	if err := view.Update(destKey, destUpdatedData); err != nil {
 		return TefINTERNAL
 	}
 
-	// Delete the escrow
-	if err := e.view.Erase(escrowKey); err != nil {
+	// Delete the escrow - deletion tracked automatically by ApplyStateTable
+	if err := view.Erase(escrowKey); err != nil {
 		return TefINTERNAL
 	}
 
@@ -411,14 +399,14 @@ func (e *Engine) applyEscrowFinish(tx *EscrowFinish, account *AccountRoot, metad
 	if tx.Owner != tx.Account {
 		// Need to update owner's account too
 		ownerKey := keylet.Account(ownerID)
-		ownerData, err := e.view.Read(ownerKey)
+		ownerData, err := view.Read(ownerKey)
 		if err == nil {
 			ownerAccount, err := parseAccountRoot(ownerData)
 			if err == nil && ownerAccount.OwnerCount > 0 {
 				ownerAccount.OwnerCount--
 				ownerUpdatedData, err := serializeAccountRoot(ownerAccount)
 				if err == nil {
-					e.view.Update(ownerKey, ownerUpdatedData)
+					view.Update(ownerKey, ownerUpdatedData)
 				}
 			}
 		}
@@ -428,29 +416,11 @@ func (e *Engine) applyEscrowFinish(tx *EscrowFinish, account *AccountRoot, metad
 		}
 	}
 
-	// Record in metadata
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "DeletedNode",
-		LedgerEntryType: "Escrow",
-		LedgerIndex:     hex.EncodeToString(escrowKey.Key[:]),
-	})
-
-	destAddr, _ := encodeAccountID(escrow.DestinationID)
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "AccountRoot",
-		LedgerIndex:     hex.EncodeToString(destKey.Key[:]),
-		FinalFields: map[string]any{
-			"Account": destAddr,
-			"Balance": strconv.FormatUint(destAccount.Balance, 10),
-		},
-	})
-
 	return TesSUCCESS
 }
 
 // applyEscrowCancel applies an EscrowCancel transaction
-func (e *Engine) applyEscrowCancel(tx *EscrowCancel, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyEscrowCancel(tx *EscrowCancel, account *AccountRoot, view LedgerView) Result {
 	// Get the escrow owner's account ID
 	ownerID, err := decodeAccountID(tx.Owner)
 	if err != nil {
@@ -459,7 +429,7 @@ func (e *Engine) applyEscrowCancel(tx *EscrowCancel, account *AccountRoot, metad
 
 	// Find the escrow
 	escrowKey := keylet.Escrow(ownerID, tx.OfferSequence)
-	escrowData, err := e.view.Read(escrowKey)
+	escrowData, err := view.Read(escrowKey)
 	if err != nil {
 		return TecNO_TARGET
 	}
@@ -486,7 +456,7 @@ func (e *Engine) applyEscrowCancel(tx *EscrowCancel, account *AccountRoot, metad
 
 	// Return the escrowed amount to the owner
 	ownerKey := keylet.Account(ownerID)
-	ownerData, err := e.view.Read(ownerKey)
+	ownerData, err := view.Read(ownerKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -506,31 +476,15 @@ func (e *Engine) applyEscrowCancel(tx *EscrowCancel, account *AccountRoot, metad
 		return TefINTERNAL
 	}
 
-	if err := e.view.Update(ownerKey, ownerUpdatedData); err != nil {
+	// Update owner - modification tracked automatically by ApplyStateTable
+	if err := view.Update(ownerKey, ownerUpdatedData); err != nil {
 		return TefINTERNAL
 	}
 
-	// Delete the escrow
-	if err := e.view.Erase(escrowKey); err != nil {
+	// Delete the escrow - deletion tracked automatically by ApplyStateTable
+	if err := view.Erase(escrowKey); err != nil {
 		return TefINTERNAL
 	}
-
-	// Record in metadata
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "DeletedNode",
-		LedgerEntryType: "Escrow",
-		LedgerIndex:     hex.EncodeToString(escrowKey.Key[:]),
-	})
-
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "AccountRoot",
-		LedgerIndex:     hex.EncodeToString(ownerKey.Key[:]),
-		FinalFields: map[string]any{
-			"Account": tx.Owner,
-			"Balance": strconv.FormatUint(ownerAccount.Balance, 10),
-		},
-	})
 
 	return TesSUCCESS
 }

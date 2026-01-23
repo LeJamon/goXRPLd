@@ -1,28 +1,28 @@
 package tx
 
 import (
-	"encoding/hex"
 	"fmt"
+	"math"
 	"math/big"
 	"strconv"
-	"strings"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 )
 
 // applyPayment applies a Payment transaction
-func (e *Engine) applyPayment(payment *Payment, sender *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyPayment(payment *Payment, sender *AccountRoot, metadata *Metadata, view LedgerView) Result {
 	// XRP-to-XRP payment (direct payment)
 	if payment.Amount.IsNative() {
-		return e.applyXRPPayment(payment, sender, metadata)
+		return e.applyXRPPayment(payment, sender, metadata, view)
 	}
 
 	// IOU payment - more complex, involves trust lines and paths
-	return e.applyIOUPayment(payment, sender, metadata)
+	return e.applyIOUPayment(payment, sender, metadata, view)
 }
 
 // applyXRPPayment applies an XRP-to-XRP payment
-func (e *Engine) applyXRPPayment(payment *Payment, sender *AccountRoot, metadata *Metadata) Result {
+// Reference: rippled/src/xrpld/app/tx/detail/Payment.cpp doApply() for XRP direct payments
+func (e *Engine) applyXRPPayment(payment *Payment, sender *AccountRoot, metadata *Metadata, view LedgerView) Result {
 	// Parse the amount
 	amountDrops, err := strconv.ParseUint(payment.Amount.Value, 10, 64)
 	if err != nil || amountDrops == 0 {
@@ -35,20 +35,27 @@ func (e *Engine) applyXRPPayment(payment *Payment, sender *AccountRoot, metadata
 		feeDrops = e.config.BaseFee // fallback to base fee if not specified
 	}
 
+	// IMPORTANT: sender.Balance has already had fee deducted (in doApply).
+	// Rippled checks against mPriorBalance (balance BEFORE fee deduction).
+	// We reconstruct the pre-fee balance for the check.
+	// Reference: rippled Payment.cpp:619 - if (mPriorBalance < dstAmount.xrp() + mmm)
+	priorBalance := sender.Balance + feeDrops
+
 	// Calculate reserve as: ReserveBase + (ownerCount * ReserveIncrement)
 	// This matches rippled's accountReserve(ownerCount) calculation
 	reserve := e.config.ReserveBase + (uint64(sender.OwnerCount) * e.config.ReserveIncrement)
 
 	// Use max(reserve, fee) as the minimum balance that must remain
 	// This matches rippled's behavior: auto const mmm = std::max(reserve, ctx_.tx.getFieldAmount(sfFee).xrp())
-	minBalance := reserve
-	if feeDrops > minBalance {
-		minBalance = feeDrops
+	// Reference: rippled Payment.cpp:617
+	mmm := reserve
+	if feeDrops > mmm {
+		mmm = feeDrops
 	}
 
-	// Check sender has enough balance (amount + minBalance)
-	requiredBalance := amountDrops + minBalance
-	if sender.Balance < requiredBalance {
+	// Check sender has enough balance using PRE-FEE balance
+	// Reference: rippled Payment.cpp:619 - if (mPriorBalance < dstAmount.xrp() + mmm)
+	if priorBalance < amountDrops+mmm {
 		return TecUNFUNDED_PAYMENT
 	}
 
@@ -59,14 +66,14 @@ func (e *Engine) applyXRPPayment(payment *Payment, sender *AccountRoot, metadata
 	}
 	destKey := keylet.Account(destAccountID)
 
-	destExists, err := e.view.Exists(destKey)
+	destExists, err := view.Exists(destKey)
 	if err != nil {
 		return TefINTERNAL
 	}
 
 	if destExists {
 		// Destination exists - just credit the amount
-		destData, err := e.view.Read(destKey)
+		destData, err := view.Read(destKey)
 		if err != nil {
 			return TefINTERNAL
 		}
@@ -97,10 +104,6 @@ func (e *Engine) applyXRPPayment(payment *Payment, sender *AccountRoot, metadata
 			}
 		}
 
-		previousDestBalance := destAccount.Balance
-		previousDestTxnID := destAccount.PreviousTxnID
-		previousDestTxnLgrSeq := destAccount.PreviousTxnLgrSeq
-
 		// Check if destination requires a tag
 		if (destAccount.Flags&0x00020000) != 0 && payment.DestinationTag == nil {
 			return TecDST_TAG_NEEDED
@@ -125,7 +128,7 @@ func (e *Engine) applyXRPPayment(payment *Payment, sender *AccountRoot, metadata
 
 				// Look up the DepositPreauth ledger entry
 				depositPreauthKey := keylet.DepositPreauth(destAccountID, senderAccountID)
-				preauthExists, err := e.view.Exists(depositPreauthKey)
+				preauthExists, err := view.Exists(depositPreauthKey)
 				if err != nil {
 					return TefINTERNAL
 				}
@@ -161,33 +164,10 @@ func (e *Engine) applyXRPPayment(payment *Payment, sender *AccountRoot, metadata
 			return TefINTERNAL
 		}
 
-		if err := e.view.Update(destKey, updatedDestData); err != nil {
+		// Update tracked automatically by ApplyStateTable
+		if err := view.Update(destKey, updatedDestData); err != nil {
 			return TefINTERNAL
 		}
-
-		// Record destination modification
-		// Include all fields that rippled marks with sMD_Always (Flags, OwnerCount, Sequence)
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:          "ModifiedNode",
-			LedgerEntryType:   "AccountRoot",
-			LedgerIndex:       strings.ToUpper(hex.EncodeToString(destKey.Key[:])),
-			PreviousTxnLgrSeq: previousDestTxnLgrSeq,
-			PreviousTxnID:     strings.ToUpper(hex.EncodeToString(previousDestTxnID[:])),
-			FinalFields: map[string]any{
-				"Account":    payment.Destination,
-				"Balance":    strconv.FormatUint(destAccount.Balance, 10),
-				"Flags":      destAccount.Flags,
-				"OwnerCount": destAccount.OwnerCount,
-				"Sequence":   destAccount.Sequence,
-			},
-			PreviousFields: map[string]any{
-				"Balance": strconv.FormatUint(previousDestBalance, 10),
-			},
-		})
-
-		// Set delivered amount in metadata
-		delivered := payment.Amount
-		metadata.DeliveredAmount = &delivered
 
 		return TesSUCCESS
 	}
@@ -199,12 +179,19 @@ func (e *Engine) applyXRPPayment(payment *Payment, sender *AccountRoot, metadata
 	}
 
 	// Create new account
-	// With featureDeletableAccounts enabled (mainnet), new accounts start with
-	// sequence equal to the current ledger sequence (see rippled Payment.cpp:409-411)
+	// With featureDeletableAccounts enabled, new accounts start with sequence
+	// equal to the current ledger sequence. Otherwise, sequence starts at 1.
+	// (see rippled Payment.cpp:409-411)
+	var accountSequence uint32
+	if e.rules().DeletableAccountsEnabled() {
+		accountSequence = e.config.LedgerSequence
+	} else {
+		accountSequence = 1
+	}
 	newAccount := &AccountRoot{
 		Account:           payment.Destination,
 		Balance:           amountDrops,
-		Sequence:          e.config.LedgerSequence,
+		Sequence:          accountSequence,
 		Flags:             0,
 		PreviousTxnID:     e.currentTxHash,
 		PreviousTxnLgrSeq: e.config.LedgerSequence,
@@ -219,31 +206,17 @@ func (e *Engine) applyXRPPayment(payment *Payment, sender *AccountRoot, metadata
 		return TefINTERNAL
 	}
 
-	if err := e.view.Insert(destKey, newAccountData); err != nil {
+	// Insert tracked automatically by ApplyStateTable
+	if err := view.Insert(destKey, newAccountData); err != nil {
 		return TefINTERNAL
 	}
-
-	// Record account creation
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "CreatedNode",
-		LedgerEntryType: "AccountRoot",
-		LedgerIndex:     hex.EncodeToString(destKey.Key[:]),
-		NewFields: map[string]any{
-			"Account":  payment.Destination,
-			"Balance":  strconv.FormatUint(amountDrops, 10),
-			"Sequence": e.config.LedgerSequence,
-		},
-	})
-
-	// Set delivered amount
-	delivered := payment.Amount
-	metadata.DeliveredAmount = &delivered
 
 	return TesSUCCESS
 }
 
 // applyIOUPayment applies an IOU (issued currency) payment
-func (e *Engine) applyIOUPayment(payment *Payment, sender *AccountRoot, metadata *Metadata) Result {
+// Reference: rippled/src/xrpld/app/tx/detail/Payment.cpp
+func (e *Engine) applyIOUPayment(payment *Payment, sender *AccountRoot, metadata *Metadata, view LedgerView) Result {
 	// Parse the amount
 	amount := NewIOUAmount(payment.Amount.Value, payment.Amount.Currency, payment.Amount.Issuer)
 	if amount.IsZero() {
@@ -269,9 +242,56 @@ func (e *Engine) applyIOUPayment(payment *Payment, sender *AccountRoot, metadata
 		return TemBAD_ISSUER
 	}
 
+	// Detect payments that require RippleCalc (path finding)
+	// Reference: rippled Payment.cpp:435-436:
+	// bool const ripple = (hasPaths || sendMax || !dstAmount.native()) && !mptDirect;
+	//
+	// Payments that require path finding:
+	// 1. Explicit paths in the transaction
+	// 2. SendMax with different issuer than Amount (cross-issuer)
+	//
+	// Payments that DON'T require path finding (can be handled directly):
+	// - When sender == Amount.issuer (issue): issuer creates tokens for recipient
+	// - When dest == Amount.issuer AND no SendMax with different issuer (simple redemption)
+	//
+	// For now, we only support simple direct IOU payments (no path finding).
+	// Return tecPATH_DRY for payments that require RippleCalc.
+
+	// Determine payment type: is this a direct payment to/from issuer?
+	senderIsIssuer := senderAccountID == issuerAccountID
+	destIsIssuer := destAccountID == issuerAccountID
+
+	requiresPathFinding := false
+
+	// Check for explicit paths
+	if payment.Paths != nil && len(payment.Paths) > 0 {
+		requiresPathFinding = true
+	}
+
+	// Check for SendMax with cross-issuer
+	// When SendMax.issuer == sender, it means "use my trust line balance" - rippled
+	// determines the actual issuer from the sender's trust lines.
+	// When SendMax.issuer is explicitly a different third party (not sender, not Amount.issuer),
+	// that's a true cross-issuer payment requiring path finding.
+	if payment.SendMax != nil && !senderIsIssuer {
+		sendMaxIssuer := payment.SendMax.Issuer
+		// True cross-issuer: SendMax.issuer is a specific third-party issuer
+		// (not the sender, not the Amount.issuer)
+		if sendMaxIssuer != "" &&
+			sendMaxIssuer != payment.Amount.Issuer &&
+			sendMaxIssuer != payment.Common.Account {
+			requiresPathFinding = true
+		}
+	}
+
+	// For path-finding payments, use the Flow Engine (RippleCalculate)
+	if requiresPathFinding {
+		return e.applyIOUPaymentWithPaths(payment, sender, senderAccountID, destAccountID, issuerAccountID, metadata, view)
+	}
+
 	// Check destination exists
 	destKey := keylet.Account(destAccountID)
-	destExists, err := e.view.Exists(destKey)
+	destExists, err := view.Exists(destKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -280,7 +300,7 @@ func (e *Engine) applyIOUPayment(payment *Payment, sender *AccountRoot, metadata
 	}
 
 	// Get destination account to check flags
-	destData, err := e.view.Read(destKey)
+	destData, err := view.Read(destKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -299,24 +319,21 @@ func (e *Engine) applyIOUPayment(payment *Payment, sender *AccountRoot, metadata
 	// 2. Destination is issuer - redeeming tokens
 	// 3. Neither - transfer between accounts via trust lines
 
-	senderIsIssuer := senderAccountID == issuerAccountID
-	destIsIssuer := destAccountID == issuerAccountID
-
 	var result Result
 	var deliveredAmount IOUAmount
 
 	if senderIsIssuer {
 		// Sender is issuing their own currency to destination
 		// Need trust line from destination to sender (issuer)
-		result, deliveredAmount = e.applyIOUIssueWithDelivered(payment, sender, destAccount, senderAccountID, destAccountID, amount, metadata)
+		result, deliveredAmount = e.applyIOUIssueWithDelivered(payment, sender, destAccount, senderAccountID, destAccountID, amount, metadata, view)
 	} else if destIsIssuer {
 		// Destination is the issuer - sender is redeeming tokens
 		// Need trust line from sender to destination (issuer)
-		result, deliveredAmount = e.applyIOURedeemWithDelivered(payment, sender, destAccount, senderAccountID, destAccountID, amount, metadata)
+		result, deliveredAmount = e.applyIOURedeemWithDelivered(payment, sender, destAccount, senderAccountID, destAccountID, amount, metadata, view)
 	} else {
 		// Neither is issuer - transfer between two non-issuer accounts
 		// This requires trust lines from both parties to the issuer
-		result, deliveredAmount = e.applyIOUTransferWithDelivered(payment, sender, destAccount, senderAccountID, destAccountID, issuerAccountID, amount, metadata)
+		result, deliveredAmount = e.applyIOUTransferWithDelivered(payment, sender, destAccount, senderAccountID, destAccountID, issuerAccountID, amount, metadata, view)
 	}
 
 	// DeliverMin enforcement for partial payments
@@ -335,12 +352,75 @@ func (e *Engine) applyIOUPayment(payment *Payment, sender *AccountRoot, metadata
 	return result
 }
 
+// applyIOUPaymentWithPaths handles IOU payments that require path finding using the Flow Engine.
+// This is the main entry point for cross-currency payments and payments with explicit paths.
+// Reference: rippled/src/xrpld/app/paths/RippleCalc.cpp
+func (e *Engine) applyIOUPaymentWithPaths(
+	payment *Payment,
+	sender *AccountRoot,
+	senderID, destID, issuerID [20]byte,
+	metadata *Metadata,
+	view LedgerView,
+) Result {
+	// Determine payment flags
+	flags := payment.GetFlags()
+	partialPayment := (flags & PaymentFlagPartialPayment) != 0
+	limitQuality := (flags & PaymentFlagLimitQuality) != 0
+	noDirectRipple := (flags & PaymentFlagNoDirectRipple) != 0
+
+	// addDefaultPath is true unless tfNoRippleDirect is set
+	addDefaultPath := !noDirectRipple
+
+	// Execute RippleCalculate
+	_, actualOut, _, sandbox, result := RippleCalculate(
+		view,
+		senderID,
+		destID,
+		payment.Amount,
+		payment.SendMax,
+		payment.Paths,
+		addDefaultPath,
+		partialPayment,
+		limitQuality,
+		e.currentTxHash,
+		e.config.LedgerSequence,
+	)
+
+	// Handle result
+	if result != TesSUCCESS && result != TecPATH_PARTIAL {
+		return result
+	}
+
+	// Apply sandbox changes back to the ledger view (through ApplyStateTable for tracking)
+	if sandbox != nil {
+		if err := sandbox.ApplyToView(view); err != nil {
+			return TefINTERNAL
+		}
+	}
+
+	// Check if partial payment delivered enough (DeliverMin)
+	if partialPayment && payment.DeliverMin != nil {
+		deliverMin := ToEitherAmount(*payment.DeliverMin)
+		if actualOut.Compare(deliverMin) < 0 {
+			return TecPATH_PARTIAL
+		}
+	}
+
+	// Record delivered amount in metadata
+	deliveredAmt := FromEitherAmount(actualOut)
+	metadata.DeliveredAmount = &deliveredAmt
+
+	// Offer deletions and trust line modifications tracked automatically by ApplyStateTable
+
+	return result
+}
+
 // applyIOUIssue handles when sender is the issuer creating new tokens
-func (e *Engine) applyIOUIssue(payment *Payment, sender *AccountRoot, dest *AccountRoot, senderID, destID [20]byte, amount IOUAmount, metadata *Metadata) Result {
+func (e *Engine) applyIOUIssue(payment *Payment, sender *AccountRoot, dest *AccountRoot, senderID, destID [20]byte, amount IOUAmount, metadata *Metadata, view LedgerView) Result {
 	// Look up the trust line between destination and issuer (sender)
 	trustLineKey := keylet.Line(destID, senderID, amount.Currency)
 
-	trustLineExists, err := e.view.Exists(trustLineKey)
+	trustLineExists, err := view.Exists(trustLineKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -351,7 +431,7 @@ func (e *Engine) applyIOUIssue(payment *Payment, sender *AccountRoot, dest *Acco
 	}
 
 	// Read and parse the trust line
-	trustLineData, err := e.view.Read(trustLineKey)
+	trustLineData, err := view.Read(trustLineKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -405,10 +485,6 @@ func (e *Engine) applyIOUIssue(payment *Payment, sender *AccountRoot, dest *Acco
 	newBalance.Currency = amount.Currency
 	newBalance.Issuer = amount.Issuer
 
-	// Save old PreviousTxnID/LgrSeq for metadata (before updating)
-	oldPreviousTxnID := rippleState.PreviousTxnID
-	oldPreviousTxnLgrSeq := rippleState.PreviousTxnLgrSeq
-
 	// Update the trust line
 	rippleState.Balance = newBalance
 
@@ -422,52 +498,11 @@ func (e *Engine) applyIOUIssue(payment *Payment, sender *AccountRoot, dest *Acco
 		return TefINTERNAL
 	}
 
-	if err := e.view.Update(trustLineKey, updatedTrustLine); err != nil {
+	if err := view.Update(trustLineKey, updatedTrustLine); err != nil {
 		return TefINTERNAL
 	}
 
-	// Record the modification with all fields rippled includes
-	// Balance issuer in RippleState metadata is ACCOUNT_ONE (rrrrrrrrrrrrrrrrrrrrBZbvji)
-	previousBalanceStr := "0"
-	if rippleState.Balance.Value != nil {
-		// Calculate previous balance (before adding amount)
-		prevBal := rippleState.Balance.Sub(newBalance).Negate()
-		previousBalanceStr = formatIOUValue(prevBal.Value)
-	}
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:          "ModifiedNode",
-		LedgerEntryType:   "RippleState",
-		LedgerIndex:       strings.ToUpper(hex.EncodeToString(trustLineKey.Key[:])),
-		PreviousTxnLgrSeq: oldPreviousTxnLgrSeq,
-		PreviousTxnID:     strings.ToUpper(hex.EncodeToString(oldPreviousTxnID[:])),
-		FinalFields: map[string]any{
-			"Balance": map[string]any{
-				"currency": amount.Currency,
-				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
-				"value":    formatIOUValue(newBalance.Value),
-			},
-			"Flags": rippleState.Flags,
-			"HighLimit": map[string]any{
-				"currency": amount.Currency,
-				"issuer":   rippleState.HighLimit.Issuer,
-				"value":    formatIOUValue(rippleState.HighLimit.Value),
-			},
-			"HighNode": fmt.Sprintf("%x", rippleState.HighNode),
-			"LowLimit": map[string]any{
-				"currency": amount.Currency,
-				"issuer":   rippleState.LowLimit.Issuer,
-				"value":    formatIOUValue(rippleState.LowLimit.Value),
-			},
-			"LowNode": fmt.Sprintf("%x", rippleState.LowNode),
-		},
-		PreviousFields: map[string]any{
-			"Balance": map[string]any{
-				"currency": amount.Currency,
-				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
-				"value":    previousBalanceStr,
-			},
-		},
-	})
+	// RippleState modification tracked automatically by ApplyStateTable
 
 	delivered := payment.Amount
 	metadata.DeliveredAmount = &delivered
@@ -476,11 +511,11 @@ func (e *Engine) applyIOUIssue(payment *Payment, sender *AccountRoot, dest *Acco
 }
 
 // applyIOURedeem handles when destination is the issuer (redeeming tokens)
-func (e *Engine) applyIOURedeem(payment *Payment, sender *AccountRoot, dest *AccountRoot, senderID, destID [20]byte, amount IOUAmount, metadata *Metadata) Result {
+func (e *Engine) applyIOURedeem(payment *Payment, sender *AccountRoot, dest *AccountRoot, senderID, destID [20]byte, amount IOUAmount, metadata *Metadata, view LedgerView) Result {
 	// Look up the trust line between sender and issuer (destination)
 	trustLineKey := keylet.Line(senderID, destID, amount.Currency)
 
-	trustLineExists, err := e.view.Exists(trustLineKey)
+	trustLineExists, err := view.Exists(trustLineKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -491,7 +526,7 @@ func (e *Engine) applyIOURedeem(payment *Payment, sender *AccountRoot, dest *Acc
 	}
 
 	// Read and parse the trust line
-	trustLineData, err := e.view.Read(trustLineKey)
+	trustLineData, err := view.Read(trustLineKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -525,9 +560,6 @@ func (e *Engine) applyIOURedeem(payment *Payment, sender *AccountRoot, dest *Acc
 		return TecPATH_PARTIAL
 	}
 
-	// Save previous balance for metadata
-	previousBalance := rippleState.Balance
-
 	// Update balance by reducing sender's holding
 	// When redeeming, the issuer owes less to the sender
 	var newBalance IOUAmount
@@ -546,10 +578,6 @@ func (e *Engine) applyIOURedeem(payment *Payment, sender *AccountRoot, dest *Acc
 	newBalance.Currency = amount.Currency
 	newBalance.Issuer = amount.Issuer
 
-	// Save old PreviousTxnID/LgrSeq for metadata (before updating)
-	oldPreviousTxnID := rippleState.PreviousTxnID
-	oldPreviousTxnLgrSeq := rippleState.PreviousTxnLgrSeq
-
 	rippleState.Balance = newBalance
 
 	// Update PreviousTxnID and PreviousTxnLgrSeq to this transaction
@@ -562,46 +590,11 @@ func (e *Engine) applyIOURedeem(payment *Payment, sender *AccountRoot, dest *Acc
 		return TefINTERNAL
 	}
 
-	if err := e.view.Update(trustLineKey, updatedTrustLine); err != nil {
+	if err := view.Update(trustLineKey, updatedTrustLine); err != nil {
 		return TefINTERNAL
 	}
 
-	// Record the modification with all fields rippled includes
-	// Balance issuer in RippleState metadata is ACCOUNT_ONE (rrrrrrrrrrrrrrrrrrrrBZbvji)
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:          "ModifiedNode",
-		LedgerEntryType:   "RippleState",
-		LedgerIndex:       strings.ToUpper(hex.EncodeToString(trustLineKey.Key[:])),
-		PreviousTxnLgrSeq: oldPreviousTxnLgrSeq,
-		PreviousTxnID:     strings.ToUpper(hex.EncodeToString(oldPreviousTxnID[:])),
-		FinalFields: map[string]any{
-			"Balance": map[string]any{
-				"currency": amount.Currency,
-				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
-				"value":    formatIOUValue(newBalance.Value),
-			},
-			"Flags": rippleState.Flags,
-			"HighLimit": map[string]any{
-				"currency": amount.Currency,
-				"issuer":   rippleState.HighLimit.Issuer,
-				"value":    formatIOUValue(rippleState.HighLimit.Value),
-			},
-			"HighNode": fmt.Sprintf("%x", rippleState.HighNode),
-			"LowLimit": map[string]any{
-				"currency": amount.Currency,
-				"issuer":   rippleState.LowLimit.Issuer,
-				"value":    formatIOUValue(rippleState.LowLimit.Value),
-			},
-			"LowNode": fmt.Sprintf("%x", rippleState.LowNode),
-		},
-		PreviousFields: map[string]any{
-			"Balance": map[string]any{
-				"currency": amount.Currency,
-				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
-				"value":    formatIOUValue(previousBalance.Value),
-			},
-		},
-	})
+	// RippleState modification tracked automatically by ApplyStateTable
 
 	delivered := payment.Amount
 	metadata.DeliveredAmount = &delivered
@@ -610,13 +603,13 @@ func (e *Engine) applyIOURedeem(payment *Payment, sender *AccountRoot, dest *Acc
 }
 
 // applyIOUTransfer handles transfer between two non-issuer accounts
-func (e *Engine) applyIOUTransfer(payment *Payment, sender *AccountRoot, dest *AccountRoot, senderID, destID, issuerID [20]byte, amount IOUAmount, metadata *Metadata) Result {
+func (e *Engine) applyIOUTransfer(payment *Payment, sender *AccountRoot, dest *AccountRoot, senderID, destID, issuerID [20]byte, amount IOUAmount, metadata *Metadata, view LedgerView) Result {
 	// Both sender and destination need trust lines to the issuer
 	// This is a simplified implementation - full path finding is more complex
 
 	// Get sender's trust line to issuer
 	senderTrustLineKey := keylet.Line(senderID, issuerID, amount.Currency)
-	senderTrustExists, err := e.view.Exists(senderTrustLineKey)
+	senderTrustExists, err := view.Exists(senderTrustLineKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -626,7 +619,7 @@ func (e *Engine) applyIOUTransfer(payment *Payment, sender *AccountRoot, dest *A
 
 	// Get destination's trust line to issuer
 	destTrustLineKey := keylet.Line(destID, issuerID, amount.Currency)
-	destTrustExists, err := e.view.Exists(destTrustLineKey)
+	destTrustExists, err := view.Exists(destTrustLineKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -635,7 +628,7 @@ func (e *Engine) applyIOUTransfer(payment *Payment, sender *AccountRoot, dest *A
 	}
 
 	// Read sender's trust line
-	senderTrustData, err := e.view.Read(senderTrustLineKey)
+	senderTrustData, err := view.Read(senderTrustLineKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -645,7 +638,7 @@ func (e *Engine) applyIOUTransfer(payment *Payment, sender *AccountRoot, dest *A
 	}
 
 	// Read destination's trust line
-	destTrustData, err := e.view.Read(destTrustLineKey)
+	destTrustData, err := view.Read(destTrustLineKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -653,10 +646,6 @@ func (e *Engine) applyIOUTransfer(payment *Payment, sender *AccountRoot, dest *A
 	if err != nil {
 		return TefINTERNAL
 	}
-
-	// Save previous balances for metadata
-	senderPreviousBalance := senderRippleState.Balance
-	destPreviousBalance := destRippleState.Balance
 
 	// Calculate sender's balance with issuer
 	// RippleState balance semantics:
@@ -733,7 +722,7 @@ func (e *Engine) applyIOUTransfer(payment *Payment, sender *AccountRoot, dest *A
 	if err != nil {
 		return TefINTERNAL
 	}
-	if err := e.view.Update(senderTrustLineKey, updatedSenderTrust); err != nil {
+	if err := view.Update(senderTrustLineKey, updatedSenderTrust); err != nil {
 		return TefINTERNAL
 	}
 
@@ -742,81 +731,11 @@ func (e *Engine) applyIOUTransfer(payment *Payment, sender *AccountRoot, dest *A
 	if err != nil {
 		return TefINTERNAL
 	}
-	if err := e.view.Update(destTrustLineKey, updatedDestTrust); err != nil {
+	if err := view.Update(destTrustLineKey, updatedDestTrust); err != nil {
 		return TefINTERNAL
 	}
 
-	// Record the modifications
-	// Balance issuer in RippleState metadata is ACCOUNT_ONE (rrrrrrrrrrrrrrrrrrrrBZbvji)
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:          "ModifiedNode",
-		LedgerEntryType:   "RippleState",
-		LedgerIndex:       strings.ToUpper(hex.EncodeToString(senderTrustLineKey.Key[:])),
-		PreviousTxnLgrSeq: senderRippleState.PreviousTxnLgrSeq,
-		PreviousTxnID:     strings.ToUpper(hex.EncodeToString(senderRippleState.PreviousTxnID[:])),
-		FinalFields: map[string]any{
-			"Balance": map[string]any{
-				"currency": amount.Currency,
-				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
-				"value":    formatIOUValue(newSenderRippleBalance.Value),
-			},
-			"Flags": senderRippleState.Flags,
-			"HighLimit": map[string]any{
-				"currency": amount.Currency,
-				"issuer":   senderRippleState.HighLimit.Issuer,
-				"value":    formatIOUValue(senderRippleState.HighLimit.Value),
-			},
-			"HighNode": fmt.Sprintf("%x", senderRippleState.HighNode),
-			"LowLimit": map[string]any{
-				"currency": amount.Currency,
-				"issuer":   senderRippleState.LowLimit.Issuer,
-				"value":    formatIOUValue(senderRippleState.LowLimit.Value),
-			},
-			"LowNode": fmt.Sprintf("%x", senderRippleState.LowNode),
-		},
-		PreviousFields: map[string]any{
-			"Balance": map[string]any{
-				"currency": amount.Currency,
-				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
-				"value":    formatIOUValue(senderPreviousBalance.Value),
-			},
-		},
-	})
-
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:          "ModifiedNode",
-		LedgerEntryType:   "RippleState",
-		LedgerIndex:       strings.ToUpper(hex.EncodeToString(destTrustLineKey.Key[:])),
-		PreviousTxnLgrSeq: destRippleState.PreviousTxnLgrSeq,
-		PreviousTxnID:     strings.ToUpper(hex.EncodeToString(destRippleState.PreviousTxnID[:])),
-		FinalFields: map[string]any{
-			"Balance": map[string]any{
-				"currency": amount.Currency,
-				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
-				"value":    formatIOUValue(newDestRippleBalance.Value),
-			},
-			"Flags": destRippleState.Flags,
-			"HighLimit": map[string]any{
-				"currency": amount.Currency,
-				"issuer":   destRippleState.HighLimit.Issuer,
-				"value":    formatIOUValue(destRippleState.HighLimit.Value),
-			},
-			"HighNode": fmt.Sprintf("%x", destRippleState.HighNode),
-			"LowLimit": map[string]any{
-				"currency": amount.Currency,
-				"issuer":   destRippleState.LowLimit.Issuer,
-				"value":    formatIOUValue(destRippleState.LowLimit.Value),
-			},
-			"LowNode": fmt.Sprintf("%x", destRippleState.LowNode),
-		},
-		PreviousFields: map[string]any{
-			"Balance": map[string]any{
-				"currency": amount.Currency,
-				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
-				"value":    formatIOUValue(destPreviousBalance.Value),
-			},
-		},
-	})
+	// RippleState modifications tracked automatically by ApplyStateTable
 
 	delivered := payment.Amount
 	metadata.DeliveredAmount = &delivered
@@ -825,8 +744,8 @@ func (e *Engine) applyIOUTransfer(payment *Payment, sender *AccountRoot, dest *A
 }
 
 // applyIOUIssueWithDelivered wraps applyIOUIssue to return the delivered amount
-func (e *Engine) applyIOUIssueWithDelivered(payment *Payment, sender *AccountRoot, dest *AccountRoot, senderID, destID [20]byte, amount IOUAmount, metadata *Metadata) (Result, IOUAmount) {
-	result := e.applyIOUIssue(payment, sender, dest, senderID, destID, amount, metadata)
+func (e *Engine) applyIOUIssueWithDelivered(payment *Payment, sender *AccountRoot, dest *AccountRoot, senderID, destID [20]byte, amount IOUAmount, metadata *Metadata, view LedgerView) (Result, IOUAmount) {
+	result := e.applyIOUIssue(payment, sender, dest, senderID, destID, amount, metadata, view)
 	if result == TesSUCCESS {
 		// For successful issue, the full amount is delivered
 		return result, amount
@@ -835,8 +754,8 @@ func (e *Engine) applyIOUIssueWithDelivered(payment *Payment, sender *AccountRoo
 }
 
 // applyIOURedeemWithDelivered wraps applyIOURedeem to return the delivered amount
-func (e *Engine) applyIOURedeemWithDelivered(payment *Payment, sender *AccountRoot, dest *AccountRoot, senderID, destID [20]byte, amount IOUAmount, metadata *Metadata) (Result, IOUAmount) {
-	result := e.applyIOURedeem(payment, sender, dest, senderID, destID, amount, metadata)
+func (e *Engine) applyIOURedeemWithDelivered(payment *Payment, sender *AccountRoot, dest *AccountRoot, senderID, destID [20]byte, amount IOUAmount, metadata *Metadata, view LedgerView) (Result, IOUAmount) {
+	result := e.applyIOURedeem(payment, sender, dest, senderID, destID, amount, metadata, view)
 	if result == TesSUCCESS {
 		// For successful redeem, the full amount is delivered
 		return result, amount
@@ -845,8 +764,8 @@ func (e *Engine) applyIOURedeemWithDelivered(payment *Payment, sender *AccountRo
 }
 
 // applyIOUTransferWithDelivered wraps applyIOUTransfer to return the delivered amount
-func (e *Engine) applyIOUTransferWithDelivered(payment *Payment, sender *AccountRoot, dest *AccountRoot, senderID, destID, issuerID [20]byte, amount IOUAmount, metadata *Metadata) (Result, IOUAmount) {
-	result := e.applyIOUTransfer(payment, sender, dest, senderID, destID, issuerID, amount, metadata)
+func (e *Engine) applyIOUTransferWithDelivered(payment *Payment, sender *AccountRoot, dest *AccountRoot, senderID, destID, issuerID [20]byte, amount IOUAmount, metadata *Metadata, view LedgerView) (Result, IOUAmount) {
+	result := e.applyIOUTransfer(payment, sender, dest, senderID, destID, issuerID, amount, metadata, view)
 	if result == TesSUCCESS {
 		// For successful transfer, the full amount is delivered
 		return result, amount
@@ -872,9 +791,121 @@ const (
 	qualityOne uint32 = 1000000000 // 1e9 = 100% (no fee)
 )
 
+// getTransferRate returns the transfer rate for an issuer account
+// Returns qualityOne (1e9) if no transfer rate is set
+func (e *Engine) getTransferRate(issuerAddress string) uint32 {
+	issuerID, err := decodeAccountID(issuerAddress)
+	if err != nil {
+		return qualityOne
+	}
+	issuerKey := keylet.Account(issuerID)
+	issuerData, err := e.view.Read(issuerKey)
+	if err != nil {
+		return qualityOne
+	}
+	issuerAccount, err := parseAccountRoot(issuerData)
+	if err != nil {
+		return qualityOne
+	}
+	if issuerAccount.TransferRate > 0 {
+		return issuerAccount.TransferRate
+	}
+	return qualityOne
+}
+
+// getAccountIOUBalance returns the IOU balance an account holds for a specific currency/issuer
+// Returns the balance from the trust line, accounting for which side is low/high
+func (e *Engine) getAccountIOUBalance(accountAddress string, currency string, issuerAddress string) IOUAmount {
+	accountID, err := decodeAccountID(accountAddress)
+	if err != nil {
+		return IOUAmount{Value: big.NewFloat(0), Currency: currency, Issuer: issuerAddress}
+	}
+	issuerID, err := decodeAccountID(issuerAddress)
+	if err != nil {
+		return IOUAmount{Value: big.NewFloat(0), Currency: currency, Issuer: issuerAddress}
+	}
+
+	trustLineKey := keylet.Line(accountID, issuerID, currency)
+	trustLineData, err := e.view.Read(trustLineKey)
+	if err != nil {
+		return IOUAmount{Value: big.NewFloat(0), Currency: currency, Issuer: issuerAddress}
+	}
+
+	rs, err := parseRippleState(trustLineData)
+	if err != nil {
+		return IOUAmount{Value: big.NewFloat(0), Currency: currency, Issuer: issuerAddress}
+	}
+
+	// Determine account's balance based on low/high position
+	// Balance is stored from low's perspective:
+	// - Negative balance = low owes high (high holds tokens)
+	// - Positive balance = high owes low (low holds tokens)
+	accountIsLow := compareAccountIDsForLine(accountID, issuerID) < 0
+
+	balance := rs.Balance
+	if !accountIsLow {
+		// Account is HIGH, negate to get their perspective
+		// If balance is negative (low owes high), account holds tokens
+		balance = balance.Negate()
+	}
+
+	// Positive balance means account holds tokens
+	balance.Currency = currency
+	balance.Issuer = issuerAddress
+	return balance
+}
+
+// applyTransferFee applies the transfer fee to an amount
+// Used when sending IOUs through offers
+func applyTransferFee(amount IOUAmount, transferRate uint32) IOUAmount {
+	if transferRate == qualityOne || transferRate == 0 {
+		return amount
+	}
+
+	// Transfer rate is expressed as fraction of 1e9
+	// Example: 1.01 (1% fee) = 1010000000
+	// To apply: multiply amount by (transferRate / 1e9)
+	// Use big.Float for full precision
+	rate := new(big.Float).SetPrec(128).SetUint64(uint64(transferRate))
+	one := new(big.Float).SetPrec(128).SetUint64(uint64(qualityOne))
+	rateRatio := new(big.Float).SetPrec(128).Quo(rate, one)
+
+	amountValue := new(big.Float).SetPrec(128).Set(amount.Value)
+	adjustedValue := new(big.Float).SetPrec(128).Mul(amountValue, rateRatio)
+
+	return IOUAmount{
+		Value:    adjustedValue,
+		Currency: amount.Currency,
+		Issuer:   amount.Issuer,
+	}
+}
+
+// removeTransferFee removes the transfer fee from an amount
+// Used to calculate the actual amount received after fees
+func removeTransferFee(amount IOUAmount, transferRate uint32) IOUAmount {
+	if transferRate == qualityOne || transferRate == 0 {
+		return amount
+	}
+
+	// To remove fee: divide amount by (transferRate / 1e9)
+	// Use big.Float for full precision
+	rate := new(big.Float).SetPrec(128).SetUint64(uint64(transferRate))
+	one := new(big.Float).SetPrec(128).SetUint64(uint64(qualityOne))
+	rateRatio := new(big.Float).SetPrec(128).Quo(rate, one)
+
+	amountValue := new(big.Float).SetPrec(128).Set(amount.Value)
+	adjustedValue := new(big.Float).SetPrec(128).Quo(amountValue, rateRatio)
+
+	return IOUAmount{
+		Value:    adjustedValue,
+		Currency: amount.Currency,
+		Issuer:   amount.Issuer,
+	}
+}
+
 // applyAccountSet applies an AccountSet transaction
 // Reference: rippled SetAccount.cpp doApply()
-func (e *Engine) applyAccountSet(accountSet *AccountSet, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyAccountSet(accountSet *AccountSet, account *AccountRoot, view LedgerView) Result {
 	uFlagsIn := account.Flags
 	uFlagsOut := uFlagsIn
 
@@ -1140,7 +1171,7 @@ func isZeroHash256(hexStr string) bool {
 }
 
 // applyTrustSet applies a TrustSet transaction
-func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, view LedgerView) Result {
 	// TrustSet creates or modifies a trust line (RippleState object)
 
 	// Cannot create trust line to self
@@ -1175,7 +1206,7 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 	// Get or create the trust line
 	trustLineKey := keylet.Line(accountID, issuerAccountID, trustSet.LimitAmount.Currency)
 
-	trustLineExists, err := e.view.Exists(trustLineKey)
+	trustLineExists, err := view.Exists(trustLineKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -1191,6 +1222,8 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 	bClearNoRipple := (txFlags & TrustSetFlagClearNoRipple) != 0
 	bSetFreeze := (txFlags & TrustSetFlagSetFreeze) != 0
 	bClearFreeze := (txFlags & TrustSetFlagClearFreeze) != 0
+	bSetDeepFreeze := (txFlags & TrustSetFlagSetDeepFreeze) != 0
+	bClearDeepFreeze := (txFlags & TrustSetFlagClearDeepFreeze) != 0
 
 	// Validate tfSetfAuth - requires issuer to have lsfRequireAuth set
 	// Per rippled SetTrust.cpp preclaim: if bSetAuth && !(account.Flags & lsfRequireAuth) -> tefNO_AUTH_REQUIRED
@@ -1199,9 +1232,9 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 	}
 
 	// Validate freeze flags - cannot freeze if account has lsfNoFreeze set
-	// Per rippled SetTrust.cpp preclaim: if bNoFreeze && bSetFreeze -> tecNO_PERMISSION
+	// Per rippled SetTrust.cpp preclaim: if bNoFreeze && (bSetFreeze || bSetDeepFreeze) -> tecNO_PERMISSION
 	bNoFreeze := (account.Flags & lsfNoFreeze) != 0
-	if bNoFreeze && bSetFreeze {
+	if bNoFreeze && (bSetFreeze || bSetDeepFreeze) {
 		return TecNO_PERMISSION
 	}
 
@@ -1226,7 +1259,9 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 	}
 
 	// Parse the limit amount
-	limitAmount := NewIOUAmount(trustSet.LimitAmount.Value, trustSet.LimitAmount.Currency, trustSet.LimitAmount.Issuer)
+	// Per rippled SetTrust.cpp: saLimitAllow.setIssuer(account_)
+	// The issuer of the limit is the account setting the trust line, not the LimitAmount.Issuer
+	limitAmount := NewIOUAmount(trustSet.LimitAmount.Value, trustSet.LimitAmount.Currency, account.Account)
 
 	if !trustLineExists {
 		// Check if setting zero limit without existing trust line
@@ -1246,22 +1281,26 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 
 		// Create new RippleState
 		rs := &RippleState{
-			Balance:  NewIOUAmount("0", trustSet.LimitAmount.Currency, trustSet.LimitAmount.Issuer),
-			Flags:    0,
-			LowNode:  0,
-			HighNode: 0,
+			Balance:           NewIOUAmount("0", trustSet.LimitAmount.Currency, trustSet.LimitAmount.Issuer),
+			Flags:             0,
+			LowNode:           0,
+			HighNode:          0,
+			PreviousTxnID:     e.currentTxHash,
+			PreviousTxnLgrSeq: e.config.LedgerSequence,
 		}
 
 		// Set the limit based on which side this account is
+		// Per rippled trustCreate: limit issuers must be the respective account
+		// LowLimit issuer = LOW account, HighLimit issuer = HIGH account
 		if !bHigh {
-			// Account is LOW
-			rs.LowLimit = limitAmount
-			rs.HighLimit = NewIOUAmount("0", trustSet.LimitAmount.Currency, account.Account)
+			// Account is LOW, LimitAmount.Issuer is HIGH
+			rs.LowLimit = limitAmount                                                                    // issuer = account.Account (LOW)
+			rs.HighLimit = NewIOUAmount("0", trustSet.LimitAmount.Currency, trustSet.LimitAmount.Issuer) // issuer = HIGH
 			rs.Flags |= lsfLowReserve
 		} else {
-			// Account is HIGH
-			rs.LowLimit = NewIOUAmount("0", trustSet.LimitAmount.Currency, trustSet.LimitAmount.Issuer)
-			rs.HighLimit = limitAmount
+			// Account is HIGH, LimitAmount.Issuer is LOW
+			rs.LowLimit = NewIOUAmount("0", trustSet.LimitAmount.Currency, trustSet.LimitAmount.Issuer) // issuer = LOW
+			rs.HighLimit = limitAmount                                                                  // issuer = account.Account (HIGH)
 			rs.Flags |= lsfHighReserve
 		}
 
@@ -1284,11 +1323,24 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 		}
 
 		// Handle Freeze flag for new trust line
+		// Per rippled computeFreezeFlags:
+		//   if bSetFreeze && !bClearFreeze && !bNoFreeze -> set freeze
 		if bSetFreeze && !bClearFreeze && !bNoFreeze {
 			if bHigh {
 				rs.Flags |= lsfHighFreeze
 			} else {
 				rs.Flags |= lsfLowFreeze
+			}
+		}
+
+		// Handle DeepFreeze flag for new trust line
+		// Per rippled computeFreezeFlags:
+		//   if bSetDeepFreeze && !bClearDeepFreeze && !bNoFreeze -> set deep freeze
+		if bSetDeepFreeze && !bClearDeepFreeze && !bNoFreeze {
+			if bHigh {
+				rs.Flags |= lsfHighDeepFreeze
+			} else {
+				rs.Flags |= lsfLowDeepFreeze
 			}
 		}
 
@@ -1308,73 +1360,59 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 			}
 		}
 
+		// Determine the LOW and HIGH account IDs for directory operations
+		// Low account is the one with the smaller account ID
+		var lowAccountID, highAccountID [20]byte
+		if !bHigh {
+			// Current account is LOW
+			lowAccountID = accountID
+			highAccountID = issuerAccountID
+		} else {
+			// Current account is HIGH
+			lowAccountID = issuerAccountID
+			highAccountID = accountID
+		}
+
+		// Add trust line to LOW account's owner directory
+		// Per rippled View.cpp trustCreate: insert into both accounts' directories
+		lowDirKey := keylet.OwnerDir(lowAccountID)
+		lowDirResult, err := e.dirInsert(view, lowDirKey, trustLineKey.Key, func(dir *DirectoryNode) {
+			dir.Owner = lowAccountID
+		})
+		if err != nil {
+			return TefINTERNAL
+		}
+
+		// Add trust line to HIGH account's owner directory
+		highDirKey := keylet.OwnerDir(highAccountID)
+		highDirResult, err := e.dirInsert(view, highDirKey, trustLineKey.Key, func(dir *DirectoryNode) {
+			dir.Owner = highAccountID
+		})
+		if err != nil {
+			return TefINTERNAL
+		}
+
+		// Set LowNode and HighNode on the RippleState (deletion hints)
+		rs.LowNode = lowDirResult.Page
+		rs.HighNode = highDirResult.Page
+
 		// Serialize and insert the trust line
 		trustLineData, err := serializeRippleState(rs)
 		if err != nil {
 			return TefINTERNAL
 		}
 
-		if err := e.view.Insert(trustLineKey, trustLineData); err != nil {
+		if err := view.Insert(trustLineKey, trustLineData); err != nil {
 			return TefINTERNAL
 		}
 
-		// Increment owner count
+		// Increment owner count for the transaction sender
 		account.OwnerCount++
 
-		// Build metadata for created node
-		newFields := map[string]any{
-			"Balance": map[string]any{
-				"currency": trustSet.LimitAmount.Currency,
-				"issuer":   "rrrrrrrrrrrrrrrrrrrrBZbvji",
-				"value":    "0",
-			},
-			"Flags": rs.Flags,
-		}
-		if !bHigh {
-			newFields["LowLimit"] = map[string]any{
-				"currency": trustSet.LimitAmount.Currency,
-				"issuer":   account.Account,
-				"value":    formatIOUValue(rs.LowLimit.Value),
-			}
-			newFields["HighLimit"] = map[string]any{
-				"currency": trustSet.LimitAmount.Currency,
-				"issuer":   trustSet.LimitAmount.Issuer,
-				"value":    "0",
-			}
-		} else {
-			newFields["LowLimit"] = map[string]any{
-				"currency": trustSet.LimitAmount.Currency,
-				"issuer":   trustSet.LimitAmount.Issuer,
-				"value":    "0",
-			}
-			newFields["HighLimit"] = map[string]any{
-				"currency": trustSet.LimitAmount.Currency,
-				"issuer":   account.Account,
-				"value":    formatIOUValue(rs.HighLimit.Value),
-			}
-		}
-		if rs.LowQualityIn != 0 {
-			newFields["LowQualityIn"] = rs.LowQualityIn
-		}
-		if rs.LowQualityOut != 0 {
-			newFields["LowQualityOut"] = rs.LowQualityOut
-		}
-		if rs.HighQualityIn != 0 {
-			newFields["HighQualityIn"] = rs.HighQualityIn
-		}
-		if rs.HighQualityOut != 0 {
-			newFields["HighQualityOut"] = rs.HighQualityOut
-		}
-
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "CreatedNode",
-			LedgerEntryType: "RippleState",
-			LedgerIndex:     hex.EncodeToString(trustLineKey.Key[:]),
-			NewFields:       newFields,
-		})
+		// Directory, RippleState creation, and issuer account modifications tracked automatically by ApplyStateTable
 	} else {
 		// Modify existing trust line
-		trustLineData, err := e.view.Read(trustLineKey)
+		trustLineData, err := view.Read(trustLineKey)
 		if err != nil {
 			return TefINTERNAL
 		}
@@ -1383,17 +1421,6 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 		if err != nil {
 			return TefINTERNAL
 		}
-
-		// Store previous values for metadata
-		previousFlags := rs.Flags
-		previousLimit := rs.LowLimit
-		if bHigh {
-			previousLimit = rs.HighLimit
-		}
-		previousLowQualityIn := rs.LowQualityIn
-		previousLowQualityOut := rs.LowQualityOut
-		previousHighQualityIn := rs.HighQualityIn
-		previousHighQualityOut := rs.HighQualityOut
 
 		// Update the limit
 		if !bHigh {
@@ -1412,12 +1439,35 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 		}
 
 		// Handle NoRipple flag
+		// Per rippled SetTrust.cpp:577-584:
+		// NoRipple can only be set if the balance from this account's perspective >= 0
+		// Balance is stored from LOW account's perspective:
+		//   - Positive balance means LOW owes HIGH
+		//   - Negative balance means HIGH owes LOW
+		// From HIGH's perspective: saHighBalance = -rs.Balance, so check rs.Balance <= 0
+		// From LOW's perspective: saLowBalance = rs.Balance, so check rs.Balance >= 0
 		if bSetNoRipple && !bClearNoRipple {
-			if bHigh {
-				rs.Flags |= lsfHighNoRipple
-			} else {
-				rs.Flags |= lsfLowNoRipple
+			// Check if balance from this account's perspective is >= 0
+			balanceFromPerspective := true // Assume can set
+			if rs.Balance.Value != nil {
+				if bHigh {
+					// HIGH account: balance from HIGH's perspective is >= 0 if stored balance <= 0
+					balanceFromPerspective = rs.Balance.Value.Sign() <= 0
+				} else {
+					// LOW account: balance from LOW's perspective is >= 0 if stored balance >= 0
+					balanceFromPerspective = rs.Balance.Value.Sign() >= 0
+				}
 			}
+			// Only set NoRipple if balance from our perspective is non-negative
+			if balanceFromPerspective {
+				if bHigh {
+					rs.Flags |= lsfHighNoRipple
+				} else {
+					rs.Flags |= lsfLowNoRipple
+				}
+			}
+			// Note: If fix1578 amendment is enabled and balance < 0, we should return tecNO_PERMISSION
+			// For now, we match pre-fix1578 behavior: silently don't set the flag
 		} else if bClearNoRipple && !bSetNoRipple {
 			if bHigh {
 				rs.Flags &^= lsfHighNoRipple
@@ -1440,6 +1490,24 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 				rs.Flags &^= lsfHighFreeze
 			} else {
 				rs.Flags &^= lsfLowFreeze
+			}
+		}
+
+		// Handle DeepFreeze flag
+		// Per rippled computeFreezeFlags:
+		//   if bSetDeepFreeze && !bClearDeepFreeze && !bNoFreeze -> set deep freeze
+		//   if bClearDeepFreeze && !bSetDeepFreeze -> clear deep freeze
+		if bSetDeepFreeze && !bClearDeepFreeze && !bNoFreeze {
+			if bHigh {
+				rs.Flags |= lsfHighDeepFreeze
+			} else {
+				rs.Flags |= lsfLowDeepFreeze
+			}
+		} else if bClearDeepFreeze && !bSetDeepFreeze {
+			if bHigh {
+				rs.Flags &^= lsfHighDeepFreeze
+			} else {
+				rs.Flags &^= lsfLowDeepFreeze
 			}
 		}
 
@@ -1522,7 +1590,7 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 
 		if bDefault && rs.Balance.IsZero() {
 			// Delete the trust line
-			if err := e.view.Erase(trustLineKey); err != nil {
+			if err := view.Erase(trustLineKey); err != nil {
 				return TefINTERNAL
 			}
 
@@ -1531,11 +1599,7 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 				account.OwnerCount--
 			}
 
-			metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-				NodeType:        "DeletedNode",
-				LedgerEntryType: "RippleState",
-				LedgerIndex:     hex.EncodeToString(trustLineKey.Key[:]),
-			})
+			// RippleState deletion tracked automatically by ApplyStateTable
 		} else {
 			// Update reserve flags based on reserve requirements
 			if bLowReserveSet && (rs.Flags&lsfLowReserve) == 0 {
@@ -1556,84 +1620,11 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 				return TefINTERNAL
 			}
 
-			if err := e.view.Update(trustLineKey, updatedData); err != nil {
+			if err := view.Update(trustLineKey, updatedData); err != nil {
 				return TefINTERNAL
 			}
 
-			// Build metadata
-			limitField := "LowLimit"
-			if bHigh {
-				limitField = "HighLimit"
-			}
-
-			finalFields := map[string]any{
-				"Flags": rs.Flags,
-			}
-			previousFields := map[string]any{}
-
-			// Only include limit in metadata if it changed
-			if formatIOUValue(limitAmount.Value) != formatIOUValue(previousLimit.Value) {
-				finalFields[limitField] = map[string]any{
-					"currency": trustSet.LimitAmount.Currency,
-					"issuer":   account.Account,
-					"value":    formatIOUValue(limitAmount.Value),
-				}
-				previousFields[limitField] = map[string]any{
-					"currency": trustSet.LimitAmount.Currency,
-					"issuer":   account.Account,
-					"value":    formatIOUValue(previousLimit.Value),
-				}
-			}
-
-			// Include flags if changed
-			if previousFlags != rs.Flags {
-				previousFields["Flags"] = previousFlags
-			}
-
-			// Include quality fields if changed
-			if !bHigh {
-				if previousLowQualityIn != rs.LowQualityIn {
-					if rs.LowQualityIn != 0 {
-						finalFields["LowQualityIn"] = rs.LowQualityIn
-					}
-					if previousLowQualityIn != 0 {
-						previousFields["LowQualityIn"] = previousLowQualityIn
-					}
-				}
-				if previousLowQualityOut != rs.LowQualityOut {
-					if rs.LowQualityOut != 0 {
-						finalFields["LowQualityOut"] = rs.LowQualityOut
-					}
-					if previousLowQualityOut != 0 {
-						previousFields["LowQualityOut"] = previousLowQualityOut
-					}
-				}
-			} else {
-				if previousHighQualityIn != rs.HighQualityIn {
-					if rs.HighQualityIn != 0 {
-						finalFields["HighQualityIn"] = rs.HighQualityIn
-					}
-					if previousHighQualityIn != 0 {
-						previousFields["HighQualityIn"] = previousHighQualityIn
-					}
-				}
-				if previousHighQualityOut != rs.HighQualityOut {
-					if rs.HighQualityOut != 0 {
-						finalFields["HighQualityOut"] = rs.HighQualityOut
-					}
-					if previousHighQualityOut != 0 {
-						previousFields["HighQualityOut"] = previousHighQualityOut
-					}
-				}
-			}
-
-			metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-				NodeType:        "ModifiedNode",
-				LedgerEntryType: "RippleState",
-				LedgerIndex:     hex.EncodeToString(trustLineKey.Key[:]),
-				FinalFields:     finalFields,
-				PreviousFields:  previousFields,
-			})
+			// RippleState modification tracked automatically by ApplyStateTable
 		}
 	}
 
@@ -1641,7 +1632,7 @@ func (e *Engine) applyTrustSet(trustSet *TrustSet, account *AccountRoot, metadat
 }
 
 // applyOfferCreate applies an OfferCreate transaction
-func (e *Engine) applyOfferCreate(offer *OfferCreate, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyOfferCreate(offer *OfferCreate, account *AccountRoot, view LedgerView) Result {
 	// Check if offer has expired
 	// Reference: rippled CreateOffer.cpp:189-200 and 623-636
 	if offer.Expiration != nil && *offer.Expiration > 0 {
@@ -1659,18 +1650,59 @@ func (e *Engine) applyOfferCreate(offer *OfferCreate, account *AccountRoot, meta
 	if offer.OfferSequence != nil {
 		accountID, _ := decodeAccountID(account.Account)
 		oldOfferKey := keylet.Offer(accountID, *offer.OfferSequence)
-		exists, _ := e.view.Exists(oldOfferKey)
+		exists, _ := view.Exists(oldOfferKey)
 		if exists {
-			// Delete the old offer
-			if err := e.view.Erase(oldOfferKey); err == nil {
+			// Delete the old offer - tracked automatically by ApplyStateTable
+			if err := view.Erase(oldOfferKey); err == nil {
 				if account.OwnerCount > 0 {
 					account.OwnerCount--
 				}
-				metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-					NodeType:        "DeletedNode",
-					LedgerEntryType: "Offer",
-					LedgerIndex:     hex.EncodeToString(oldOfferKey.Key[:]),
-				})
+			}
+		}
+	}
+
+	// Get the amounts
+	takerGets := offer.TakerGets
+	takerPays := offer.TakerPays
+
+	// Check if account has funds to back the offer
+	// Reference: rippled CreateOffer.cpp:172-178 (preclaim)
+	// accountFunds checks if the account has ANY available funds for TakerGets
+	// For XRP: available = balance - current_reserve
+	// If available <= 0, return tecUNFUNDED_OFFER
+	if takerGets.IsNative() {
+		// For XRP offers, check if balance exceeds current reserve
+		currentReserve := e.config.ReserveBase + e.config.ReserveIncrement*uint64(account.OwnerCount)
+		if account.Balance <= currentReserve {
+			return TecUNFUNDED_OFFER
+		}
+	} else {
+		// For IOU offers, check if account has any of the token
+		// Reference: rippled CreateOffer.cpp preclaim - accountFunds(... saTakerGets ...)
+		// If account IS the issuer, they have unlimited funds
+		accountID, _ := decodeAccountID(account.Account)
+		issuerID, _ := decodeAccountID(takerGets.Issuer)
+		if accountID != issuerID {
+			// Check trust line balance
+			trustLineKey := keylet.Line(accountID, issuerID, takerGets.Currency)
+			trustLineData, err := view.Read(trustLineKey)
+			if err != nil {
+				// No trust line = no funds
+				return TecUNFUNDED_OFFER
+			}
+			rs, err := parseRippleState(trustLineData)
+			if err != nil {
+				return TecUNFUNDED_OFFER
+			}
+			// Determine balance from account's perspective
+			accountIsLow := compareAccountIDsForLine(accountID, issuerID) < 0
+			balance := rs.Balance
+			if !accountIsLow {
+				balance = balance.Negate()
+			}
+			// If balance <= 0, account has no funds
+			if balance.Value.Sign() <= 0 {
+				return TecUNFUNDED_OFFER
 			}
 		}
 	}
@@ -1682,10 +1714,6 @@ func (e *Engine) applyOfferCreate(offer *OfferCreate, account *AccountRoot, meta
 		return TecINSUF_RESERVE_OFFER
 	}
 
-	// Get the amounts
-	takerGets := offer.TakerGets
-	takerPays := offer.TakerPays
-
 	// Check for ImmediateOrCancel or FillOrKill flags
 	flags := offer.GetFlags()
 	isPassive := (flags & OfferCreateFlagPassive) != 0
@@ -1693,27 +1721,59 @@ func (e *Engine) applyOfferCreate(offer *OfferCreate, account *AccountRoot, meta
 	isFOK := (flags & OfferCreateFlagFillOrKill) != 0
 
 	// Track how much was filled
-	var takerGotTotal, takerPaidTotal Amount
+	var takerGotTotal Amount
+	var takerPaidTotal Amount
 
 	// Simple order matching - look for crossing offers
 	// This is a simplified implementation that checks if there are any offers to match
 	if !isPassive {
-		takerGotTotal, takerPaidTotal = e.matchOffers(offer, account, metadata)
+		takerGotTotal, takerPaidTotal = e.matchOffers(offer, account, view)
+		// Metadata consolidation now handled by ApplyStateTable
 	}
 
 	// Check if fully filled
+	// XRPL semantics: TakerPays = what taker receives, TakerGets = what taker pays
+	// takerGotTotal is what we received from matching (should compare with TakerPays)
+	// takerPaidTotal is what we paid to matches (should compare with TakerGets)
 	fullyFilled := false
-	if takerGotTotal.Value != "" && takerGets.Value != "" {
-		// Compare amounts to check if fully filled
-		if takerGets.IsNative() {
+	if takerGotTotal.Value != "" && takerPays.Value != "" {
+		// Compare what we received with what we wanted to receive
+		if takerPays.IsNative() {
 			gotDrops, _ := parseDropsString(takerGotTotal.Value)
-			wantDrops, _ := parseDropsString(takerGets.Value)
+			wantDrops, _ := parseDropsString(takerPays.Value)
 			fullyFilled = gotDrops >= wantDrops
 		} else {
 			gotIOU := NewIOUAmount(takerGotTotal.Value, takerGotTotal.Currency, takerGotTotal.Issuer)
-			wantIOU := NewIOUAmount(takerGets.Value, takerGets.Currency, takerGets.Issuer)
+			wantIOU := NewIOUAmount(takerPays.Value, takerPays.Currency, takerPays.Issuer)
 			fullyFilled = gotIOU.Compare(wantIOU) >= 0
 		}
+	}
+
+	// Also check if we exhausted what we're selling (TakerGets)
+	// This can happen when transfer fees cause us to pay more than takerPaidTotal reports
+	// (takerPaidTotal is what makers received, not what taker actually sent including fees)
+	sellExhausted := false
+	if takerPaidTotal.Value != "" && takerGets.Value != "" {
+		if takerGets.IsNative() {
+			// XRP has no transfer fee
+			paidDrops, _ := parseDropsString(takerPaidTotal.Value)
+			sellDrops, _ := parseDropsString(takerGets.Value)
+			sellExhausted = paidDrops >= sellDrops
+		} else {
+			// IOU - need to account for transfer fee
+			// Taker sent = takerPaidTotal * transferRate
+			// If taker sent >= takerGets, we're exhausted
+			paidIOU := NewIOUAmount(takerPaidTotal.Value, takerPaidTotal.Currency, takerPaidTotal.Issuer)
+			sellIOU := NewIOUAmount(takerGets.Value, takerGets.Currency, takerGets.Issuer)
+			transferRate := e.getTransferRate(takerGets.Issuer)
+			takerSentIOU := applyTransferFee(paidIOU, transferRate)
+			sellExhausted = takerSentIOU.Compare(sellIOU) >= 0
+		}
+	}
+
+	// Fully filled if we got what we wanted OR exhausted what we're selling
+	if sellExhausted {
+		fullyFilled = true
 	}
 
 	// Handle FillOrKill - if not fully filled, fail
@@ -1741,12 +1801,50 @@ func (e *Engine) applyOfferCreate(offer *OfferCreate, account *AccountRoot, meta
 	offerKey := keylet.Offer(accountID, offerSequence)
 
 	// Calculate remaining amounts after partial fill
+	// XRPL semantics: TakerPays = what taker receives, TakerGets = what taker pays
+	// takerGotTotal = what we received (same currency as TakerPays)
+	// takerPaidTotal = what we paid (same currency as TakerGets)
+	// IMPORTANT: rippled calculates remainder at ORIGINAL quality to maintain consistency
+	// Reference: rippled CreateOffer.cpp - remainder uses original offer's exchange rate
 	remainingTakerGets := takerGets
 	remainingTakerPays := takerPays
 	if takerGotTotal.Value != "" {
-		// Subtract what was already obtained
-		remainingTakerGets = subtractAmount(takerGets, takerGotTotal)
-		remainingTakerPays = subtractAmount(takerPays, takerPaidTotal)
+		// Subtract what was already received from what we want to receive
+		remainingTakerPays = subtractAmount(takerPays, takerGotTotal)
+		// Calculate remaining TakerGets at original quality (not simple subtraction)
+		// Quality = TakerPays / TakerGets
+		// remainingTakerGets = remainingTakerPays / quality
+		originalQuality := calculateQuality(takerPays, takerGets)
+		if originalQuality > 0 {
+			if remainingTakerPays.IsNative() {
+				// XRP remaining
+				remainingDrops, _ := parseDropsString(remainingTakerPays.Value)
+				remainingGetsValue := float64(remainingDrops) / originalQuality
+				if takerGets.IsNative() {
+					remainingTakerGets = Amount{Value: formatDrops(uint64(remainingGetsValue))}
+				} else {
+					remainingTakerGets = Amount{
+						Value:    formatIOUValuePrecise(remainingGetsValue),
+						Currency: takerGets.Currency,
+						Issuer:   takerGets.Issuer,
+					}
+				}
+			} else {
+				// IOU remaining
+				remainingIOU := NewIOUAmount(remainingTakerPays.Value, remainingTakerPays.Currency, remainingTakerPays.Issuer)
+				remainingPaysVal, _ := remainingIOU.Value.Float64()
+				remainingGetsValue := remainingPaysVal / originalQuality
+				if takerGets.IsNative() {
+					remainingTakerGets = Amount{Value: formatDrops(uint64(remainingGetsValue))}
+				} else {
+					remainingTakerGets = Amount{
+						Value:    formatIOUValuePrecise(remainingGetsValue),
+						Currency: takerGets.Currency,
+						Issuer:   takerGets.Issuer,
+					}
+				}
+			}
+		}
 	}
 
 	// Calculate quality (exchange rate) for the book directory
@@ -1764,7 +1862,7 @@ func (e *Engine) applyOfferCreate(offer *OfferCreate, account *AccountRoot, meta
 
 	// Add offer to owner directory
 	ownerDirKey := keylet.OwnerDir(accountID)
-	ownerDirResult, err := e.dirInsert(ownerDirKey, offerKey.Key, func(dir *DirectoryNode) {
+	ownerDirResult, err := e.dirInsert(view, ownerDirKey, offerKey.Key, func(dir *DirectoryNode) {
 		dir.Owner = accountID
 	})
 	if err != nil {
@@ -1772,7 +1870,7 @@ func (e *Engine) applyOfferCreate(offer *OfferCreate, account *AccountRoot, meta
 	}
 
 	// Add offer to book directory
-	bookDirResult, err := e.dirInsert(bookDirKey, offerKey.Key, func(dir *DirectoryNode) {
+	bookDirResult, err := e.dirInsert(view, bookDirKey, offerKey.Key, func(dir *DirectoryNode) {
 		dir.TakerPaysCurrency = takerPaysCurrency
 		dir.TakerPaysIssuer = takerPaysIssuer
 		dir.TakerGetsCurrency = takerGetsCurrency
@@ -1811,97 +1909,56 @@ func (e *Engine) applyOfferCreate(offer *OfferCreate, account *AccountRoot, meta
 		return TefINTERNAL
 	}
 
-	if err := e.view.Insert(offerKey, offerData); err != nil {
+	if err := view.Insert(offerKey, offerData); err != nil {
 		return TefINTERNAL
 	}
 
 	// Increment owner count
 	account.OwnerCount++
 
-	// Add owner directory metadata
-	if ownerDirResult.Created {
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "CreatedNode",
-			LedgerEntryType: "DirectoryNode",
-			LedgerIndex:     strings.ToUpper(hex.EncodeToString(ownerDirKey.Key[:])),
-			NewFields: map[string]any{
-				"Owner":     offer.Account,
-				"RootIndex": strings.ToUpper(hex.EncodeToString(ownerDirKey.Key[:])),
-			},
-		})
-	} else if ownerDirResult.Modified {
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "ModifiedNode",
-			LedgerEntryType: "DirectoryNode",
-			LedgerIndex:     strings.ToUpper(hex.EncodeToString(ownerDirKey.Key[:])),
-			FinalFields: map[string]any{
-				"Flags":     uint32(0),
-				"Owner":     offer.Account,
-				"RootIndex": strings.ToUpper(hex.EncodeToString(ownerDirKey.Key[:])),
-			},
-		})
-	}
-
-	// Add book directory metadata
-	if bookDirResult.Created {
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "CreatedNode",
-			LedgerEntryType: "DirectoryNode",
-			LedgerIndex:     strings.ToUpper(hex.EncodeToString(bookDirKey.Key[:])),
-			NewFields: map[string]any{
-				"ExchangeRate":      formatUint64Hex(quality),
-				"RootIndex":         strings.ToUpper(hex.EncodeToString(bookDirKey.Key[:])),
-				"TakerGetsCurrency": strings.ToUpper(hex.EncodeToString(takerGetsCurrency[:])),
-				"TakerGetsIssuer":   strings.ToUpper(hex.EncodeToString(takerGetsIssuer[:])),
-			},
-		})
-	}
-
-	// Add offer metadata with BookDirectory
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "CreatedNode",
-		LedgerEntryType: "Offer",
-		LedgerIndex:     strings.ToUpper(hex.EncodeToString(offerKey.Key[:])),
-		NewFields: map[string]any{
-			"Account":       offer.Account,
-			"BookDirectory": strings.ToUpper(hex.EncodeToString(bookDirKey.Key[:])),
-			"Sequence":      offerSequence,
-			"TakerGets":     flattenAmount(remainingTakerGets),
-			"TakerPays":     flattenAmount(remainingTakerPays),
-		},
-	})
+	// Directory, book, and offer metadata tracked automatically by ApplyStateTable
 
 	return TesSUCCESS
 }
 
 // matchOffers attempts to match the new offer against existing offers
 // Returns the amounts obtained and paid through matching
-func (e *Engine) matchOffers(offer *OfferCreate, account *AccountRoot, metadata *Metadata) (takerGot, takerPaid Amount) {
+func (e *Engine) matchOffers(offer *OfferCreate, account *AccountRoot, view LedgerView) (takerGot, takerPaid Amount) {
 	// Find matching offers by scanning the ledger
 	// This is a simplified implementation - production would use book directories
 
+	// XRPL Offer semantics (from offer CREATOR's perspective):
+	// - TakerGets = what creator is SELLING
+	// - TakerPays = what creator is BUYING
+	//
+	// Our offer: TakerGets=BTC (selling BTC), TakerPays=XRP (buying XRP)
+	// Their offer: TakerGets=XRP (selling XRP), TakerPays=BTC (buying BTC)
+	//
 	// We want to find offers where:
-	// - Their TakerGets matches our TakerPays (what we want to pay is what they want to get)
-	// - Their TakerPays matches our TakerGets (what we want to get is what they're paying)
-	wantCurrency := offer.TakerGets.Currency
-	wantIssuer := offer.TakerGets.Issuer
-	payCurrency := offer.TakerPays.Currency
-	payIssuer := offer.TakerPays.Issuer
+	// - Their TakerGets (what they're selling) matches our TakerPays (what we want to buy)
+	// - Their TakerPays (what they're buying) matches our TakerGets (what we're selling)
+
+	// What we want to BUY (receive)
+	wantCurrency := offer.TakerPays.Currency
+	wantIssuer := offer.TakerPays.Issuer
+	// What we're SELLING (paying)
+	payCurrency := offer.TakerGets.Currency
+	payIssuer := offer.TakerGets.Issuer
 
 	// Determine if matching native XRP
-	wantingXRP := offer.TakerGets.IsNative()
-	payingXRP := offer.TakerPays.IsNative()
+	wantingXRP := offer.TakerPays.IsNative() // We want to receive XRP
+	payingXRP := offer.TakerGets.IsNative()  // We're paying XRP
 
 	// Collect matching offers
 	type matchOffer struct {
-		key      [32]byte
-		offer    *LedgerOffer
-		quality  float64 // TakerPays/TakerGets (lower is better for us)
+		key     [32]byte
+		offer   *LedgerOffer
+		quality float64 // TakerPays/TakerGets (lower is better for us)
 	}
 	var matches []matchOffer
 
 	// Iterate through ledger entries to find offers
-	e.view.ForEach(func(key [32]byte, data []byte) bool {
+	view.ForEach(func(key [32]byte, data []byte) bool {
 		// Check if this is an offer (first byte after header indicates type)
 		if len(data) < 3 {
 			return true // continue
@@ -1928,26 +1985,26 @@ func (e *Engine) matchOffers(offer *OfferCreate, account *AccountRoot, metadata 
 			return true // continue
 		}
 
-		// Check if this offer is the inverse of what we want
-		// Their TakerGets = what we're paying
-		// Their TakerPays = what we're getting
-		theirGetsMatchesOurPays := false
-		if payingXRP && ledgerOffer.TakerGets.IsNative() {
-			theirGetsMatchesOurPays = true
-		} else if !payingXRP && !ledgerOffer.TakerGets.IsNative() {
-			theirGetsMatchesOurPays = ledgerOffer.TakerGets.Currency == payCurrency &&
-				ledgerOffer.TakerGets.Issuer == payIssuer
+		// Check if this offer crosses with ours:
+		// - Their TakerGets (what they're selling) = what we want to buy (our TakerPays)
+		// - Their TakerPays (what they're buying) = what we're selling (our TakerGets)
+		theirGetsMatchesWhatWeWant := false
+		if wantingXRP && ledgerOffer.TakerGets.IsNative() {
+			theirGetsMatchesWhatWeWant = true
+		} else if !wantingXRP && !ledgerOffer.TakerGets.IsNative() {
+			theirGetsMatchesWhatWeWant = ledgerOffer.TakerGets.Currency == wantCurrency &&
+				ledgerOffer.TakerGets.Issuer == wantIssuer
 		}
 
-		theirPaysMatchesOurGets := false
-		if wantingXRP && ledgerOffer.TakerPays.IsNative() {
-			theirPaysMatchesOurGets = true
-		} else if !wantingXRP && !ledgerOffer.TakerPays.IsNative() {
-			theirPaysMatchesOurGets = ledgerOffer.TakerPays.Currency == wantCurrency &&
-				ledgerOffer.TakerPays.Issuer == wantIssuer
+		theirPaysMatchesWhatWeSell := false
+		if payingXRP && ledgerOffer.TakerPays.IsNative() {
+			theirPaysMatchesWhatWeSell = true
+		} else if !payingXRP && !ledgerOffer.TakerPays.IsNative() {
+			theirPaysMatchesWhatWeSell = ledgerOffer.TakerPays.Currency == payCurrency &&
+				ledgerOffer.TakerPays.Issuer == payIssuer
 		}
 
-		if !theirGetsMatchesOurPays || !theirPaysMatchesOurGets {
+		if !theirGetsMatchesWhatWeWant || !theirPaysMatchesWhatWeSell {
 			return true // continue
 		}
 
@@ -1984,32 +2041,122 @@ func (e *Engine) matchOffers(offer *OfferCreate, account *AccountRoot, metadata 
 
 	// Match against offers
 	var totalGot, totalPaid Amount
-	remainingWant := offer.TakerGets
-	remainingPay := offer.TakerPays
+	remainingWant := offer.TakerPays // How much we still want to BUY (receive)
+	remainingPay := offer.TakerGets  // How much we can still SELL (pay)
 
 	for _, match := range matches {
+
 		// Check if price crosses (their quality <= our inverse quality)
 		// For us: we want high TakerGets, low TakerPays
 		// For them: they want high TakerGets, low TakerPays
 		// Match if: their_price <= 1/our_price
-		if match.quality > 1.0/ourQuality {
+		// Use a small tolerance to account for floating-point precision issues
+		// rippled uses integer-based quality which avoids this problem
+		crossingThreshold := 1.0 / ourQuality
+		// Tolerance: allow up to 1e-14 relative error (about 15 decimal digits precision)
+		tolerance := crossingThreshold * 1e-10
+		if match.quality > crossingThreshold+tolerance {
 			continue // Price doesn't cross
 		}
 
 		// Calculate how much we can trade
-		theirGets := match.offer.TakerGets
-		theirPays := match.offer.TakerPays
+		// theirGets = what they're SELLING = what we RECEIVE
+		// theirPays = what they're BUYING = what we PAY
+		originalTheirGets := match.offer.TakerGets
+		originalTheirPays := match.offer.TakerPays
+		theirGets := originalTheirGets
+		theirPays := originalTheirPays
 
-		// We want to get as much as possible up to remainingWant
+		// IMPORTANT: Limit amounts by actual balances
+		// Reference: rippled OfferStream.cpp - checks ownerFunds to limit offers
+
+		// 1. Check maker's funds for what they're selling (theirGets)
+		// If maker is selling IOU, check their IOU balance
+		if !theirGets.IsNative() && match.offer.Account != theirGets.Issuer {
+			makerIOUBalance := e.getAccountIOUBalance(match.offer.Account, theirGets.Currency, theirGets.Issuer)
+			if makerIOUBalance.Value.Sign() > 0 {
+				offerGetsIOU := NewIOUAmount(theirGets.Value, theirGets.Currency, theirGets.Issuer)
+				if makerIOUBalance.Compare(offerGetsIOU) < 0 {
+					// Maker has less than offer amount - scale down proportionally
+					ratio := divideIOUAmounts(makerIOUBalance, offerGetsIOU)
+					theirGets = Amount{
+						Value:    formatIOUValue(makerIOUBalance.Value),
+						Currency: theirGets.Currency,
+						Issuer:   theirGets.Issuer,
+					}
+					// Scale theirPays proportionally
+					if theirPays.IsNative() {
+						theirPaysDrops, _ := parseDropsString(theirPays.Value)
+						scaledPays := uint64(float64(theirPaysDrops) * ratio)
+						theirPays = Amount{Value: formatDrops(scaledPays)}
+					} else {
+						theirPaysIOU := NewIOUAmount(theirPays.Value, theirPays.Currency, theirPays.Issuer)
+						scaledPays := multiplyIOUByRatio(theirPaysIOU, ratio)
+						theirPays = Amount{
+							Value:    formatIOUValue(scaledPays.Value),
+							Currency: theirPays.Currency,
+							Issuer:   theirPays.Issuer,
+						}
+					}
+				}
+			}
+		}
+
+		// 2. Check taker's funds for what they're paying (theirPays = what maker wants = what taker pays)
+		// If taker is paying IOU, check their IOU balance and apply transfer fee
+		// Reference: rippled applies transfer fee when IOUs move through issuer
+		if !theirPays.IsNative() && account.Account != theirPays.Issuer {
+			takerIOUBalance := e.getAccountIOUBalance(account.Account, theirPays.Currency, theirPays.Issuer)
+			if takerIOUBalance.Value.Sign() > 0 {
+				// Get the transfer rate for this IOU's issuer
+				transferRate := e.getTransferRate(theirPays.Issuer)
+
+				// Calculate effective amount maker will receive after transfer fee
+				// effective = taker_balance / transfer_rate
+				// This is the MAX the taker can deliver to the maker
+				effectiveBalance := removeTransferFee(takerIOUBalance, transferRate)
+
+				// The trade is limited by the taker's effective balance
+				// If effectiveBalance < theirPays (what maker's offer portion wants), scale down
+				offerPaysIOU := NewIOUAmount(theirPays.Value, theirPays.Currency, theirPays.Issuer)
+				if effectiveBalance.Compare(offerPaysIOU) < 0 {
+					// The maker will only receive effectiveBalance amount
+					// Scale the exchange proportionally
+					ratio := divideIOUAmounts(effectiveBalance, offerPaysIOU)
+					theirPays = Amount{
+						Value:    formatIOUValue(effectiveBalance.Value),
+						Currency: theirPays.Currency,
+						Issuer:   theirPays.Issuer,
+					}
+					// Scale theirGets proportionally (round up to match rippled's mulRound)
+					if theirGets.IsNative() {
+						theirGetsDrops, _ := parseDropsString(theirGets.Value)
+						scaledGetsFloat := float64(theirGetsDrops) * ratio
+						scaledGets := uint64(math.Ceil(scaledGetsFloat))
+						theirGets = Amount{Value: formatDrops(scaledGets)}
+					} else {
+						theirGetsIOU := NewIOUAmount(theirGets.Value, theirGets.Currency, theirGets.Issuer)
+						scaledGets := multiplyIOUByRatio(theirGetsIOU, ratio)
+						theirGets = Amount{
+							Value:    formatIOUValue(scaledGets.Value),
+							Currency: theirGets.Currency,
+							Issuer:   theirGets.Issuer,
+						}
+					}
+				}
+			}
+		}
+
+		// We want to receive as much as possible up to remainingWant (from their TakerGets)
 		// We'll pay proportionally based on their exchange rate
 		var gotAmount, paidAmount Amount
 
-		if theirPays.IsNative() {
-			// They're paying XRP
-			theirPaysDrops, _ := parseDropsString(theirPays.Value)
+		if theirGets.IsNative() {
+			// They're selling XRP (we receive XRP)
+			theirGetsDrops, _ := parseDropsString(theirGets.Value)
 			remainingWantDrops, _ := parseDropsString(remainingWant.Value)
 
-			takeDrops := theirPaysDrops
+			takeDrops := theirGetsDrops
 			if takeDrops > remainingWantDrops {
 				takeDrops = remainingWantDrops
 			}
@@ -2017,58 +2164,59 @@ func (e *Engine) matchOffers(offer *OfferCreate, account *AccountRoot, metadata 
 			gotAmount = Amount{Value: formatDrops(takeDrops)}
 
 			// Calculate what we pay based on their rate
-			if takeDrops == theirPaysDrops {
-				paidAmount = theirGets
+			// Rate: theirPays / theirGets (what they want per unit they sell)
+			if takeDrops == theirGetsDrops {
+				paidAmount = theirPays
 			} else {
 				// Partial fill - calculate proportionally
-				if theirGets.IsNative() {
-					theirGetsDrops, _ := parseDropsString(theirGets.Value)
-					payDrops := (takeDrops * theirGetsDrops) / theirPaysDrops
+				ratio := float64(takeDrops) / float64(theirGetsDrops)
+				if theirPays.IsNative() {
+					theirPaysDrops, _ := parseDropsString(theirPays.Value)
+					payDrops := uint64(float64(theirPaysDrops) * ratio)
 					paidAmount = Amount{Value: formatDrops(payDrops)}
 				} else {
-					theirGetsIOU := NewIOUAmount(theirGets.Value, theirGets.Currency, theirGets.Issuer)
-					ratio := float64(takeDrops) / float64(theirPaysDrops)
-					payValue := multiplyIOUByRatio(theirGetsIOU, ratio)
+					theirPaysIOU := NewIOUAmount(theirPays.Value, theirPays.Currency, theirPays.Issuer)
+					payValue := multiplyIOUByRatio(theirPaysIOU, ratio)
 					paidAmount = Amount{
 						Value:    formatIOUValue(payValue.Value),
-						Currency: theirGets.Currency,
-						Issuer:   theirGets.Issuer,
+						Currency: theirPays.Currency,
+						Issuer:   theirPays.Issuer,
 					}
 				}
 			}
 		} else {
-			// They're paying IOU
-			theirPaysIOU := NewIOUAmount(theirPays.Value, theirPays.Currency, theirPays.Issuer)
+			// They're selling IOU (we receive IOU)
+			theirGetsIOU := NewIOUAmount(theirGets.Value, theirGets.Currency, theirGets.Issuer)
 			remainingWantIOU := NewIOUAmount(remainingWant.Value, remainingWant.Currency, remainingWant.Issuer)
 
-			takeIOU := theirPaysIOU
+			takeIOU := theirGetsIOU
 			if takeIOU.Compare(remainingWantIOU) > 0 {
 				takeIOU = remainingWantIOU
 			}
 
 			gotAmount = Amount{
 				Value:    formatIOUValue(takeIOU.Value),
-				Currency: theirPays.Currency,
-				Issuer:   theirPays.Issuer,
+				Currency: theirGets.Currency,
+				Issuer:   theirGets.Issuer,
 			}
 
 			// Calculate what we pay
-			if takeIOU.Compare(theirPaysIOU) == 0 {
-				paidAmount = theirGets
+			if takeIOU.Compare(theirGetsIOU) == 0 {
+				paidAmount = theirPays
 			} else {
 				// Partial fill
-				ratio := divideIOUAmounts(takeIOU, theirPaysIOU)
-				if theirGets.IsNative() {
-					theirGetsDrops, _ := parseDropsString(theirGets.Value)
-					payDrops := uint64(float64(theirGetsDrops) * ratio)
+				ratio := divideIOUAmounts(takeIOU, theirGetsIOU)
+				if theirPays.IsNative() {
+					theirPaysDrops, _ := parseDropsString(theirPays.Value)
+					payDrops := uint64(float64(theirPaysDrops) * ratio)
 					paidAmount = Amount{Value: formatDrops(payDrops)}
 				} else {
-					theirGetsIOU := NewIOUAmount(theirGets.Value, theirGets.Currency, theirGets.Issuer)
-					payValue := multiplyIOUByRatio(theirGetsIOU, ratio)
+					theirPaysIOU := NewIOUAmount(theirPays.Value, theirPays.Currency, theirPays.Issuer)
+					payValue := multiplyIOUByRatio(theirPaysIOU, ratio)
 					paidAmount = Amount{
 						Value:    formatIOUValue(payValue.Value),
-						Currency: theirGets.Currency,
-						Issuer:   theirGets.Issuer,
+						Currency: theirPays.Currency,
+						Issuer:   theirPays.Issuer,
 					}
 				}
 			}
@@ -2076,71 +2224,126 @@ func (e *Engine) matchOffers(offer *OfferCreate, account *AccountRoot, metadata 
 
 		// Update the matched offer in the ledger
 		// Calculate remaining amounts for matched offer
-		matchRemainingGets := subtractAmount(theirGets, paidAmount)
-		matchRemainingPays := subtractAmount(theirPays, gotAmount)
+		// Their TakerGets decreases by what we took (gotAmount)
+		// Their TakerPays decreases by what we gave them (paidAmount)
+		// Use ORIGINAL amounts, not balance-limited effective amounts
+		matchRemainingGets := subtractAmount(originalTheirGets, gotAmount)
+		matchRemainingPays := subtractAmount(originalTheirPays, paidAmount)
 
 		matchKey := keylet.Keylet{Key: match.key}
 		matchKey.Type = 0x6F // Offer type
 
 		if isZeroAmount(matchRemainingGets) || isZeroAmount(matchRemainingPays) {
-			// Fully consumed - delete offer and decrement maker's owner count
-			e.view.Erase(matchKey)
+			// Fully consumed - update offer with zeroed amounts first, then delete
+			// Reference: rippled's TOffer::consume() updates TakerGets/TakerPays before offerDelete()
+			// This ensures proper PreviousFields in DeletedNode metadata
+			matchOfferData, readErr := view.Read(matchKey)
+			if readErr == nil {
+				consumedOffer, parseErr := parseLedgerOffer(matchOfferData)
+				if parseErr == nil {
+					consumedOffer.TakerGets = Amount{Value: "0", Currency: match.offer.TakerGets.Currency, Issuer: match.offer.TakerGets.Issuer}
+					consumedOffer.TakerPays = Amount{Value: "0", Currency: match.offer.TakerPays.Currency, Issuer: match.offer.TakerPays.Issuer}
+					if updatedOfferData, serErr := serializeLedgerOffer(consumedOffer); serErr == nil {
+						view.Update(matchKey, updatedOfferData)
+					}
+				}
+			}
+			view.Erase(matchKey)
 
 			// Decrement maker's OwnerCount
 			// Reference: rippled offerDelete() adjusts owner count
 			makerID, err := decodeAccountID(match.offer.Account)
 			if err == nil {
 				makerAccountKey := keylet.Account(makerID)
-				makerAccountData, err := e.view.Read(makerAccountKey)
+				makerAccountData, err := view.Read(makerAccountKey)
 				if err == nil {
 					makerAccount, err := parseAccountRoot(makerAccountData)
 					if err == nil && makerAccount.OwnerCount > 0 {
 						makerAccount.OwnerCount--
 						updatedMakerData, err := serializeAccountRoot(makerAccount)
 						if err == nil {
-							e.view.Update(makerAccountKey, updatedMakerData)
+							view.Update(makerAccountKey, updatedMakerData)
+							// Account modification tracked automatically by ApplyStateTable
 						}
 					}
 				}
 			}
 
-			metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-				NodeType:        "DeletedNode",
-				LedgerEntryType: "Offer",
-				LedgerIndex:     hex.EncodeToString(match.key[:]),
-				FinalFields: map[string]any{
-					"Account":   match.offer.Account,
-					"TakerGets": flattenAmount(theirGets),
-					"TakerPays": flattenAmount(theirPays),
-				},
-			})
+			// Remove offer from book directory and delete if empty
+			// Reference: rippled View.cpp offerDelete() calls dirRemove()
+			bookDirKey := keylet.Keylet{Key: match.offer.BookDirectory}
+			bookDirKey.Type = 0x64 // DirectoryNode type
+			bookDirData, err := view.Read(bookDirKey)
+			if err == nil {
+				bookDir, err := parseDirectoryNode(bookDirData)
+				if err == nil {
+					// Remove the offer from the directory's Indexes
+					newIndexes := make([][32]byte, 0, len(bookDir.Indexes))
+					for _, idx := range bookDir.Indexes {
+						if idx != match.key {
+							newIndexes = append(newIndexes, idx)
+						}
+					}
+					bookDir.Indexes = newIndexes
+
+					if len(bookDir.Indexes) == 0 {
+						// Directory is now empty - delete it (tracked by ApplyStateTable)
+						view.Erase(bookDirKey)
+					} else {
+						// Directory still has entries - update it
+						updatedBookDirData, err := serializeDirectoryNode(bookDir, true) // true = book directory
+						if err == nil {
+							view.Update(bookDirKey, updatedBookDirData)
+						}
+					}
+				}
+			}
+
+			// Remove offer from owner directory
+			// Reference: rippled View.cpp offerDelete() removes from owner dir via dirRemove()
+			if makerID != [20]byte{} {
+				ownerDirKey := keylet.OwnerDir(makerID)
+				ownerDirData, err := view.Read(ownerDirKey)
+				if err == nil {
+					ownerDir, err := parseDirectoryNode(ownerDirData)
+					if err == nil {
+						// Remove the offer from the owner directory's Indexes
+						newOwnerIndexes := make([][32]byte, 0, len(ownerDir.Indexes))
+						for _, idx := range ownerDir.Indexes {
+							if idx != match.key {
+								newOwnerIndexes = append(newOwnerIndexes, idx)
+							}
+						}
+						ownerDir.Indexes = newOwnerIndexes
+
+						// Update owner directory (don't delete even if empty - owner dirs persist)
+						// Modification tracked automatically by ApplyStateTable
+						updatedOwnerDirData, err := serializeDirectoryNode(ownerDir, false) // false = owner directory
+						if err == nil {
+							view.Update(ownerDirKey, updatedOwnerDirData)
+						}
+					}
+				}
+			}
+
+			// Offer deletion tracked automatically by ApplyStateTable
 		} else {
 			// Partially consumed - update offer
 			match.offer.TakerGets = matchRemainingGets
 			match.offer.TakerPays = matchRemainingPays
+			match.offer.PreviousTxnID = e.currentTxHash
+			match.offer.PreviousTxnLgrSeq = e.config.LedgerSequence
+
 			updatedData, err := serializeLedgerOffer(match.offer)
 			if err == nil {
-				e.view.Update(matchKey, updatedData)
-				metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-					NodeType:        "ModifiedNode",
-					LedgerEntryType: "Offer",
-					LedgerIndex:     hex.EncodeToString(match.key[:]),
-					FinalFields: map[string]any{
-						"Account":   match.offer.Account,
-						"TakerGets": flattenAmount(matchRemainingGets),
-						"TakerPays": flattenAmount(matchRemainingPays),
-					},
-					PreviousFields: map[string]any{
-						"TakerGets": flattenAmount(theirGets),
-						"TakerPays": flattenAmount(theirPays),
-					},
-				})
+				view.Update(matchKey, updatedData)
+				// Offer modification tracked automatically by ApplyStateTable
 			}
 		}
 
 		// Transfer funds for this match
 		// If trade fails (insufficient funds), skip this match and continue
-		if err := e.executeOfferTrade(account, match.offer, gotAmount, paidAmount, metadata); err != nil {
+		if err := e.executeOfferTrade(account, match.offer, gotAmount, paidAmount, view); err != nil {
 			continue // Skip this match if trade can't be executed
 		}
 
@@ -2249,14 +2452,14 @@ func isZeroAmount(a Amount) bool {
 
 // executeOfferTrade executes the fund transfer for an offer trade
 // Reference: rippled's offer crossing via flowCross
-func (e *Engine) executeOfferTrade(taker *AccountRoot, maker *LedgerOffer, takerGot, takerPaid Amount, metadata *Metadata) error {
+func (e *Engine) executeOfferTrade(taker *AccountRoot, maker *LedgerOffer, takerGot, takerPaid Amount, view LedgerView) error {
 	// Get maker account
 	makerAccountID, err := decodeAccountID(maker.Account)
 	if err != nil {
 		return err
 	}
 	makerKey := keylet.Account(makerAccountID)
-	makerData, err := e.view.Read(makerKey)
+	makerData, err := view.Read(makerKey)
 	if err != nil {
 		return err
 	}
@@ -2281,7 +2484,7 @@ func (e *Engine) executeOfferTrade(taker *AccountRoot, maker *LedgerOffer, taker
 		taker.Balance += drops
 	} else {
 		// IOU transfer - update trust lines
-		if err := e.transferIOU(maker.Account, taker.Account, takerGot, metadata); err != nil {
+		if err := e.transferIOU(maker.Account, taker.Account, takerGot, view); err != nil {
 			return err
 		}
 	}
@@ -2301,24 +2504,42 @@ func (e *Engine) executeOfferTrade(taker *AccountRoot, maker *LedgerOffer, taker
 		makerAccount.Balance += drops
 	} else {
 		// IOU transfer - update trust lines
-		if err := e.transferIOU(taker.Account, maker.Account, takerPaid, metadata); err != nil {
+		// Apply transfer fee: taker sends MORE than maker receives
+		// Reference: rippled applies transfer rate during offer crossing
+		transferRate := e.getTransferRate(takerPaid.Issuer)
+		takerPaidIOU := NewIOUAmount(takerPaid.Value, takerPaid.Currency, takerPaid.Issuer)
+
+		// Calculate what taker must send to deliver takerPaid to maker
+		takerSendsIOU := applyTransferFee(takerPaidIOU, transferRate)
+		takerSends := Amount{
+			Value:    formatIOUValue(takerSendsIOU.Value),
+			Currency: takerPaid.Currency,
+			Issuer:   takerPaid.Issuer,
+		}
+
+		// Transfer with fee: taker sends takerSends, maker receives takerPaid
+		if err := e.transferIOUWithFee(taker.Account, maker.Account, takerSends, takerPaid, view); err != nil {
 			return err
 		}
 	}
 
-	// Update maker account
+	// Update PreviousTxnID and LgrSeq for the maker account
+	makerAccount.PreviousTxnID = e.currentTxHash
+	makerAccount.PreviousTxnLgrSeq = e.config.LedgerSequence
+
+	// Update maker account - modification tracked automatically by ApplyStateTable
 	updatedMakerData, err := serializeAccountRoot(makerAccount)
 	if err != nil {
 		return err
 	}
-	e.view.Update(makerKey, updatedMakerData)
+	view.Update(makerKey, updatedMakerData)
 
 	return nil
 }
 
 // transferIOU transfers an IOU amount between accounts via trust lines
 // Reference: rippled's flow engine for IOU transfers
-func (e *Engine) transferIOU(fromAccount, toAccount string, amount Amount, metadata *Metadata) error {
+func (e *Engine) transferIOU(fromAccount, toAccount string, amount Amount, view LedgerView) error {
 	fromID, err := decodeAccountID(fromAccount)
 	if err != nil {
 		return err
@@ -2341,26 +2562,80 @@ func (e *Engine) transferIOU(fromAccount, toAccount string, amount Amount, metad
 	if fromIsIssuer {
 		// Issuer is sending - increase to's trust line balance
 		trustLineKey := keylet.Line(toID, issuerID, amount.Currency)
-		if err := e.updateTrustLineBalance(trustLineKey, toID, issuerID, iouAmount, true, metadata); err != nil {
+		if err := e.updateTrustLineBalance(trustLineKey, toID, issuerID, iouAmount, true, view); err != nil {
 			return err
 		}
 	} else if toIsIssuer {
 		// Sending to issuer - decrease from's trust line balance
 		trustLineKey := keylet.Line(fromID, issuerID, amount.Currency)
-		if err := e.updateTrustLineBalance(trustLineKey, fromID, issuerID, iouAmount, false, metadata); err != nil {
+		if err := e.updateTrustLineBalance(trustLineKey, fromID, issuerID, iouAmount, false, view); err != nil {
 			return err
 		}
 	} else {
 		// Transfer between non-issuers
 		// Decrease from's balance with issuer
 		fromTrustKey := keylet.Line(fromID, issuerID, amount.Currency)
-		if err := e.updateTrustLineBalance(fromTrustKey, fromID, issuerID, iouAmount, false, metadata); err != nil {
+		if err := e.updateTrustLineBalance(fromTrustKey, fromID, issuerID, iouAmount, false, view); err != nil {
 			return err
 		}
 
 		// Increase to's balance with issuer
 		toTrustKey := keylet.Line(toID, issuerID, amount.Currency)
-		if err := e.updateTrustLineBalance(toTrustKey, toID, issuerID, iouAmount, true, metadata); err != nil {
+		if err := e.updateTrustLineBalance(toTrustKey, toID, issuerID, iouAmount, true, view); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// transferIOUWithFee transfers IOU with transfer fee applied
+// senderAmount is what the sender pays (includes fee)
+// receiverAmount is what the receiver gets (after fee)
+// Reference: rippled applies transfer rate during IOU transfers
+func (e *Engine) transferIOUWithFee(fromAccount, toAccount string, senderAmount, receiverAmount Amount, view LedgerView) error {
+	fromID, err := decodeAccountID(fromAccount)
+	if err != nil {
+		return err
+	}
+	toID, err := decodeAccountID(toAccount)
+	if err != nil {
+		return err
+	}
+	issuerID, err := decodeAccountID(senderAmount.Issuer)
+	if err != nil {
+		return err
+	}
+
+	senderIOU := NewIOUAmount(senderAmount.Value, senderAmount.Currency, senderAmount.Issuer)
+	receiverIOU := NewIOUAmount(receiverAmount.Value, receiverAmount.Currency, receiverAmount.Issuer)
+
+	fromIsIssuer := fromAccount == senderAmount.Issuer
+	toIsIssuer := toAccount == senderAmount.Issuer
+
+	if fromIsIssuer {
+		// Issuer is sending - no transfer fee, increase to's trust line
+		trustLineKey := keylet.Line(toID, issuerID, senderAmount.Currency)
+		if err := e.updateTrustLineBalance(trustLineKey, toID, issuerID, receiverIOU, true, view); err != nil {
+			return err
+		}
+	} else if toIsIssuer {
+		// Sending to issuer - no transfer fee, decrease from's trust line
+		trustLineKey := keylet.Line(fromID, issuerID, senderAmount.Currency)
+		if err := e.updateTrustLineBalance(trustLineKey, fromID, issuerID, senderIOU, false, view); err != nil {
+			return err
+		}
+	} else {
+		// Transfer between non-issuers - apply transfer fee
+		// Sender pays senderAmount (includes fee)
+		fromTrustKey := keylet.Line(fromID, issuerID, senderAmount.Currency)
+		if err := e.updateTrustLineBalance(fromTrustKey, fromID, issuerID, senderIOU, false, view); err != nil {
+			return err
+		}
+
+		// Receiver gets receiverAmount (after fee)
+		toTrustKey := keylet.Line(toID, issuerID, senderAmount.Currency)
+		if err := e.updateTrustLineBalance(toTrustKey, toID, issuerID, receiverIOU, true, view); err != nil {
 			return err
 		}
 	}
@@ -2372,8 +2647,8 @@ func (e *Engine) transferIOU(fromAccount, toAccount string, amount Amount, metad
 // RippleState balance semantics:
 // - Negative balance = LOW owes HIGH (HIGH holds tokens)
 // - Positive balance = HIGH owes LOW (LOW holds tokens)
-func (e *Engine) updateTrustLineBalance(key keylet.Keylet, accountID, issuerID [20]byte, amount IOUAmount, increase bool, metadata *Metadata) error {
-	trustLineData, err := e.view.Read(key)
+func (e *Engine) updateTrustLineBalance(key keylet.Keylet, accountID, issuerID [20]byte, amount IOUAmount, increase bool, view LedgerView) error {
+	trustLineData, err := view.Read(key)
 	if err != nil {
 		return fmt.Errorf("trust line not found: %w", err)
 	}
@@ -2406,28 +2681,21 @@ func (e *Engine) updateTrustLineBalance(key keylet.Keylet, accountID, issuerID [
 	// Ensure the new balance has the correct currency and issuer
 	newBalance.Currency = amount.Currency
 	newBalance.Issuer = amount.Issuer
+
+	// Update the RippleState
 	rs.Balance = newBalance
+	rs.PreviousTxnID = e.currentTxHash
+	rs.PreviousTxnLgrSeq = e.config.LedgerSequence
 
 	updatedData, err := serializeRippleState(rs)
 	if err != nil {
 		return fmt.Errorf("failed to serialize trust line: %w", err)
 	}
 
-	if err := e.view.Update(key, updatedData); err != nil {
+	// RippleState modification tracked automatically by ApplyStateTable
+	if err := view.Update(key, updatedData); err != nil {
 		return fmt.Errorf("failed to update trust line: %w", err)
 	}
-
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "RippleState",
-		LedgerIndex:     hex.EncodeToString(key.Key[:]),
-		FinalFields: map[string]any{
-			"Balance": map[string]any{
-				"currency": amount.Currency,
-				"value":    formatIOUValue(rs.Balance.Value),
-			},
-		},
-	})
 
 	return nil
 }
@@ -2457,12 +2725,12 @@ func subtractAmount(a, b Amount) Amount {
 }
 
 // applyOfferCancel applies an OfferCancel transaction
-func (e *Engine) applyOfferCancel(cancel *OfferCancel, account *AccountRoot, metadata *Metadata) Result {
-	// Find and remove the offer
+func (e *Engine) applyOfferCancel(cancel *OfferCancel, account *AccountRoot, view LedgerView) Result {
+	// Find the offer
 	accountID, _ := decodeAccountID(account.Account)
 	offerKey := keylet.Offer(accountID, cancel.OfferSequence)
 
-	exists, err := e.view.Exists(offerKey)
+	exists, err := view.Exists(offerKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -2472,8 +2740,43 @@ func (e *Engine) applyOfferCancel(cancel *OfferCancel, account *AccountRoot, met
 		return TesSUCCESS
 	}
 
-	// Delete the offer
-	if err := e.view.Erase(offerKey); err != nil {
+	// Read the offer to get its details for metadata and directory removal
+	offerData, err := view.Read(offerKey)
+	if err != nil {
+		return TefINTERNAL
+	}
+	ledgerOffer, err := parseLedgerOffer(offerData)
+	if err != nil {
+		return TefINTERNAL
+	}
+
+	// Create SLE for the offer for metadata tracking
+	sleOffer := NewSLEOffer(offerKey.Key)
+	sleOffer.LoadFromLedgerOffer(ledgerOffer)
+	sleOffer.MarkAsDeleted()
+
+	// Remove from owner directory (keepRoot = false since owner dir should persist)
+	ownerDirKey := keylet.OwnerDir(accountID)
+	ownerDirResult, err := e.dirRemove(view, ownerDirKey, ledgerOffer.OwnerNode, offerKey.Key, false)
+	if err != nil {
+		return TefINTERNAL
+	}
+	if !ownerDirResult.Success {
+		return TefBAD_LEDGER
+	}
+
+	// Remove from book directory (keepRoot = false - delete directory if empty)
+	bookDirKey := keylet.Keylet{Type: 100, Key: ledgerOffer.BookDirectory} // DirectoryNode type
+	bookDirResult, err := e.dirRemove(view, bookDirKey, ledgerOffer.BookNode, offerKey.Key, false)
+	if err != nil {
+		return TefINTERNAL
+	}
+	if !bookDirResult.Success {
+		return TefBAD_LEDGER
+	}
+
+	// Delete the offer from ledger
+	if err := view.Erase(offerKey); err != nil {
 		return TefINTERNAL
 	}
 
@@ -2482,11 +2785,7 @@ func (e *Engine) applyOfferCancel(cancel *OfferCancel, account *AccountRoot, met
 		account.OwnerCount--
 	}
 
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "DeletedNode",
-		LedgerEntryType: "Offer",
-		LedgerIndex:     hex.EncodeToString(offerKey.Key[:]),
-	})
+	// All metadata generation tracked automatically by ApplyStateTable
 
 	return TesSUCCESS
 }

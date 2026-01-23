@@ -3,7 +3,6 @@ package tx
 import (
 	"encoding/hex"
 	"fmt"
-	"strconv"
 
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
@@ -11,9 +10,8 @@ import (
 )
 
 // applySetRegularKey applies a SetRegularKey transaction
-func (e *Engine) applySetRegularKey(tx *SetRegularKey, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applySetRegularKey(tx *SetRegularKey, account *AccountRoot, view LedgerView) Result {
 	// Update the account's regular key
-	previousRegularKey := account.RegularKey
 	account.RegularKey = tx.RegularKey
 
 	// If setting a new key, validate it exists (or just validate format)
@@ -23,16 +21,12 @@ func (e *Engine) applySetRegularKey(tx *SetRegularKey, account *AccountRoot, met
 		}
 	}
 
-	// Record the change in metadata
-	if previousRegularKey != account.RegularKey {
-		// This will be recorded in the main account update
-	}
-
+	// Account modification is tracked automatically by ApplyStateTable
 	return TesSUCCESS
 }
 
 // applySignerListSet applies a SignerListSet transaction
-func (e *Engine) applySignerListSet(tx *SignerListSet, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applySignerListSet(tx *SignerListSet, account *AccountRoot, view LedgerView) Result {
 	accountID, _ := decodeAccountID(tx.Account)
 
 	// Create the SignerList keylet
@@ -40,9 +34,9 @@ func (e *Engine) applySignerListSet(tx *SignerListSet, account *AccountRoot, met
 
 	if tx.SignerQuorum == 0 {
 		// Delete existing signer list
-		exists, _ := e.view.Exists(signerListKey)
+		exists, _ := view.Exists(signerListKey)
 		if exists {
-			if err := e.view.Erase(signerListKey); err != nil {
+			if err := view.Erase(signerListKey); err != nil {
 				return TefINTERNAL
 			}
 
@@ -50,13 +44,7 @@ func (e *Engine) applySignerListSet(tx *SignerListSet, account *AccountRoot, met
 			if account.OwnerCount > 0 {
 				account.OwnerCount--
 			}
-
-			// Record deletion in metadata
-			metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-				NodeType:        "DeletedNode",
-				LedgerEntryType: "SignerList",
-				LedgerIndex:     hex.EncodeToString(signerListKey.Key[:]),
-			})
+			// Deletion tracked automatically by ApplyStateTable
 		}
 	} else {
 		// Create or update signer list
@@ -65,31 +53,22 @@ func (e *Engine) applySignerListSet(tx *SignerListSet, account *AccountRoot, met
 			return TefINTERNAL
 		}
 
-		exists, _ := e.view.Exists(signerListKey)
+		exists, _ := view.Exists(signerListKey)
 		if exists {
 			// Update existing
-			if err := e.view.Update(signerListKey, signerListData); err != nil {
+			if err := view.Update(signerListKey, signerListData); err != nil {
 				return TefINTERNAL
 			}
-			metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-				NodeType:        "ModifiedNode",
-				LedgerEntryType: "SignerList",
-				LedgerIndex:     hex.EncodeToString(signerListKey.Key[:]),
-			})
+			// Modification tracked automatically by ApplyStateTable
 		} else {
 			// Create new
-			if err := e.view.Insert(signerListKey, signerListData); err != nil {
+			if err := view.Insert(signerListKey, signerListData); err != nil {
 				return TefINTERNAL
 			}
 
 			// Increase owner count
 			account.OwnerCount++
-
-			metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-				NodeType:        "CreatedNode",
-				LedgerEntryType: "SignerList",
-				LedgerIndex:     hex.EncodeToString(signerListKey.Key[:]),
-			})
+			// Creation tracked automatically by ApplyStateTable
 		}
 	}
 
@@ -97,7 +76,7 @@ func (e *Engine) applySignerListSet(tx *SignerListSet, account *AccountRoot, met
 }
 
 // applyTicketCreate applies a TicketCreate transaction
-func (e *Engine) applyTicketCreate(tx *TicketCreate, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyTicketCreate(tx *TicketCreate, account *AccountRoot, view LedgerView) Result {
 	accountID, _ := decodeAccountID(tx.Account)
 
 	// Create tickets
@@ -113,21 +92,10 @@ func (e *Engine) applyTicketCreate(tx *TicketCreate, account *AccountRoot, metad
 			return TefINTERNAL
 		}
 
-		// Insert ticket
-		if err := e.view.Insert(ticketKey, ticketData); err != nil {
+		// Insert ticket - creation tracked automatically by ApplyStateTable
+		if err := view.Insert(ticketKey, ticketData); err != nil {
 			return TefINTERNAL
 		}
-
-		// Record creation in metadata
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "CreatedNode",
-			LedgerEntryType: "Ticket",
-			LedgerIndex:     hex.EncodeToString(ticketKey.Key[:]),
-			NewFields: map[string]any{
-				"Account":        tx.Account,
-				"TicketSequence": ticketSeq,
-			},
-		})
 	}
 
 	// Increase owner count for each ticket
@@ -140,7 +108,7 @@ func (e *Engine) applyTicketCreate(tx *TicketCreate, account *AccountRoot, metad
 }
 
 // applyDepositPreauth applies a DepositPreauth transaction
-func (e *Engine) applyDepositPreauth(tx *DepositPreauth, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyDepositPreauth(tx *DepositPreauth, account *AccountRoot, view LedgerView) Result {
 	accountID, _ := decodeAccountID(tx.Account)
 
 	if tx.Authorize != "" {
@@ -152,7 +120,7 @@ func (e *Engine) applyDepositPreauth(tx *DepositPreauth, account *AccountRoot, m
 
 		// Check that authorized account exists
 		authorizedKey := keylet.Account(authorizedID)
-		exists, _ := e.view.Exists(authorizedKey)
+		exists, _ := view.Exists(authorizedKey)
 		if !exists {
 			return TecNO_TARGET
 		}
@@ -161,33 +129,23 @@ func (e *Engine) applyDepositPreauth(tx *DepositPreauth, account *AccountRoot, m
 		preauthKey := keylet.DepositPreauth(accountID, authorizedID)
 
 		// Check if already exists
-		exists, _ = e.view.Exists(preauthKey)
+		exists, _ = view.Exists(preauthKey)
 		if exists {
 			return TecDUPLICATE
 		}
 
-		// Serialize and insert
+		// Serialize and insert - creation tracked automatically by ApplyStateTable
 		preauthData, err := serializeDepositPreauth(accountID, authorizedID)
 		if err != nil {
 			return TefINTERNAL
 		}
 
-		if err := e.view.Insert(preauthKey, preauthData); err != nil {
+		if err := view.Insert(preauthKey, preauthData); err != nil {
 			return TefINTERNAL
 		}
 
 		// Increase owner count
 		account.OwnerCount++
-
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "CreatedNode",
-			LedgerEntryType: "DepositPreauth",
-			LedgerIndex:     hex.EncodeToString(preauthKey.Key[:]),
-			NewFields: map[string]any{
-				"Account":   tx.Account,
-				"Authorize": tx.Authorize,
-			},
-		})
 	} else if tx.Unauthorize != "" {
 		// Remove preauthorization
 		unauthorizedID, err := decodeAccountID(tx.Unauthorize)
@@ -198,13 +156,13 @@ func (e *Engine) applyDepositPreauth(tx *DepositPreauth, account *AccountRoot, m
 		preauthKey := keylet.DepositPreauth(accountID, unauthorizedID)
 
 		// Check if exists
-		exists, _ := e.view.Exists(preauthKey)
+		exists, _ := view.Exists(preauthKey)
 		if !exists {
 			return TecNO_ENTRY
 		}
 
-		// Delete
-		if err := e.view.Erase(preauthKey); err != nil {
+		// Delete - deletion tracked automatically by ApplyStateTable
+		if err := view.Erase(preauthKey); err != nil {
 			return TefINTERNAL
 		}
 
@@ -212,19 +170,13 @@ func (e *Engine) applyDepositPreauth(tx *DepositPreauth, account *AccountRoot, m
 		if account.OwnerCount > 0 {
 			account.OwnerCount--
 		}
-
-		metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-			NodeType:        "DeletedNode",
-			LedgerEntryType: "DepositPreauth",
-			LedgerIndex:     hex.EncodeToString(preauthKey.Key[:]),
-		})
 	}
 
 	return TesSUCCESS
 }
 
 // applyAccountDelete applies an AccountDelete transaction
-func (e *Engine) applyAccountDelete(tx *AccountDelete, account *AccountRoot, metadata *Metadata) Result {
+func (e *Engine) applyAccountDelete(tx *AccountDelete, account *AccountRoot, view LedgerView) Result {
 	// Check that owner count is 0 (no objects owned)
 	if account.OwnerCount > 0 {
 		return TecHAS_OBLIGATIONS
@@ -243,7 +195,7 @@ func (e *Engine) applyAccountDelete(tx *AccountDelete, account *AccountRoot, met
 	}
 
 	destKey := keylet.Account(destID)
-	destData, err := e.view.Read(destKey)
+	destData, err := view.Read(destKey)
 	if err != nil {
 		return TecNO_DST
 	}
@@ -259,44 +211,23 @@ func (e *Engine) applyAccountDelete(tx *AccountDelete, account *AccountRoot, met
 	// Transfer remaining balance to destination
 	destAccount.Balance += remainingBalance
 
-	// Update destination account
+	// Update destination account - modification tracked automatically by ApplyStateTable
 	destUpdatedData, err := serializeAccountRoot(destAccount)
 	if err != nil {
 		return TefINTERNAL
 	}
 
-	if err := e.view.Update(destKey, destUpdatedData); err != nil {
+	if err := view.Update(destKey, destUpdatedData); err != nil {
 		return TefINTERNAL
 	}
 
-	// Delete source account
+	// Delete source account - deletion tracked automatically by ApplyStateTable
 	srcID, _ := decodeAccountID(tx.Account)
 	srcKey := keylet.Account(srcID)
 
-	if err := e.view.Erase(srcKey); err != nil {
+	if err := view.Erase(srcKey); err != nil {
 		return TefINTERNAL
 	}
-
-	// Record in metadata
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "DeletedNode",
-		LedgerEntryType: "AccountRoot",
-		LedgerIndex:     hex.EncodeToString(srcKey.Key[:]),
-		FinalFields: map[string]any{
-			"Account": tx.Account,
-			"Balance": "0",
-		},
-	})
-
-	metadata.AffectedNodes = append(metadata.AffectedNodes, AffectedNode{
-		NodeType:        "ModifiedNode",
-		LedgerEntryType: "AccountRoot",
-		LedgerIndex:     hex.EncodeToString(destKey.Key[:]),
-		FinalFields: map[string]any{
-			"Account": tx.Destination,
-			"Balance": strconv.FormatUint(destAccount.Balance, 10),
-		},
-	})
 
 	// Set account balance to 0 so the main update doesn't try to write it
 	account.Balance = 0

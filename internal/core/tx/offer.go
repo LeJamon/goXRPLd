@@ -314,6 +314,8 @@ func parseLedgerOffer(data []byte) (*LedgerOffer, error) {
 				offer.Flags = value
 			case 4: // Sequence
 				offer.Sequence = value
+			case 5: // PreviousTxnLgrSeq (nth=5 in sfields.macro)
+				offer.PreviousTxnLgrSeq = value
 			case 10: // Expiration
 				offer.Expiration = value
 			}
@@ -325,9 +327,9 @@ func parseLedgerOffer(data []byte) (*LedgerOffer, error) {
 			value := binary.BigEndian.Uint64(data[offset : offset+8])
 			offset += 8
 			switch fieldCode {
-			case 3: // BookNode
+			case 3: // BookNode (nth=3 in definitions.json)
 				offer.BookNode = value
-			case 2: // OwnerNode
+			case 4: // OwnerNode (nth=4 in definitions.json)
 				offer.OwnerNode = value
 			}
 
@@ -335,8 +337,11 @@ func parseLedgerOffer(data []byte) (*LedgerOffer, error) {
 			if offset+32 > len(data) {
 				return offer, nil
 			}
-			if fieldCode == 1 { // BookDirectory
+			switch fieldCode {
+			case 16: // BookDirectory (nth=16 in definitions.json)
 				copy(offer.BookDirectory[:], data[offset:offset+32])
+			case 5: // PreviousTxnID (nth=5 in definitions.json)
+				copy(offer.PreviousTxnID[:], data[offset:offset+32])
 			}
 			offset += 32
 
@@ -381,13 +386,19 @@ func parseLedgerOffer(data []byte) (*LedgerOffer, error) {
 			}
 
 		case fieldTypeAccountID:
-			if offset+20 > len(data) {
+			// AccountID is VL-encoded, first byte is length (should be 0x14 = 20)
+			if offset >= len(data) {
+				return offer, nil
+			}
+			length := int(data[offset])
+			offset++
+			if length != 20 || offset+20 > len(data) {
 				return offer, nil
 			}
 			var accountID [20]byte
 			copy(accountID[:], data[offset:offset+20])
 			address, _ := encodeAccountID(accountID)
-			if fieldCode == 3 { // Account
+			if fieldCode == 1 { // Account (nth=1 in definitions.json)
 				offer.Account = address
 			}
 			offset += 20
