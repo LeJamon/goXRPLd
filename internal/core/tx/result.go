@@ -67,13 +67,11 @@ const (
 	TecAMM_NOT_EMPTY                 Result = 166
 	TecNO_SUITABLE_PAGE              Result = 167
 	TecNO_PERMISSION_XCHAIN          Result = 168
-	// DID-specific codes
 	TecEMPTY_DID                     Result = 169
-	// Oracle-specific TER codes
-	TecINVALID_UPDATE_TIME           Result = 188
-	TecTOKEN_PAIR_NOT_FOUND          Result = 189
-	TecARRAY_EMPTY                   Result = 190
-	TecARRAY_TOO_LARGE               Result = 191
+	TecINVALID_UPDATE_TIME           Result = 170
+	TecTOKEN_PAIR_NOT_FOUND          Result = 171
+	TecARRAY_EMPTY                   Result = 172
+	TecARRAY_TOO_LARGE               Result = 173
 
 	// tefFAILURE and related codes (-199 to -100)
 	// Transaction failed, fee claimed but tx not applied
@@ -254,6 +252,8 @@ func (r Result) String() string {
 		return "tecINTERNAL"
 	case TecOVERSIZE:
 		return "tecOVERSIZE"
+	case TecEMPTY_DID:
+		return "tecEMPTY_DID"
 	case TecINVALID_UPDATE_TIME:
 		return "tecINVALID_UPDATE_TIME"
 	case TecTOKEN_PAIR_NOT_FOUND:
@@ -262,8 +262,6 @@ func (r Result) String() string {
 		return "tecARRAY_EMPTY"
 	case TecARRAY_TOO_LARGE:
 		return "tecARRAY_TOO_LARGE"
-	case TecEMPTY_DID:
-		return "tecEMPTY_DID"
 	case TemEMPTY_DID:
 		return "temEMPTY_DID"
 	case TefFAILURE:
@@ -433,6 +431,8 @@ func (r Result) Message() string {
 		return "The transaction is ill-formed."
 	case TemINVALID_FLAG:
 		return "Invalid flags."
+	case TemDISABLED:
+		return "The transaction requires an amendment that is not enabled."
 	case TerNO_ACCOUNT:
 		return "The source account does not exist."
 	case TerPRE_SEQ:

@@ -36,6 +36,10 @@ type Transaction interface {
 
 	// SetRawBytes stores the original serialized bytes
 	SetRawBytes([]byte)
+
+	// RequiredAmendments returns the list of amendment names that must be enabled
+	// for this transaction type to be valid. Returns empty slice if no amendments required.
+	RequiredAmendments() []string
 }
 
 // Amount represents either XRP (as drops string) or an issued currency amount
@@ -315,6 +319,12 @@ func (b *BaseTx) Validate() error {
 // Flatten returns a flat map of transaction fields
 func (b *BaseTx) Flatten() (map[string]any, error) {
 	return b.Common.ToMap(), nil
+}
+
+// RequiredAmendments returns no required amendments by default.
+// Transaction types that require amendments should override this.
+func (b *BaseTx) RequiredAmendments() []string {
+	return nil
 }
 
 // NewBaseTx creates a new base transaction

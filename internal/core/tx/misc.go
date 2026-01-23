@@ -1,6 +1,9 @@
 package tx
 
-import "errors"
+import (
+	"errors"
+	"strconv"
+)
 
 // DepositPreauth preauthorizes an account for direct deposits.
 type DepositPreauth struct {
@@ -173,19 +176,48 @@ func (t *TicketCreate) Flatten() (map[string]any, error) {
 	return m, nil
 }
 
-// Clawback claws back tokens from a trust line.
+// Clawback flag mask
+const (
+	tfClawbackMask uint32 = 0xFFFFFFFF // All flags are invalid for Clawback
+)
+
+// Clawback errors
+var (
+	ErrClawbackAmountRequired  = errors.New("temBAD_AMOUNT: Amount is required")
+	ErrClawbackAmountNotToken  = errors.New("temBAD_AMOUNT: cannot claw back XRP")
+	ErrClawbackAmountNotPos    = errors.New("temBAD_AMOUNT: Amount must be positive")
+	ErrClawbackHolderWithToken = errors.New("temMALFORMED: Holder field cannot be present for token clawback")
+	ErrClawbackHolderRequired  = errors.New("temMALFORMED: Holder is required for MPToken clawback")
+	ErrClawbackHolderIsSelf    = errors.New("temMALFORMED: Holder cannot be the same as issuer")
+)
+
+// Clawback claws back tokens from a trust line or MPToken.
+// Reference: rippled Clawback.cpp
 type Clawback struct {
 	BaseTx
 
 	// Amount is the amount to claw back (required)
+	// For IOU clawback, the issuer field specifies the holder
 	Amount Amount `json:"Amount"`
+
+	// Holder is the MPToken holder (optional, for MPToken clawback only)
+	Holder string `json:"Holder,omitempty"`
 }
 
-// NewClawback creates a new Clawback transaction
+// NewClawback creates a new Clawback transaction for IOU tokens
 func NewClawback(account string, amount Amount) *Clawback {
 	return &Clawback{
 		BaseTx: *NewBaseTx(TypeClawback, account),
 		Amount: amount,
+	}
+}
+
+// NewMPTokenClawback creates a new Clawback transaction for MPTokens
+func NewMPTokenClawback(account, holder string, amount Amount) *Clawback {
+	return &Clawback{
+		BaseTx: *NewBaseTx(TypeClawback, account),
+		Amount: amount,
+		Holder: holder,
 	}
 }
 
@@ -195,31 +227,80 @@ func (c *Clawback) TxType() Type {
 }
 
 // Validate validates the Clawback transaction
+// Reference: rippled Clawback.cpp preflight()
 func (c *Clawback) Validate() error {
 	if err := c.BaseTx.Validate(); err != nil {
 		return err
 	}
 
+	// Check for invalid flags
+	// Reference: rippled Clawback.cpp:87-88
+	if c.Common.Flags != nil && *c.Common.Flags&tfUniversal != 0 {
+		return ErrInvalidFlags
+	}
+
+	// Amount is required
 	if c.Amount.Value == "" {
-		return errors.New("Amount is required")
+		return ErrClawbackAmountRequired
+	}
+
+	// Amount must be positive
+	amountVal, err := parseAmountValue(c.Amount.Value)
+	if err != nil || amountVal <= 0 {
+		return ErrClawbackAmountNotPos
 	}
 
 	// Cannot claw back XRP
 	if c.Amount.IsNative() {
-		return errors.New("cannot claw back XRP")
+		return ErrClawbackAmountNotToken
 	}
 
-	// Must be issuer of the currency
-	if c.Amount.Issuer != c.Account {
-		return errors.New("can only claw back own issued currency")
+	// Determine if this is IOU or MPToken clawback based on Holder field
+	// For IOU clawback, Holder must not be present
+	// For MPToken clawback, Holder is required
+	if c.Holder == "" {
+		// IOU clawback
+		// Reference: rippled Clawback.cpp:39-40
+		// For IOU, the issuer field in Amount specifies the holder
+		// The transaction account must be the issuer of the currency
+		holder := c.Amount.Issuer
+
+		// Issuer cannot claw back from themselves
+		if holder == c.Account {
+			return ErrClawbackAmountNotPos // temBAD_AMOUNT per rippled
+		}
+	} else {
+		// MPToken clawback
+		// Reference: rippled Clawback.cpp:54-76
+		// Holder cannot be same as issuer
+		if c.Holder == c.Account {
+			return ErrClawbackHolderIsSelf
+		}
 	}
 
 	return nil
+}
+
+// parseAmountValue parses amount value string (handles both integer and decimal)
+func parseAmountValue(value string) (float64, error) {
+	return strconv.ParseFloat(value, 64)
 }
 
 // Flatten returns a flat map of all transaction fields
 func (c *Clawback) Flatten() (map[string]any, error) {
 	m := c.Common.ToMap()
 	m["Amount"] = flattenAmount(c.Amount)
+	if c.Holder != "" {
+		m["Holder"] = c.Holder
+	}
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (c *Clawback) RequiredAmendments() []string {
+	// MPToken clawback requires additional amendment
+	if c.Holder != "" {
+		return []string{AmendmentClawback, AmendmentMPTokensV1}
+	}
+	return []string{AmendmentClawback}
 }

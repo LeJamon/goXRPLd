@@ -12,48 +12,48 @@ import (
 // Test Helpers - Mock LedgerView for testing
 // ============================================================================
 
-// mockLedgerView implements LedgerView for testing
-type mockLedgerView struct {
+// paymentMockLedgerView implements LedgerView for testing
+type paymentMockLedgerView struct {
 	data       map[[32]byte][]byte
 	ownerCount map[[20]byte]uint32
 }
 
-func newMockLedgerView() *mockLedgerView {
-	return &mockLedgerView{
+func newPaymentMockLedgerView() *paymentMockLedgerView {
+	return &paymentMockLedgerView{
 		data:       make(map[[32]byte][]byte),
 		ownerCount: make(map[[20]byte]uint32),
 	}
 }
 
-func (m *mockLedgerView) Read(key keylet.Keylet) ([]byte, error) {
+func (m *paymentMockLedgerView) Read(key keylet.Keylet) ([]byte, error) {
 	return m.data[key.Key], nil
 }
 
-func (m *mockLedgerView) Exists(key keylet.Keylet) (bool, error) {
+func (m *paymentMockLedgerView) Exists(key keylet.Keylet) (bool, error) {
 	_, exists := m.data[key.Key]
 	return exists, nil
 }
 
-func (m *mockLedgerView) Insert(key keylet.Keylet, data []byte) error {
+func (m *paymentMockLedgerView) Insert(key keylet.Keylet, data []byte) error {
 	m.data[key.Key] = data
 	return nil
 }
 
-func (m *mockLedgerView) Update(key keylet.Keylet, data []byte) error {
+func (m *paymentMockLedgerView) Update(key keylet.Keylet, data []byte) error {
 	m.data[key.Key] = data
 	return nil
 }
 
-func (m *mockLedgerView) Erase(key keylet.Keylet) error {
+func (m *paymentMockLedgerView) Erase(key keylet.Keylet) error {
 	delete(m.data, key.Key)
 	return nil
 }
 
-func (m *mockLedgerView) AdjustDropsDestroyed(drops XRPAmount.XRPAmount) {
+func (m *paymentMockLedgerView) AdjustDropsDestroyed(drops XRPAmount.XRPAmount) {
 	// No-op for testing
 }
 
-func (m *mockLedgerView) ForEach(fn func(key [32]byte, data []byte) bool) error {
+func (m *paymentMockLedgerView) ForEach(fn func(key [32]byte, data []byte) bool) error {
 	for k, v := range m.data {
 		if !fn(k, v) {
 			break
@@ -63,7 +63,7 @@ func (m *mockLedgerView) ForEach(fn func(key [32]byte, data []byte) bool) error 
 }
 
 // Helper to create test account with balance
-func (m *mockLedgerView) createAccount(accountID [20]byte, balanceDrops uint64, ownerCount uint32) {
+func (m *paymentMockLedgerView) createAccount(accountID [20]byte, balanceDrops uint64, ownerCount uint32) {
 	account := &AccountRoot{
 		Account:    encodeAccountIDSafe(accountID),
 		Balance:    balanceDrops,
@@ -77,7 +77,7 @@ func (m *mockLedgerView) createAccount(accountID [20]byte, balanceDrops uint64, 
 }
 
 // Helper to create test trust line
-func (m *mockLedgerView) createTrustLine(low, high [20]byte, currency string, balanceLow int64, limitLow, limitHigh int64) {
+func (m *paymentMockLedgerView) createTrustLine(low, high [20]byte, currency string, balanceLow int64, limitLow, limitHigh int64) {
 	// Create a RippleState (trust line) entry
 	lowIssuer := encodeAccountIDSafe(low)
 	highIssuer := encodeAccountIDSafe(high)
@@ -215,7 +215,7 @@ func TestQuality_BetterThan(t *testing.T) {
 
 func TestPaymentSandbox_Isolation(t *testing.T) {
 	// Create base view with an account
-	view := newMockLedgerView()
+	view := newPaymentMockLedgerView()
 	var accountID [20]byte
 	copy(accountID[:], []byte("alice12345678901234"))
 	view.createAccount(accountID, 100_000_000, 0) // 100 XRP
@@ -252,7 +252,7 @@ func TestPaymentSandbox_Isolation(t *testing.T) {
 }
 
 func TestPaymentSandbox_ChildSandbox(t *testing.T) {
-	view := newMockLedgerView()
+	view := newPaymentMockLedgerView()
 	var accountID [20]byte
 	copy(accountID[:], []byte("alice12345678901234"))
 	view.createAccount(accountID, 100_000_000, 0)
@@ -298,7 +298,7 @@ func TestPaymentSandbox_ChildSandbox(t *testing.T) {
 // ============================================================================
 
 func TestXRPEndpointStep_Source(t *testing.T) {
-	view := newMockLedgerView()
+	view := newPaymentMockLedgerView()
 	var accountID [20]byte
 	copy(accountID[:], []byte("alice12345678901234"))
 	// Account with 100 XRP, reserve needs ~12 XRP (base 10 + owner 2)
@@ -326,7 +326,7 @@ func TestXRPEndpointStep_Source(t *testing.T) {
 }
 
 func TestXRPEndpointStep_Destination(t *testing.T) {
-	view := newMockLedgerView()
+	view := newPaymentMockLedgerView()
 	var accountID [20]byte
 	copy(accountID[:], []byte("bob1234567890123456"))
 	view.createAccount(accountID, 50_000_000, 0)
@@ -374,7 +374,7 @@ func TestXRPEndpointStep_QualityUpperBound(t *testing.T) {
 // ============================================================================
 
 func TestDirectStepI_Basic(t *testing.T) {
-	view := newMockLedgerView()
+	view := newPaymentMockLedgerView()
 
 	// Create accounts
 	var alice, bob [20]byte
@@ -403,7 +403,7 @@ func TestDirectStepI_Basic(t *testing.T) {
 // ============================================================================
 
 func TestToStrand_XRPToXRP(t *testing.T) {
-	view := newMockLedgerView()
+	view := newPaymentMockLedgerView()
 
 	var alice, bob [20]byte
 	copy(alice[:], []byte("alice12345678901234"))
@@ -429,7 +429,7 @@ func TestToStrand_XRPToXRP(t *testing.T) {
 }
 
 func TestToStrands_WithPaths(t *testing.T) {
-	view := newMockLedgerView()
+	view := newPaymentMockLedgerView()
 
 	var alice, bob, gateway [20]byte
 	copy(alice[:], []byte("alice12345678901234"))
@@ -464,7 +464,7 @@ func TestToStrands_WithPaths(t *testing.T) {
 // ============================================================================
 
 func TestExecuteStrand_XRPPayment(t *testing.T) {
-	view := newMockLedgerView()
+	view := newPaymentMockLedgerView()
 
 	var alice, bob [20]byte
 	copy(alice[:], []byte("alice12345678901234"))
@@ -501,7 +501,7 @@ func TestExecuteStrand_XRPPayment(t *testing.T) {
 // ============================================================================
 
 func TestFlow_SingleStrand(t *testing.T) {
-	view := newMockLedgerView()
+	view := newPaymentMockLedgerView()
 
 	var alice, bob [20]byte
 	copy(alice[:], []byte("alice12345678901234"))
@@ -532,7 +532,7 @@ func TestFlow_SingleStrand(t *testing.T) {
 }
 
 func TestFlow_PartialPayment(t *testing.T) {
-	view := newMockLedgerView()
+	view := newPaymentMockLedgerView()
 
 	var alice, bob [20]byte
 	copy(alice[:], []byte("alice12345678901234"))
@@ -579,7 +579,7 @@ func TestFlow_PartialPayment(t *testing.T) {
 }
 
 func TestFlow_EmptyStrands(t *testing.T) {
-	view := newMockLedgerView()
+	view := newPaymentMockLedgerView()
 	sandbox := NewPaymentSandbox(view)
 
 	requestedOut := NewXRPEitherAmount(10_000_000)
@@ -592,7 +592,7 @@ func TestFlow_EmptyStrands(t *testing.T) {
 }
 
 func TestFlow_SendMaxLimit(t *testing.T) {
-	view := newMockLedgerView()
+	view := newPaymentMockLedgerView()
 
 	var alice, bob [20]byte
 	copy(alice[:], []byte("alice12345678901234"))
@@ -625,7 +625,7 @@ func TestFlow_SendMaxLimit(t *testing.T) {
 // ============================================================================
 
 func TestRippleCalculate_XRPPayment(t *testing.T) {
-	view := newMockLedgerView()
+	view := newPaymentMockLedgerView()
 
 	var alice, bob [20]byte
 	copy(alice[:], []byte("alice12345678901234"))
@@ -743,7 +743,7 @@ func TestMulRatio_IOU(t *testing.T) {
 // ============================================================================
 
 func TestGetStrandQuality(t *testing.T) {
-	view := newMockLedgerView()
+	view := newPaymentMockLedgerView()
 
 	var alice, bob [20]byte
 	copy(alice[:], []byte("alice12345678901234"))

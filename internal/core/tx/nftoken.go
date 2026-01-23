@@ -195,6 +195,11 @@ func (n *NFTokenMint) SetTransferable() {
 	n.SetFlags(flags)
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (n *NFTokenMint) RequiredAmendments() []string {
+	return []string{AmendmentNonFungibleTokensV1}
+}
+
 // NFTokenBurn burns an NFToken.
 type NFTokenBurn struct {
 	BaseTx
@@ -243,6 +248,11 @@ func (n *NFTokenBurn) Flatten() (map[string]any, error) {
 	}
 
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (n *NFTokenBurn) RequiredAmendments() []string {
+	return []string{AmendmentNonFungibleTokensV1}
 }
 
 // NFTokenCreateOffer creates an offer to buy or sell an NFToken.
@@ -403,6 +413,11 @@ func (n *NFTokenCreateOffer) SetSellOffer() {
 	n.SetFlags(flags)
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (n *NFTokenCreateOffer) RequiredAmendments() []string {
+	return []string{AmendmentNonFungibleTokensV1}
+}
+
 // NFTokenCancelOffer cancels NFToken offers.
 type NFTokenCancelOffer struct {
 	BaseTx
@@ -463,6 +478,11 @@ func (n *NFTokenCancelOffer) Flatten() (map[string]any, error) {
 	m := n.Common.ToMap()
 	m["NFTokenOffers"] = n.NFTokenOffers
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (n *NFTokenCancelOffer) RequiredAmendments() []string {
+	return []string{AmendmentNonFungibleTokensV1}
 }
 
 // NFTokenAcceptOffer accepts an NFToken offer.
@@ -562,4 +582,9 @@ func (n *NFTokenAcceptOffer) SetSellOffer(offerID string) {
 // SetBuyOffer sets the buy offer to accept
 func (n *NFTokenAcceptOffer) SetBuyOffer(offerID string) {
 	n.NFTokenBuyOffer = offerID
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (n *NFTokenAcceptOffer) RequiredAmendments() []string {
+	return []string{AmendmentNonFungibleTokensV1}
 }

@@ -149,6 +149,30 @@ func (o *OracleSet) Validate() error {
 		}
 	}
 
+	// Validate each price data entry and check for duplicates
+	// Reference: rippled SetOracle.cpp checkArray()
+	seenPairs := make(map[string]bool)
+	for _, pd := range o.PriceDataSeries {
+		entry := pd.PriceData
+
+		// BaseAsset and QuoteAsset must be different
+		if entry.BaseAsset == entry.QuoteAsset {
+			return errors.New("temMALFORMED: BaseAsset and QuoteAsset must be different")
+		}
+
+		// Scale cannot exceed MaxPriceScale
+		if entry.Scale != nil && *entry.Scale > MaxPriceScale {
+			return fmt.Errorf("temMALFORMED: Scale cannot exceed %d", MaxPriceScale)
+		}
+
+		// Check for duplicate token pairs
+		pairKey := entry.BaseAsset + ":" + entry.QuoteAsset
+		if seenPairs[pairKey] {
+			return errors.New("temMALFORMED: duplicate token pair in PriceDataSeries")
+		}
+		seenPairs[pairKey] = true
+	}
+
 	return nil
 }
 
@@ -243,6 +267,11 @@ func (o *OracleSet) AddPriceDataDelete(baseAsset, quoteAsset string) {
 	})
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (o *OracleSet) RequiredAmendments() []string {
+	return []string{AmendmentPriceOracle}
+}
+
 // OracleDelete deletes a price oracle.
 type OracleDelete struct {
 	BaseTx
@@ -284,6 +313,11 @@ func (o *OracleDelete) Flatten() (map[string]any, error) {
 	m := o.Common.ToMap()
 	m["OracleDocumentID"] = o.OracleDocumentID
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (o *OracleDelete) RequiredAmendments() []string {
+	return []string{AmendmentPriceOracle}
 }
 
 // OracleEntry represents a price oracle ledger entry

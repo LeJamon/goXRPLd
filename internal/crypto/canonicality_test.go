@@ -1,0 +1,216 @@
+package crypto
+
+import (
+	"encoding/hex"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestECDSACanonicality(t *testing.T) {
+	tests := []struct {
+		name     string
+		sig      string
+		expected Canonicality
+	}{
+		{
+			name: "Fully canonical signature",
+			// A valid DER signature with low S value
+			sig:      "304402206878b5690514437a2342405029426cc2b25b4a03fc396fef845d656cf62bad2c022018610a8d37f65ad02af907c8cb8f72becd0de43de7d5f42fefccb6c2a391a67c",
+			expected: CanonicityFullyCanonical,
+		},
+		{
+			name:     "Too short signature",
+			sig:      "3006020101020101",
+			expected: CanonicityFullyCanonical, // Actually this is minimal valid
+		},
+		{
+			name:     "Invalid sequence tag",
+			sig:      "3106020100020100",
+			expected: CanonicityNone,
+		},
+		{
+			name:     "Wrong total length",
+			sig:      "3007020100020100",
+			expected: CanonicityNone,
+		},
+		{
+			name:     "Empty signature",
+			sig:      "",
+			expected: CanonicityNone,
+		},
+		{
+			name:     "Just sequence tag",
+			sig:      "30",
+			expected: CanonicityNone,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sig, err := hex.DecodeString(tt.sig)
+			if err != nil && tt.expected == CanonicityNone {
+				// Invalid hex is also invalid signature
+				return
+			}
+			require.NoError(t, err)
+			result := ECDSACanonicality(sig)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestECDSACanonicality_EdgeCases(t *testing.T) {
+	// Test with R and S at boundary values
+	t.Run("Zero R value should be invalid", func(t *testing.T) {
+		// DER signature with R=0
+		sig, _ := hex.DecodeString("300602010002010a")
+		assert.Equal(t, CanonicityNone, ECDSACanonicality(sig))
+	})
+
+	t.Run("Negative R value (high bit set without padding)", func(t *testing.T) {
+		// The byte 0x80 has high bit set - should fail
+		sig, _ := hex.DecodeString("3006020180020101")
+		assert.Equal(t, CanonicityNone, ECDSACanonicality(sig))
+	})
+}
+
+func TestEd25519Canonical(t *testing.T) {
+	tests := []struct {
+		name     string
+		sig      string
+		expected bool
+	}{
+		{
+			name:     "Valid Ed25519 signature with low S",
+			sig:      "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+			expected: true,
+		},
+		{
+			name:     "Wrong length (too short)",
+			sig:      "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155",
+			expected: false,
+		},
+		{
+			name:     "Wrong length (too long)",
+			sig:      "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b00",
+			expected: false,
+		},
+		{
+			name:     "Empty signature",
+			sig:      "",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sig, _ := hex.DecodeString(tt.sig)
+			result := Ed25519Canonical(sig)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestMakeSignatureCanonical(t *testing.T) {
+	t.Run("Already fully canonical signature returns copy", func(t *testing.T) {
+		sig, _ := hex.DecodeString("304402206878b5690514437a2342405029426cc2b25b4a03fc396fef845d656cf62bad2c022018610a8d37f65ad02af907c8cb8f72becd0de43de7d5f42fefccb6c2a391a67c")
+		result := MakeSignatureCanonical(sig)
+		assert.NotNil(t, result)
+		assert.Equal(t, CanonicityFullyCanonical, ECDSACanonicality(result))
+	})
+
+	t.Run("Invalid signature returns nil", func(t *testing.T) {
+		sig := []byte{0x30, 0x00}
+		result := MakeSignatureCanonical(sig)
+		assert.Nil(t, result)
+	})
+
+	t.Run("Empty signature returns nil", func(t *testing.T) {
+		result := MakeSignatureCanonical(nil)
+		assert.Nil(t, result)
+	})
+}
+
+func TestParseDERInteger(t *testing.T) {
+	tests := []struct {
+		name        string
+		data        string
+		expectValue bool
+		expectLen   int
+	}{
+		{
+			name:        "Valid single byte integer",
+			data:        "020101",
+			expectValue: true,
+			expectLen:   1,
+		},
+		{
+			name:        "Valid multi-byte integer",
+			data:        "02030102ff",
+			expectValue: true,
+			expectLen:   3,
+		},
+		{
+			name:        "Valid integer with leading zero (high bit set)",
+			data:        "020200ff",
+			expectValue: true,
+			expectLen:   2,
+		},
+		{
+			name:        "Invalid - wrong tag",
+			data:        "030101",
+			expectValue: false,
+			expectLen:   0,
+		},
+		{
+			name:        "Invalid - too short",
+			data:        "02",
+			expectValue: false,
+			expectLen:   0,
+		},
+		{
+			name:        "Invalid - length exceeds data",
+			data:        "020501",
+			expectValue: false,
+			expectLen:   0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, _ := hex.DecodeString(tt.data)
+			result, _, ok := parseDERInteger(data)
+			assert.Equal(t, tt.expectValue, ok)
+			if ok {
+				assert.Equal(t, tt.expectLen, len(result))
+			}
+		})
+	}
+}
+
+func TestBytesLessThan(t *testing.T) {
+	tests := []struct {
+		name     string
+		a        []byte
+		b        []byte
+		expected bool
+	}{
+		{"Equal bytes", []byte{0x01, 0x02}, []byte{0x01, 0x02}, false},
+		{"A less than B", []byte{0x01, 0x01}, []byte{0x01, 0x02}, true},
+		{"A greater than B", []byte{0x01, 0x03}, []byte{0x01, 0x02}, false},
+		{"Different lengths, A shorter and less", []byte{0x01}, []byte{0x01, 0x02}, true},
+		{"Different lengths, A shorter but same prefix", []byte{0x01, 0x02}, []byte{0x01, 0x02, 0x03}, true},
+		{"Empty A", []byte{}, []byte{0x01}, true},
+		{"Empty B", []byte{0x01}, []byte{}, false},
+		{"Both empty", []byte{}, []byte{}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := bytesLessThan(tt.a, tt.b)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}

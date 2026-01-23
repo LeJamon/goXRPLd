@@ -18,6 +18,15 @@ const (
 	MaxDIDAttestationLength = 256
 )
 
+// DID validation errors
+var (
+	ErrDIDEmpty      = errors.New("temEMPTY_DID: DID transaction must have at least one non-empty field")
+	ErrDIDURITooLong = errors.New("temMALFORMED: URI exceeds maximum length of 256 bytes")
+	ErrDIDDocTooLong = errors.New("temMALFORMED: DIDDocument exceeds maximum length of 256 bytes")
+	ErrDIDDataTooLong = errors.New("temMALFORMED: Data exceeds maximum length of 256 bytes")
+	ErrDIDInvalidHex = errors.New("temMALFORMED: field must be valid hex string")
+)
+
 // DIDSet creates or updates a DID document.
 type DIDSet struct {
 	BaseTx
@@ -54,65 +63,46 @@ func (d *DIDSet) Validate() error {
 	// Check for invalid flags (tfUniversalMask)
 	flags := d.GetFlags()
 	if flags&TfUniversalMask != 0 {
-		return errors.New("temINVALID_FLAG: Invalid flags set")
+		return ErrInvalidFlags
 	}
 
 	// At least one field must be present
 	// Reference: DID.cpp line 57-59
 	if d.URI == "" && d.DIDDocument == "" && d.Data == "" {
-		return errors.New("temEMPTY_DID: At least one of URI, DIDDocument, or Data is required")
+		return ErrDIDEmpty
 	}
-
-	// Check if all present fields are empty (all fields present but empty)
-	// Reference: DID.cpp line 61-64
-	uriPresent := d.URI != ""
-	docPresent := d.DIDDocument != ""
-	dataPresent := d.Data != ""
-
-	// If URI is present but empty string
-	uriEmpty := uriPresent && d.URI == ""
-	docEmpty := docPresent && d.DIDDocument == ""
-	dataEmpty := dataPresent && d.Data == ""
-
-	// Note: This case cannot actually happen given the earlier check,
-	// but we keep the logic for completeness with rippled
 
 	// Check field lengths (after hex decode)
 	// Reference: DID.cpp line 66-75
 	if d.URI != "" {
 		decoded, err := hex.DecodeString(d.URI)
 		if err != nil {
-			return errors.New("temMALFORMED: URI must be valid hex")
+			return ErrDIDInvalidHex
 		}
 		if len(decoded) > MaxDIDURILength {
-			return errors.New("temMALFORMED: URI too long")
+			return ErrDIDURITooLong
 		}
 	}
 
 	if d.DIDDocument != "" {
 		decoded, err := hex.DecodeString(d.DIDDocument)
 		if err != nil {
-			return errors.New("temMALFORMED: DIDDocument must be valid hex")
+			return ErrDIDInvalidHex
 		}
 		if len(decoded) > MaxDIDDocumentLength {
-			return errors.New("temMALFORMED: DIDDocument too long")
+			return ErrDIDDocTooLong
 		}
 	}
 
 	if d.Data != "" {
 		decoded, err := hex.DecodeString(d.Data)
 		if err != nil {
-			return errors.New("temMALFORMED: Data must be valid hex")
+			return ErrDIDInvalidHex
 		}
 		if len(decoded) > MaxDIDAttestationLength {
-			return errors.New("temMALFORMED: Data too long")
+			return ErrDIDDataTooLong
 		}
 	}
-
-	// Suppress unused variable warnings
-	_ = uriEmpty
-	_ = docEmpty
-	_ = dataEmpty
 
 	return nil
 }
@@ -132,6 +122,11 @@ func (d *DIDSet) Flatten() (map[string]any, error) {
 	}
 
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (d *DIDSet) RequiredAmendments() []string {
+	return []string{AmendmentDID}
 }
 
 // DIDDelete deletes a DID document.
@@ -161,7 +156,7 @@ func (d *DIDDelete) Validate() error {
 	// Check for invalid flags (tfUniversalMask)
 	flags := d.GetFlags()
 	if flags&TfUniversalMask != 0 {
-		return errors.New("temINVALID_FLAG: Invalid flags set")
+		return ErrInvalidFlags
 	}
 
 	return nil
@@ -170,4 +165,9 @@ func (d *DIDDelete) Validate() error {
 // Flatten returns a flat map of all transaction fields
 func (d *DIDDelete) Flatten() (map[string]any, error) {
 	return d.Common.ToMap(), nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (d *DIDDelete) RequiredAmendments() []string {
+	return []string{AmendmentDID}
 }

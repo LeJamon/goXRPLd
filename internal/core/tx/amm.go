@@ -152,6 +152,11 @@ func (a *AMMCreate) Flatten() (map[string]any, error) {
 	return m, nil
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (a *AMMCreate) RequiredAmendments() []string {
+	return []string{AmendmentAMM, AmendmentFixUniversalNumber}
+}
+
 // AMMDeposit deposits assets into an AMM.
 type AMMDeposit struct {
 	BaseTx
@@ -282,6 +287,11 @@ func (a *AMMDeposit) Flatten() (map[string]any, error) {
 	}
 
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (a *AMMDeposit) RequiredAmendments() []string {
+	return []string{AmendmentAMM, AmendmentFixUniversalNumber}
 }
 
 // AMMWithdraw withdraws assets from an AMM.
@@ -456,6 +466,11 @@ func (a *AMMWithdraw) Flatten() (map[string]any, error) {
 	return m, nil
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (a *AMMWithdraw) RequiredAmendments() []string {
+	return []string{AmendmentAMM, AmendmentFixUniversalNumber}
+}
+
 // AMMVote votes on the trading fee for an AMM.
 type AMMVote struct {
 	BaseTx
@@ -523,6 +538,11 @@ func (a *AMMVote) Flatten() (map[string]any, error) {
 	m["TradingFee"] = a.TradingFee
 
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (a *AMMVote) RequiredAmendments() []string {
+	return []string{AmendmentAMM, AmendmentFixUniversalNumber}
 }
 
 // AMMBid places a bid on an AMM auction slot.
@@ -649,6 +669,11 @@ func (a *AMMBid) Flatten() (map[string]any, error) {
 	return m, nil
 }
 
+// RequiredAmendments returns the amendments required for this transaction type
+func (a *AMMBid) RequiredAmendments() []string {
+	return []string{AmendmentAMM, AmendmentFixUniversalNumber}
+}
+
 // AMMDelete deletes an empty AMM.
 type AMMDelete struct {
 	BaseTx
@@ -706,6 +731,11 @@ func (a *AMMDelete) Flatten() (map[string]any, error) {
 	m["Asset2"] = a.Asset2
 
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (a *AMMDelete) RequiredAmendments() []string {
+	return []string{AmendmentAMM, AmendmentFixUniversalNumber}
 }
 
 // AMMClawback claws back tokens from an AMM.
@@ -816,4 +846,9 @@ func (a *AMMClawback) Flatten() (map[string]any, error) {
 	}
 
 	return m, nil
+}
+
+// RequiredAmendments returns the amendments required for this transaction type
+func (a *AMMClawback) RequiredAmendments() []string {
+	return []string{AmendmentAMM, AmendmentFixUniversalNumber, AmendmentAMMClawback}
 }
