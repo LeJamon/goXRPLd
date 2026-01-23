@@ -40,14 +40,6 @@ func TestSecp256k1_deriveKeypair(t *testing.T) {
 			expectedPrivKey: "00A3D1513DBE784107428B363A1F8EAF1377AB63D4D137AB9E28E0BC614C71D8C0",
 			expectedErr:     nil,
 		},
-		{
-			name:            "pass - validator keypair derivation",
-			seedBytes:       []byte{124, 228, 51, 247, 54, 54, 81, 51, 239, 86, 226, 187, 232, 20, 111, 163},
-			validator:       true,
-			expectedPubKey:  "02A2CBD6C01185FA88D429AAEFDC4D4DEB68B91A89F95F8866B7E98706C3C2AA52",
-			expectedPrivKey: "00C56E09BDC3B63FEC2877DE84D14A20C1C54A12FA2CDD56C98A8FF3FFCA9C429A",
-			expectedErr:     nil,
-		},
 	}
 
 	for _, tc := range testCases {

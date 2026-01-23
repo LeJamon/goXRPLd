@@ -10,6 +10,8 @@ import (
 type HashPrefix uint32
 
 const (
+	AccountIDSize = 20
+
 	// HashPrefixTransactionID is the prefix for transaction ID calculation (TXN\0).
 	HashPrefixTransactionID HashPrefix = 0x54584E00
 
