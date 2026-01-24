@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	offertx "github.com/LeJamon/goXRPLd/internal/core/tx/offer"
 )
 
 // OfferCreateBuilder provides a fluent interface for building OfferCreate transactions.
@@ -68,34 +69,34 @@ func (b *OfferCreateBuilder) Sequence(seq uint32) *OfferCreateBuilder {
 
 // Passive makes the offer passive (won't consume matching offers).
 func (b *OfferCreateBuilder) Passive() *OfferCreateBuilder {
-	b.flags |= tx.OfferCreateFlagPassive
+	b.flags |= offertx.OfferCreateFlagPassive
 	return b
 }
 
 // ImmediateOrCancel makes the offer immediate-or-cancel.
 // The offer will only take what's available immediately and cancel the rest.
 func (b *OfferCreateBuilder) ImmediateOrCancel() *OfferCreateBuilder {
-	b.flags |= tx.OfferCreateFlagImmediateOrCancel
+	b.flags |= offertx.OfferCreateFlagImmediateOrCancel
 	return b
 }
 
 // FillOrKill makes the offer fill-or-kill.
 // The offer must be fully filled or it will be cancelled entirely.
 func (b *OfferCreateBuilder) FillOrKill() *OfferCreateBuilder {
-	b.flags |= tx.OfferCreateFlagFillOrKill
+	b.flags |= offertx.OfferCreateFlagFillOrKill
 	return b
 }
 
 // Sell makes this a sell offer.
 // The taker gets at least as much as TakerGets, possibly more.
 func (b *OfferCreateBuilder) Sell() *OfferCreateBuilder {
-	b.flags |= tx.OfferCreateFlagSell
+	b.flags |= offertx.OfferCreateFlagSell
 	return b
 }
 
 // Build constructs the OfferCreate transaction.
 func (b *OfferCreateBuilder) Build() tx.Transaction {
-	offer := tx.NewOfferCreate(b.account.Address, b.takerGets, b.takerPays)
+	offer := offertx.NewOfferCreate(b.account.Address, b.takerGets, b.takerPays)
 	offer.Fee = fmt.Sprintf("%d", b.fee)
 
 	if b.expiration != nil {
@@ -114,17 +115,17 @@ func (b *OfferCreateBuilder) Build() tx.Transaction {
 	return offer
 }
 
-// BuildOfferCreate is a convenience method that returns the concrete *tx.OfferCreate type.
-func (b *OfferCreateBuilder) BuildOfferCreate() *tx.OfferCreate {
-	return b.Build().(*tx.OfferCreate)
+// BuildOfferCreate is a convenience method that returns the concrete *offertx.OfferCreate type.
+func (b *OfferCreateBuilder) BuildOfferCreate() *offertx.OfferCreate {
+	return b.Build().(*offertx.OfferCreate)
 }
 
 // OfferCancelBuilder provides a fluent interface for building OfferCancel transactions.
 type OfferCancelBuilder struct {
-	account   *Account
-	offerSeq  uint32
-	fee       uint64
-	sequence  *uint32
+	account  *Account
+	offerSeq uint32
+	fee      uint64
+	sequence *uint32
 }
 
 // OfferCancel creates a new OfferCancelBuilder.
@@ -151,7 +152,7 @@ func (b *OfferCancelBuilder) Sequence(seq uint32) *OfferCancelBuilder {
 
 // Build constructs the OfferCancel transaction.
 func (b *OfferCancelBuilder) Build() tx.Transaction {
-	offer := tx.NewOfferCancel(b.account.Address, b.offerSeq)
+	offer := offertx.NewOfferCancel(b.account.Address, b.offerSeq)
 	offer.Fee = fmt.Sprintf("%d", b.fee)
 
 	if b.sequence != nil {
@@ -161,9 +162,9 @@ func (b *OfferCancelBuilder) Build() tx.Transaction {
 	return offer
 }
 
-// BuildOfferCancel is a convenience method that returns the concrete *tx.OfferCancel type.
-func (b *OfferCancelBuilder) BuildOfferCancel() *tx.OfferCancel {
-	return b.Build().(*tx.OfferCancel)
+// BuildOfferCancel is a convenience method that returns the concrete *offertx.OfferCancel type.
+func (b *OfferCancelBuilder) BuildOfferCancel() *offertx.OfferCancel {
+	return b.Build().(*offertx.OfferCancel)
 }
 
 // Amount helpers for creating amounts in tests

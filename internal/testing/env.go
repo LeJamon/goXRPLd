@@ -10,6 +10,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/genesis"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/payment"
 )
 
 // TestEnv manages a test ledger environment for transaction testing.
@@ -156,7 +157,7 @@ func (e *TestEnv) FundAmount(acc *Account, amount uint64) {
 
 	// Create payment transaction
 	seq := e.Seq(master)
-	payment := tx.NewPayment(master.Address, acc.Address, tx.NewXRPAmount(formatUint64(amount)))
+	payment := payment.NewPayment(master.Address, acc.Address, tx.NewXRPAmount(formatUint64(amount)))
 	payment.Fee = formatUint64(e.baseFee)
 	payment.Sequence = &seq
 

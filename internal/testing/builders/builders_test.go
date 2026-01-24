@@ -8,6 +8,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	escrowtx "github.com/LeJamon/goXRPLd/internal/core/tx/escrow"
+	offertx "github.com/LeJamon/goXRPLd/internal/core/tx/offer"
+	paymenttx "github.com/LeJamon/goXRPLd/internal/core/tx/payment"
+	trustsettx "github.com/LeJamon/goXRPLd/internal/core/tx/trustset"
 )
 
 func TestPaymentBuilder(t *testing.T) {
@@ -25,12 +29,12 @@ func TestPaymentBuilder(t *testing.T) {
 	assert.Equal(t, "20", common.Fee)
 
 	// With destination tag
-	payment3 := Pay(alice, bob, 1_000_000).DestTag(12345).Build().(*tx.Payment)
+	payment3 := Pay(alice, bob, 1_000_000).DestTag(12345).Build().(*paymenttx.Payment)
 	require.NotNil(t, payment3.DestinationTag)
 	assert.Equal(t, uint32(12345), *payment3.DestinationTag)
 
 	// With source tag
-	payment4 := Pay(alice, bob, 1_000_000).SourceTag(54321).Build().(*tx.Payment)
+	payment4 := Pay(alice, bob, 1_000_000).SourceTag(54321).Build().(*paymenttx.Payment)
 	require.NotNil(t, payment4.SourceTag)
 	assert.Equal(t, uint32(54321), *payment4.SourceTag)
 
@@ -47,7 +51,7 @@ func TestPaymentBuilderIssued(t *testing.T) {
 
 	// Issued currency payment
 	amount := USD("100.50", gateway)
-	payment := PayIssued(alice, bob, amount).Build().(*tx.Payment)
+	payment := PayIssued(alice, bob, amount).Build().(*paymenttx.Payment)
 
 	assert.Equal(t, "100.50", payment.Amount.Value)
 	assert.Equal(t, "USD", payment.Amount.Currency)
@@ -89,12 +93,12 @@ func TestTrustSetBuilder(t *testing.T) {
 	// With no ripple flag
 	trustSet2 := TrustUSD(alice, gateway, "1000000").NoRipple().Build()
 	flags := trustSet2.GetCommon().GetFlags()
-	assert.True(t, flags&tx.TrustSetFlagSetNoRipple != 0)
+	assert.True(t, flags&trustsettx.TrustSetFlagSetNoRipple != 0)
 
 	// With quality
 	trustSet3 := TrustUSD(alice, gateway, "1000000").
 		QualityIn(QualityFromPercentage(101)).
-		Build().(*tx.TrustSet)
+		Build().(*trustsettx.TrustSet)
 	require.NotNil(t, trustSet3.QualityIn)
 	// 101% = 1,010,000,000
 	assert.Equal(t, uint32(1_010_000_000), *trustSet3.QualityIn)
@@ -104,8 +108,8 @@ func TestOfferCreateBuilder(t *testing.T) {
 	alice := NewAccount("rAlice")
 	gateway := NewAccount("rGateway")
 
-	takerPays := XRP(1_000_000)        // 1 XRP
-	takerGets := USD("100", gateway)   // 100 USD
+	takerPays := XRP(1_000_000)      // 1 XRP
+	takerGets := USD("100", gateway) // 100 USD
 
 	// Basic offer
 	offer := OfferCreate(alice, takerPays, takerGets).Build()
@@ -115,17 +119,17 @@ func TestOfferCreateBuilder(t *testing.T) {
 	// Passive offer
 	offer2 := OfferCreate(alice, takerPays, takerGets).Passive().Build()
 	flags := offer2.GetCommon().GetFlags()
-	assert.True(t, flags&tx.OfferCreateFlagPassive != 0)
+	assert.True(t, flags&offertx.OfferCreateFlagPassive != 0)
 
 	// Immediate or cancel
 	offer3 := OfferCreate(alice, takerPays, takerGets).ImmediateOrCancel().Build()
 	flags3 := offer3.GetCommon().GetFlags()
-	assert.True(t, flags3&tx.OfferCreateFlagImmediateOrCancel != 0)
+	assert.True(t, flags3&offertx.OfferCreateFlagImmediateOrCancel != 0)
 
 	// Fill or kill
 	offer4 := OfferCreate(alice, takerPays, takerGets).FillOrKill().Build()
 	flags4 := offer4.GetCommon().GetFlags()
-	assert.True(t, flags4&tx.OfferCreateFlagFillOrKill != 0)
+	assert.True(t, flags4&offertx.OfferCreateFlagFillOrKill != 0)
 }
 
 func TestOfferCancelBuilder(t *testing.T) {
@@ -136,7 +140,7 @@ func TestOfferCancelBuilder(t *testing.T) {
 	require.NotNil(t, cancel)
 	assert.Equal(t, tx.TypeOfferCancel, cancel.TxType())
 
-	cancelTx := cancel.(*tx.OfferCancel)
+	cancelTx := cancel.(*offertx.OfferCancel)
 	assert.Equal(t, uint32(5), cancelTx.OfferSequence)
 }
 
@@ -155,14 +159,14 @@ func TestEscrowCreateBuilder(t *testing.T) {
 	require.NotNil(t, escrow)
 	assert.Equal(t, tx.TypeEscrowCreate, escrow.TxType())
 
-	escrowTx := escrow.(*tx.EscrowCreate)
+	escrowTx := escrow.(*escrowtx.EscrowCreate)
 	require.NotNil(t, escrowTx.FinishAfter)
 	require.NotNil(t, escrowTx.CancelAfter)
 
 	// Condition-based escrow
 	escrow2 := EscrowCreate(alice, bob, 1_000_000).
 		Condition(TestCondition1).
-		Build().(*tx.EscrowCreate)
+		Build().(*escrowtx.EscrowCreate)
 	assert.NotEmpty(t, escrow2.Condition)
 }
 
@@ -177,7 +181,7 @@ func TestEscrowFinishBuilder(t *testing.T) {
 	require.NotNil(t, finish)
 	assert.Equal(t, tx.TypeEscrowFinish, finish.TxType())
 
-	finishTx := finish.(*tx.EscrowFinish)
+	finishTx := finish.(*escrowtx.EscrowFinish)
 	assert.NotEmpty(t, finishTx.Condition)
 	assert.NotEmpty(t, finishTx.Fulfillment)
 }

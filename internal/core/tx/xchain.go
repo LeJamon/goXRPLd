@@ -2,9 +2,11 @@ package tx
 
 import (
 	"errors"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
 	"strconv"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
 func init() {
@@ -90,7 +92,7 @@ func (x *XChainCreateBridge) Flatten() (map[string]any, error) {
 
 // RequiredAmendments returns the amendments required for this transaction type
 func (x *XChainCreateBridge) RequiredAmendments() []string {
-	return []string{AmendmentXChainBridge}
+	return []string{amendment.AmendmentXChainBridge}
 }
 
 // XChainModifyBridge modifies an existing cross-chain bridge.
@@ -138,7 +140,7 @@ func (x *XChainModifyBridge) Flatten() (map[string]any, error) {
 
 // RequiredAmendments returns the amendments required for this transaction type
 func (x *XChainModifyBridge) RequiredAmendments() []string {
-	return []string{AmendmentXChainBridge}
+	return []string{amendment.AmendmentXChainBridge}
 }
 
 // XChainCreateClaimID creates a claim ID for cross-chain transfers.
@@ -190,7 +192,7 @@ func (x *XChainCreateClaimID) Flatten() (map[string]any, error) {
 
 // RequiredAmendments returns the amendments required for this transaction type
 func (x *XChainCreateClaimID) RequiredAmendments() []string {
-	return []string{AmendmentXChainBridge}
+	return []string{amendment.AmendmentXChainBridge}
 }
 
 // XChainCommit commits assets to a cross-chain transfer.
@@ -245,7 +247,7 @@ func (x *XChainCommit) Flatten() (map[string]any, error) {
 
 // RequiredAmendments returns the amendments required for this transaction type
 func (x *XChainCommit) RequiredAmendments() []string {
-	return []string{AmendmentXChainBridge}
+	return []string{amendment.AmendmentXChainBridge}
 }
 
 // XChainClaim claims assets from a cross-chain transfer.
@@ -308,7 +310,7 @@ func (x *XChainClaim) Flatten() (map[string]any, error) {
 
 // RequiredAmendments returns the amendments required for this transaction type
 func (x *XChainClaim) RequiredAmendments() []string {
-	return []string{AmendmentXChainBridge}
+	return []string{amendment.AmendmentXChainBridge}
 }
 
 // XChainAccountCreateCommit commits to create an account on the other chain.
@@ -368,7 +370,7 @@ func (x *XChainAccountCreateCommit) Flatten() (map[string]any, error) {
 
 // RequiredAmendments returns the amendments required for this transaction type
 func (x *XChainAccountCreateCommit) RequiredAmendments() []string {
-	return []string{AmendmentXChainBridge}
+	return []string{amendment.AmendmentXChainBridge}
 }
 
 // XChainAddClaimAttestation adds a witness attestation for a claim.
@@ -456,7 +458,7 @@ func (x *XChainAddClaimAttestation) Flatten() (map[string]any, error) {
 
 // RequiredAmendments returns the amendments required for this transaction type
 func (x *XChainAddClaimAttestation) RequiredAmendments() []string {
-	return []string{AmendmentXChainBridge}
+	return []string{amendment.AmendmentXChainBridge}
 }
 
 // XChainAddAccountCreateAttestation adds a witness attestation for account creation.
@@ -534,7 +536,7 @@ func (x *XChainAddAccountCreateAttestation) Flatten() (map[string]any, error) {
 
 // RequiredAmendments returns the amendments required for this transaction type
 func (x *XChainAddAccountCreateAttestation) RequiredAmendments() []string {
-	return []string{AmendmentXChainBridge}
+	return []string{amendment.AmendmentXChainBridge}
 }
 
 // Apply applies the XChainCreateBridge transaction to the ledger.
@@ -570,17 +572,17 @@ func (x *XChainCommit) Apply(ctx *ApplyContext) Result {
 func (x *XChainClaim) Apply(ctx *ApplyContext) Result {
 	amount, err := strconv.ParseUint(x.Amount.Value, 10, 64)
 	if err == nil && x.Amount.Currency == "" {
-		destID, err := decodeAccountID(x.Destination)
+		destID, err := sle.DecodeAccountID(x.Destination)
 		if err != nil {
 			return TemINVALID
 		}
 		destKey := keylet.Account(destID)
 		destData, err := ctx.View.Read(destKey)
 		if err == nil {
-			destAccount, err := parseAccountRoot(destData)
+			destAccount, err := sle.ParseAccountRoot(destData)
 			if err == nil {
 				destAccount.Balance += amount
-				destUpdatedData, _ := serializeAccountRoot(destAccount)
+				destUpdatedData, _ := sle.SerializeAccountRoot(destAccount)
 				ctx.View.Update(destKey, destUpdatedData)
 			}
 		}

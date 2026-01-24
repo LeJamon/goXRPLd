@@ -3,9 +3,16 @@ package tx
 import (
 	"encoding/hex"
 	"errors"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
 )
+
+//TODO SPLIT AND RM THIS FILE
+
+// maxTokenURILength is the maximum length of a token URI (256 bytes when encoded)
+const maxTokenURILength = 256
 
 func init() {
 	Register(TypeDelegateSet, func() Transaction {
@@ -69,7 +76,7 @@ func (d *DelegateSet) Flatten() (map[string]any, error) {
 
 // RequiredAmendments returns the amendments required for this transaction type
 func (d *DelegateSet) RequiredAmendments() []string {
-	return []string{AmendmentPermissionDelegation}
+	return []string{amendment.AmendmentPermissionDelegation}
 }
 
 // NFTokenModify modifies an existing NFToken.
@@ -145,7 +152,7 @@ func (n *NFTokenModify) Flatten() (map[string]any, error) {
 
 // RequiredAmendments returns the amendments required for this transaction type
 func (n *NFTokenModify) RequiredAmendments() []string {
-	return []string{AmendmentDynamicNFT}
+	return []string{amendment.AmendmentDynamicNFT}
 }
 
 // LedgerStateFix fix types
@@ -157,7 +164,7 @@ const (
 
 // LedgerStateFix errors
 var (
-	ErrLedgerFixInvalidType  = errors.New("tefINVALID_LEDGER_FIX_TYPE: invalid LedgerFixType")
+	ErrLedgerFixInvalidType   = errors.New("tefINVALID_LEDGER_FIX_TYPE: invalid LedgerFixType")
 	ErrLedgerFixOwnerRequired = errors.New("temINVALID: Owner is required for nfTokenPageLink fix")
 )
 
@@ -204,7 +211,7 @@ func (l *LedgerStateFix) Validate() error {
 
 	// Check for invalid flags (universal mask)
 	// Reference: rippled LedgerStateFix.cpp:36-37
-	if l.Common.Flags != nil && *l.Common.Flags&tfUniversal != 0 {
+	if l.Common.Flags != nil && *l.Common.Flags&TfUniversalMask != 0 {
 		return ErrInvalidFlags
 	}
 
@@ -233,7 +240,7 @@ func (l *LedgerStateFix) Flatten() (map[string]any, error) {
 
 // RequiredAmendments returns the amendments required for this transaction type
 func (l *LedgerStateFix) RequiredAmendments() []string {
-	return []string{AmendmentFixNFTokenPageLinks}
+	return []string{amendment.AmendmentFixNFTokenPageLinks}
 }
 
 // Batch is a transaction that contains multiple inner transactions.
@@ -264,8 +271,8 @@ type BatchSigner struct {
 
 // BatchSignerData contains batch signer fields
 type BatchSignerData struct {
-	Account         string `json:"Account"`
-	SigningPubKey   string `json:"SigningPubKey"`
+	Account           string `json:"Account"`
+	SigningPubKey     string `json:"SigningPubKey"`
 	BatchTxnSignature string `json:"BatchTxnSignature"`
 }
 
@@ -289,14 +296,14 @@ const (
 
 // Batch errors
 var (
-	ErrBatchTooFewTxns        = errors.New("temARRAY_EMPTY: batch must have at least 2 transactions")
-	ErrBatchTooManyTxns       = errors.New("temARRAY_TOO_LARGE: batch exceeds 8 transactions")
-	ErrBatchInvalidFlags      = errors.New("temINVALID_FLAG: invalid batch flags")
-	ErrBatchMustHaveOneFlag   = errors.New("temINVALID_FLAG: exactly one batch mode flag required")
-	ErrBatchTooManySigners    = errors.New("temARRAY_TOO_LARGE: batch signers exceeds 8 entries")
-	ErrBatchDuplicateSigner   = errors.New("temREDUNDANT: duplicate batch signer")
-	ErrBatchSignerIsOuter     = errors.New("temBAD_SIGNER: batch signer cannot be outer account")
-	ErrBatchEmptyRawTxBlob    = errors.New("temMALFORMED: RawTxBlob cannot be empty")
+	ErrBatchTooFewTxns      = errors.New("temARRAY_EMPTY: batch must have at least 2 transactions")
+	ErrBatchTooManyTxns     = errors.New("temARRAY_TOO_LARGE: batch exceeds 8 transactions")
+	ErrBatchInvalidFlags    = errors.New("temINVALID_FLAG: invalid batch flags")
+	ErrBatchMustHaveOneFlag = errors.New("temINVALID_FLAG: exactly one batch mode flag required")
+	ErrBatchTooManySigners  = errors.New("temARRAY_TOO_LARGE: batch signers exceeds 8 entries")
+	ErrBatchDuplicateSigner = errors.New("temREDUNDANT: duplicate batch signer")
+	ErrBatchSignerIsOuter   = errors.New("temBAD_SIGNER: batch signer cannot be outer account")
+	ErrBatchEmptyRawTxBlob  = errors.New("temMALFORMED: RawTxBlob cannot be empty")
 )
 
 // NewBatch creates a new Batch transaction
@@ -398,13 +405,13 @@ func (b *Batch) AddRawTransaction(blob string) {
 
 // RequiredAmendments returns the amendments required for this transaction type
 func (b *Batch) RequiredAmendments() []string {
-	return []string{AmendmentBatch}
+	return []string{amendment.AmendmentBatch}
 }
 
 // Apply applies the DelegateSet transaction to the ledger.
 func (d *DelegateSet) Apply(ctx *ApplyContext) Result {
 	if d.Authorize != "" {
-		delegateID, err := decodeAccountID(d.Authorize)
+		delegateID, err := sle.DecodeAccountID(d.Authorize)
 		if err != nil {
 			return TecNO_TARGET
 		}
@@ -453,7 +460,7 @@ func (b *Batch) Apply(ctx *ApplyContext) Result {
 // Apply applies the LedgerStateFix transaction to the ledger.
 func (l *LedgerStateFix) Apply(ctx *ApplyContext) Result {
 	if l.Owner != "" {
-		_, err := decodeAccountID(l.Owner)
+		_, err := sle.DecodeAccountID(l.Owner)
 		if err != nil {
 			return TecNO_TARGET
 		}

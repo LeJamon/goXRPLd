@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	trustsettx "github.com/LeJamon/goXRPLd/internal/core/tx/trustset"
 )
 
 // TrustSetBuilder provides a fluent interface for building TrustSet transactions.
@@ -80,39 +81,39 @@ func (b *TrustSetBuilder) Sequence(seq uint32) *TrustSetBuilder {
 // SetAuth authorizes the other party to hold the currency.
 // This is required when the issuer has RequireAuth enabled.
 func (b *TrustSetBuilder) SetAuth() *TrustSetBuilder {
-	b.flags |= tx.TrustSetFlagSetfAuth
+	b.flags |= trustsettx.TrustSetFlagSetfAuth
 	return b
 }
 
 // NoRipple blocks rippling on this trust line.
 // Rippling allows balance to flow through the account for payments.
 func (b *TrustSetBuilder) NoRipple() *TrustSetBuilder {
-	b.flags |= tx.TrustSetFlagSetNoRipple
+	b.flags |= trustsettx.TrustSetFlagSetNoRipple
 	return b
 }
 
 // ClearNoRipple removes the no-ripple flag, allowing rippling.
 func (b *TrustSetBuilder) ClearNoRipple() *TrustSetBuilder {
-	b.flags |= tx.TrustSetFlagClearNoRipple
+	b.flags |= trustsettx.TrustSetFlagClearNoRipple
 	return b
 }
 
 // Freeze freezes this trust line.
 // The issuer can freeze the holder's balance.
 func (b *TrustSetBuilder) Freeze() *TrustSetBuilder {
-	b.flags |= tx.TrustSetFlagSetFreeze
+	b.flags |= trustsettx.TrustSetFlagSetFreeze
 	return b
 }
 
 // ClearFreeze removes the freeze from this trust line.
 func (b *TrustSetBuilder) ClearFreeze() *TrustSetBuilder {
-	b.flags |= tx.TrustSetFlagClearFreeze
+	b.flags |= trustsettx.TrustSetFlagClearFreeze
 	return b
 }
 
 // Build constructs the TrustSet transaction.
 func (b *TrustSetBuilder) Build() tx.Transaction {
-	trustSet := tx.NewTrustSet(b.account.Address, b.limitAmount)
+	trustSet := trustsettx.NewTrustSet(b.account.Address, b.limitAmount)
 	trustSet.Fee = fmt.Sprintf("%d", b.fee)
 
 	if b.qualityIn != nil {
@@ -131,9 +132,9 @@ func (b *TrustSetBuilder) Build() tx.Transaction {
 	return trustSet
 }
 
-// BuildTrustSet is a convenience method that returns the concrete *tx.TrustSet type.
-func (b *TrustSetBuilder) BuildTrustSet() *tx.TrustSet {
-	return b.Build().(*tx.TrustSet)
+// BuildTrustSet is a convenience method that returns the concrete *trustsettx.TrustSet type.
+func (b *TrustSetBuilder) BuildTrustSet() *trustsettx.TrustSet {
+	return b.Build().(*trustsettx.TrustSet)
 }
 
 // Quality constant for 1:1 ratio (no premium or discount).

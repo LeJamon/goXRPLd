@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/escrow"
 )
 
 // RippleEpoch is the Unix timestamp for the Ripple epoch (January 1, 2000 00:00:00 UTC).
@@ -114,34 +115,34 @@ func (b *EscrowCreateBuilder) Sequence(seq uint32) *EscrowCreateBuilder {
 // Build constructs the EscrowCreate transaction.
 func (b *EscrowCreateBuilder) Build() tx.Transaction {
 	amount := tx.NewXRPAmount(fmt.Sprintf("%d", b.amount))
-	escrow := tx.NewEscrowCreate(b.from.Address, b.to.Address, amount)
-	escrow.Fee = fmt.Sprintf("%d", b.fee)
+	e := escrow.NewEscrowCreate(b.from.Address, b.to.Address, amount)
+	e.Fee = fmt.Sprintf("%d", b.fee)
 
 	if b.finishAfter != nil {
-		escrow.FinishAfter = b.finishAfter
+		e.FinishAfter = b.finishAfter
 	}
 	if b.cancelAfter != nil {
-		escrow.CancelAfter = b.cancelAfter
+		e.CancelAfter = b.cancelAfter
 	}
 	if b.condition != nil {
-		escrow.Condition = hex.EncodeToString(b.condition)
+		e.Condition = hex.EncodeToString(b.condition)
 	}
 	if b.destTag != nil {
-		escrow.DestinationTag = b.destTag
+		e.DestinationTag = b.destTag
 	}
 	if b.sourceTag != nil {
-		escrow.SourceTag = b.sourceTag
+		e.SourceTag = b.sourceTag
 	}
 	if b.sequence != nil {
-		escrow.SetSequence(*b.sequence)
+		e.SetSequence(*b.sequence)
 	}
 
-	return escrow
+	return e
 }
 
-// BuildEscrowCreate is a convenience method that returns the concrete *tx.EscrowCreate type.
-func (b *EscrowCreateBuilder) BuildEscrowCreate() *tx.EscrowCreate {
-	return b.Build().(*tx.EscrowCreate)
+// BuildEscrowCreate is a convenience method that returns the concrete *escrow.EscrowCreate type.
+func (b *EscrowCreateBuilder) BuildEscrowCreate() *escrow.EscrowCreate {
+	return b.Build().(*escrow.EscrowCreate)
 }
 
 // EscrowFinishBuilder provides a fluent interface for building EscrowFinish transactions.
@@ -217,25 +218,25 @@ func (b *EscrowFinishBuilder) Sequence(seq uint32) *EscrowFinishBuilder {
 
 // Build constructs the EscrowFinish transaction.
 func (b *EscrowFinishBuilder) Build() tx.Transaction {
-	escrow := tx.NewEscrowFinish(b.finisher.Address, b.owner.Address, b.offerSeq)
-	escrow.Fee = fmt.Sprintf("%d", b.fee)
+	e := escrow.NewEscrowFinish(b.finisher.Address, b.owner.Address, b.offerSeq)
+	e.Fee = fmt.Sprintf("%d", b.fee)
 
 	if b.condition != nil {
-		escrow.Condition = hex.EncodeToString(b.condition)
+		e.Condition = hex.EncodeToString(b.condition)
 	}
 	if b.fulfillment != nil {
-		escrow.Fulfillment = hex.EncodeToString(b.fulfillment)
+		e.Fulfillment = hex.EncodeToString(b.fulfillment)
 	}
 	if b.sequence != nil {
-		escrow.SetSequence(*b.sequence)
+		e.SetSequence(*b.sequence)
 	}
 
-	return escrow
+	return e
 }
 
-// BuildEscrowFinish is a convenience method that returns the concrete *tx.EscrowFinish type.
-func (b *EscrowFinishBuilder) BuildEscrowFinish() *tx.EscrowFinish {
-	return b.Build().(*tx.EscrowFinish)
+// BuildEscrowFinish is a convenience method that returns the concrete *escrow.EscrowFinish type.
+func (b *EscrowFinishBuilder) BuildEscrowFinish() *escrow.EscrowFinish {
+	return b.Build().(*escrow.EscrowFinish)
 }
 
 // EscrowCancelBuilder provides a fluent interface for building EscrowCancel transactions.
@@ -273,17 +274,17 @@ func (b *EscrowCancelBuilder) Sequence(seq uint32) *EscrowCancelBuilder {
 
 // Build constructs the EscrowCancel transaction.
 func (b *EscrowCancelBuilder) Build() tx.Transaction {
-	escrow := tx.NewEscrowCancel(b.canceller.Address, b.owner.Address, b.offerSeq)
-	escrow.Fee = fmt.Sprintf("%d", b.fee)
+	e := escrow.NewEscrowCancel(b.canceller.Address, b.owner.Address, b.offerSeq)
+	e.Fee = fmt.Sprintf("%d", b.fee)
 
 	if b.sequence != nil {
-		escrow.SetSequence(*b.sequence)
+		e.SetSequence(*b.sequence)
 	}
 
-	return escrow
+	return e
 }
 
-// BuildEscrowCancel is a convenience method that returns the concrete *tx.EscrowCancel type.
-func (b *EscrowCancelBuilder) BuildEscrowCancel() *tx.EscrowCancel {
-	return b.Build().(*tx.EscrowCancel)
+// BuildEscrowCancel is a convenience method that returns the concrete *escrow.EscrowCancel type.
+func (b *EscrowCancelBuilder) BuildEscrowCancel() *escrow.EscrowCancel {
+	return b.Build().(*escrow.EscrowCancel)
 }

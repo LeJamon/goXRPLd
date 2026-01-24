@@ -5,6 +5,8 @@ import (
 	"strconv"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
 func init() {
@@ -233,7 +235,7 @@ func (c *Clawback) Validate() error {
 
 	// Check for invalid flags
 	// Reference: rippled Clawback.cpp:87-88
-	if c.Common.Flags != nil && *c.Common.Flags&tfUniversal != 0 {
+	if c.Common.Flags != nil && *c.Common.Flags&TfUniversalMask != 0 {
 		return ErrInvalidFlags
 	}
 
@@ -293,15 +295,15 @@ func (c *Clawback) Flatten() (map[string]any, error) {
 func (c *Clawback) RequiredAmendments() []string {
 	// MPToken clawback requires additional amendment
 	if c.Holder != "" {
-		return []string{AmendmentClawback, AmendmentMPTokensV1}
+		return []string{amendment.AmendmentClawback, amendment.AmendmentMPTokensV1}
 	}
-	return []string{AmendmentClawback}
+	return []string{amendment.AmendmentClawback}
 }
 
 // Apply applies the DepositPreauth transaction to ledger state.
 func (d *DepositPreauth) Apply(ctx *ApplyContext) Result {
 	if d.Authorize != "" {
-		authorizedID, err := decodeAccountID(d.Authorize)
+		authorizedID, err := sle.DecodeAccountID(d.Authorize)
 		if err != nil {
 			return TemINVALID
 		}
@@ -319,7 +321,7 @@ func (d *DepositPreauth) Apply(ctx *ApplyContext) Result {
 			return TecDUPLICATE
 		}
 
-		preauthData, err := serializeDepositPreauth(ctx.AccountID, authorizedID)
+		preauthData, err := sle.SerializeDepositPreauth(ctx.AccountID, authorizedID)
 		if err != nil {
 			return TefINTERNAL
 		}
@@ -330,7 +332,7 @@ func (d *DepositPreauth) Apply(ctx *ApplyContext) Result {
 
 		ctx.Account.OwnerCount++
 	} else if d.Unauthorize != "" {
-		unauthorizedID, err := decodeAccountID(d.Unauthorize)
+		unauthorizedID, err := sle.DecodeAccountID(d.Unauthorize)
 		if err != nil {
 			return TemINVALID
 		}
@@ -364,7 +366,7 @@ func (a *AccountDelete) Apply(ctx *ApplyContext) Result {
 		return TefTOO_BIG
 	}
 
-	destID, err := decodeAccountID(a.Destination)
+	destID, err := sle.DecodeAccountID(a.Destination)
 	if err != nil {
 		return TemINVALID
 	}
@@ -375,14 +377,14 @@ func (a *AccountDelete) Apply(ctx *ApplyContext) Result {
 		return TecNO_DST
 	}
 
-	destAccount, err := parseAccountRoot(destData)
+	destAccount, err := sle.ParseAccountRoot(destData)
 	if err != nil {
 		return TefINTERNAL
 	}
 
 	destAccount.Balance += ctx.Account.Balance
 
-	destUpdatedData, err := serializeAccountRoot(destAccount)
+	destUpdatedData, err := sle.SerializeAccountRoot(destAccount)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -408,7 +410,7 @@ func (t *TicketCreate) Apply(ctx *ApplyContext) Result {
 
 		ticketKey := keylet.Ticket(ctx.AccountID, ticketSeq)
 
-		ticketData, err := serializeTicket(ctx.AccountID, ticketSeq)
+		ticketData, err := sle.SerializeTicket(ctx.AccountID, ticketSeq)
 		if err != nil {
 			return TefINTERNAL
 		}
@@ -430,7 +432,7 @@ func (c *Clawback) Apply(ctx *ApplyContext) Result {
 		return TemINVALID
 	}
 
-	holderID, err := decodeAccountID(c.Amount.Issuer)
+	holderID, err := sle.DecodeAccountID(c.Amount.Issuer)
 	if err != nil {
 		return TecNO_TARGET
 	}
@@ -442,7 +444,7 @@ func (c *Clawback) Apply(ctx *ApplyContext) Result {
 		return TecNO_LINE
 	}
 
-	_, err = parseRippleState(trustData)
+	_, err = sle.ParseRippleState(trustData)
 	if err != nil {
 		return TefINTERNAL
 	}

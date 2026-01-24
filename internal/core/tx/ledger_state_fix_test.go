@@ -3,6 +3,7 @@ package tx
 import (
 	"testing"
 
+	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -64,7 +65,7 @@ func TestLedgerStateFixValidation(t *testing.T) {
 			name: "invalid - universal flags set",
 			tx: func() *LedgerStateFix {
 				l := NewNFTokenPageLinkFix("rAdmin", "rOwner")
-				flags := uint32(tfUniversal)
+				flags := uint32(TfUniversalMask)
 				l.Common.Flags = &flags
 				return l
 			}(),
@@ -152,7 +153,7 @@ func TestLedgerStateFixConstructors(t *testing.T) {
 func TestLedgerStateFixRequiredAmendments(t *testing.T) {
 	tx := NewNFTokenPageLinkFix("rAdmin", "rOwner")
 	amendments := tx.RequiredAmendments()
-	assert.Contains(t, amendments, AmendmentFixNFTokenPageLinks)
+	assert.Contains(t, amendments, amendment.AmendmentFixNFTokenPageLinks)
 }
 
 // =============================================================================

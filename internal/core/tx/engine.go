@@ -11,6 +11,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
 	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
 )
 
@@ -52,8 +53,8 @@ type engineSignerListLookup struct {
 }
 
 // GetSignerList returns the signer list for an account
-func (l *engineSignerListLookup) GetSignerList(account string) (*SignerListInfo, error) {
-	accountID, err := decodeAccountID(account)
+func (l *engineSignerListLookup) GetSignerList(account string) (*sle.SignerListInfo, error) {
+	accountID, err := sle.DecodeAccountID(account)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +75,7 @@ func (l *engineSignerListLookup) GetSignerList(account string) (*SignerListInfo,
 		return nil, err
 	}
 
-	signerList, err := parseSignerList(signerListData)
+	signerList, err := sle.ParseSignerList(signerListData)
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +85,7 @@ func (l *engineSignerListLookup) GetSignerList(account string) (*SignerListInfo,
 
 // GetAccountInfo returns account information needed for signer validation
 func (l *engineSignerListLookup) GetAccountInfo(account string) (flags uint32, regularKey string, err error) {
-	accountID, err := decodeAccountID(account)
+	accountID, err := sle.DecodeAccountID(account)
 	if err != nil {
 		return 0, "", err
 	}
@@ -103,7 +104,7 @@ func (l *engineSignerListLookup) GetAccountInfo(account string) (flags uint32, r
 		return 0, "", err
 	}
 
-	accountRoot, err := parseAccountRoot(accountData)
+	accountRoot, err := sle.ParseAccountRoot(accountData)
 	if err != nil {
 		return 0, "", err
 	}
@@ -207,32 +208,8 @@ type Metadata struct {
 	DeliveredAmount *Amount
 }
 
-// AffectedNode represents a ledger entry that was changed
-type AffectedNode struct {
-	// NodeType is "CreatedNode", "ModifiedNode", or "DeletedNode"
-	NodeType string
-
-	// LedgerEntryType is the type of ledger entry
-	LedgerEntryType string
-
-	// LedgerIndex is the key of the entry
-	LedgerIndex string
-
-	// PreviousTxnLgrSeq is the ledger sequence of the previous transaction that modified this entry
-	PreviousTxnLgrSeq uint32
-
-	// PreviousTxnID is the hash of the previous transaction that modified this entry
-	PreviousTxnID string
-
-	// FinalFields contains the final state (for Modified/Deleted)
-	FinalFields map[string]any
-
-	// PreviousFields contains the previous state (for Modified)
-	PreviousFields map[string]any
-
-	// NewFields contains the new state (for Created)
-	NewFields map[string]any
-}
+// AffectedNode is an alias for sle.AffectedNode
+type AffectedNode = sle.AffectedNode
 
 // MarshalJSON implements custom JSON marshaling for Metadata to match rippled format
 func (m Metadata) MarshalJSON() ([]byte, error) {
@@ -249,7 +226,7 @@ func (m Metadata) MarshalJSON() ([]byte, error) {
 	// AffectedNodes with nested structure
 	affectedNodes := make([]map[string]any, 0, len(sortedNodes))
 	for _, node := range sortedNodes {
-		nodeJSON, err := node.toRippledFormat()
+		nodeJSON, err := affectedNodeToRippledFormat(node)
 		if err != nil {
 			return nil, err
 		}
@@ -273,7 +250,7 @@ func (m Metadata) MarshalJSON() ([]byte, error) {
 }
 
 // toRippledFormat converts an AffectedNode to rippled's nested format
-func (n AffectedNode) toRippledFormat() (map[string]any, error) {
+func affectedNodeToRippledFormat(n AffectedNode) (map[string]any, error) {
 	// Build the inner node content
 	inner := make(map[string]any)
 
@@ -682,7 +659,7 @@ func (e *Engine) preclaim(tx Transaction) Result {
 	common := tx.GetCommon()
 
 	// Check that the source account exists
-	accountID, err := decodeAccountID(common.Account)
+	accountID, err := sle.DecodeAccountID(common.Account)
 	if err != nil {
 		return TemBAD_SRC_ACCOUNT
 	}
@@ -703,7 +680,7 @@ func (e *Engine) preclaim(tx Transaction) Result {
 	}
 
 	// Parse account and check sequence
-	account, err := parseAccountRoot(accountData)
+	account, err := sle.ParseAccountRoot(accountData)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -744,7 +721,7 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 
 	// Deduct fee from sender
 	common := tx.GetCommon()
-	accountID, _ := decodeAccountID(common.Account)
+	accountID, _ := sle.DecodeAccountID(common.Account)
 	accountKey := keylet.Account(accountID)
 
 	// Read sender account through the table (tracks it for metadata)
@@ -753,7 +730,7 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 		return TefINTERNAL
 	}
 
-	account, err := parseAccountRoot(accountData)
+	account, err := sle.ParseAccountRoot(accountData)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -790,7 +767,7 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 	}
 
 	// Update the source account through the table
-	updatedData, err := serializeAccountRoot(account)
+	updatedData, err := sle.SerializeAccountRoot(account)
 	if err != nil {
 		return TefINTERNAL
 	}

@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
 func init() {
@@ -168,7 +169,7 @@ func (s *SetRegularKey) Apply(ctx *ApplyContext) Result {
 	ctx.Account.RegularKey = s.RegularKey
 
 	if s.RegularKey != "" {
-		if _, err := decodeAccountID(s.RegularKey); err != nil {
+		if _, err := sle.DecodeAccountID(s.RegularKey); err != nil {
 			return TemINVALID
 		}
 	}
@@ -191,7 +192,14 @@ func (sl *SignerListSet) Apply(ctx *ApplyContext) Result {
 			}
 		}
 	} else {
-		signerListData, err := serializeSignerList(sl, ctx.AccountID)
+		sleEntries := make([]sle.SignerEntry, len(sl.SignerEntries))
+		for i, e := range sl.SignerEntries {
+			sleEntries[i] = sle.SignerEntry{
+				Account:      e.SignerEntry.Account,
+				SignerWeight: e.SignerEntry.SignerWeight,
+			}
+		}
+		signerListData, err := sle.SerializeSignerList(sl.SignerQuorum, sleEntries, ctx.AccountID)
 		if err != nil {
 			return TefINTERNAL
 		}

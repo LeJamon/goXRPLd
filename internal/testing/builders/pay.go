@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/payment"
 )
 
 // PaymentBuilder provides a fluent interface for building Payment transactions.
@@ -128,7 +129,7 @@ func (b *PaymentBuilder) Build() tx.Transaction {
 		amount = tx.NewXRPAmount(fmt.Sprintf("%d", b.amount))
 	}
 
-	payment := tx.NewPayment(b.from.Address, b.to.Address, amount)
+	payment := payment.NewPayment(b.from.Address, b.to.Address, amount)
 	payment.Fee = fmt.Sprintf("%d", b.fee)
 
 	if b.destTag != nil {
@@ -159,7 +160,7 @@ func (b *PaymentBuilder) Build() tx.Transaction {
 	return payment
 }
 
-// BuildPayment is a convenience method that returns the concrete *tx.Payment type.
-func (b *PaymentBuilder) BuildPayment() *tx.Payment {
-	return b.Build().(*tx.Payment)
+// BuildPayment is a convenience method that returns the concrete *payment.Payment type.
+func (b *PaymentBuilder) BuildPayment() *payment.Payment {
+	return b.Build().(*payment.Payment)
 }
