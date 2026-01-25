@@ -365,7 +365,7 @@ func (s *BookStep) transferRateIn(sb *PaymentSandbox, prevStepDir DebtDirection)
 		return QualityOne
 	}
 
-	return s.getAccountTransferRate(sb, s.book.In.Issuer)
+	return s.GetAccountTransferRate(sb, s.book.In.Issuer)
 }
 
 // transferRateOut returns the transfer rate for outgoing currency
@@ -378,11 +378,11 @@ func (s *BookStep) transferRateOut(sb *PaymentSandbox) uint32 {
 		return QualityOne
 	}
 
-	return s.getAccountTransferRate(sb, s.book.Out.Issuer)
+	return s.GetAccountTransferRate(sb, s.book.Out.Issuer)
 }
 
-// getAccountTransferRate gets the transfer rate from an account
-func (s *BookStep) getAccountTransferRate(sb *PaymentSandbox, issuer [20]byte) uint32 {
+// GetAccountTransferRate gets the transfer rate from an account
+func (s *BookStep) GetAccountTransferRate(sb *PaymentSandbox, issuer [20]byte) uint32 {
 	accountKey := keylet.Account(issuer)
 	data, err := sb.Read(accountKey)
 	if err != nil || data == nil {

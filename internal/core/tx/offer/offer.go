@@ -1,9 +1,8 @@
-//go:build ignore
-
 package offer
 
 import (
 	"errors"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/payment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
@@ -189,7 +188,7 @@ func (o *OfferCancel) Flatten() (map[string]any, error) {
 // Reference: rippled CancelOffer.cpp doApply
 func (o *OfferCancel) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Find the offer
-	accountID, _ := tx.DecodeAccountID(ctx.Account.Account)
+	accountID, _ := sle.DecodeAccountID(ctx.Account.Account)
 	offerKey := keylet.Offer(accountID, o.OfferSequence)
 
 	exists, err := ctx.View.Exists(offerKey)
@@ -219,7 +218,7 @@ func (o *OfferCancel) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Remove from owner directory (keepRoot = false since owner dir should persist)
 	ownerDirKey := keylet.OwnerDir(accountID)
-	ownerDirResult, err := ctx.Engine.DirRemove(ctx.View, ownerDirKey, ledgerOffer.OwnerNode, offerKey.Key, false)
+	ownerDirResult, err := sle.DirRemove(ctx.View, ownerDirKey, ledgerOffer.OwnerNode, offerKey.Key, false)
 	if err != nil {
 		return tx.TefINTERNAL
 	}
@@ -229,7 +228,7 @@ func (o *OfferCancel) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Remove from book directory (keepRoot = false - delete directory if empty)
 	bookDirKey := keylet.Keylet{Type: 100, Key: ledgerOffer.BookDirectory} // DirectoryNode type
-	bookDirResult, err := ctx.Engine.DirRemove(ctx.View, bookDirKey, ledgerOffer.BookNode, offerKey.Key, false)
+	bookDirResult, err := sle.DirRemove(ctx.View, bookDirKey, ledgerOffer.BookNode, offerKey.Key, false)
 	if err != nil {
 		return tx.TefINTERNAL
 	}
@@ -263,7 +262,7 @@ func (o *OfferCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// First, cancel any existing offer if OfferSequence is specified
 	if o.OfferSequence != nil {
-		accountID, _ := tx.DecodeAccountID(ctx.Account.Account)
+		accountID, _ := sle.DecodeAccountID(ctx.Account.Account)
 		oldOfferKey := keylet.Offer(accountID, *o.OfferSequence)
 		exists, _ := ctx.View.Exists(oldOfferKey)
 		if exists {
@@ -286,8 +285,8 @@ func (o *OfferCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 			return tx.TecUNFUNDED_OFFER
 		}
 	} else {
-		accountID, _ := tx.DecodeAccountID(ctx.Account.Account)
-		issuerID, _ := tx.DecodeAccountID(takerGets.Issuer)
+		accountID, _ := sle.DecodeAccountID(ctx.Account.Account)
+		issuerID, _ := sle.DecodeAccountID(takerGets.Issuer)
 		if accountID != issuerID {
 			trustLineKey := keylet.Line(accountID, issuerID, takerGets.Currency)
 			trustLineData, err := ctx.View.Read(trustLineKey)
@@ -298,7 +297,7 @@ func (o *OfferCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 			if err != nil {
 				return tx.TecUNFUNDED_OFFER
 			}
-			accountIsLow := tx.CompareAccountIDsForLine(accountID, issuerID) < 0
+			accountIsLow := sle.CompareAccountIDsForLine(accountID, issuerID) < 0
 			balance := rs.Balance
 			if !accountIsLow {
 				balance = balance.Negate()
@@ -325,9 +324,16 @@ func (o *OfferCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	var takerGotTotal tx.Amount
 	var takerPaidTotal tx.Amount
 
-	// Simple order matching - look for crossing offers
+	// Order matching - cross against existing offers using flow engine
 	if !isPassive {
-		takerGotTotal, takerPaidTotal = ctx.Engine.MatchOffers(o.TakerGets, o.TakerPays, ctx.Account, ctx.View)
+		takerGotTotal, takerPaidTotal, _, _ = payment.FlowCrossSimple(
+			ctx.View,
+			ctx.Account.Account,
+			o.TakerGets,
+			o.TakerPays,
+			ctx.TxHash,
+			ctx.Config.LedgerSequence,
+		)
 	}
 
 	// Check if fully filled
@@ -338,8 +344,8 @@ func (o *OfferCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 			wantDrops, _ := sle.ParseDropsString(takerPays.Value)
 			fullyFilled = gotDrops >= wantDrops
 		} else {
-			gotIOU := tx.NewIOUAmount(takerGotTotal.Value, takerGotTotal.Currency, takerGotTotal.Issuer)
-			wantIOU := tx.NewIOUAmount(takerPays.Value, takerPays.Currency, takerPays.Issuer)
+			gotIOU := sle.NewIOUAmount(takerGotTotal.Value, takerGotTotal.Currency, takerGotTotal.Issuer)
+			wantIOU := sle.NewIOUAmount(takerPays.Value, takerPays.Currency, takerPays.Issuer)
 			fullyFilled = gotIOU.Compare(wantIOU) >= 0
 		}
 	}
@@ -352,10 +358,13 @@ func (o *OfferCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 			sellDrops, _ := sle.ParseDropsString(takerGets.Value)
 			sellExhausted = paidDrops >= sellDrops
 		} else {
-			paidIOU := sle.NewIOUAmount(takerPaidTotal.Value, takerPaidTotal.Currency, takerPaidTotal.Issuer)
+			// Convert to sle.Amount for transfer fee calculation
+			paidAmt := sle.NewIssuedAmount(takerPaidTotal.Value, takerPaidTotal.Currency, takerPaidTotal.Issuer)
+			transferRate := payment.GetTransferRateByAddress(ctx.View, takerGets.Issuer)
+			takerSentAmt := sle.ApplyTransferFee(paidAmt, transferRate)
+			// Convert to IOUAmount for precise comparison
+			takerSentIOU := takerSentAmt.ToIOU()
 			sellIOU := sle.NewIOUAmount(takerGets.Value, takerGets.Currency, takerGets.Issuer)
-			transferRate := ctx.Engine.GetTransferRate(takerGets.Issuer)
-			takerSentIOU := tx.ApplyTransferFee(paidIOU, transferRate)
 			sellExhausted = takerSentIOU.Compare(sellIOU) >= 0
 		}
 	}
@@ -383,7 +392,7 @@ func (o *OfferCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	// Create the offer in the ledger
-	accountID, _ := tx.DecodeAccountID(ctx.Account.Account)
+	accountID, _ := sle.DecodeAccountID(ctx.Account.Account)
 	offerSequence := ctx.Account.Sequence - 1
 	offerKey := keylet.Offer(accountID, offerSequence)
 
@@ -391,30 +400,30 @@ func (o *OfferCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	remainingTakerGets := takerGets
 	remainingTakerPays := takerPays
 	if takerGotTotal.Value != "" {
-		remainingTakerPays = tx.SubtractAmount(takerPays, takerGotTotal)
-		originalQuality := tx.CalculateQuality(takerPays, takerGets)
+		remainingTakerPays = sle.SubtractAmount(takerPays, takerGotTotal)
+		originalQuality := sle.CalculateQuality(takerPays, takerGets)
 		if originalQuality > 0 {
 			if remainingTakerPays.IsNative() {
 				remainingDrops, _ := sle.ParseDropsString(remainingTakerPays.Value)
-				remainingGetsValue := float64(remainingDrops) / originalQuality
+				remainingGetsValue := remainingDrops / originalQuality
 				if takerGets.IsNative() {
-					remainingTakerGets = tx.Amount{Value: tx.FormatDrops(uint64(remainingGetsValue))}
+					remainingTakerGets = tx.Amount{Value: sle.FormatDrops(uint64(remainingGetsValue))}
 				} else {
 					remainingTakerGets = tx.Amount{
-						Value:    tx.FormatIOUValuePrecise(remainingGetsValue),
+						Value:    sle.FormatIOUValuePrecise(float64(remainingGetsValue)),
 						Currency: takerGets.Currency,
 						Issuer:   takerGets.Issuer,
 					}
 				}
 			} else {
-				remainingIOU := tx.NewIOUAmount(remainingTakerPays.Value, remainingTakerPays.Currency, remainingTakerPays.Issuer)
+				remainingIOU := sle.NewIOUAmount(remainingTakerPays.Value, remainingTakerPays.Currency, remainingTakerPays.Issuer)
 				remainingPaysVal, _ := remainingIOU.Value.Float64()
-				remainingGetsValue := remainingPaysVal / originalQuality
+				remainingGetsValue := remainingPaysVal / float64(originalQuality)
 				if takerGets.IsNative() {
-					remainingTakerGets = tx.Amount{Value: tx.FormatDrops(uint64(remainingGetsValue))}
+					remainingTakerGets = tx.Amount{Value: sle.FormatDrops(uint64(remainingGetsValue))}
 				} else {
 					remainingTakerGets = tx.Amount{
-						Value:    tx.FormatIOUValuePrecise(remainingGetsValue),
+						Value:    sle.FormatIOUValuePrecise(remainingGetsValue),
 						Currency: takerGets.Currency,
 						Issuer:   takerGets.Issuer,
 					}
@@ -428,9 +437,9 @@ func (o *OfferCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Get currency and issuer bytes for the book directory
 	takerPaysCurrency := sle.GetCurrencyBytes(remainingTakerPays.Currency)
-	takerPaysIssuer := tx.GetIssuerBytes(remainingTakerPays.Issuer)
+	takerPaysIssuer := sle.GetIssuerBytes(remainingTakerPays.Issuer)
 	takerGetsCurrency := sle.GetCurrencyBytes(remainingTakerGets.Currency)
-	takerGetsIssuer := tx.GetIssuerBytes(remainingTakerGets.Issuer)
+	takerGetsIssuer := sle.GetIssuerBytes(remainingTakerGets.Issuer)
 
 	// Calculate the book directory key with quality
 	bookBase := keylet.BookDir(takerPaysCurrency, takerPaysIssuer, takerGetsCurrency, takerGetsIssuer)
@@ -438,7 +447,7 @@ func (o *OfferCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Add offer to owner directory
 	ownerDirKey := keylet.OwnerDir(accountID)
-	ownerDirResult, err := ctx.Engine.DirInsert(ctx.View, ownerDirKey, offerKey.Key, func(dir *sle.DirectoryNode) {
+	ownerDirResult, err := sle.DirInsert(ctx.View, ownerDirKey, offerKey.Key, func(dir *sle.DirectoryNode) {
 		dir.Owner = accountID
 	})
 	if err != nil {
@@ -446,7 +455,7 @@ func (o *OfferCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	// Add offer to book directory
-	bookDirResult, err := ctx.Engine.DirInsert(ctx.View, bookDirKey, offerKey.Key, func(dir *sle.DirectoryNode) {
+	bookDirResult, err := sle.DirInsert(ctx.View, bookDirKey, offerKey.Key, func(dir *sle.DirectoryNode) {
 		dir.TakerPaysCurrency = takerPaysCurrency
 		dir.TakerPaysIssuer = takerPaysIssuer
 		dir.TakerGetsCurrency = takerGetsCurrency
@@ -480,7 +489,7 @@ func (o *OfferCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	// Serialize and store the offer
-	offerData, err := tx.SerializeLedgerOffer(ledgerOffer)
+	offerData, err := sle.SerializeLedgerOffer(ledgerOffer)
 	if err != nil {
 		return tx.TefINTERNAL
 	}

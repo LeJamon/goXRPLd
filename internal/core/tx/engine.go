@@ -32,6 +32,9 @@ const (
 
 	// DefaultMaxFee is the default maximum fee (1 XRP = 1,000,000 drops)
 	DefaultMaxFee = 1000000
+
+	// QualityOne Per rippled: QUALITY_ONE (1e9 = 1000000000) is treated as default (stored as 0)
+	QualityOne uint32 = 1000000000
 )
 
 // Engine processes transactions against a ledger

@@ -41,8 +41,8 @@ const (
 	OfferCreateFlagSell              uint32 = 0x00080000
 )
 
-// serializeLedgerOffer serializes a LedgerOffer to binary for storage
-func serializeLedgerOffer(offer *LedgerOffer) ([]byte, error) {
+// SerializeLedgerOffer serializes a LedgerOffer to binary for storage
+func SerializeLedgerOffer(offer *LedgerOffer) ([]byte, error) {
 	// Helper function to convert Amount to JSON format
 	amountToJSON := func(amt Amount) any {
 		if amt.IsNative() {
