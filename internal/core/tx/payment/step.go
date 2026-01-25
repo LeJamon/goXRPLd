@@ -94,6 +94,20 @@ func (e EitherAmount) IsZero() bool {
 	return e.IOU.IsZero()
 }
 
+// IsEffectivelyZero returns true if the amount is effectively zero (< 1e-10 for IOU)
+// This handles floating point imprecision when checking if an offer is unfunded
+func (e EitherAmount) IsEffectivelyZero() bool {
+	if e.IsNative {
+		return e.XRP == 0
+	}
+	if e.IOU.Value == nil {
+		return true
+	}
+	val, _ := e.IOU.Value.Float64()
+	// Use 1e-10 as threshold for "effectively zero" for IOUs
+	return val < 1e-10 && val > -1e-10
+}
+
 // IsNegative returns true if the amount is negative
 func (e EitherAmount) IsNegative() bool {
 	if e.IsNative {
@@ -147,6 +161,39 @@ func (e EitherAmount) Max(other EitherAmount) EitherAmount {
 		return e
 	}
 	return other
+}
+
+// DivideFloat divides this amount by another, returning a float64 ratio
+func (e EitherAmount) DivideFloat(other EitherAmount) float64 {
+	var eVal, otherVal float64
+	if e.IsNative {
+		eVal = float64(e.XRP)
+	} else {
+		eVal, _ = e.IOU.Value.Float64()
+	}
+	if other.IsNative {
+		otherVal = float64(other.XRP)
+	} else {
+		otherVal, _ = other.IOU.Value.Float64()
+	}
+	if otherVal == 0 {
+		return 0
+	}
+	return eVal / otherVal
+}
+
+// MultiplyFloat multiplies this amount by a float64 factor
+func (e EitherAmount) MultiplyFloat(factor float64) EitherAmount {
+	if e.IsNative {
+		return NewXRPEitherAmount(int64(float64(e.XRP) * factor))
+	}
+	val, _ := e.IOU.Value.Float64()
+	newVal := val * factor
+	return NewIOUEitherAmount(sle.IOUAmount{
+		Value:    new(big.Float).SetFloat64(newVal),
+		Currency: e.IOU.Currency,
+		Issuer:   e.IOU.Issuer,
+	})
 }
 
 // Quality represents an exchange rate as output/input ratio.

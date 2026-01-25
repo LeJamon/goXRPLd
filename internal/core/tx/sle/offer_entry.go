@@ -23,6 +23,14 @@ type LedgerOffer struct {
 	Flags             uint32
 	PreviousTxnID     [32]byte
 	PreviousTxnLgrSeq uint32
+
+	// DomainID is the permissioned domain for this offer (optional, requires PermissionedDEX amendment)
+	DomainID [32]byte
+
+	// AdditionalBookDirectory and AdditionalBookNode are for hybrid offers
+	// that are placed in both domain and open books
+	AdditionalBookDirectory [32]byte
+	AdditionalBookNode      uint64
 }
 
 // Ledger offer flags

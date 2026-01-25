@@ -32,44 +32,46 @@ type DirectoryNode struct {
 }
 
 // GetRate calculates the quality/exchange rate for an offer.
-// Quality = TakerPays / TakerGets (what taker pays per unit they get)
-// Lower quality = better for taker
+// This matches rippled's getRate(offerOut, offerIn) which returns in/out.
+// Reference: rippled STAmount.h line 693-694:
+//   "Rate: smaller is better, the taker wants the most out: in/out"
+// Lower rate value = better for taker (they pay less per unit they get)
 // Returns uint64 encoded as: (exponent+100) << 56 | mantissa
-func GetRate(takerPays, takerGets Amount) uint64 {
-	// Handle zero case
-	if takerGets.Value == "" || takerGets.Value == "0" {
+func GetRate(offerOut, offerIn Amount) uint64 {
+	// Handle zero case - check offerOut since we divide by it
+	if offerOut.Value == "" || offerOut.Value == "0" {
 		return 0
 	}
 
 	// Convert amounts to big.Float for precise calculation
-	var paysFloat, getsFloat *big.Float
+	var outFloat, inFloat *big.Float
 
-	if takerPays.IsNative() {
+	if offerOut.IsNative() {
 		// XRP amount in drops
-		drops, _ := ParseDropsString(takerPays.Value)
-		paysFloat = new(big.Float).SetUint64(drops)
+		drops, _ := ParseDropsString(offerOut.Value)
+		outFloat = new(big.Float).SetUint64(drops)
 	} else {
 		// IOU amount
-		paysFloat, _ = new(big.Float).SetString(takerPays.Value)
-		if paysFloat == nil {
+		outFloat, _ = new(big.Float).SetString(offerOut.Value)
+		if outFloat == nil {
 			return 0
 		}
 	}
 
-	if takerGets.IsNative() {
+	if offerIn.IsNative() {
 		// XRP amount in drops
-		drops, _ := ParseDropsString(takerGets.Value)
-		getsFloat = new(big.Float).SetUint64(drops)
+		drops, _ := ParseDropsString(offerIn.Value)
+		inFloat = new(big.Float).SetUint64(drops)
 	} else {
 		// IOU amount
-		getsFloat, _ = new(big.Float).SetString(takerGets.Value)
-		if getsFloat == nil {
+		inFloat, _ = new(big.Float).SetString(offerIn.Value)
+		if inFloat == nil {
 			return 0
 		}
 	}
 
-	// Calculate rate = pays / gets
-	rate := new(big.Float).Quo(paysFloat, getsFloat)
+	// Calculate rate = in / out (rippled convention: offerIn/offerOut)
+	rate := new(big.Float).Quo(inFloat, outFloat)
 
 	// Convert to mantissa and exponent
 	// XRPL uses: mantissa × 10^exponent where mantissa is 10^15 to 10^16-1
@@ -164,8 +166,8 @@ func normalizeForQuality(f *big.Float) (uint64, int) {
 	return mantissa, newExp
 }
 
-// serializeDirectoryNode serializes a DirectoryNode to binary format
-func serializeDirectoryNode(dir *DirectoryNode, isBookDir bool) ([]byte, error) {
+// SerializeDirectoryNode serializes a DirectoryNode to binary format
+func SerializeDirectoryNode(dir *DirectoryNode, isBookDir bool) ([]byte, error) {
 	jsonObj := map[string]any{
 		"LedgerEntryType": "DirectoryNode",
 		"Flags":           dir.Flags,
@@ -373,7 +375,7 @@ func DirInsert(view LedgerView, dirKey keylet.Keylet, itemKey [32]byte, setupFun
 		result.DirKey = dirKey.Key
 
 		// Serialize and store
-		data, err := serializeDirectoryNode(dir, isBookDir)
+		data, err := SerializeDirectoryNode(dir, isBookDir)
 		if err != nil {
 			return nil, err
 		}
@@ -426,7 +428,7 @@ func DirInsert(view LedgerView, dirKey keylet.Keylet, itemKey [32]byte, setupFun
 
 		// Serialize and update
 		nodeIsBookDir := node.TakerPaysCurrency != [20]byte{} || node.TakerGetsCurrency != [20]byte{}
-		data, err := serializeDirectoryNode(node, nodeIsBookDir)
+		data, err := SerializeDirectoryNode(node, nodeIsBookDir)
 		if err != nil {
 			return nil, err
 		}
@@ -491,7 +493,7 @@ func DirInsert(view LedgerView, dirKey keylet.Keylet, itemKey [32]byte, setupFun
 
 	// 1. Update current page (node) with new IndexNext
 	nodeIsBookDir := node.TakerPaysCurrency != [20]byte{} || node.TakerGetsCurrency != [20]byte{}
-	nodeData, err := serializeDirectoryNode(node, nodeIsBookDir)
+	nodeData, err := SerializeDirectoryNode(node, nodeIsBookDir)
 	if err != nil {
 		return nil, err
 	}
@@ -502,7 +504,7 @@ func DirInsert(view LedgerView, dirKey keylet.Keylet, itemKey [32]byte, setupFun
 	// 2. Update root with new IndexPrevious (only if root != node)
 	if page != 0 {
 		rootIsBookDir := root.TakerPaysCurrency != [20]byte{} || root.TakerGetsCurrency != [20]byte{}
-		rootData, err := serializeDirectoryNode(root, rootIsBookDir)
+		rootData, err := SerializeDirectoryNode(root, rootIsBookDir)
 		if err != nil {
 			return nil, err
 		}
@@ -513,7 +515,7 @@ func DirInsert(view LedgerView, dirKey keylet.Keylet, itemKey [32]byte, setupFun
 
 	// 3. Insert new page
 	newPageIsBookDir := newPageNode.TakerPaysCurrency != [20]byte{} || newPageNode.TakerGetsCurrency != [20]byte{}
-	newPageData, err := serializeDirectoryNode(newPageNode, newPageIsBookDir)
+	newPageData, err := SerializeDirectoryNode(newPageNode, newPageIsBookDir)
 	if err != nil {
 		return nil, err
 	}
@@ -650,7 +652,7 @@ func DirRemove(view LedgerView, directory keylet.Keylet, page uint64, itemKey [3
 
 		// Serialize and update
 		isBookDir := node.TakerPaysCurrency != [20]byte{} || node.TakerGetsCurrency != [20]byte{}
-		data, err := serializeDirectoryNode(node, isBookDir)
+		data, err := SerializeDirectoryNode(node, isBookDir)
 		if err != nil {
 			return nil, err
 		}
@@ -706,7 +708,7 @@ func DirRemove(view LedgerView, directory keylet.Keylet, page uint64, itemKey [3
 
 				// Serialize root update
 				isBookDir := node.TakerPaysCurrency != [20]byte{} || node.TakerGetsCurrency != [20]byte{}
-				data, err := serializeDirectoryNode(node, isBookDir)
+				data, err := SerializeDirectoryNode(node, isBookDir)
 				if err != nil {
 					return nil, err
 				}
@@ -738,7 +740,7 @@ func DirRemove(view LedgerView, directory keylet.Keylet, page uint64, itemKey [3
 				})
 
 				isBookDir := node.TakerPaysCurrency != [20]byte{} || node.TakerGetsCurrency != [20]byte{}
-				data, err := serializeDirectoryNode(node, isBookDir)
+				data, err := SerializeDirectoryNode(node, isBookDir)
 				if err != nil {
 					return nil, err
 				}
@@ -771,7 +773,7 @@ func DirRemove(view LedgerView, directory keylet.Keylet, page uint64, itemKey [3
 			})
 
 			isBookDir := node.TakerPaysCurrency != [20]byte{} || node.TakerGetsCurrency != [20]byte{}
-			data, err := serializeDirectoryNode(node, isBookDir)
+			data, err := SerializeDirectoryNode(node, isBookDir)
 			if err != nil {
 				return nil, err
 			}
@@ -839,7 +841,7 @@ func DirRemove(view LedgerView, directory keylet.Keylet, page uint64, itemKey [3
 
 	// Serialize prev update
 	prevIsBookDir := prev.TakerPaysCurrency != [20]byte{} || prev.TakerGetsCurrency != [20]byte{}
-	prevData, err := serializeDirectoryNode(prev, prevIsBookDir)
+	prevData, err := SerializeDirectoryNode(prev, prevIsBookDir)
 	if err != nil {
 		return nil, err
 	}
@@ -850,7 +852,7 @@ func DirRemove(view LedgerView, directory keylet.Keylet, page uint64, itemKey [3
 	// Serialize next update (only if different from prev)
 	if nextPageKeylet.Key != prevPageKeylet.Key {
 		nextIsBookDir := next.TakerPaysCurrency != [20]byte{} || next.TakerGetsCurrency != [20]byte{}
-		nextData, err := serializeDirectoryNode(next, nextIsBookDir)
+		nextData, err := SerializeDirectoryNode(next, nextIsBookDir)
 		if err != nil {
 			return nil, err
 		}
@@ -883,7 +885,7 @@ func DirRemove(view LedgerView, directory keylet.Keylet, page uint64, itemKey [3
 		// Update prev to point to root
 		prev.IndexNext = rootPage
 		// Re-serialize prev
-		prevData, err := serializeDirectoryNode(prev, prevIsBookDir)
+		prevData, err := SerializeDirectoryNode(prev, prevIsBookDir)
 		if err != nil {
 			return nil, err
 		}
@@ -911,7 +913,7 @@ func DirRemove(view LedgerView, directory keylet.Keylet, page uint64, itemKey [3
 		})
 
 		rootIsBookDir := root.TakerPaysCurrency != [20]byte{} || root.TakerGetsCurrency != [20]byte{}
-		rootData, err = serializeDirectoryNode(root, rootIsBookDir)
+		rootData, err = SerializeDirectoryNode(root, rootIsBookDir)
 		if err != nil {
 			return nil, err
 		}

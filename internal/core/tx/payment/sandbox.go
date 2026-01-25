@@ -35,6 +35,10 @@ type PaymentSandbox struct {
 	// deletions holds deleted ledger entry keys
 	deletions map[[32]byte]bool
 
+	// deletedFinalStates holds the final state of modified entries before deletion
+	// This is needed for correct metadata generation (PreviousFields/FinalFields in DeletedNode)
+	deletedFinalStates map[[32]byte][]byte
+
 	// tab holds deferred credits for balance adjustments
 	tab *DeferredCredits
 
@@ -83,13 +87,14 @@ type Adjustment struct {
 // NewPaymentSandbox creates a new root PaymentSandbox wrapping the given LedgerView
 func NewPaymentSandbox(view tx.LedgerView) *PaymentSandbox {
 	return &PaymentSandbox{
-		parent:        nil,
-		view:          view,
-		modifications: make(map[[32]byte][]byte),
-		preImages:     make(map[[32]byte][]byte),
-		insertions:    make(map[[32]byte][]byte),
-		deletions:     make(map[[32]byte]bool),
-		tab:           newDeferredCredits(),
+		parent:             nil,
+		view:               view,
+		modifications:      make(map[[32]byte][]byte),
+		preImages:          make(map[[32]byte][]byte),
+		insertions:         make(map[[32]byte][]byte),
+		deletions:          make(map[[32]byte]bool),
+		deletedFinalStates: make(map[[32]byte][]byte),
+		tab:                newDeferredCredits(),
 	}
 }
 
@@ -117,15 +122,16 @@ func (s *PaymentSandbox) GetTransactionContext() ([32]byte, uint32) {
 func NewChildSandbox(parent *PaymentSandbox) *PaymentSandbox {
 	txHash, ledgerSeq := parent.GetTransactionContext()
 	return &PaymentSandbox{
-		parent:        parent,
-		txHash:        txHash,
-		ledgerSeq:     ledgerSeq,
-		view:          nil, // Use parent's view
-		modifications: make(map[[32]byte][]byte),
-		preImages:     make(map[[32]byte][]byte),
-		insertions:    make(map[[32]byte][]byte),
-		deletions:     make(map[[32]byte]bool),
-		tab:           newDeferredCredits(),
+		parent:             parent,
+		txHash:             txHash,
+		ledgerSeq:          ledgerSeq,
+		view:               nil, // Use parent's view
+		modifications:      make(map[[32]byte][]byte),
+		preImages:          make(map[[32]byte][]byte),
+		insertions:         make(map[[32]byte][]byte),
+		deletions:          make(map[[32]byte]bool),
+		deletedFinalStates: make(map[[32]byte][]byte),
+		tab:                newDeferredCredits(),
 	}
 }
 
@@ -265,10 +271,29 @@ func (s *PaymentSandbox) readOriginal(k keylet.Keylet) ([]byte, error) {
 // Erase marks a ledger entry for deletion
 func (s *PaymentSandbox) Erase(k keylet.Keylet) error {
 	key := k.Key
+	// If this entry was modified, save the final state before deletion
+	// This is needed for correct metadata generation (PreviousFields vs FinalFields)
+	if modData, ok := s.modifications[key]; ok {
+		// Save the modified data as the final state before deletion
+		finalCopy := make([]byte, len(modData))
+		copy(finalCopy, modData)
+		if s.deletedFinalStates == nil {
+			s.deletedFinalStates = make(map[[32]byte][]byte)
+		}
+		s.deletedFinalStates[key] = finalCopy
+	}
 	delete(s.modifications, key)
 	delete(s.insertions, key)
 	s.deletions[key] = true
 	return nil
+}
+
+// getDeletedFinalState retrieves the final state of a deleted entry
+func (s *PaymentSandbox) getDeletedFinalState(key [32]byte) []byte {
+	if s.deletedFinalStates == nil {
+		return nil
+	}
+	return s.deletedFinalStates[key]
 }
 
 // AdjustDropsDestroyed records XRP that has been destroyed
@@ -523,6 +548,25 @@ func (s *PaymentSandbox) Apply(to *PaymentSandbox) {
 
 	// Apply ledger item changes
 	for key := range s.deletions {
+		// Before marking as deleted in parent, save the final state if we have one
+		// or if parent has a modification that should become the final state
+		if finalState, ok := s.deletedFinalStates[key]; ok {
+			// Child has a final state for this deletion
+			if to.deletedFinalStates == nil {
+				to.deletedFinalStates = make(map[[32]byte][]byte)
+			}
+			finalCopy := make([]byte, len(finalState))
+			copy(finalCopy, finalState)
+			to.deletedFinalStates[key] = finalCopy
+		} else if modData, ok := to.modifications[key]; ok {
+			// Parent has a modification that will be deleted - save it as final state
+			if to.deletedFinalStates == nil {
+				to.deletedFinalStates = make(map[[32]byte][]byte)
+			}
+			finalCopy := make([]byte, len(modData))
+			copy(finalCopy, modData)
+			to.deletedFinalStates[key] = finalCopy
+		}
 		to.deletions[key] = true
 		delete(to.modifications, key)
 		delete(to.insertions, key)
@@ -556,6 +600,18 @@ func (s *PaymentSandbox) Apply(to *PaymentSandbox) {
 		}
 	}
 
+	// Propagate deletedFinalStates (only if parent doesn't already have one)
+	for key, data := range s.deletedFinalStates {
+		if _, hasFinalState := to.deletedFinalStates[key]; !hasFinalState {
+			if to.deletedFinalStates == nil {
+				to.deletedFinalStates = make(map[[32]byte][]byte)
+			}
+			finalCopy := make([]byte, len(data))
+			copy(finalCopy, data)
+			to.deletedFinalStates[key] = finalCopy
+		}
+	}
+
 	// Apply deferred credits
 	s.tab.apply(to.tab)
 
@@ -570,8 +626,19 @@ func (s *PaymentSandbox) ApplyToView(view tx.LedgerView) error {
 		panic("PaymentSandbox.ApplyToView: not a root sandbox")
 	}
 
-	// Apply deletions
+	// Apply deletions - but first apply any final state modifications
+	// This ensures the ApplyStateTable sees the modified state before deletion
+	// which is necessary for correct metadata generation (PreviousFields/FinalFields)
 	for key := range s.deletions {
+		// Check if there's a final state that was saved before deletion
+		if finalState := s.getDeletedFinalState(key); finalState != nil {
+			// First update with the final state, then erase
+			// This lets ApplyStateTable track the modification before deletion
+			if err := view.Update(keylet.Keylet{Key: key}, finalState); err != nil {
+				// If update fails (e.g., entry doesn't exist), just continue to erase
+				_ = err
+			}
+		}
 		if err := view.Erase(keylet.Keylet{Key: key}); err != nil {
 			return err
 		}
@@ -605,6 +672,7 @@ func (s *PaymentSandbox) Reset() {
 	s.preImages = make(map[[32]byte][]byte)
 	s.insertions = make(map[[32]byte][]byte)
 	s.deletions = make(map[[32]byte]bool)
+	s.deletedFinalStates = make(map[[32]byte][]byte)
 	s.tab = newDeferredCredits()
 	s.dropsDestroyed = XRPAmount.XRPAmount(0)
 }
@@ -618,6 +686,21 @@ func (s *PaymentSandbox) GetView() tx.LedgerView {
 		return s.parent.GetView()
 	}
 	return nil
+}
+
+// GetModifications returns the modifications map for debugging
+func (s *PaymentSandbox) GetModifications() map[[32]byte][]byte {
+	return s.modifications
+}
+
+// GetInsertions returns the insertions map for debugging
+func (s *PaymentSandbox) GetInsertions() map[[32]byte][]byte {
+	return s.insertions
+}
+
+// GetDeletions returns the deletions map for debugging
+func (s *PaymentSandbox) GetDeletions() map[[32]byte]bool {
+	return s.deletions
 }
 
 // IOUAmountFromBigFloat creates an IOUAmount from a big.Float value

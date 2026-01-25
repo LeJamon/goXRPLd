@@ -1,6 +1,8 @@
 package payment
 
 import (
+	"fmt"
+
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	tx "github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
@@ -49,6 +51,8 @@ func FlowCross(
 	txHash [32]byte,
 	ledgerSeq uint32,
 ) FlowCrossResult {
+	fmt.Printf("DEBUG FlowCross: takerGets=%+v, takerPays=%+v\n", takerGets, takerPays)
+
 	// Create sandbox for tracking changes
 	sandbox := NewPaymentSandbox(view)
 	sandbox.SetTransactionContext(txHash, ledgerSeq)
@@ -59,30 +63,50 @@ func FlowCross(
 	outAmt := ToEitherAmount(takerGets) // Taker pays this out
 	inAmt := ToEitherAmount(takerPays)  // Taker receives this
 
+	fmt.Printf("DEBUG FlowCross: outAmt=%+v, inAmt=%+v\n", outAmt, inAmt)
+
 	// Build the book step for crossing
 	// The opposite book is: TakerPays currency -> TakerGets currency
 	// i.e., offers where someone is selling what we want to buy
 	inIssue := GetIssue(takerPays)  // What we want to receive
 	outIssue := GetIssue(takerGets) // What we're paying
 
-	// Create a single BookStep for the opposite order book
+	fmt.Printf("DEBUG FlowCross: book.In=%+v, book.Out=%+v\n", outIssue, inIssue)
+
+	// Calculate quality limit for offer crossing
+	// The taker's quality is: what they pay / what they get = outAmt / inAmt
+	// Offers with worse quality (higher value) should not be crossed
+	takerQuality := QualityFromAmounts(outAmt, inAmt)
+	fmt.Printf("DEBUG FlowCross: takerQuality=%+v\n", takerQuality)
+
+	// Create a single BookStep for the opposite order book WITH quality limit
 	// For offer crossing, we consume from the book where:
 	//   - Book.In = what we're paying (takerGets)
 	//   - Book.Out = what we're receiving (takerPays)
 	// So we look at offers selling takerPays and buying takerGets
-	bookStep := NewBookStep(outIssue, inIssue, takerAccount, takerAccount, nil, false)
+	// Pass quality limit to only cross offers at or better than taker's quality
+	bookStep := NewBookStepWithQualityLimit(outIssue, inIssue, takerAccount, takerAccount, nil, false, &takerQuality)
 
 	// Create strand with just the book step
 	strand := Strand{bookStep}
 
-	// Execute the flow
+	// Execute the flow with quality limit
 	// We want to receive up to takerPays amount
-	result := Flow(sandbox, []Strand{strand}, inAmt, true, nil, &outAmt)
+	// Only cross offers at quality <= taker's quality
+	result := Flow(sandbox, []Strand{strand}, inAmt, true, &takerQuality, &outAmt)
+
+	fmt.Printf("DEBUG FlowCross: result=%+v, Out=%+v, In=%+v\n", result.Result, result.Out, result.In)
+
+	// Apply the flow sandbox changes to our root sandbox
+	// Reference: rippled CreateOffer.cpp line 711: psbFlow.apply(sb)
+	if result.Sandbox != nil {
+		result.Sandbox.Apply(sandbox)
+	}
 
 	return FlowCrossResult{
 		TakerGot:        result.Out,  // What taker received
 		TakerPaid:       result.In,   // What taker paid
-		Sandbox:         result.Sandbox,
+		Sandbox:         sandbox,     // Return the root sandbox, not the child
 		RemovableOffers: result.RemovableOffers,
 		Result:          result.Result,
 	}

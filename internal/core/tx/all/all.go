@@ -10,7 +10,7 @@ import (
 	_ "github.com/LeJamon/goXRPLd/internal/core/tx/escrow"
 	_ "github.com/LeJamon/goXRPLd/internal/core/tx/mpt"
 	_ "github.com/LeJamon/goXRPLd/internal/core/tx/nftoken"
-	//_ "github.com/LeJamon/goXRPLd/internal/core/tx/offer"
+	_ "github.com/LeJamon/goXRPLd/internal/core/tx/offer"
 	_ "github.com/LeJamon/goXRPLd/internal/core/tx/oracle"
 	//_ "github.com/LeJamon/goXRPLd/internal/core/tx/paychan"
 	_ "github.com/LeJamon/goXRPLd/internal/core/tx/payment"

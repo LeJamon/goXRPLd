@@ -8,7 +8,7 @@ import (
 )
 
 // DebugFlow enables debug output for flow execution
-var DebugFlow = false
+var DebugFlow = true
 
 // Flow executes payment across multiple strands, selecting the best quality paths.
 //
@@ -54,14 +54,25 @@ func Flow(
 	accumSandbox := NewChildSandbox(baseView)
 	allOfrsToRm := make(map[[32]byte]bool)
 
-	// Initialize result accumulators (match type with request)
+	// Initialize result accumulators
+	// totalOut matches the type of outReq (what we're delivering)
+	// totalIn matches the type of sendMax (what we're spending), or XRP if not specified
 	var totalIn, totalOut EitherAmount
 	if outReq.IsNative {
-		totalIn = ZeroXRPEitherAmount()
 		totalOut = ZeroXRPEitherAmount()
 	} else {
-		totalIn = ZeroIOUEitherAmount(outReq.IOU.Currency, outReq.IOU.Issuer)
 		totalOut = ZeroIOUEitherAmount(outReq.IOU.Currency, outReq.IOU.Issuer)
+	}
+	// Initialize totalIn based on sendMax type, or default to XRP
+	if sendMax != nil {
+		if sendMax.IsNative {
+			totalIn = ZeroXRPEitherAmount()
+		} else {
+			totalIn = ZeroIOUEitherAmount(sendMax.IOU.Currency, sendMax.IOU.Issuer)
+		}
+	} else {
+		// Default to XRP if no sendMax specified
+		totalIn = ZeroXRPEitherAmount()
 	}
 
 	// Track remaining output needed
