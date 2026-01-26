@@ -350,6 +350,12 @@ func computeTransactionHash(tx Transaction) ([32]byte, error) {
 
 // Apply processes a transaction and applies it to the ledger
 func (e *Engine) Apply(tx Transaction) ApplyResult {
+	// Check if this is a pseudo-transaction (Amendment, SetFee, UNLModify)
+	txType := tx.TxType()
+	if txType.IsPseudoTransaction() {
+		return e.applyPseudoTransaction(tx)
+	}
+
 	// Step 1: Preflight checks (syntax validation)
 	result := e.preflight(tx)
 	if !result.IsSuccess() {
@@ -405,6 +411,76 @@ func (e *Engine) Apply(tx Transaction) ApplyResult {
 		Result:   result,
 		Applied:  result.IsApplied(),
 		Fee:      fee,
+		Metadata: metadata,
+		Message:  result.Message(),
+	}
+}
+
+// applyPseudoTransaction handles pseudo-transactions (Amendment, SetFee, UNLModify).
+// These transactions have special handling:
+// - No source account (account is zero/empty)
+// - No fee (fee is 0)
+// - No signature
+// - No sequence number checks
+// Reference: rippled Change.cpp
+func (e *Engine) applyPseudoTransaction(tx Transaction) ApplyResult {
+	// Compute transaction hash
+	txHash, err := computeTransactionHash(tx)
+	if err != nil {
+		return ApplyResult{
+			Result:  TefINTERNAL,
+			Applied: false,
+			Message: "failed to compute transaction hash: " + err.Error(),
+		}
+	}
+
+	// Create metadata
+	metadata := &Metadata{
+		AffectedNodes:     make([]AffectedNode, 0),
+		TransactionResult: TesSUCCESS,
+	}
+
+	// Create ApplyStateTable to track changes
+	table := NewApplyStateTable(e.view, txHash, e.config.LedgerSequence)
+
+	// Create a minimal ApplyContext for pseudo-transactions
+	ctx := &ApplyContext{
+		View:     table,
+		Account:  nil, // No account for pseudo-transactions
+		Config:   e.config,
+		TxHash:   txHash,
+		Metadata: metadata,
+		Engine:   e,
+	}
+
+	// Apply the transaction
+	var result Result
+	if appliable, ok := tx.(Appliable); ok {
+		result = appliable.Apply(ctx)
+	} else {
+		result = TesSUCCESS
+	}
+
+	metadata.TransactionResult = result
+
+	// Apply all tracked changes to the base view and generate metadata
+	if result.IsSuccess() {
+		generatedMeta, err := table.Apply()
+		if err != nil {
+			return ApplyResult{
+				Result:   TefINTERNAL,
+				Applied:  false,
+				Metadata: metadata,
+				Message:  "failed to apply state changes: " + err.Error(),
+			}
+		}
+		metadata.AffectedNodes = generatedMeta.AffectedNodes
+	}
+
+	return ApplyResult{
+		Result:   result,
+		Applied:  result.IsApplied(),
+		Fee:      0, // Pseudo-transactions have no fee
 		Metadata: metadata,
 		Message:  result.Message(),
 	}
@@ -495,10 +571,73 @@ func (e *Engine) preflight(tx Transaction) Result {
 
 	// Transaction-specific validation
 	if err := tx.Validate(); err != nil {
-		return TemINVALID
+		// Try to extract a specific TER code from the error message
+		// Many Validate() implementations include the TER code as a prefix (e.g., "temREDUNDANT: message")
+		return parseValidationError(err)
 	}
 
 	return TesSUCCESS
+}
+
+// parseValidationError extracts a TER result code from a validation error message.
+// If the error message starts with a valid TER code prefix (e.g., "temREDUNDANT:"),
+// it returns the corresponding Result. Otherwise, it returns TemINVALID.
+func parseValidationError(err error) Result {
+	msg := err.Error()
+
+	// Check for known TER code prefixes
+	// Common tem (malformed) codes
+	terCodes := map[string]Result{
+		"temMALFORMED":           TemMALFORMED,
+		"temBAD_AMOUNT":          TemBAD_AMOUNT,
+		"temBAD_CURRENCY":        TemBAD_CURRENCY,
+		"temBAD_EXPIRATION":      TemBAD_EXPIRATION,
+		"temBAD_FEE":             TemBAD_FEE,
+		"temBAD_ISSUER":          TemBAD_ISSUER,
+		"temBAD_LIMIT":           TemBAD_LIMIT,
+		"temBAD_OFFER":           TemBAD_OFFER,
+		"temBAD_PATH":            TemBAD_PATH,
+		"temBAD_PATH_LOOP":       TemBAD_PATH_LOOP,
+		"temBAD_REGKEY":          TemBAD_REGKEY,
+		"temBAD_SEQUENCE":        TemBAD_SEQUENCE,
+		"temBAD_SIGNATURE":       TemBAD_SIGNATURE,
+		"temBAD_SRC_ACCOUNT":     TemBAD_SRC_ACCOUNT,
+		"temBAD_TRANSFER_RATE":   TemBAD_TRANSFER_RATE,
+		"temDST_IS_SRC":          TemDST_IS_SRC,
+		"temDST_NEEDED":          TemDST_NEEDED,
+		"temINVALID":             TemINVALID,
+		"temINVALID_FLAG":        TemINVALID_FLAG,
+		"temREDUNDANT":           TemREDUNDANT,
+		"temRIPPLE_EMPTY":        TemRIPPLE_EMPTY,
+		"temDISABLED":            TemDISABLED,
+		"temBAD_SIGNER":          TemBAD_SIGNER,
+		"temBAD_QUORUM":          TemBAD_QUORUM,
+		"temBAD_WEIGHT":          TemBAD_WEIGHT,
+		"temBAD_TICK_SIZE":       TemBAD_TICK_SIZE,
+		"temINVALID_ACCOUNT_ID":  TemINVALID_ACCOUNT_ID,
+		"temUNCERTAIN":           TemUNCERTAIN,
+		"temUNKNOWN":             TemUNKNOWN,
+		"temSEQ_AND_TICKET":      TemSEQ_AND_TICKET,
+		"temBAD_SEND_XRP_MAX":    TemBAD_SEND_XRP_MAX,
+		"temBAD_SEND_XRP_PARTIAL": TemBAD_SEND_XRP_PARTIAL,
+		"temBAD_SEND_XRP_PATHS":  TemBAD_SEND_XRP_PATHS,
+		"temBAD_SEND_XRP_LIMIT":  TemBAD_SEND_XRP_LIMIT,
+		"temBAD_SEND_XRP_NO_DIRECT": TemBAD_SEND_XRP_NO_DIRECT,
+		"temCAN_NOT_PREAUTH_SELF": TemCAN_NOT_PREAUTH_SELF,
+	}
+
+	// Check if the message starts with any known TER code
+	for code, result := range terCodes {
+		if len(msg) >= len(code) && msg[:len(code)] == code {
+			// Check that it's followed by a colon, space, or is the entire message
+			if len(msg) == len(code) || msg[len(code)] == ':' || msg[len(code)] == ' ' {
+				return result
+			}
+		}
+	}
+
+	// Default to temINVALID
+	return TemINVALID
 }
 
 // validateNetworkID validates the NetworkID field according to rippled rules

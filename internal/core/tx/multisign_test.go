@@ -1,4 +1,5 @@
 //go:build ignore
+
 package tx
 
 import (
@@ -241,11 +242,11 @@ func TestGetTransactionSignerCount(t *testing.T) {
 }
 
 // Testsle.SignerListInfo tests the sle.SignerListInfo structure.
-func Testsle.SignerListInfo(t *testing.T) {
+func TestsleSignerListInfo(t *testing.T) {
 	t.Run("basic signer list", func(t *testing.T) {
 		signerList := sle.SignerListInfo{
-			SignerQuorum:  2,
-			SignerListID:  0,
+			SignerQuorum: 2,
+			SignerListID: 0,
 			SignerEntries: []AccountSignerEntry{
 				{Account: "rBob", SignerWeight: 1},
 				{Account: "rCharlie", SignerWeight: 1},
@@ -262,8 +263,8 @@ func Testsle.SignerListInfo(t *testing.T) {
 
 	t.Run("signer list with different weights", func(t *testing.T) {
 		signerList := sle.SignerListInfo{
-			SignerQuorum:  4,
-			SignerListID:  0,
+			SignerQuorum: 4,
+			SignerListID: 0,
 			SignerEntries: []AccountSignerEntry{
 				{Account: "rBob", SignerWeight: 3},
 				{Account: "rCharlie", SignerWeight: 4},

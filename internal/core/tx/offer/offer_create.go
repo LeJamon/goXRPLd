@@ -412,6 +412,13 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 
 			result = crossResult.Result
 
+			// For offer crossing, tecPATH_DRY means no liquidity found to cross
+			// This is not an error - we just place the offer with original amounts
+			// Reference: rippled's flowCross always returns tesSUCCESS (CreateOffer.cpp line 509)
+			if result == tx.TecPATH_DRY {
+				result = tx.TesSUCCESS
+			}
+
 			if result != tx.TesSUCCESS {
 				return result
 			}
@@ -452,7 +459,9 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 
 			// Check if any crossing happened
 			// Reference: line 744-745
-			if !isAmountEmpty(placeOffer.in) || !isAmountEmpty(placeOffer.out) {
+			// Use isAmountZeroOrNegative because FromEitherAmount returns "0" for zero amounts,
+			// not empty string ""
+			if !isAmountZeroOrNegative(placeOffer.in) || !isAmountZeroOrNegative(placeOffer.out) {
 				crossed = true
 			}
 
@@ -512,8 +521,11 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 	// Reference: lines 815-834
 	reserve := ctx.AccountReserve(ctx.Account.OwnerCount + 1)
 	priorBalance := ctx.Account.Balance + parseFee(ctx)
+	fmt.Printf("DEBUG reserve check: balance=%d, fee=%d, priorBalance=%d, ownerCount=%d, reserve=%d, crossed=%v\n",
+		ctx.Account.Balance, parseFee(ctx), priorBalance, ctx.Account.OwnerCount, reserve, crossed)
 	if priorBalance < reserve {
 		if !crossed {
+			fmt.Printf("DEBUG reserve check: returning TecINSUF_RESERVE_OFFER\n")
 			return tx.TecINSUF_RESERVE_OFFER
 		}
 		return tx.TesSUCCESS

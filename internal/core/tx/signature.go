@@ -8,19 +8,19 @@ import (
 	"strings"
 
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 	ed25519algo "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/ed25519"
 	secp256k1algo "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/secp256k1"
 )
 
 // Signature verification errors
 var (
-	ErrMissingSignature    = errors.New("transaction is not signed")
-	ErrMissingPublicKey    = errors.New("signing public key is missing")
-	ErrInvalidSignature    = errors.New("signature is invalid")
-	ErrPublicKeyMismatch   = errors.New("public key does not match account")
-	ErrUnknownKeyType      = errors.New("unknown public key type")
+	ErrMissingSignature  = errors.New("transaction is not signed")
+	ErrMissingPublicKey  = errors.New("signing public key is missing")
+	ErrInvalidSignature  = errors.New("signature is invalid")
+	ErrPublicKeyMismatch = errors.New("public key does not match account")
+	ErrUnknownKeyType    = errors.New("unknown public key type")
 )
 
 // Multi-signature specific errors (matching rippled error codes)
@@ -403,23 +403,6 @@ func SignTransaction(tx Transaction, privateKeyHex string) (string, error) {
 	}
 
 	return strings.ToUpper(signature), nil
-}
-
-// DeriveKeypairFromSeed derives a public/private keypair from a seed
-func DeriveKeypairFromSeed(seed string) (privateKey, publicKey string, err error) {
-	// Decode the seed to get the entropy and algorithm
-	entropy, algo, err := addresscodec.DecodeSeed(seed)
-	if err != nil {
-		return "", "", errors.New("invalid seed: " + err.Error())
-	}
-
-	// Derive the keypair
-	privateKey, publicKey, err = algo.DeriveKeypair(entropy, false)
-	if err != nil {
-		return "", "", errors.New("failed to derive keypair: " + err.Error())
-	}
-
-	return privateKey, publicKey, nil
 }
 
 // DeriveAddressFromPublicKey derives a classic address from a public key

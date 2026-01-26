@@ -18,6 +18,11 @@ func ptrUint64MPT(v uint64) *uint64 {
 	return &v
 }
 
+// ptrUint32 creates a pointer to a uint32 value (test helper)
+func ptrUint32AccountSet(v uint32) *uint32 {
+	return &v
+}
+
 // TestMPTokenIssuanceCreateValidation tests MPTokenIssuanceCreate transaction validation.
 // Reference: rippled MPTokenIssuanceCreate.cpp preflight
 func TestMPTokenIssuanceCreateValidation(t *testing.T) {

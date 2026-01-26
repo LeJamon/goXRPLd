@@ -1,24 +1,25 @@
-package tx
+package signerlist
 
 import (
 	"errors"
+	"github.com/LeJamon/goXRPLd/internal/core/tx"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
 func init() {
-	Register(TypeSignerListSet, func() Transaction {
-		return &SignerListSet{BaseTx: *NewBaseTx(TypeSignerListSet, "")}
+	tx.Register(tx.TypeSignerListSet, func() tx.Transaction {
+		return &SignerListSet{BaseTx: *tx.NewBaseTx(tx.TypeSignerListSet, "")}
 	})
-	Register(TypeRegularKeySet, func() Transaction {
-		return &SetRegularKey{BaseTx: *NewBaseTx(TypeRegularKeySet, "")}
+	tx.Register(tx.TypeRegularKeySet, func() tx.Transaction {
+		return &SetRegularKey{BaseTx: *tx.NewBaseTx(tx.TypeRegularKeySet, "")}
 	})
 }
 
 // SignerListSet sets or clears a list of signers for multi-signing.
 type SignerListSet struct {
-	BaseTx
+	tx.BaseTx
 
 	// SignerQuorum is the target number of signer weights (required)
 	// Set to 0 to delete the signer list
@@ -43,14 +44,14 @@ type SignerEntryData struct {
 // NewSignerListSet creates a new SignerListSet transaction
 func NewSignerListSet(account string, quorum uint32) *SignerListSet {
 	return &SignerListSet{
-		BaseTx:       *NewBaseTx(TypeSignerListSet, account),
+		BaseTx:       *tx.NewBaseTx(tx.TypeSignerListSet, account),
 		SignerQuorum: quorum,
 	}
 }
 
 // TxType returns the transaction type
-func (s *SignerListSet) TxType() Type {
-	return TypeSignerListSet
+func (s *SignerListSet) TxType() tx.Type {
+	return tx.TypeSignerListSet
 }
 
 // Validate validates the SignerListSet transaction
@@ -111,7 +112,7 @@ func (s *SignerListSet) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (s *SignerListSet) Flatten() (map[string]any, error) {
-	return ReflectFlatten(s)
+	return tx.ReflectFlatten(s)
 }
 
 // AddSigner adds a signer to the list
@@ -126,7 +127,7 @@ func (s *SignerListSet) AddSigner(account string, weight uint16) {
 
 // SetRegularKey sets or clears an account's regular key.
 type SetRegularKey struct {
-	BaseTx
+	tx.BaseTx
 
 	// RegularKey is the regular key to set (optional, omit to clear)
 	RegularKey string `json:"RegularKey,omitempty" xrpl:"RegularKey,omitempty"`
@@ -135,13 +136,13 @@ type SetRegularKey struct {
 // NewSetRegularKey creates a new SetRegularKey transaction
 func NewSetRegularKey(account string) *SetRegularKey {
 	return &SetRegularKey{
-		BaseTx: *NewBaseTx(TypeRegularKeySet, account),
+		BaseTx: *tx.NewBaseTx(tx.TypeRegularKeySet, account),
 	}
 }
 
 // TxType returns the transaction type
-func (s *SetRegularKey) TxType() Type {
-	return TypeRegularKeySet
+func (s *SetRegularKey) TxType() tx.Type {
+	return tx.TypeRegularKeySet
 }
 
 // Validate validates the SetRegularKey transaction
@@ -151,7 +152,7 @@ func (s *SetRegularKey) Validate() error {
 
 // Flatten returns a flat map of all transaction fields
 func (s *SetRegularKey) Flatten() (map[string]any, error) {
-	return ReflectFlatten(s)
+	return tx.ReflectFlatten(s)
 }
 
 // SetKey sets the regular key
@@ -165,27 +166,27 @@ func (s *SetRegularKey) ClearKey() {
 }
 
 // Apply applies the SetRegularKey transaction to ledger state.
-func (s *SetRegularKey) Apply(ctx *ApplyContext) Result {
+func (s *SetRegularKey) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Account.RegularKey = s.RegularKey
 
 	if s.RegularKey != "" {
 		if _, err := sle.DecodeAccountID(s.RegularKey); err != nil {
-			return TemINVALID
+			return tx.TemINVALID
 		}
 	}
 
-	return TesSUCCESS
+	return tx.TesSUCCESS
 }
 
 // Apply applies the SignerListSet transaction to ledger state.
-func (sl *SignerListSet) Apply(ctx *ApplyContext) Result {
+func (sl *SignerListSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	signerListKey := keylet.SignerList(ctx.AccountID)
 
 	if sl.SignerQuorum == 0 {
 		exists, _ := ctx.View.Exists(signerListKey)
 		if exists {
 			if err := ctx.View.Erase(signerListKey); err != nil {
-				return TefINTERNAL
+				return tx.TefINTERNAL
 			}
 			if ctx.Account.OwnerCount > 0 {
 				ctx.Account.OwnerCount--
@@ -201,21 +202,21 @@ func (sl *SignerListSet) Apply(ctx *ApplyContext) Result {
 		}
 		signerListData, err := sle.SerializeSignerList(sl.SignerQuorum, sleEntries, ctx.AccountID)
 		if err != nil {
-			return TefINTERNAL
+			return tx.TefINTERNAL
 		}
 
 		exists, _ := ctx.View.Exists(signerListKey)
 		if exists {
 			if err := ctx.View.Update(signerListKey, signerListData); err != nil {
-				return TefINTERNAL
+				return tx.TefINTERNAL
 			}
 		} else {
 			if err := ctx.View.Insert(signerListKey, signerListData); err != nil {
-				return TefINTERNAL
+				return tx.TefINTERNAL
 			}
 			ctx.Account.OwnerCount++
 		}
 	}
 
-	return TesSUCCESS
+	return tx.TesSUCCESS
 }

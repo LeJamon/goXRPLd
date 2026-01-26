@@ -1,7 +1,6 @@
 package batch
 
 import (
-	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,18 +14,18 @@ import (
 
 func TestBatchValidation(t *testing.T) {
 	// Helper to create a valid batch with minimum requirements
-	makeValidBatch := func() *tx.Batch {
-		b := tx.NewBatch("rOuter")
+	makeValidBatch := func() *Batch {
+		b := NewBatch("rOuter")
 		b.AddRawTransaction("AABBCCDD")
 		b.AddRawTransaction("EEFF0011")
-		flags := tx.BatchFlagAllOrNothing
+		flags := BatchFlagAllOrNothing
 		b.Common.Flags = &flags
 		return b
 	}
 
 	tests := []struct {
 		name    string
-		tx      *tx.Batch
+		tx      *Batch
 		wantErr bool
 		errMsg  string
 	}{
@@ -38,11 +37,11 @@ func TestBatchValidation(t *testing.T) {
 		},
 		{
 			name: "valid - batch with OnlyOne flag",
-			tx: func() *tx.Batch {
-				b := tx.NewBatch("rOuter")
+			tx: func() *Batch {
+				b := NewBatch("rOuter")
 				b.AddRawTransaction("AABBCCDD")
 				b.AddRawTransaction("EEFF0011")
-				flags := tx.BatchFlagOnlyOne
+				flags := BatchFlagOnlyOne
 				b.Common.Flags = &flags
 				return b
 			}(),
@@ -50,11 +49,11 @@ func TestBatchValidation(t *testing.T) {
 		},
 		{
 			name: "valid - batch with UntilFailure flag",
-			tx: func() *tx.Batch {
-				b := tx.NewBatch("rOuter")
+			tx: func() *Batch {
+				b := NewBatch("rOuter")
 				b.AddRawTransaction("AABBCCDD")
 				b.AddRawTransaction("EEFF0011")
-				flags := tx.BatchFlagUntilFailure
+				flags := BatchFlagUntilFailure
 				b.Common.Flags = &flags
 				return b
 			}(),
@@ -62,11 +61,11 @@ func TestBatchValidation(t *testing.T) {
 		},
 		{
 			name: "valid - batch with Independent flag",
-			tx: func() *tx.Batch {
-				b := tx.NewBatch("rOuter")
+			tx: func() *Batch {
+				b := NewBatch("rOuter")
 				b.AddRawTransaction("AABBCCDD")
 				b.AddRawTransaction("EEFF0011")
-				flags := tx.BatchFlagIndependent
+				flags := BatchFlagIndependent
 				b.Common.Flags = &flags
 				return b
 			}(),
@@ -74,12 +73,12 @@ func TestBatchValidation(t *testing.T) {
 		},
 		{
 			name: "valid - maximum 8 transactions",
-			tx: func() *tx.Batch {
-				b := tx.NewBatch("rOuter")
+			tx: func() *Batch {
+				b := NewBatch("rOuter")
 				for i := 0; i < 8; i++ {
 					b.AddRawTransaction("AABBCCDD")
 				}
-				flags := tx.BatchFlagAllOrNothing
+				flags := BatchFlagAllOrNothing
 				b.Common.Flags = &flags
 				return b
 			}(),
@@ -87,11 +86,11 @@ func TestBatchValidation(t *testing.T) {
 		},
 		{
 			name: "valid - batch with signers",
-			tx: func() *tx.Batch {
+			tx: func() *Batch {
 				b := makeValidBatch()
-				b.BatchSigners = []tx.BatchSigner{
-					{BatchSigner: tx.BatchSignerData{Account: "rSigner1", SigningPubKey: "ABC", BatchTxnSignature: "DEF"}},
-					{BatchSigner: tx.BatchSignerData{Account: "rSigner2", SigningPubKey: "GHI", BatchTxnSignature: "JKL"}},
+				b.BatchSigners = []BatchSigner{
+					{BatchSigner: BatchSignerData{Account: "rSigner1", SigningPubKey: "ABC", BatchTxnSignature: "DEF"}},
+					{BatchSigner: BatchSignerData{Account: "rSigner2", SigningPubKey: "GHI", BatchTxnSignature: "JKL"}},
 				}
 				return b
 			}(),
@@ -101,9 +100,9 @@ func TestBatchValidation(t *testing.T) {
 		// Invalid cases - transaction count
 		{
 			name: "invalid - no transactions (empty array)",
-			tx: func() *tx.Batch {
-				b := tx.NewBatch("rOuter")
-				flags := tx.BatchFlagAllOrNothing
+			tx: func() *Batch {
+				b := NewBatch("rOuter")
+				flags := BatchFlagAllOrNothing
 				b.Common.Flags = &flags
 				return b
 			}(),
@@ -112,10 +111,10 @@ func TestBatchValidation(t *testing.T) {
 		},
 		{
 			name: "invalid - only 1 transaction",
-			tx: func() *tx.Batch {
-				b := tx.NewBatch("rOuter")
+			tx: func() *Batch {
+				b := NewBatch("rOuter")
 				b.AddRawTransaction("AABBCCDD")
-				flags := tx.BatchFlagAllOrNothing
+				flags := BatchFlagAllOrNothing
 				b.Common.Flags = &flags
 				return b
 			}(),
@@ -124,12 +123,12 @@ func TestBatchValidation(t *testing.T) {
 		},
 		{
 			name: "invalid - too many transactions (>8)",
-			tx: func() *tx.Batch {
-				b := tx.NewBatch("rOuter")
+			tx: func() *Batch {
+				b := NewBatch("rOuter")
 				for i := 0; i < 9; i++ {
 					b.AddRawTransaction("AABBCCDD")
 				}
-				flags := tx.BatchFlagAllOrNothing
+				flags := BatchFlagAllOrNothing
 				b.Common.Flags = &flags
 				return b
 			}(),
@@ -140,8 +139,8 @@ func TestBatchValidation(t *testing.T) {
 		// Invalid cases - flags
 		{
 			name: "invalid - no mode flag set",
-			tx: func() *tx.Batch {
-				b := tx.NewBatch("rOuter")
+			tx: func() *Batch {
+				b := NewBatch("rOuter")
 				b.AddRawTransaction("AABBCCDD")
 				b.AddRawTransaction("EEFF0011")
 				flags := uint32(0)
@@ -153,11 +152,11 @@ func TestBatchValidation(t *testing.T) {
 		},
 		{
 			name: "invalid - multiple mode flags set",
-			tx: func() *tx.Batch {
-				b := tx.NewBatch("rOuter")
+			tx: func() *Batch {
+				b := NewBatch("rOuter")
 				b.AddRawTransaction("AABBCCDD")
 				b.AddRawTransaction("EEFF0011")
-				flags := tx.BatchFlagAllOrNothing | tx.BatchFlagOnlyOne
+				flags := BatchFlagAllOrNothing | BatchFlagOnlyOne
 				b.Common.Flags = &flags
 				return b
 			}(),
@@ -166,11 +165,11 @@ func TestBatchValidation(t *testing.T) {
 		},
 		{
 			name: "invalid - all mode flags set",
-			tx: func() *tx.Batch {
-				b := tx.NewBatch("rOuter")
+			tx: func() *Batch {
+				b := NewBatch("rOuter")
 				b.AddRawTransaction("AABBCCDD")
 				b.AddRawTransaction("EEFF0011")
-				flags := tx.BatchFlagAllOrNothing | tx.BatchFlagOnlyOne | tx.BatchFlagUntilFailure | tx.BatchFlagIndependent
+				flags := BatchFlagAllOrNothing | BatchFlagOnlyOne | BatchFlagUntilFailure | BatchFlagIndependent
 				b.Common.Flags = &flags
 				return b
 			}(),
@@ -181,13 +180,13 @@ func TestBatchValidation(t *testing.T) {
 		// Invalid cases - raw transaction blobs
 		{
 			name: "invalid - empty RawTxBlob",
-			tx: func() *tx.Batch {
-				b := tx.NewBatch("rOuter")
-				b.RawTransactions = []tx.RawTransaction{
-					{RawTransaction: tx.RawTransactionData{RawTxBlob: "AABBCCDD"}},
-					{RawTransaction: tx.RawTransactionData{RawTxBlob: ""}}, // empty
+			tx: func() *Batch {
+				b := NewBatch("rOuter")
+				b.RawTransactions = []RawTransaction{
+					{RawTransaction: RawTransactionData{RawTxBlob: "AABBCCDD"}},
+					{RawTransaction: RawTransactionData{RawTxBlob: ""}}, // empty
 				}
-				flags := tx.BatchFlagAllOrNothing
+				flags := BatchFlagAllOrNothing
 				b.Common.Flags = &flags
 				return b
 			}(),
@@ -198,11 +197,11 @@ func TestBatchValidation(t *testing.T) {
 		// Invalid cases - batch signers
 		{
 			name: "invalid - too many batch signers",
-			tx: func() *tx.Batch {
+			tx: func() *Batch {
 				b := makeValidBatch()
 				for i := 0; i < 9; i++ {
-					b.BatchSigners = append(b.BatchSigners, tx.BatchSigner{
-						BatchSigner: tx.BatchSignerData{Account: "rSigner" + string(rune('0'+i))},
+					b.BatchSigners = append(b.BatchSigners, BatchSigner{
+						BatchSigner: BatchSignerData{Account: "rSigner" + string(rune('0'+i))},
 					})
 				}
 				return b
@@ -212,11 +211,11 @@ func TestBatchValidation(t *testing.T) {
 		},
 		{
 			name: "invalid - duplicate batch signer",
-			tx: func() *tx.Batch {
+			tx: func() *Batch {
 				b := makeValidBatch()
-				b.BatchSigners = []tx.BatchSigner{
-					{BatchSigner: tx.BatchSignerData{Account: "rSigner1"}},
-					{BatchSigner: tx.BatchSignerData{Account: "rSigner1"}}, // duplicate
+				b.BatchSigners = []BatchSigner{
+					{BatchSigner: BatchSignerData{Account: "rSigner1"}},
+					{BatchSigner: BatchSignerData{Account: "rSigner1"}}, // duplicate
 				}
 				return b
 			}(),
@@ -225,10 +224,10 @@ func TestBatchValidation(t *testing.T) {
 		},
 		{
 			name: "invalid - batch signer is outer account",
-			tx: func() *tx.Batch {
+			tx: func() *Batch {
 				b := makeValidBatch()
-				b.BatchSigners = []tx.BatchSigner{
-					{BatchSigner: tx.BatchSignerData{Account: "rOuter"}}, // same as outer
+				b.BatchSigners = []BatchSigner{
+					{BatchSigner: BatchSignerData{Account: "rOuter"}}, // same as outer
 				}
 				return b
 			}(),
@@ -262,7 +261,7 @@ func TestBatchValidation(t *testing.T) {
 
 func TestBatchFlatten(t *testing.T) {
 	t.Run("basic batch", func(t *testing.T) {
-		b := tx.NewBatch("rOuter")
+		b := NewBatch("rOuter")
 		b.AddRawTransaction("AABBCCDD")
 		b.AddRawTransaction("EEFF0011")
 
@@ -272,23 +271,23 @@ func TestBatchFlatten(t *testing.T) {
 		assert.Equal(t, "rOuter", flat["Account"])
 		assert.Equal(t, "Batch", flat["TransactionType"])
 
-		rawTxns, ok := flat["RawTransactions"].([]tx.RawTransaction)
+		rawTxns, ok := flat["RawTransactions"].([]RawTransaction)
 		require.True(t, ok)
 		assert.Len(t, rawTxns, 2)
 	})
 
 	t.Run("batch with signers", func(t *testing.T) {
-		b := tx.NewBatch("rOuter")
+		b := NewBatch("rOuter")
 		b.AddRawTransaction("AABBCCDD")
 		b.AddRawTransaction("EEFF0011")
-		b.BatchSigners = []tx.BatchSigner{
-			{BatchSigner: tx.BatchSignerData{Account: "rSigner1", SigningPubKey: "ABC", BatchTxnSignature: "DEF"}},
+		b.BatchSigners = []BatchSigner{
+			{BatchSigner: BatchSignerData{Account: "rSigner1", SigningPubKey: "ABC", BatchTxnSignature: "DEF"}},
 		}
 
 		flat, err := b.Flatten()
 		require.NoError(t, err)
 
-		signers, ok := flat["BatchSigners"].([]tx.BatchSigner)
+		signers, ok := flat["BatchSigners"].([]BatchSigner)
 		require.True(t, ok)
 		assert.Len(t, signers, 1)
 	})
@@ -300,7 +299,7 @@ func TestBatchFlatten(t *testing.T) {
 
 func TestBatchConstructors(t *testing.T) {
 	t.Run("NewBatch", func(t *testing.T) {
-		tx := tx.NewBatch("rOuter")
+		tx := NewBatch("rOuter")
 		require.NotNil(t, tx)
 		assert.Equal(t, "rOuter", tx.Account)
 		assert.Equal(t, tx.TypeBatch, tx.TxType())
@@ -314,7 +313,7 @@ func TestBatchConstructors(t *testing.T) {
 // =============================================================================
 
 func TestBatchAddRawTransaction(t *testing.T) {
-	b := tx.NewBatch("rOuter")
+	b := NewBatch("rOuter")
 
 	b.AddRawTransaction("AABBCCDD")
 	b.AddRawTransaction("EEFF0011")
@@ -329,7 +328,7 @@ func TestBatchAddRawTransaction(t *testing.T) {
 // =============================================================================
 
 func TestBatchRequiredAmendments(t *testing.T) {
-	tx := tx.NewBatch("rOuter")
+	tx := NewBatch("rOuter")
 	amendments := tx.RequiredAmendments()
 	assert.Contains(t, amendments, AmendmentBatch)
 }
@@ -339,9 +338,9 @@ func TestBatchRequiredAmendments(t *testing.T) {
 // =============================================================================
 
 func TestBatchConstants(t *testing.T) {
-	assert.Equal(t, 8, tx.MaxBatchTransactions)
-	assert.Equal(t, uint32(0x00000001), tx.BatchFlagAllOrNothing)
-	assert.Equal(t, uint32(0x00000002), tx.BatchFlagOnlyOne)
-	assert.Equal(t, uint32(0x00000004), tx.BatchFlagUntilFailure)
-	assert.Equal(t, uint32(0x00000008), tx.BatchFlagIndependent)
+	assert.Equal(t, 8, MaxBatchTransactions)
+	assert.Equal(t, uint32(0x00000001), BatchFlagAllOrNothing)
+	assert.Equal(t, uint32(0x00000002), BatchFlagOnlyOne)
+	assert.Equal(t, uint32(0x00000004), BatchFlagUntilFailure)
+	assert.Equal(t, uint32(0x00000008), BatchFlagIndependent)
 }

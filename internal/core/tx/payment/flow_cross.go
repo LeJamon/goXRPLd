@@ -74,16 +74,21 @@ func FlowCross(
 	fmt.Printf("DEBUG FlowCross: book.In=%+v, book.Out=%+v\n", outIssue, inIssue)
 
 	// Calculate quality limit for offer crossing
-	// The taker's quality is: what they pay / what they get = outAmt / inAmt
-	// Offers with worse quality (higher value) should not be crossed
+	// Quality = what you pay / what you get (from the crossing perspective)
+	// When crossing matching offers:
+	//   - Creator pays what matching offers want (matching TakerPays = creator's takerGets = outAmt)
+	//   - Creator gets what matching offers give (matching TakerGets = creator's takerPays = inAmt)
+	// So quality = outAmt / inAmt = creator's_takerGets / creator's_takerPays
+	// This must match offerQuality = TakerPays/TakerGets (of matching offers)
+	// Reference: rippled CreateOffer.cpp - quality threshold for offer crossing
 	takerQuality := QualityFromAmounts(outAmt, inAmt)
 	fmt.Printf("DEBUG FlowCross: takerQuality=%+v\n", takerQuality)
 
 	// Create a single BookStep for the opposite order book WITH quality limit
-	// For offer crossing, we consume from the book where:
-	//   - Book.In = what we're paying (takerGets)
-	//   - Book.Out = what we're receiving (takerPays)
-	// So we look at offers selling takerPays and buying takerGets
+	// For offer crossing, we search the book where:
+	//   - Book.In = takerGets (what we're paying = what matching offers TakerPays)
+	//   - Book.Out = takerPays (what we want = what matching offers TakerGets)
+	// This finds offers that are BUYING what we're SELLING (opposite side of market)
 	// Pass quality limit to only cross offers at or better than taker's quality
 	bookStep := NewBookStepWithQualityLimit(outIssue, inIssue, takerAccount, takerAccount, nil, false, &takerQuality)
 

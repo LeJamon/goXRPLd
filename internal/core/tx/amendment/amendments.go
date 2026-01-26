@@ -2,6 +2,7 @@ package amendment
 
 // Amendment names for required amendments.
 // These match the amendment names registered in the amendment package.
+// TODO rework this shit
 const (
 	// Check transactions
 	AmendmentChecks = "Checks"

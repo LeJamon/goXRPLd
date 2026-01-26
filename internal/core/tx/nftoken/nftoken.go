@@ -1,5 +1,8 @@
 package nftoken
 
+// TODO split this into a file per tx
+// TODO check apply methods seem to be missing
+
 import (
 	"errors"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"

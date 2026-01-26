@@ -2,6 +2,7 @@ package account
 
 import (
 	tx2 "github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/signerlist"
 	"testing"
 )
 
@@ -12,13 +13,13 @@ import (
 func TestSetRegularKeyValidation(t *testing.T) {
 	tests := []struct {
 		name        string
-		tx          *tx2.SetRegularKey
+		tx          *signerlist.SetRegularKey
 		expectError bool
 		errorMsg    string
 	}{
 		{
 			name: "valid set regular key",
-			tx: &tx2.SetRegularKey{
+			tx: &signerlist.SetRegularKey{
 				BaseTx:     *tx2.NewBaseTx(tx2.TypeRegularKeySet, "rAlice"),
 				RegularKey: "rBob",
 			},
@@ -26,7 +27,7 @@ func TestSetRegularKeyValidation(t *testing.T) {
 		},
 		{
 			name: "valid clear regular key (empty)",
-			tx: &tx2.SetRegularKey{
+			tx: &signerlist.SetRegularKey{
 				BaseTx:     *tx2.NewBaseTx(tx2.TypeRegularKeySet, "rAlice"),
 				RegularKey: "",
 			},
@@ -34,7 +35,7 @@ func TestSetRegularKeyValidation(t *testing.T) {
 		},
 		{
 			name: "missing account",
-			tx: &tx2.SetRegularKey{
+			tx: &signerlist.SetRegularKey{
 				BaseTx:     tx2.BaseTx{Common: tx2.Common{TransactionType: "SetRegularKey"}},
 				RegularKey: "rBob",
 			},
@@ -43,7 +44,7 @@ func TestSetRegularKeyValidation(t *testing.T) {
 		},
 		{
 			name: "valid with ed25519 key format",
-			tx: &tx2.SetRegularKey{
+			tx: &signerlist.SetRegularKey{
 				BaseTx:     *tx2.NewBaseTx(tx2.TypeRegularKeySet, "rAlice"),
 				RegularKey: "rEd25519Address",
 			},
@@ -51,7 +52,7 @@ func TestSetRegularKeyValidation(t *testing.T) {
 		},
 		{
 			name: "valid with secp256k1 key format",
-			tx: &tx2.SetRegularKey{
+			tx: &signerlist.SetRegularKey{
 				BaseTx:     *tx2.NewBaseTx(tx2.TypeRegularKeySet, "rAlice"),
 				RegularKey: "rSecp256k1Address",
 			},
@@ -81,12 +82,12 @@ func TestSetRegularKeyValidation(t *testing.T) {
 func TestSetRegularKeyFlatten(t *testing.T) {
 	tests := []struct {
 		name     string
-		tx       *tx2.SetRegularKey
+		tx       *signerlist.SetRegularKey
 		checkMap func(t *testing.T, m map[string]any)
 	}{
 		{
 			name: "set regular key",
-			tx: &tx2.SetRegularKey{
+			tx: &signerlist.SetRegularKey{
 				BaseTx:     *tx2.NewBaseTx(tx2.TypeRegularKeySet, "rAlice"),
 				RegularKey: "rBob",
 			},
@@ -104,7 +105,7 @@ func TestSetRegularKeyFlatten(t *testing.T) {
 		},
 		{
 			name: "clear regular key (no RegularKey field in output)",
-			tx: &tx2.SetRegularKey{
+			tx: &signerlist.SetRegularKey{
 				BaseTx:     *tx2.NewBaseTx(tx2.TypeRegularKeySet, "rAlice"),
 				RegularKey: "",
 			},
@@ -132,7 +133,7 @@ func TestSetRegularKeyFlatten(t *testing.T) {
 
 // TestSetRegularKeyTransactionType tests that the transaction type is correctly returned.
 func TestSetRegularKeyTransactionType(t *testing.T) {
-	tx := tx2.NewSetRegularKey("rAlice")
+	tx := signerlist.NewSetRegularKey("rAlice")
 	if tx.TxType() != tx2.TypeRegularKeySet {
 		t.Errorf("expected TypeRegularKeySet, got %v", tx.TxType())
 	}
@@ -140,7 +141,7 @@ func TestSetRegularKeyTransactionType(t *testing.T) {
 
 // TestNewSetRegularKeyConstructor tests the constructor function.
 func TestNewSetRegularKeyConstructor(t *testing.T) {
-	tx := tx2.NewSetRegularKey("rAlice")
+	tx := signerlist.NewSetRegularKey("rAlice")
 	if tx.Account != "rAlice" {
 		t.Errorf("expected Account=rAlice, got %v", tx.Account)
 	}
@@ -155,7 +156,7 @@ func TestNewSetRegularKeyConstructor(t *testing.T) {
 // TestSetRegularKeyHelperMethods tests the SetKey and ClearKey helper methods.
 func TestSetRegularKeyHelperMethods(t *testing.T) {
 	t.Run("SetKey", func(t *testing.T) {
-		tx := tx2.NewSetRegularKey("rAlice")
+		tx := signerlist.NewSetRegularKey("rAlice")
 		tx.SetKey("rBob")
 		if tx.RegularKey != "rBob" {
 			t.Errorf("expected RegularKey=rBob, got %v", tx.RegularKey)
@@ -163,7 +164,7 @@ func TestSetRegularKeyHelperMethods(t *testing.T) {
 	})
 
 	t.Run("ClearKey", func(t *testing.T) {
-		tx := tx2.NewSetRegularKey("rAlice")
+		tx := signerlist.NewSetRegularKey("rAlice")
 		tx.SetKey("rBob")
 		tx.ClearKey()
 		if tx.RegularKey != "" {
@@ -172,7 +173,7 @@ func TestSetRegularKeyHelperMethods(t *testing.T) {
 	})
 
 	t.Run("SetKey after ClearKey", func(t *testing.T) {
-		tx := tx2.NewSetRegularKey("rAlice")
+		tx := signerlist.NewSetRegularKey("rAlice")
 		tx.ClearKey()
 		tx.SetKey("rCarol")
 		if tx.RegularKey != "rCarol" {
@@ -186,25 +187,25 @@ func TestSetRegularKeyHelperMethods(t *testing.T) {
 func TestSignerListSetValidation(t *testing.T) {
 	tests := []struct {
 		name        string
-		tx          *tx2.SignerListSet
+		tx          *signerlist.SignerListSet
 		expectError bool
 		errorMsg    string
 	}{
 		{
 			name: "valid signer list with two signers",
-			tx: &tx2.SignerListSet{
+			tx: &signerlist.SignerListSet{
 				BaseTx:       *tx2.NewBaseTx(tx2.TypeSignerListSet, "rAlice"),
 				SignerQuorum: 2,
-				SignerEntries: []tx2.SignerEntry{
-					{SignerEntry: tx2.SignerEntryData{Account: "rBob", SignerWeight: 1}},
-					{SignerEntry: tx2.SignerEntryData{Account: "rCarol", SignerWeight: 1}},
+				SignerEntries: []signerlist.SignerEntry{
+					{SignerEntry: signerlist.SignerEntryData{Account: "rBob", SignerWeight: 1}},
+					{SignerEntry: signerlist.SignerEntryData{Account: "rCarol", SignerWeight: 1}},
 				},
 			},
 			expectError: false,
 		},
 		{
 			name: "valid delete signer list (quorum=0)",
-			tx: &tx2.SignerListSet{
+			tx: &signerlist.SignerListSet{
 				BaseTx:        *tx2.NewBaseTx(tx2.TypeSignerListSet, "rAlice"),
 				SignerQuorum:  0,
 				SignerEntries: nil,
@@ -213,11 +214,11 @@ func TestSignerListSetValidation(t *testing.T) {
 		},
 		{
 			name: "invalid: quorum=0 with entries",
-			tx: &tx2.SignerListSet{
+			tx: &signerlist.SignerListSet{
 				BaseTx:       *tx2.NewBaseTx(tx2.TypeSignerListSet, "rAlice"),
 				SignerQuorum: 0,
-				SignerEntries: []tx2.SignerEntry{
-					{SignerEntry: tx2.SignerEntryData{Account: "rBob", SignerWeight: 1}},
+				SignerEntries: []signerlist.SignerEntry{
+					{SignerEntry: signerlist.SignerEntryData{Account: "rBob", SignerWeight: 1}},
 				},
 			},
 			expectError: true,
@@ -225,7 +226,7 @@ func TestSignerListSetValidation(t *testing.T) {
 		},
 		{
 			name: "invalid: quorum>0 without entries",
-			tx: &tx2.SignerListSet{
+			tx: &signerlist.SignerListSet{
 				BaseTx:        *tx2.NewBaseTx(tx2.TypeSignerListSet, "rAlice"),
 				SignerQuorum:  2,
 				SignerEntries: nil,
@@ -235,14 +236,14 @@ func TestSignerListSetValidation(t *testing.T) {
 		},
 		{
 			name: "invalid: too many signers (>32)",
-			tx: func() *tx2.SignerListSet {
-				s := &tx2.SignerListSet{
+			tx: func() *signerlist.SignerListSet {
+				s := &signerlist.SignerListSet{
 					BaseTx:       *tx2.NewBaseTx(tx2.TypeSignerListSet, "rAlice"),
 					SignerQuorum: 33,
 				}
 				for i := 0; i < 33; i++ {
-					s.SignerEntries = append(s.SignerEntries, tx2.SignerEntry{
-						SignerEntry: tx2.SignerEntryData{Account: "rSigner" + string(rune('A'+i)), SignerWeight: 1},
+					s.SignerEntries = append(s.SignerEntries, signerlist.SignerEntry{
+						SignerEntry: signerlist.SignerEntryData{Account: "rSigner" + string(rune('A'+i)), SignerWeight: 1},
 					})
 				}
 				return s
@@ -252,12 +253,12 @@ func TestSignerListSetValidation(t *testing.T) {
 		},
 		{
 			name: "invalid: duplicate signer",
-			tx: &tx2.SignerListSet{
+			tx: &signerlist.SignerListSet{
 				BaseTx:       *tx2.NewBaseTx(tx2.TypeSignerListSet, "rAlice"),
 				SignerQuorum: 2,
-				SignerEntries: []tx2.SignerEntry{
-					{SignerEntry: tx2.SignerEntryData{Account: "rBob", SignerWeight: 1}},
-					{SignerEntry: tx2.SignerEntryData{Account: "rBob", SignerWeight: 1}},
+				SignerEntries: []signerlist.SignerEntry{
+					{SignerEntry: signerlist.SignerEntryData{Account: "rBob", SignerWeight: 1}},
+					{SignerEntry: signerlist.SignerEntryData{Account: "rBob", SignerWeight: 1}},
 				},
 			},
 			expectError: true,
@@ -265,12 +266,12 @@ func TestSignerListSetValidation(t *testing.T) {
 		},
 		{
 			name: "invalid: self as signer",
-			tx: &tx2.SignerListSet{
+			tx: &signerlist.SignerListSet{
 				BaseTx:       *tx2.NewBaseTx(tx2.TypeSignerListSet, "rAlice"),
 				SignerQuorum: 2,
-				SignerEntries: []tx2.SignerEntry{
-					{SignerEntry: tx2.SignerEntryData{Account: "rAlice", SignerWeight: 1}},
-					{SignerEntry: tx2.SignerEntryData{Account: "rBob", SignerWeight: 1}},
+				SignerEntries: []signerlist.SignerEntry{
+					{SignerEntry: signerlist.SignerEntryData{Account: "rAlice", SignerWeight: 1}},
+					{SignerEntry: signerlist.SignerEntryData{Account: "rBob", SignerWeight: 1}},
 				},
 			},
 			expectError: true,
@@ -278,12 +279,12 @@ func TestSignerListSetValidation(t *testing.T) {
 		},
 		{
 			name: "invalid: zero weight signer",
-			tx: &tx2.SignerListSet{
+			tx: &signerlist.SignerListSet{
 				BaseTx:       *tx2.NewBaseTx(tx2.TypeSignerListSet, "rAlice"),
 				SignerQuorum: 2,
-				SignerEntries: []tx2.SignerEntry{
-					{SignerEntry: tx2.SignerEntryData{Account: "rBob", SignerWeight: 0}},
-					{SignerEntry: tx2.SignerEntryData{Account: "rCarol", SignerWeight: 2}},
+				SignerEntries: []signerlist.SignerEntry{
+					{SignerEntry: signerlist.SignerEntryData{Account: "rBob", SignerWeight: 0}},
+					{SignerEntry: signerlist.SignerEntryData{Account: "rCarol", SignerWeight: 2}},
 				},
 			},
 			expectError: true,
@@ -291,12 +292,12 @@ func TestSignerListSetValidation(t *testing.T) {
 		},
 		{
 			name: "invalid: weights less than quorum",
-			tx: &tx2.SignerListSet{
+			tx: &signerlist.SignerListSet{
 				BaseTx:       *tx2.NewBaseTx(tx2.TypeSignerListSet, "rAlice"),
 				SignerQuorum: 5,
-				SignerEntries: []tx2.SignerEntry{
-					{SignerEntry: tx2.SignerEntryData{Account: "rBob", SignerWeight: 1}},
-					{SignerEntry: tx2.SignerEntryData{Account: "rCarol", SignerWeight: 1}},
+				SignerEntries: []signerlist.SignerEntry{
+					{SignerEntry: signerlist.SignerEntryData{Account: "rBob", SignerWeight: 1}},
+					{SignerEntry: signerlist.SignerEntryData{Account: "rCarol", SignerWeight: 1}},
 				},
 			},
 			expectError: true,
@@ -304,24 +305,24 @@ func TestSignerListSetValidation(t *testing.T) {
 		},
 		{
 			name: "valid: weights equal to quorum",
-			tx: &tx2.SignerListSet{
+			tx: &signerlist.SignerListSet{
 				BaseTx:       *tx2.NewBaseTx(tx2.TypeSignerListSet, "rAlice"),
 				SignerQuorum: 3,
-				SignerEntries: []tx2.SignerEntry{
-					{SignerEntry: tx2.SignerEntryData{Account: "rBob", SignerWeight: 1}},
-					{SignerEntry: tx2.SignerEntryData{Account: "rCarol", SignerWeight: 2}},
+				SignerEntries: []signerlist.SignerEntry{
+					{SignerEntry: signerlist.SignerEntryData{Account: "rBob", SignerWeight: 1}},
+					{SignerEntry: signerlist.SignerEntryData{Account: "rCarol", SignerWeight: 2}},
 				},
 			},
 			expectError: false,
 		},
 		{
 			name: "valid: weights greater than quorum",
-			tx: &tx2.SignerListSet{
+			tx: &signerlist.SignerListSet{
 				BaseTx:       *tx2.NewBaseTx(tx2.TypeSignerListSet, "rAlice"),
 				SignerQuorum: 2,
-				SignerEntries: []tx2.SignerEntry{
-					{SignerEntry: tx2.SignerEntryData{Account: "rBob", SignerWeight: 2}},
-					{SignerEntry: tx2.SignerEntryData{Account: "rCarol", SignerWeight: 2}},
+				SignerEntries: []signerlist.SignerEntry{
+					{SignerEntry: signerlist.SignerEntryData{Account: "rBob", SignerWeight: 2}},
+					{SignerEntry: signerlist.SignerEntryData{Account: "rCarol", SignerWeight: 2}},
 				},
 			},
 			expectError: false,
@@ -350,24 +351,24 @@ func TestSignerListSetValidation(t *testing.T) {
 func TestSignerListSetFlatten(t *testing.T) {
 	tests := []struct {
 		name     string
-		tx       *tx2.SignerListSet
+		tx       *signerlist.SignerListSet
 		checkMap func(t *testing.T, m map[string]any)
 	}{
 		{
 			name: "with signers",
-			tx: &tx2.SignerListSet{
+			tx: &signerlist.SignerListSet{
 				BaseTx:       *tx2.NewBaseTx(tx2.TypeSignerListSet, "rAlice"),
 				SignerQuorum: 2,
-				SignerEntries: []tx2.SignerEntry{
-					{SignerEntry: tx2.SignerEntryData{Account: "rBob", SignerWeight: 1}},
-					{SignerEntry: tx2.SignerEntryData{Account: "rCarol", SignerWeight: 1}},
+				SignerEntries: []signerlist.SignerEntry{
+					{SignerEntry: signerlist.SignerEntryData{Account: "rBob", SignerWeight: 1}},
+					{SignerEntry: signerlist.SignerEntryData{Account: "rCarol", SignerWeight: 1}},
 				},
 			},
 			checkMap: func(t *testing.T, m map[string]any) {
 				if m["SignerQuorum"] != uint32(2) {
 					t.Errorf("expected SignerQuorum=2, got %v", m["SignerQuorum"])
 				}
-				entries, ok := m["SignerEntries"].([]tx2.SignerEntry)
+				entries, ok := m["SignerEntries"].([]signerlist.SignerEntry)
 				if !ok {
 					t.Fatalf("SignerEntries should be []SignerEntry, got %T", m["SignerEntries"])
 				}
@@ -378,7 +379,7 @@ func TestSignerListSetFlatten(t *testing.T) {
 		},
 		{
 			name: "delete (no entries)",
-			tx: &tx2.SignerListSet{
+			tx: &signerlist.SignerListSet{
 				BaseTx:       *tx2.NewBaseTx(tx2.TypeSignerListSet, "rAlice"),
 				SignerQuorum: 0,
 			},
@@ -406,7 +407,7 @@ func TestSignerListSetFlatten(t *testing.T) {
 
 // TestSignerListSetAddSigner tests the AddSigner helper method.
 func TestSignerListSetAddSigner(t *testing.T) {
-	s := tx2.NewSignerListSet("rAlice", 2)
+	s := signerlist.NewSignerListSet("rAlice", 2)
 	s.AddSigner("rBob", 1)
 	s.AddSigner("rCarol", 2)
 
@@ -431,7 +432,7 @@ func TestSignerListSetAddSigner(t *testing.T) {
 
 // TestNewSignerListSetConstructor tests the constructor function.
 func TestNewSignerListSetConstructor(t *testing.T) {
-	s := tx2.NewSignerListSet("rAlice", 3)
+	s := signerlist.NewSignerListSet("rAlice", 3)
 	if s.Account != "rAlice" {
 		t.Errorf("expected Account=rAlice, got %v", s.Account)
 	}
@@ -445,7 +446,7 @@ func TestNewSignerListSetConstructor(t *testing.T) {
 
 // TestSignerListSetTransactionType tests that the transaction type is correctly returned.
 func TestSignerListSetTransactionType(t *testing.T) {
-	s := tx2.NewSignerListSet("rAlice", 2)
+	s := signerlist.NewSignerListSet("rAlice", 2)
 	if s.TxType() != tx2.TypeSignerListSet {
 		t.Errorf("expected TypeSignerListSet, got %v", s.TxType())
 	}

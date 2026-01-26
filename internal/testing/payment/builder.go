@@ -8,12 +8,13 @@ import (
 
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/payment"
+	"github.com/LeJamon/goXRPLd/internal/testing"
 )
 
 // PaymentBuilder provides a fluent interface for building Payment transactions.
 type PaymentBuilder struct {
-	from       *Account
-	to         *Account
+	from       *testing.Account
+	to         *testing.Account
 	amount     uint64 // XRP in drops
 	issuedAmt  *tx.Amount
 	fee        uint64
@@ -29,7 +30,7 @@ type PaymentBuilder struct {
 
 // Pay creates a new PaymentBuilder for an XRP payment.
 // The amount is specified in drops (1 XRP = 1,000,000 drops).
-func Pay(from, to *Account, amount uint64) *PaymentBuilder {
+func Pay(from, to *testing.Account, amount uint64) *PaymentBuilder {
 	return &PaymentBuilder{
 		from:   from,
 		to:     to,
@@ -39,7 +40,7 @@ func Pay(from, to *Account, amount uint64) *PaymentBuilder {
 }
 
 // PayIssued creates a new PaymentBuilder for an issued currency payment.
-func PayIssued(from, to *Account, amount tx.Amount) *PaymentBuilder {
+func PayIssued(from, to *testing.Account, amount tx.Amount) *PaymentBuilder {
 	return &PaymentBuilder{
 		from:      from,
 		to:        to,
@@ -92,19 +93,19 @@ func (b *PaymentBuilder) Sequence(seq uint32) *PaymentBuilder {
 
 // PartialPayment enables the partial payment flag.
 func (b *PaymentBuilder) PartialPayment() *PaymentBuilder {
-	b.flags |= tx.PaymentFlagPartialPayment
+	b.flags |= payment.PaymentFlagPartialPayment
 	return b
 }
 
 // NoDirectRipple enables the no direct ripple flag.
 func (b *PaymentBuilder) NoDirectRipple() *PaymentBuilder {
-	b.flags |= tx.PaymentFlagNoDirectRipple
+	b.flags |= payment.PaymentFlagNoDirectRipple
 	return b
 }
 
 // LimitQuality enables the limit quality flag.
 func (b *PaymentBuilder) LimitQuality() *PaymentBuilder {
-	b.flags |= tx.PaymentFlagLimitQuality
+	b.flags |= payment.PaymentFlagLimitQuality
 	return b
 }
 

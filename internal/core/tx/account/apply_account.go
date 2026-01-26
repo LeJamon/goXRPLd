@@ -3,14 +3,14 @@ package account
 import (
 	"encoding/hex"
 	"fmt"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/signerlist"
 
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
-	"github.com/LeJamon/goXRPLd/internal/core/tx"
 )
 
 // serializeSignerList serializes a SignerList ledger entry from a SignerListSet transaction
-func serializeSignerList(tx *tx.SignerListSet, ownerID [20]byte) ([]byte, error) {
+func serializeSignerList(tx *signerlist.SignerListSet, ownerID [20]byte) ([]byte, error) {
 	// Convert owner ID to classic address
 	ownerAddress, err := addresscodec.EncodeAccountIDToClassicAddress(ownerID[:])
 	if err != nil {

@@ -207,14 +207,16 @@ type Quality struct {
 	Value uint64
 }
 
-// QualityFromAmounts creates a Quality from input and output amounts
+// QualityFromAmounts creates a Quality from input and output amounts.
+// Quality = in / out, encoded using STAmount-like floating point representation.
+// Reference: rippled's getRate() in STAmount.cpp
 func QualityFromAmounts(in, out EitherAmount) Quality {
-	// Quality = in / out
-	// For now, use a simplified calculation
-	// In production, this should match rippled's exact encoding
-
 	if out.IsZero() {
-		return Quality{Value: 0} // Invalid quality
+		return Quality{Value: 0} // Invalid quality - division by zero
+	}
+
+	if in.IsZero() {
+		return Quality{Value: 0} // Zero quality - best possible (getting something for nothing)
 	}
 
 	var ratio *big.Float
@@ -237,16 +239,55 @@ func QualityFromAmounts(in, out EitherAmount) Quality {
 		ratio = new(big.Float).Quo(in.IOU.Value, out.IOU.Value)
 	}
 
-	// Encode as uint64 - simplified version
-	// In production, should use STAmount encoding
+	// Encode using STAmount-like format:
+	// - Upper 8 bits: exponent + 100
+	// - Lower 56 bits: mantissa
+	// STAmount mantissa range: 10^15 to 10^16 - 1
+	// Reference: rippled Quality.cpp getRate()
+
 	f64, _ := ratio.Float64()
 	if f64 <= 0 {
 		return Quality{Value: 0}
 	}
 
-	// Scale to preserve precision
-	scaled := f64 * float64(QualityOne)
-	return Quality{Value: uint64(scaled)}
+	// Calculate exponent and mantissa
+	// We want mantissa in range [10^15, 10^16)
+	// So: f64 = mantissa * 10^(exponent-15)
+	// Where mantissa is in [10^15, 10^16)
+	exponent := 0
+	mantissa := f64
+
+	// Normalize: scale mantissa to [10^15, 10^16)
+	minMantissa := 1e15
+	maxMantissa := 1e16
+
+	if mantissa != 0 {
+		for mantissa < minMantissa {
+			mantissa *= 10
+			exponent--
+		}
+		for mantissa >= maxMantissa {
+			mantissa /= 10
+			exponent++
+		}
+	}
+
+	// Clamp exponent to valid range [-100, 155]
+	// (stored exponent = exponent + 100, must fit in 8 bits as 0-255)
+	if exponent < -100 {
+		// Value too small - return 0
+		return Quality{Value: 0}
+	}
+	if exponent > 155 {
+		// Value too large - return max
+		return Quality{Value: ^uint64(0)}
+	}
+
+	storedExponent := uint64(exponent + 100)
+	storedMantissa := uint64(mantissa)
+
+	// Combine into quality value: exponent in upper 8 bits, mantissa in lower 56 bits
+	return Quality{Value: (storedExponent << 56) | (storedMantissa & 0x00FFFFFFFFFFFFFF)}
 }
 
 // Compare compares two qualities

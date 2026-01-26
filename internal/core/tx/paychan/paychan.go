@@ -1,6 +1,5 @@
-//go:build ignore
-
 // TODO missing sle method related to payment chanel
+// TODO split this file
 package paychan
 
 import (
@@ -417,7 +416,7 @@ func (pc *PaymentChannelCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	// Verify destination exists
-	destID, err := tx.DecodeAccountID(pc.Destination)
+	destID, err := sle.DecodeAccountID(pc.Destination)
 	if err != nil {
 		return tx.TemINVALID
 	}
@@ -432,7 +431,7 @@ func (pc *PaymentChannelCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Account.Balance -= amount
 
 	// Create pay channel
-	accountID, _ := tx.DecodeAccountID(pc.Account)
+	accountID, _ := sle.DecodeAccountID(pc.Account)
 	sequence := *pc.GetCommon().Sequence
 
 	channelKey := keylet.PayChannel(accountID, destID, sequence)
@@ -473,13 +472,13 @@ func (pf *PaymentChannelFund) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	// Parse channel
-	channel, err := sle.ParsePayChannelData(channelData)
+	channel, err := sle.ParsePayChannel(channelData)
 	if err != nil {
 		return tx.TefINTERNAL
 	}
 
 	// Verify sender is the channel owner
-	accountID, _ := tx.DecodeAccountID(pf.Account)
+	accountID, _ := sle.DecodeAccountID(pf.Account)
 	if channel.Account != accountID {
 		return tx.TecNO_PERMISSION
 	}
@@ -507,7 +506,7 @@ func (pf *PaymentChannelFund) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	// Serialize updated channel - modification tracked automatically by ApplyStateTable
-	updatedChannelData, err := sle.SerializePayChannelData(channel)
+	updatedChannelData, err := sle.SerializePayChannelFromData(channel)
 	if err != nil {
 		return tx.TefINTERNAL
 	}
@@ -538,12 +537,12 @@ func (pcl *PaymentChannelClaim) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	// Parse channel
-	channel, err := sle.ParsePayChannelData(channelData)
+	channel, err := sle.ParsePayChannel(channelData)
 	if err != nil {
 		return tx.TefINTERNAL
 	}
 
-	accountID, _ := tx.DecodeAccountID(pcl.Account)
+	accountID, _ := sle.DecodeAccountID(pcl.Account)
 	isOwner := channel.Account == accountID
 	isDest := channel.DestinationID == accountID
 
@@ -626,7 +625,7 @@ func (pcl *PaymentChannelClaim) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 	} else {
 		// Update channel - modification tracked automatically by ApplyStateTable
-		updatedChannelData, err := sle.SerializePayChannelData(channel)
+		updatedChannelData, err := sle.SerializePayChannelFromData(channel)
 		if err != nil {
 			return tx.TefINTERNAL
 		}
