@@ -26,7 +26,7 @@ func TestClawbackValidation(t *testing.T) {
 			name: "valid - basic IOU clawback",
 			tx: &Clawback{
 				BaseTx: *tx.NewBaseTx(tx.TypeClawback, "rIssuer"),
-				Amount: tx.NewIssuedAmount("100", "USD", "rHolder"), // Holder in issuer field
+				Amount: tx.NewIssuedAmountFromFloat64(100.0, "USD", "rHolder"), // Holder in issuer field
 			},
 			wantErr: false,
 		},
@@ -34,7 +34,7 @@ func TestClawbackValidation(t *testing.T) {
 			name: "valid - MPToken clawback with Holder",
 			tx: &Clawback{
 				BaseTx: *tx.NewBaseTx(tx.TypeClawback, "rIssuer"),
-				Amount: tx.NewIssuedAmount("100", "MPT", "rIssuer"),
+				Amount: tx.NewIssuedAmountFromFloat64(100.0, "MPT", "rIssuer"),
 				Holder: "rHolder",
 			},
 			wantErr: false,
@@ -54,7 +54,7 @@ func TestClawbackValidation(t *testing.T) {
 			name: "invalid - XRP Amount (cannot claw back XRP)",
 			tx: &Clawback{
 				BaseTx: *tx.NewBaseTx(tx.TypeClawback, "rIssuer"),
-				Amount: tx.NewXRPAmount("1000000"),
+				Amount: tx.NewXRPAmount(1000000),
 			},
 			wantErr: true,
 			errMsg:  "XRP",
@@ -63,7 +63,7 @@ func TestClawbackValidation(t *testing.T) {
 			name: "invalid - negative Amount",
 			tx: &Clawback{
 				BaseTx: *tx.NewBaseTx(tx.TypeClawback, "rIssuer"),
-				Amount: tx.NewIssuedAmount("-100", "USD", "rHolder"),
+				Amount: tx.NewIssuedAmountFromFloat64(-100.0, "USD", "rHolder"),
 			},
 			wantErr: true,
 			errMsg:  "positive",
@@ -72,7 +72,7 @@ func TestClawbackValidation(t *testing.T) {
 			name: "invalid - zero Amount",
 			tx: &Clawback{
 				BaseTx: *tx.NewBaseTx(tx.TypeClawback, "rIssuer"),
-				Amount: tx.NewIssuedAmount("0", "USD", "rHolder"),
+				Amount: tx.NewIssuedAmountFromFloat64(0.0, "USD", "rHolder"),
 			},
 			wantErr: true,
 			errMsg:  "positive",
@@ -81,7 +81,7 @@ func TestClawbackValidation(t *testing.T) {
 			name: "invalid - IOU clawback from self",
 			tx: &Clawback{
 				BaseTx: *tx.NewBaseTx(tx.TypeClawback, "rIssuer"),
-				Amount: tx.NewIssuedAmount("100", "USD", "rIssuer"), // Same as Account
+				Amount: tx.NewIssuedAmountFromFloat64(100.0, "USD", "rIssuer"), // Same as Account
 			},
 			wantErr: true,
 			errMsg:  "positive", // temBAD_AMOUNT in rippled
@@ -90,7 +90,7 @@ func TestClawbackValidation(t *testing.T) {
 			name: "invalid - MPToken clawback - Holder same as issuer",
 			tx: &Clawback{
 				BaseTx: *tx.NewBaseTx(tx.TypeClawback, "rIssuer"),
-				Amount: tx.NewIssuedAmount("100", "MPT", "rIssuer"),
+				Amount: tx.NewIssuedAmountFromFloat64(100.0, "MPT", "rIssuer"),
 				Holder: "rIssuer", // Same as Account
 			},
 			wantErr: true,
@@ -101,7 +101,7 @@ func TestClawbackValidation(t *testing.T) {
 			tx: func() *Clawback {
 				clawbackTx := &Clawback{
 					BaseTx: *tx.NewBaseTx(tx.TypeClawback, "rIssuer"),
-					Amount: tx.NewIssuedAmount("100", "USD", "rHolder"),
+					Amount: tx.NewIssuedAmountFromFloat64(100.0, "USD", "rHolder"),
 				}
 				flags := uint32(tx.TfUniversalMask)
 				clawbackTx.Common.Flags = &flags
@@ -139,7 +139,7 @@ func TestClawbackFlatten(t *testing.T) {
 	t.Run("IOU clawback", func(t *testing.T) {
 		clawbackTx := &Clawback{
 			BaseTx: *tx.NewBaseTx(tx.TypeClawback, "rIssuer"),
-			Amount: tx.NewIssuedAmount("100", "USD", "rHolder"),
+			Amount: tx.NewIssuedAmountFromFloat64(100.0, "USD", "rHolder"),
 		}
 
 		flat, err := clawbackTx.Flatten()
@@ -156,13 +156,13 @@ func TestClawbackFlatten(t *testing.T) {
 	})
 
 	t.Run("MPToken clawback", func(t *testing.T) {
-		tx := &Clawback{
+		clawbackTx := &Clawback{
 			BaseTx: *tx.NewBaseTx(tx.TypeClawback, "rIssuer"),
-			Amount: tx.NewIssuedAmount("100", "MPT", "rIssuer"),
+			Amount: tx.NewIssuedAmountFromFloat64(100.0, "MPT", "rIssuer"),
 			Holder: "rHolder",
 		}
 
-		flat, err := tx.Flatten()
+		flat, err := clawbackTx.Flatten()
 		require.NoError(t, err)
 
 		assert.Equal(t, "rIssuer", flat["Account"])
@@ -176,17 +176,17 @@ func TestClawbackFlatten(t *testing.T) {
 
 func TestClawbackConstructors(t *testing.T) {
 	t.Run("NewClawback (IOU)", func(t *testing.T) {
-		clawbackTx := NewClawback("rIssuer", tx.NewIssuedAmount("100", "USD", "rHolder"))
+		clawbackTx := NewClawback("rIssuer", tx.NewIssuedAmountFromFloat64(100.0, "USD", "rHolder"))
 		require.NotNil(t, clawbackTx)
 		assert.Equal(t, "rIssuer", clawbackTx.Account)
-		assert.Equal(t, "100", clawbackTx.Amount.Value)
+		assert.Equal(t, "100", clawbackTx.Amount.Value())
 		assert.Equal(t, "USD", clawbackTx.Amount.Currency)
 		assert.Equal(t, "rHolder", clawbackTx.Amount.Issuer)
 		assert.Equal(t, tx.TypeClawback, clawbackTx.TxType())
 	})
 
 	t.Run("NewMPTokenClawback", func(t *testing.T) {
-		clawbackTx := NewMPTokenClawback("rIssuer", "rHolder", tx.NewIssuedAmount("100", "MPT", "rIssuer"))
+		clawbackTx := NewMPTokenClawback("rIssuer", "rHolder", tx.NewIssuedAmountFromFloat64(100.0, "MPT", "rIssuer"))
 		require.NotNil(t, clawbackTx)
 		assert.Equal(t, "rIssuer", clawbackTx.Account)
 		assert.Equal(t, "rHolder", clawbackTx.Holder)
@@ -200,14 +200,14 @@ func TestClawbackConstructors(t *testing.T) {
 
 func TestClawbackRequiredAmendments(t *testing.T) {
 	t.Run("IOU clawback requires Clawback amendment", func(t *testing.T) {
-		clawbackTx := NewClawback("rIssuer", tx.NewIssuedAmount("100", "USD", "rHolder"))
+		clawbackTx := NewClawback("rIssuer", tx.NewIssuedAmountFromFloat64(100.0, "USD", "rHolder"))
 		amendments := clawbackTx.RequiredAmendments()
 		assert.Contains(t, amendments, amendment.AmendmentClawback)
 		assert.NotContains(t, amendments, amendment.AmendmentMPTokensV1)
 	})
 
 	t.Run("MPToken clawback requires Clawback and MPTokensV1 amendments", func(t *testing.T) {
-		clawbackTx := NewMPTokenClawback("rIssuer", "rHolder", tx.NewIssuedAmount("100", "MPT", "rIssuer"))
+		clawbackTx := NewMPTokenClawback("rIssuer", "rHolder", tx.NewIssuedAmountFromFloat64(100.0, "MPT", "rIssuer"))
 		amendments := clawbackTx.RequiredAmendments()
 		assert.Contains(t, amendments, amendment.AmendmentClawback)
 		assert.Contains(t, amendments, amendment.AmendmentMPTokensV1)

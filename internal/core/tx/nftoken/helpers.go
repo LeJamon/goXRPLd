@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"strconv"
 	"strings"
 
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
@@ -580,11 +579,7 @@ func (n *NFTokenAcceptOffer) acceptNFTokenBrokeredMode(ctx *tx.ApplyContext, acc
 		}
 
 		if brokerFeeIsXRP {
-			var err error
-			brokerFee, err = strconv.ParseUint(n.NFTokenBrokerFee.Value, 10, 64)
-			if err != nil {
-				return tx.TemMALFORMED
-			}
+			brokerFee = uint64(n.NFTokenBrokerFee.Drops())
 		}
 
 		// Broker fee cannot exceed or equal what buyer pays

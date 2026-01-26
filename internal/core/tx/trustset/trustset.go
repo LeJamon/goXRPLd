@@ -100,7 +100,7 @@ func (t *TrustSet) Validate() error {
 	}
 
 	// Negative limit is not allowed
-	if len(t.LimitAmount.Value) > 0 && t.LimitAmount.Value[0] == '-' {
+	if t.LimitAmount.IsNegative() {
 		return errors.New("temBAD_LIMIT: negative credit limit")
 	}
 
@@ -241,7 +241,7 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	// Parse the limit amount
-	limitAmount := sle.NewIOUAmount(t.LimitAmount.Value, t.LimitAmount.Currency, ctx.Account.Account)
+	limitAmount := t.LimitAmount.ToIOUAmountLegacy()
 
 	if !trustLineExists {
 		// Check if setting zero limit without existing trust line

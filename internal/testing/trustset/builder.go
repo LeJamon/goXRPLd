@@ -32,7 +32,10 @@ func TrustSet(account *testing.Account, limitAmount tx.Amount) *TrustSetBuilder 
 // TrustLine is a convenience function to create a trust line builder.
 // limit is the maximum amount the account will trust the issuer for.
 func TrustLine(account *testing.Account, currency string, issuer *testing.Account, limit string) *TrustSetBuilder {
-	limitAmount := tx.NewIssuedAmount(limit, currency, issuer.Address)
+	// Parse limit as float and convert to issued amount
+	var limitFloat float64
+	fmt.Sscanf(limit, "%f", &limitFloat)
+	limitAmount := tx.NewIssuedAmountFromFloat64(limitFloat, currency, issuer.Address)
 	return TrustSet(account, limitAmount)
 }
 

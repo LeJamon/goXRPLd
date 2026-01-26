@@ -29,7 +29,7 @@ func TestCheckCreateValidation(t *testing.T) {
 			check: &CheckCreate{
 				BaseTx:      *tx.NewBaseTx(tx.TypeCheckCreate, "rAlice"),
 				Destination: "rBob",
-				SendMax:     tx.NewXRPAmount("10000000000"),
+				SendMax:     tx.NewXRPAmount(10000000000),
 			},
 			expectError: false,
 		},
@@ -38,7 +38,7 @@ func TestCheckCreateValidation(t *testing.T) {
 			check: &CheckCreate{
 				BaseTx:      *tx.NewBaseTx(tx.TypeCheckCreate, "rAlice"),
 				Destination: "rBob",
-				SendMax:     tx.NewIssuedAmount("50", "USD", "rGateway"),
+				SendMax:     tx.NewIssuedAmountFromFloat64(50.0, "USD", "rGateway"),
 			},
 			expectError: false,
 		},
@@ -47,7 +47,7 @@ func TestCheckCreateValidation(t *testing.T) {
 			check: &CheckCreate{
 				BaseTx:         *tx.NewBaseTx(tx.TypeCheckCreate, "rAlice"),
 				Destination:    "rBob",
-				SendMax:        tx.NewXRPAmount("10000000000"),
+				SendMax:        tx.NewXRPAmount(10000000000),
 				DestinationTag: ptrUint32(42),
 				Expiration:     ptrUint32(700000000),
 				InvoiceID:      "0000000000000000000000000000000000000000000000000000000000000004",
@@ -59,7 +59,7 @@ func TestCheckCreateValidation(t *testing.T) {
 			check: &CheckCreate{
 				BaseTx:      *tx.NewBaseTx(tx.TypeCheckCreate, "rAlice"),
 				Destination: "",
-				SendMax:     tx.NewXRPAmount("10000000000"),
+				SendMax:     tx.NewXRPAmount(10000000000),
 			},
 			expectError: true,
 			errorMsg:    "Destination is required",
@@ -79,7 +79,7 @@ func TestCheckCreateValidation(t *testing.T) {
 			check: &CheckCreate{
 				BaseTx:      *tx.NewBaseTx(tx.TypeCheckCreate, "rAlice"),
 				Destination: "rAlice",
-				SendMax:     tx.NewXRPAmount("10000000000"),
+				SendMax:     tx.NewXRPAmount(10000000000),
 			},
 			expectError: true,
 			errorMsg:    "cannot create check to self",
@@ -89,7 +89,7 @@ func TestCheckCreateValidation(t *testing.T) {
 			check: &CheckCreate{
 				BaseTx:      tx.BaseTx{Common: tx.Common{TransactionType: "CheckCreate"}},
 				Destination: "rBob",
-				SendMax:     tx.NewXRPAmount("10000000000"),
+				SendMax:     tx.NewXRPAmount(10000000000),
 			},
 			expectError: true,
 			errorMsg:    "Account is required",
@@ -127,7 +127,7 @@ func TestCheckCashValidation(t *testing.T) {
 			check: &CheckCash{
 				BaseTx:  *tx.NewBaseTx(tx.TypeCheckCash, "rBob"),
 				CheckID: "49647F0D748DC3FE26BDACBC57F251AADEFFF391403EC9BF87C97F67E9977FB0",
-				Amount:  &tx.Amount{Value: "10000000000"},
+				Amount:  ptrAmount(tx.NewXRPAmount(10000000000)),
 			},
 			expectError: false,
 		},
@@ -136,7 +136,7 @@ func TestCheckCashValidation(t *testing.T) {
 			check: &CheckCash{
 				BaseTx:     *tx.NewBaseTx(tx.TypeCheckCash, "rBob"),
 				CheckID:    "49647F0D748DC3FE26BDACBC57F251AADEFFF391403EC9BF87C97F67E9977FB0",
-				DeliverMin: &tx.Amount{Value: "5000000000"},
+				DeliverMin: ptrAmount(tx.NewXRPAmount(5000000000)),
 			},
 			expectError: false,
 		},
@@ -145,7 +145,7 @@ func TestCheckCashValidation(t *testing.T) {
 			check: &CheckCash{
 				BaseTx:  *tx.NewBaseTx(tx.TypeCheckCash, "rBob"),
 				CheckID: "49647F0D748DC3FE26BDACBC57F251AADEFFF391403EC9BF87C97F67E9977FB0",
-				Amount:  ptrAmount(tx.NewIssuedAmount("10", "USD", "rGateway")),
+				Amount:  ptrAmount(tx.NewIssuedAmountFromFloat64(10.0, "USD", "rGateway")),
 			},
 			expectError: false,
 		},
@@ -154,7 +154,7 @@ func TestCheckCashValidation(t *testing.T) {
 			check: &CheckCash{
 				BaseTx:     *tx.NewBaseTx(tx.TypeCheckCash, "rBob"),
 				CheckID:    "49647F0D748DC3FE26BDACBC57F251AADEFFF391403EC9BF87C97F67E9977FB0",
-				DeliverMin: ptrAmount(tx.NewIssuedAmount("5", "USD", "rGateway")),
+				DeliverMin: ptrAmount(tx.NewIssuedAmountFromFloat64(5.0, "USD", "rGateway")),
 			},
 			expectError: false,
 		},
@@ -163,7 +163,7 @@ func TestCheckCashValidation(t *testing.T) {
 			check: &CheckCash{
 				BaseTx:  *tx.NewBaseTx(tx.TypeCheckCash, "rBob"),
 				CheckID: "",
-				Amount:  &tx.Amount{Value: "10000000000"},
+				Amount:  ptrAmount(tx.NewXRPAmount(10000000000)),
 			},
 			expectError: true,
 			errorMsg:    "CheckID is required",
@@ -182,8 +182,8 @@ func TestCheckCashValidation(t *testing.T) {
 			check: &CheckCash{
 				BaseTx:     *tx.NewBaseTx(tx.TypeCheckCash, "rBob"),
 				CheckID:    "49647F0D748DC3FE26BDACBC57F251AADEFFF391403EC9BF87C97F67E9977FB0",
-				Amount:     &tx.Amount{Value: "10000000000"},
-				DeliverMin: &tx.Amount{Value: "5000000000"},
+				Amount:     ptrAmount(tx.NewXRPAmount(10000000000)),
+				DeliverMin: ptrAmount(tx.NewXRPAmount(5000000000)),
 			},
 			expectError: true,
 			errorMsg:    "cannot specify both Amount and DeliverMin",
@@ -193,7 +193,7 @@ func TestCheckCashValidation(t *testing.T) {
 			check: &CheckCash{
 				BaseTx:  tx.BaseTx{Common: tx.Common{TransactionType: "CheckCash"}},
 				CheckID: "49647F0D748DC3FE26BDACBC57F251AADEFFF391403EC9BF87C97F67E9977FB0",
-				Amount:  &tx.Amount{Value: "10000000000"},
+				Amount:  ptrAmount(tx.NewXRPAmount(10000000000)),
 			},
 			expectError: true,
 			errorMsg:    "Account is required",
@@ -292,7 +292,7 @@ func TestCheckCreateFlatten(t *testing.T) {
 			check: &CheckCreate{
 				BaseTx:      *tx.NewBaseTx(tx.TypeCheckCreate, "rAlice"),
 				Destination: "rBob",
-				SendMax:     tx.NewXRPAmount("10000000000"),
+				SendMax:     tx.NewXRPAmount(10000000000),
 			},
 			checkMap: func(t *testing.T, m map[string]any) {
 				if m["Account"] != "rAlice" {
@@ -311,7 +311,7 @@ func TestCheckCreateFlatten(t *testing.T) {
 			check: &CheckCreate{
 				BaseTx:      *tx.NewBaseTx(tx.TypeCheckCreate, "rAlice"),
 				Destination: "rBob",
-				SendMax:     tx.NewIssuedAmount("50", "USD", "rGateway"),
+				SendMax:     tx.NewIssuedAmountFromFloat64(50.0, "USD", "rGateway"),
 			},
 			checkMap: func(t *testing.T, m map[string]any) {
 				sendMax, ok := m["SendMax"].(map[string]any)
@@ -334,7 +334,7 @@ func TestCheckCreateFlatten(t *testing.T) {
 			check: &CheckCreate{
 				BaseTx:         *tx.NewBaseTx(tx.TypeCheckCreate, "rAlice"),
 				Destination:    "rBob",
-				SendMax:        tx.NewXRPAmount("10000000000"),
+				SendMax:        tx.NewXRPAmount(10000000000),
 				DestinationTag: ptrUint32(42),
 				Expiration:     ptrUint32(700000000),
 				InvoiceID:      "DEADBEEF",
@@ -376,7 +376,7 @@ func TestCheckCashFlatten(t *testing.T) {
 			check: &CheckCash{
 				BaseTx:  *tx.NewBaseTx(tx.TypeCheckCash, "rBob"),
 				CheckID: "49647F0D748DC3FE26BDACBC57F251AADEFFF391403EC9BF87C97F67E9977FB0",
-				Amount:  &tx.Amount{Value: "10000000000"},
+				Amount:  ptrAmount(tx.NewXRPAmount(10000000000)),
 			},
 			checkMap: func(t *testing.T, m map[string]any) {
 				if m["CheckID"] != "49647F0D748DC3FE26BDACBC57F251AADEFFF391403EC9BF87C97F67E9977FB0" {
@@ -395,7 +395,7 @@ func TestCheckCashFlatten(t *testing.T) {
 			check: &CheckCash{
 				BaseTx:     *tx.NewBaseTx(tx.TypeCheckCash, "rBob"),
 				CheckID:    "49647F0D748DC3FE26BDACBC57F251AADEFFF391403EC9BF87C97F67E9977FB0",
-				DeliverMin: &tx.Amount{Value: "5000000000"},
+				DeliverMin: ptrAmount(tx.NewXRPAmount(5000000000)),
 			},
 			checkMap: func(t *testing.T, m map[string]any) {
 				if m["DeliverMin"] != "5000000000" {
@@ -439,7 +439,7 @@ func TestCheckCancelFlatten(t *testing.T) {
 // TestCheckTransactionTypes tests that transaction types are correctly returned.
 func TestCheckTransactionTypes(t *testing.T) {
 	t.Run("CheckCreate type", func(t *testing.T) {
-		c := NewCheckCreate("rAlice", "rBob", tx.NewXRPAmount("1000000"))
+		c := NewCheckCreate("rAlice", "rBob", tx.NewXRPAmount(1000000))
 		if c.TxType() != tx.TypeCheckCreate {
 			t.Errorf("expected TypeCheckCreate, got %v", c.TxType())
 		}
@@ -463,15 +463,15 @@ func TestCheckTransactionTypes(t *testing.T) {
 // TestNewCheckConstructors tests the constructor functions.
 func TestNewCheckConstructors(t *testing.T) {
 	t.Run("NewCheckCreate", func(t *testing.T) {
-		c := NewCheckCreate("rAlice", "rBob", tx.NewXRPAmount("1000000"))
+		c := NewCheckCreate("rAlice", "rBob", tx.NewXRPAmount(1000000))
 		if c.Account != "rAlice" {
 			t.Errorf("expected Account=rAlice, got %v", c.Account)
 		}
 		if c.Destination != "rBob" {
 			t.Errorf("expected Destination=rBob, got %v", c.Destination)
 		}
-		if c.SendMax.Value != "1000000" {
-			t.Errorf("expected SendMax=1000000, got %v", c.SendMax.Value)
+		if c.SendMax.Value() != "1000000" {
+			t.Errorf("expected SendMax=1000000, got %v", c.SendMax.Value())
 		}
 	})
 
@@ -502,14 +502,14 @@ func TestNewCheckConstructors(t *testing.T) {
 func TestCheckCashHelperMethods(t *testing.T) {
 	t.Run("SetExactAmount", func(t *testing.T) {
 		c := NewCheckCash("rBob", "DEADBEEF")
-		amount := tx.NewXRPAmount("1000000")
+		amount := tx.NewXRPAmount(1000000)
 		c.SetExactAmount(amount)
 
 		if c.Amount == nil {
 			t.Error("Amount should not be nil")
 		}
-		if c.Amount.Value != "1000000" {
-			t.Errorf("expected Amount=1000000, got %v", c.Amount.Value)
+		if c.Amount.Value() != "1000000" {
+			t.Errorf("expected Amount=1000000, got %v", c.Amount.Value())
 		}
 		if c.DeliverMin != nil {
 			t.Error("DeliverMin should be nil")
@@ -518,14 +518,14 @@ func TestCheckCashHelperMethods(t *testing.T) {
 
 	t.Run("SetDeliverMin", func(t *testing.T) {
 		c := NewCheckCash("rBob", "DEADBEEF")
-		amount := tx.NewXRPAmount("500000")
+		amount := tx.NewXRPAmount(500000)
 		c.SetDeliverMin(amount)
 
 		if c.DeliverMin == nil {
 			t.Error("DeliverMin should not be nil")
 		}
-		if c.DeliverMin.Value != "500000" {
-			t.Errorf("expected DeliverMin=500000, got %v", c.DeliverMin.Value)
+		if c.DeliverMin.Value() != "500000" {
+			t.Errorf("expected DeliverMin=500000, got %v", c.DeliverMin.Value())
 		}
 		if c.Amount != nil {
 			t.Error("Amount should be nil")
@@ -534,8 +534,8 @@ func TestCheckCashHelperMethods(t *testing.T) {
 
 	t.Run("SetExactAmount clears DeliverMin", func(t *testing.T) {
 		c := NewCheckCash("rBob", "DEADBEEF")
-		c.SetDeliverMin(tx.NewXRPAmount("500000"))
-		c.SetExactAmount(tx.NewXRPAmount("1000000"))
+		c.SetDeliverMin(tx.NewXRPAmount(500000))
+		c.SetExactAmount(tx.NewXRPAmount(1000000))
 
 		if c.DeliverMin != nil {
 			t.Error("DeliverMin should be nil after SetExactAmount")
@@ -547,8 +547,8 @@ func TestCheckCashHelperMethods(t *testing.T) {
 
 	t.Run("SetDeliverMin clears Amount", func(t *testing.T) {
 		c := NewCheckCash("rBob", "DEADBEEF")
-		c.SetExactAmount(tx.NewXRPAmount("1000000"))
-		c.SetDeliverMin(tx.NewXRPAmount("500000"))
+		c.SetExactAmount(tx.NewXRPAmount(1000000))
+		c.SetDeliverMin(tx.NewXRPAmount(500000))
 
 		if c.Amount != nil {
 			t.Error("Amount should be nil after SetDeliverMin")

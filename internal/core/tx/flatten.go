@@ -175,10 +175,10 @@ func ReflectFlatten(tx Transaction) (map[string]any, error) {
 // Issued currency amounts are returned as a map with value/currency/issuer.
 func flattenAmount(a Amount) any {
 	if a.IsNative() {
-		return a.Value
+		return a.Value()
 	}
 	return map[string]string{
-		"value":    a.Value,
+		"value":    a.Value(),
 		"currency": a.Currency,
 		"issuer":   a.Issuer,
 	}

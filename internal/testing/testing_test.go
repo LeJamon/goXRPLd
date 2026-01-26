@@ -64,15 +64,15 @@ func TestAccountString(t *testing.T) {
 
 func TestXRPConversion(t *testing.T) {
 	// 1 XRP = 1,000,000 drops
-	assert.Equal(t, uint64(1_000_000), XRP(1))
-	assert.Equal(t, uint64(100_000_000), XRP(100))
-	assert.Equal(t, uint64(1_000_000_000_000), XRP(1_000_000))
+	assert.Equal(t, int64(1_000_000), XRP(1))
+	assert.Equal(t, int64(100_000_000), XRP(100))
+	assert.Equal(t, int64(1_000_000_000_000), XRP(1_000_000))
 }
 
 func TestDropsConversion(t *testing.T) {
 	// Drops should pass through unchanged
-	assert.Equal(t, uint64(1000), Drops(1000))
-	assert.Equal(t, uint64(0), Drops(0))
+	assert.Equal(t, int64(1000), Drops(1000))
+	assert.Equal(t, int64(0), Drops(0))
 }
 
 func TestManualClock(t *testing.T) {
@@ -159,7 +159,7 @@ func TestIssuedCurrencyHelpers(t *testing.T) {
 	usd := USD(gateway, 100.50)
 	assert.Equal(t, "USD", usd.Currency)
 	assert.Equal(t, gateway.Address, usd.Issuer)
-	assert.Equal(t, "100.5", usd.Value)
+	assert.InDelta(t, 100.5, usd.Float64(), 0.0001)
 
 	// EUR
 	eur := EUR(gateway, 50.0)
@@ -180,13 +180,13 @@ func TestIssuedCurrencyHelpers(t *testing.T) {
 func TestXRPTxAmount(t *testing.T) {
 	amount := XRPTxAmount(1_000_000)
 	assert.True(t, amount.IsNative())
-	assert.Equal(t, "1000000", amount.Value)
+	assert.Equal(t, int64(1000000), amount.Drops())
 }
 
 func TestXRPTxAmountFromXRP(t *testing.T) {
 	amount := XRPTxAmountFromXRP(100.0)
 	assert.True(t, amount.IsNative())
-	assert.Equal(t, "100000000", amount.Value)
+	assert.Equal(t, int64(100000000), amount.Drops())
 }
 
 // TestNewTestEnv tests the basic TestEnv creation

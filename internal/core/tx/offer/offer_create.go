@@ -79,10 +79,10 @@ func (o *OfferCreate) Validate() error {
 	}
 
 	// Check required fields are present
-	if o.TakerGets.Value == "" {
+	if o.TakerGets.IsZero() {
 		return errors.New("temBAD_OFFER: TakerGets is required")
 	}
-	if o.TakerPays.Value == "" {
+	if o.TakerPays.IsZero() {
 		return errors.New("temBAD_OFFER: TakerPays is required")
 	}
 
@@ -265,20 +265,25 @@ func (o *OfferCreate) Preclaim(ctx *tx.ApplyContext) tx.Result {
 	// Check global freeze on both issuers
 	// Reference: lines 165-170
 	if uPaysIssuerID != "" {
-		if isGlobalFrozen(ctx.View, uPaysIssuerID) {
+		if tx.IsGlobalFrozen(ctx.View, uPaysIssuerID) {
 			return tx.TecFROZEN
 		}
 	}
 	if uGetsIssuerID != "" {
-		if isGlobalFrozen(ctx.View, uGetsIssuerID) {
+		if tx.IsGlobalFrozen(ctx.View, uGetsIssuerID) {
 			return tx.TecFROZEN
 		}
 	}
 
+	fmt.Println("TakerGet: ", saTakerGets.Value())
 	// Check account has funds for the offer
 	// Reference: lines 172-178
-	funds := accountFunds(ctx.View, ctx.AccountID, saTakerGets, true)
-	if isAmountZeroOrNegative(funds) {
+	funds := tx.AccountFunds(ctx.View, ctx.AccountID, saTakerGets, true)
+	fmt.Println("PASSED FUNDS: ", funds.Value())
+	fmt.Println()
+	//TODO seems weird, to ensure proper behaviour against rippled
+	diff := sle.SubtractAmount(saTakerGets, funds)
+	if diff.Signum() > 0 {
 		return tx.TecUNFUNDED_OFFER
 	}
 
@@ -327,6 +332,7 @@ func (o *OfferCreate) Preclaim(ctx *tx.ApplyContext) tx.Result {
 // This is the main entry point called by the engine.
 // Reference: rippled CreateOffer.cpp doApply() lines 932-949
 func (o *OfferCreate) ApplyCreate(ctx *tx.ApplyContext) tx.Result {
+	fmt.Println("Applying create")
 	return o.applyGuts(ctx)
 }
 
@@ -348,7 +354,7 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 	// Calculate the original rate (quality) for the offer
 	// Reference: line 601
 	uRate := sle.GetRate(saTakerGets, saTakerPays)
-
+	fmt.Println("rate: ", uRate)
 	result := tx.TesSUCCESS
 
 	// Process cancellation request if specified
@@ -399,6 +405,7 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 				ctx.TxHash,
 				ctx.Config.LedgerSequence,
 			)
+			fmt.Println("CrossResult: ", crossResult)
 
 			// Convert result amounts back
 			placeOffer.in = payment.FromEitherAmount(crossResult.TakerPaid) // What we paid out
@@ -431,7 +438,7 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 			// The engine writes ctx.Account after Apply(), so we must update it here
 			// Reference: The taker paid XRP for the crossing
 			if placeOffer.in.IsNative() {
-				paidDrops, _ := sle.ParseDropsString(placeOffer.in.Value)
+				paidDrops := uint64(placeOffer.in.Drops())
 				if ctx.Account.Balance >= paidDrops {
 					ctx.Account.Balance -= paidDrops
 				}
@@ -505,7 +512,10 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 	// Check reserve for new offer
 	// Reference: lines 815-834
 	reserve := ctx.AccountReserve(ctx.Account.OwnerCount + 1)
+	fmt.Println("RESERVE: ", reserve)
+	parsedFee := parseFee(ctx)
 	priorBalance := ctx.Account.Balance + parseFee(ctx)
+	fmt.Println("FEE: ", parsedFee)
 	if priorBalance < reserve {
 		if !crossed {
 			return tx.TecINSUF_RESERVE_OFFER
@@ -626,181 +636,41 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 // isLegalNetAmount checks if an amount is a valid net amount.
 // Reference: rippled protocol/STAmount.h isLegalNet()
 func isLegalNetAmount(amt tx.Amount) bool {
-	if amt.Value == "" {
-		return false
-	}
-	// Check for obviously invalid values
-	if len(amt.Value) == 0 {
-		return false
-	}
-	// Additional validation could include:
-	// - Checking precision limits
-	// - Checking range limits
-	// For now, basic validation
-	return true
+	// A legal net amount is non-zero
+	return !amt.IsZero()
 }
 
 // isAmountZeroOrNegative checks if an amount is zero or negative.
 func isAmountZeroOrNegative(amt tx.Amount) bool {
-	if amt.Value == "" || amt.Value == "0" {
-		return true
-	}
-	if len(amt.Value) > 0 && amt.Value[0] == '-' {
-		return true
-	}
-	return false
+	return amt.IsZero() || amt.IsNegative()
 }
 
 // isAmountEmpty checks if an amount is empty/unset.
 func isAmountEmpty(amt tx.Amount) bool {
-	return amt.Value == ""
+	return amt.IsZero()
 }
 
 // subtractAmounts subtracts b from a.
 // a - b = result
 func subtractAmounts(a, b tx.Amount) tx.Amount {
-	if a.IsNative() {
-		// XRP subtraction
-		aVal, _ := sle.ParseDropsString(a.Value)
-		bVal, _ := sle.ParseDropsString(b.Value)
-		result := int64(aVal) - int64(bVal)
-		if result < 0 {
-			result = 0
-		}
-		return tx.Amount{Value: sle.FormatDrops(uint64(result))}
-	}
-
-	// IOU subtraction
-	aIOU := a.ToIOU()
-	bIOU := b.ToIOU()
-	resultIOU := aIOU.Sub(bIOU)
-
-	return tx.Amount{
-		Value:    sle.FormatIOUValue(resultIOU.Value),
-		Currency: a.Currency,
-		Issuer:   a.Issuer,
-	}
-}
-
-// isGlobalFrozen checks if an issuer has globally frozen assets.
-// Reference: rippled ledger/View.h isGlobalFrozen()
-func isGlobalFrozen(view tx.LedgerView, issuerAddress string) bool {
-	if issuerAddress == "" {
-		return false
-	}
-
-	issuerID, err := sle.DecodeAccountID(issuerAddress)
+	result, err := a.Sub(b)
 	if err != nil {
-		return false
-	}
-
-	accountKey := keylet.Account(issuerID)
-	data, err := view.Read(accountKey)
-	if err != nil || data == nil {
-		return false
-	}
-
-	account, err := sle.ParseAccountRoot(data)
-	if err != nil {
-		return false
-	}
-
-	return (account.Flags & sle.LsfGlobalFreeze) != 0
-}
-
-// accountFunds returns the amount of funds an account has available.
-// If fhZeroIfFrozen is true, returns zero if the asset is frozen.
-// Reference: rippled ledger/View.h accountFunds()
-func accountFunds(view tx.LedgerView, accountID [20]byte, amount tx.Amount, fhZeroIfFrozen bool) tx.Amount {
-	if amount.IsNative() {
-		// XRP balance
-		accountKey := keylet.Account(accountID)
-		data, err := view.Read(accountKey)
-		if err != nil || data == nil {
-			return tx.Amount{Value: "0"}
+		// Type mismatch - return zero amount of a's type
+		if a.IsNative() {
+			return tx.NewXRPAmount(0)
 		}
+		return tx.NewIssuedAmount(0, -100, a.Currency, a.Issuer)
+	}
 
-		account, err := sle.ParseAccountRoot(data)
-		if err != nil {
-			return tx.Amount{Value: "0"}
+	// Clamp negative results to zero
+	if result.IsNegative() {
+		if result.IsNative() {
+			return tx.NewXRPAmount(0)
 		}
-
-		// Return balance minus reserve
-		return tx.Amount{Value: sle.FormatDrops(account.Balance)}
+		return tx.NewIssuedAmount(0, -100, a.Currency, a.Issuer)
 	}
 
-	// IOU balance
-	issuerID, err := sle.DecodeAccountID(amount.Issuer)
-	if err != nil {
-		return tx.Amount{Value: "0", Currency: amount.Currency, Issuer: amount.Issuer}
-	}
-
-	// If account is issuer, they have unlimited funds
-	if accountID == issuerID {
-		return tx.Amount{Value: "999999999999999", Currency: amount.Currency, Issuer: amount.Issuer}
-	}
-
-	// Check for frozen if requested
-	if fhZeroIfFrozen {
-		if isGlobalFrozen(view, amount.Issuer) {
-			return tx.Amount{Value: "0", Currency: amount.Currency, Issuer: amount.Issuer}
-		}
-		// Check individual trustline freeze
-		if isTrustlineFrozen(view, accountID, issuerID, amount.Currency) {
-			return tx.Amount{Value: "0", Currency: amount.Currency, Issuer: amount.Issuer}
-		}
-	}
-
-	// Read trustline balance
-	trustLineKey := keylet.Line(accountID, issuerID, amount.Currency)
-	trustLineData, err := view.Read(trustLineKey)
-	if err != nil || trustLineData == nil {
-		return tx.Amount{Value: "0", Currency: amount.Currency, Issuer: amount.Issuer}
-	}
-
-	rs, err := sle.ParseRippleState(trustLineData)
-	if err != nil {
-		return tx.Amount{Value: "0", Currency: amount.Currency, Issuer: amount.Issuer}
-	}
-
-	// Determine balance based on canonical ordering
-	accountIsLow := sle.CompareAccountIDsForLine(accountID, issuerID) < 0
-	balance := rs.Balance
-	if !accountIsLow {
-		balance = balance.Negate()
-	}
-
-	// Only return positive balance as available funds
-	if balance.Value == nil || balance.Value.Sign() <= 0 {
-		return tx.Amount{Value: "0", Currency: amount.Currency, Issuer: amount.Issuer}
-	}
-
-	return tx.Amount{
-		Value:    sle.FormatIOUValue(balance.Value),
-		Currency: amount.Currency,
-		Issuer:   amount.Issuer,
-	}
-}
-
-// isTrustlineFrozen checks if a specific trustline is frozen.
-func isTrustlineFrozen(view tx.LedgerView, accountID, issuerID [20]byte, currency string) bool {
-	trustLineKey := keylet.Line(accountID, issuerID, currency)
-	trustLineData, err := view.Read(trustLineKey)
-	if err != nil || trustLineData == nil {
-		return false
-	}
-
-	rs, err := sle.ParseRippleState(trustLineData)
-	if err != nil {
-		return false
-	}
-
-	// Check freeze flags
-	accountIsLow := sle.CompareAccountIDsForLine(accountID, issuerID) < 0
-	if accountIsLow {
-		return (rs.Flags & sle.LsfLowFreeze) != 0
-	}
-	return (rs.Flags & sle.LsfHighFreeze) != 0
+	return result
 }
 
 // hasExpired checks if an offer has expired.
@@ -974,21 +844,19 @@ func roundToTickSize(quality uint64, tickSize uint8) uint64 {
 // multiplyByQuality multiplies an amount by a quality rate.
 func multiplyByQuality(amount tx.Amount, quality uint64, currency, issuer string) tx.Amount {
 	// TODO: Implement proper multiplication
-	return tx.Amount{
-		Value:    amount.Value,
-		Currency: currency,
-		Issuer:   issuer,
+	if amount.IsNative() {
+		return tx.NewXRPAmount(amount.Drops())
 	}
+	return sle.NewIssuedAmountFromDecimalString(amount.Value(), currency, issuer)
 }
 
 // divideByQuality divides an amount by a quality rate.
 func divideByQuality(amount tx.Amount, quality uint64, currency, issuer string) tx.Amount {
 	// TODO: Implement proper division
-	return tx.Amount{
-		Value:    amount.Value,
-		Currency: currency,
-		Issuer:   issuer,
+	if amount.IsNative() {
+		return tx.NewXRPAmount(amount.Drops())
 	}
+	return sle.NewIssuedAmountFromDecimalString(amount.Value(), currency, issuer)
 }
 
 // peekOffer reads an offer from the ledger without modifying it.

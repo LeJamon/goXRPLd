@@ -139,7 +139,7 @@ func (e *TestEnv) Fund(accounts ...*Account) {
 	e.t.Helper()
 
 	for _, acc := range accounts {
-		e.FundAmount(acc, XRP(1000))
+		e.FundAmount(acc, uint64(XRP(1000)))
 	}
 }
 
@@ -158,7 +158,7 @@ func (e *TestEnv) FundAmount(acc *Account, amount uint64) {
 
 	// Create payment transaction
 	seq := e.Seq(master)
-	payment := payment.NewPayment(master.Address, acc.Address, tx.NewXRPAmount(formatUint64(amount)))
+	payment := payment.NewPayment(master.Address, acc.Address, tx.NewXRPAmount(int64(amount)))
 	payment.Fee = formatUint64(e.baseFee)
 	payment.Sequence = &seq
 

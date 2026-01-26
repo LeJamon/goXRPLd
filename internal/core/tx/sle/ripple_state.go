@@ -170,6 +170,27 @@ func (a IOUAmount) Compare(b IOUAmount) int {
 	return a.Value.Cmp(b.Value)
 }
 
+// Float64 returns the value as a float64
+func (a IOUAmount) Float64() float64 {
+	if a.Value == nil {
+		return 0
+	}
+	f, _ := a.Value.Float64()
+	return f
+}
+
+// String returns the value as a decimal string with full precision.
+// This avoids precision loss that occurs with Float64().
+func (a IOUAmount) String() string {
+	return FormatIOUValue(a.Value)
+}
+
+// ToAmount converts IOUAmount to the new Amount type without precision loss.
+// This uses the string representation to preserve all significant digits.
+func (a IOUAmount) ToAmount() Amount {
+	return NewIssuedAmountFromDecimalString(a.String(), a.Currency, a.Issuer)
+}
+
 // FormatIOUValue formats an IOU value for JSON output, matching rippled's format
 // XRPL IOU amounts can have up to 16 significant digits
 func FormatIOUValue(value *big.Float) string {

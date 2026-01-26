@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
-	"strconv"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	tx "github.com/LeJamon/goXRPLd/internal/core/tx"
@@ -566,7 +565,7 @@ func (s *BookStep) isOfferFunded(sb *PaymentSandbox, offer *sle.LedgerOffer) boo
 	if offer == nil {
 		return false
 	}
-	if offer.TakerGets.Value == "" || offer.TakerGets.Value == "0" {
+	if offer.TakerGets.IsZero() {
 		return false
 	}
 	// Check if actual funded amount is effectively > 0
@@ -690,19 +689,17 @@ func (s *BookStep) getIOUBalance(sb *PaymentSandbox, account, issuer [20]byte, c
 // offerTakerGets returns what the taker gets from this offer
 func (s *BookStep) offerTakerGets(offer *sle.LedgerOffer) EitherAmount {
 	if s.book.Out.IsXRP() {
-		drops, _ := strconv.ParseInt(offer.TakerGets.Value, 10, 64)
-		return NewXRPEitherAmount(drops)
+		return NewXRPEitherAmount(offer.TakerGets.Drops())
 	}
-	return NewIOUEitherAmount(offer.TakerGets.ToIOU())
+	return NewIOUEitherAmount(offer.TakerGets.ToIOUAmountLegacy())
 }
 
 // offerTakerPays returns what the taker pays to this offer
 func (s *BookStep) offerTakerPays(offer *sle.LedgerOffer) EitherAmount {
 	if s.book.In.IsXRP() {
-		drops, _ := strconv.ParseInt(offer.TakerPays.Value, 10, 64)
-		return NewXRPEitherAmount(drops)
+		return NewXRPEitherAmount(offer.TakerPays.Drops())
 	}
-	return NewIOUEitherAmount(offer.TakerPays.ToIOU())
+	return NewIOUEitherAmount(offer.TakerPays.ToIOUAmountLegacy())
 }
 
 // offerQuality returns the quality of an offer
@@ -1157,13 +1154,9 @@ func (s *BookStep) subtractFromAmount(original, consumed EitherAmount) EitherAmo
 // eitherAmountToTxAmount converts EitherAmount to tx.Amount
 func (s *BookStep) eitherAmountToTxAmount(ea EitherAmount, issue Issue) tx.Amount {
 	if ea.IsNative {
-		return tx.Amount{Value: strconv.FormatInt(ea.XRP, 10)}
+		return tx.NewXRPAmount(ea.XRP)
 	}
-	return tx.Amount{
-		Value:    sle.FormatIOUValue(ea.IOU.Value),
-		Currency: issue.Currency,
-		Issuer:   sle.EncodeAccountIDSafe(issue.Issuer),
-	}
+	return sle.NewIssuedAmountFromDecimalString(ea.IOU.String(), issue.Currency, sle.EncodeAccountIDSafe(issue.Issuer))
 }
 
 // getTipQuality gets the best quality available in the order book

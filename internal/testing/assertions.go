@@ -21,7 +21,7 @@ func RequireBalance(t *testing.T, env *TestEnv, acc *Account, expected uint64) {
 // The expected amount is in whole XRP units (e.g., 100 XRP, not drops).
 func RequireBalanceXRP(t *testing.T, env *TestEnv, acc *Account, expectedXRP int64) {
 	t.Helper()
-	expected := XRP(expectedXRP)
+	expected := uint64(XRP(expectedXRP))
 	RequireBalance(t, env, acc, expected)
 }
 
@@ -328,10 +328,10 @@ func RequireFlagNotSet(t *testing.T, env *TestEnv, acc *Account, flag uint32) {
 // XRPMinusFee calculates expected XRP balance after paying fees.
 // amount is in drops, fee defaults to env's base fee.
 func XRPMinusFee(env *TestEnv, amountXRP int64) uint64 {
-	return XRP(amountXRP) - env.BaseFee()
+	return uint64(XRP(amountXRP)) - env.BaseFee()
 }
 
 // XRPMinusFees calculates expected XRP balance after paying multiple fees.
 func XRPMinusFees(env *TestEnv, amountXRP int64, numFees int) uint64 {
-	return XRP(amountXRP) - uint64(numFees)*env.BaseFee()
+	return uint64(XRP(amountXRP)) - uint64(numFees)*env.BaseFee()
 }

@@ -23,11 +23,11 @@ import (
 )
 
 var (
-	replayRangeFrom     uint32
-	replayRangeTo       uint32
-	replayRangeDumpDir  string
-	replayRangeVerbose  bool
-	replayRangeDecoded  bool
+	replayRangeFrom    uint32
+	replayRangeTo      uint32
+	replayRangeDumpDir string
+	replayRangeVerbose bool
+	replayRangeDecoded bool
 )
 
 // replayRangeCmd represents the replay-range command
@@ -193,6 +193,9 @@ func runReplayRange(cmd *cobra.Command, args []string) {
 		// Update state for next iteration
 		currentStateMap = newStateMap
 		previousSnapshot = result.PostSnapshot
+
+		// Update fees from the new state (in case a SetFee transaction was processed)
+		fees = ExtractFeesFromSHAMap(currentStateMap)
 	}
 
 	stats.TotalDuration = time.Since(startTime)
@@ -208,21 +211,21 @@ func runReplayRange(cmd *cobra.Command, args []string) {
 
 // BlockResult holds the result of processing a single block
 type BlockResult struct {
-	Success         bool
-	TxCount         int
-	LedgerHash      [32]byte
-	AccountHash     [32]byte
-	TransactionHash [32]byte
-	TotalCoins      uint64
+	Success                 bool
+	TxCount                 int
+	LedgerHash              [32]byte
+	AccountHash             [32]byte
+	TransactionHash         [32]byte
+	TotalCoins              uint64
 	ExpectedLedgerHash      [32]byte
 	ExpectedAccountHash     [32]byte
 	ExpectedTransactionHash [32]byte
 	ExpectedTotalCoins      uint64
-	PostSnapshot    *statecompare.LedgerSnapshot
-	PostState       map[string][]byte
-	PreState        map[string][]byte
-	TxResults       []TxApplyInfo
-	Errors          []string
+	PostSnapshot            *statecompare.LedgerSnapshot
+	PostState               map[string][]byte
+	PreState                map[string][]byte
+	TxResults               []TxApplyInfo
+	Errors                  []string
 }
 
 func loadInitialState(ctx context.Context, client *statecompare.Client, ledgerIndex uint32) (*shamap.SHAMap, *statecompare.LedgerSnapshot, XRPAmount.Fees, error) {
@@ -252,12 +255,12 @@ func loadInitialState(ctx context.Context, client *statecompare.Client, ledgerIn
 	}
 
 	// Extract fees from state (use defaults if not found)
-	fees := extractFeesFromState(entries)
+	fees := ExtractFeesFromState(entries)
 
 	return stateMap, snapshot, fees, nil
 }
 
-func extractFeesFromState(entries []statecompare.StateEntry) XRPAmount.Fees {
+func ExtractFeesFromState(entries []statecompare.StateEntry) XRPAmount.Fees {
 	// FeeSettings keylet index
 	feeSettingsIndex := [32]byte{}
 	feeSettingsIndexBytes, _ := hex.DecodeString("4BC50C9B0D8515D3EAAE1E74B29A95804346C491EE1A95BF25E4AAB854A6A651")
@@ -297,17 +300,82 @@ func extractFeesFromState(entries []statecompare.StateEntry) XRPAmount.Fees {
 	}
 }
 
-func parseHexOrDecimal(s string) (uint64, error) {
-	// Try hex first (starts with 0x or is all hex chars)
-	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
-		var val uint64
-		_, err := fmt.Sscanf(s, "0x%x", &val)
-		return val, err
+// extractFeesFromSHAMap extracts fee settings from a state SHAMap.
+// Returns default fees if FeeSettings not found.
+func ExtractFeesFromSHAMap(stateMap *shamap.SHAMap) XRPAmount.Fees {
+	// FeeSettings keylet index (keylet::fees())
+	feeSettingsIndex := [32]byte{}
+	feeSettingsIndexBytes, _ := hex.DecodeString("4BC50C9B0D8515D3EAAE1E74B29A95804346C491EE1A95BF25E4AAB854A6A651")
+	copy(feeSettingsIndex[:], feeSettingsIndexBytes)
+
+	// Try to get the FeeSettings entry from the state map
+	item, found, err := stateMap.Get(feeSettingsIndex)
+	if err != nil || !found || item == nil {
+		// Return defaults if not found
+		return XRPAmount.Fees{
+			Base:      10,
+			Reserve:   10_000_000,
+			Increment: 2_000_000,
+		}
 	}
-	// Try decimal
-	var val uint64
-	_, err := fmt.Sscanf(s, "%d", &val)
-	return val, err
+
+	// Get the data from the item
+	data := item.Data()
+
+	// Decode the entry
+	decoded, err := binarycodec.Decode(hex.EncodeToString(data))
+	if err != nil {
+		return XRPAmount.Fees{
+			Base:      10,
+			Reserve:   10_000_000,
+			Increment: 2_000_000,
+		}
+	}
+
+	fees := XRPAmount.Fees{}
+
+	// Modern format (XRPFees amendment)
+	if baseFeeDrops, ok := decoded["BaseFeeDrops"].(string); ok {
+		if val, err := parseHexOrDecimal(baseFeeDrops); err == nil {
+			fees.Base = XRPAmount.XRPAmount(val)
+		}
+	}
+	if reserveBaseDrops, ok := decoded["ReserveBaseDrops"].(string); ok {
+		if val, err := parseHexOrDecimal(reserveBaseDrops); err == nil {
+			fees.Reserve = XRPAmount.XRPAmount(val)
+		}
+	}
+	if reserveIncrementDrops, ok := decoded["ReserveIncrementDrops"].(string); ok {
+		if val, err := parseHexOrDecimal(reserveIncrementDrops); err == nil {
+			fees.Increment = XRPAmount.XRPAmount(val)
+		}
+	}
+
+	// Legacy format (pre-XRPFees)
+	if baseFee, ok := decoded["BaseFee"].(string); ok && fees.Base == 0 {
+		if val, err := parseHexOrDecimal(baseFee); err == nil {
+			fees.Base = XRPAmount.XRPAmount(val)
+		}
+	}
+	if reserveBase, ok := decoded["ReserveBase"].(uint32); ok && fees.Reserve == 0 {
+		fees.Reserve = XRPAmount.XRPAmount(reserveBase)
+	}
+	if reserveInc, ok := decoded["ReserveIncrement"].(uint32); ok && fees.Increment == 0 {
+		fees.Increment = XRPAmount.XRPAmount(reserveInc)
+	}
+
+	// Use defaults for any unset values
+	if fees.Base == 0 {
+		fees.Base = 10
+	}
+	if fees.Reserve == 0 {
+		fees.Reserve = 10_000_000
+	}
+	if fees.Increment == 0 {
+		fees.Increment = 2_000_000
+	}
+
+	return fees
 }
 
 func processBlock(

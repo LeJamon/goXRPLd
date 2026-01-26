@@ -123,12 +123,12 @@ func (a *AMMCreate) Validate() error {
 	}
 
 	// Amount is required and must be positive
-	if a.Amount.Value == "" {
+	if a.Amount.IsZero() {
 		return errors.New("temMALFORMED: Amount is required")
 	}
 
 	// Amount2 is required and must be positive
-	if a.Amount2.Value == "" {
+	if a.Amount2.IsZero() {
 		return errors.New("temMALFORMED: Amount2 is required")
 	}
 
@@ -155,21 +155,12 @@ func (a *AMMCreate) Validate() error {
 
 // validateAMMAmount validates an AMM amount
 func validateAMMAmount(amt tx.Amount) error {
-	if amt.Value == "" {
-		return errors.New("amount is required")
+	if amt.IsZero() {
+		return errors.New("amount must be positive")
 	}
-	// For XRP (no currency), value must be positive drops
-	if amt.Currency == "" {
-		// XRP amount - should be positive integer drops
-		if amt.Value == "0" {
-			return errors.New("amount must be positive")
-		}
-		if len(amt.Value) > 0 && amt.Value[0] == '-' {
-			return errors.New("amount must be positive")
-		}
+	if amt.IsNegative() {
+		return errors.New("amount must be positive")
 	}
-	// For IOU, value must be positive
-	// Note: Further IOU validation would check issuer existence, etc.
 	return nil
 }
 
@@ -213,8 +204,8 @@ func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	// Parse amounts
-	amount1 := parseAmount(a.Amount.Value)
-	amount2 := parseAmount(a.Amount2.Value)
+	amount1 := parseAmountFromTx(&a.Amount)
+	amount2 := parseAmountFromTx(&a.Amount2)
 
 	// Check creator has sufficient balance
 	isXRP1 := a.Amount.Currency == "" || a.Amount.Currency == "XRP"
@@ -515,13 +506,13 @@ func (a *AMMDeposit) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Parse amounts
 	var amount1, amount2, lpTokensRequested uint64
 	if a.Amount != nil {
-		amount1 = parseAmount(a.Amount.Value)
+		amount1 = parseAmountFromTx(a.Amount)
 	}
 	if a.Amount2 != nil {
-		amount2 = parseAmount(a.Amount2.Value)
+		amount2 = parseAmountFromTx(a.Amount2)
 	}
 	if a.LPTokenOut != nil {
-		lpTokensRequested = parseAmount(a.LPTokenOut.Value)
+		lpTokensRequested = parseAmountFromTx(a.LPTokenOut)
 	}
 
 	// Get current AMM balances (simplified - using stored balance)
@@ -581,7 +572,7 @@ func (a *AMMDeposit) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 		// Check effective price
 		if a.EPrice != nil {
-			ePrice := parseAmount(a.EPrice.Value)
+			ePrice := parseAmountFromTx(a.EPrice)
 			if ePrice > 0 && amount1/lpTokensToIssue > ePrice {
 				return tx.TecAMM_FAILED
 			}
@@ -873,13 +864,13 @@ func (a *AMMWithdraw) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Parse amounts
 	var amount1, amount2, lpTokensRequested uint64
 	if a.Amount != nil {
-		amount1 = parseAmount(a.Amount.Value)
+		amount1 = parseAmountFromTx(a.Amount)
 	}
 	if a.Amount2 != nil {
-		amount2 = parseAmount(a.Amount2.Value)
+		amount2 = parseAmountFromTx(a.Amount2)
 	}
 	if a.LPTokenIn != nil {
-		lpTokensRequested = parseAmount(a.LPTokenIn.Value)
+		lpTokensRequested = parseAmountFromTx(a.LPTokenIn)
 	}
 
 	// Get current AMM balances
@@ -1008,7 +999,7 @@ func (a *AMMWithdraw) Apply(ctx *tx.ApplyContext) tx.Result {
 		if amount1 == 0 || a.EPrice == nil {
 			return tx.TemMALFORMED
 		}
-		ePrice := parseAmount(a.EPrice.Value)
+		ePrice := parseAmountFromTx(a.EPrice)
 		if ePrice == 0 {
 			return tx.TemMALFORMED
 		}
@@ -1466,13 +1457,13 @@ func (a *AMMBid) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Parse bid amounts
 	var bidMin, bidMax uint64
 	if a.BidMin != nil {
-		bidMin = parseAmount(a.BidMin.Value)
+		bidMin = parseAmountFromTx(a.BidMin)
 		if bidMin > lpTokens || bidMin >= lptAMMBalance {
 			return tx.TecAMM_INVALID_TOKENS
 		}
 	}
 	if a.BidMax != nil {
-		bidMax = parseAmount(a.BidMax.Value)
+		bidMax = parseAmountFromTx(a.BidMax)
 		if bidMax > lpTokens || bidMax >= lptAMMBalance {
 			return tx.TecAMM_INVALID_TOKENS
 		}
@@ -1904,7 +1895,7 @@ func (a *AMMClawback) Apply(ctx *tx.ApplyContext) tx.Result {
 		withdrawAmount2 = uint64(float64(assetBalance2) * frac)
 	} else {
 		// Amount specified - calculate proportional withdrawal based on specified amount
-		clawAmount := parseAmount(a.Amount.Value)
+		clawAmount := parseAmountFromTx(a.Amount)
 
 		// Calculate fraction based on the clawback amount relative to asset1 balance
 		if assetBalance1 == 0 {

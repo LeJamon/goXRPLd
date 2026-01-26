@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 
@@ -375,6 +376,7 @@ func (e *Engine) Apply(tx Transaction) ApplyResult {
 			Message: result.Message(),
 		}
 	}
+	fmt.Println("PASSED PRECLAIM")
 
 	// Step 3: Calculate and apply fee
 	fee := e.calculateFee(tx)
@@ -588,42 +590,42 @@ func parseValidationError(err error) Result {
 	// Check for known TER code prefixes
 	// Common tem (malformed) codes
 	terCodes := map[string]Result{
-		"temMALFORMED":           TemMALFORMED,
-		"temBAD_AMOUNT":          TemBAD_AMOUNT,
-		"temBAD_CURRENCY":        TemBAD_CURRENCY,
-		"temBAD_EXPIRATION":      TemBAD_EXPIRATION,
-		"temBAD_FEE":             TemBAD_FEE,
-		"temBAD_ISSUER":          TemBAD_ISSUER,
-		"temBAD_LIMIT":           TemBAD_LIMIT,
-		"temBAD_OFFER":           TemBAD_OFFER,
-		"temBAD_PATH":            TemBAD_PATH,
-		"temBAD_PATH_LOOP":       TemBAD_PATH_LOOP,
-		"temBAD_REGKEY":          TemBAD_REGKEY,
-		"temBAD_SEQUENCE":        TemBAD_SEQUENCE,
-		"temBAD_SIGNATURE":       TemBAD_SIGNATURE,
-		"temBAD_SRC_ACCOUNT":     TemBAD_SRC_ACCOUNT,
-		"temBAD_TRANSFER_RATE":   TemBAD_TRANSFER_RATE,
-		"temDST_IS_SRC":          TemDST_IS_SRC,
-		"temDST_NEEDED":          TemDST_NEEDED,
-		"temINVALID":             TemINVALID,
-		"temINVALID_FLAG":        TemINVALID_FLAG,
-		"temREDUNDANT":           TemREDUNDANT,
-		"temRIPPLE_EMPTY":        TemRIPPLE_EMPTY,
-		"temDISABLED":            TemDISABLED,
-		"temBAD_SIGNER":          TemBAD_SIGNER,
-		"temBAD_QUORUM":          TemBAD_QUORUM,
-		"temBAD_WEIGHT":          TemBAD_WEIGHT,
-		"temBAD_TICK_SIZE":       TemBAD_TICK_SIZE,
-		"temINVALID_ACCOUNT_ID":  TemINVALID_ACCOUNT_ID,
-		"temUNCERTAIN":           TemUNCERTAIN,
-		"temUNKNOWN":             TemUNKNOWN,
-		"temSEQ_AND_TICKET":      TemSEQ_AND_TICKET,
-		"temBAD_SEND_XRP_MAX":    TemBAD_SEND_XRP_MAX,
-		"temBAD_SEND_XRP_PARTIAL": TemBAD_SEND_XRP_PARTIAL,
-		"temBAD_SEND_XRP_PATHS":  TemBAD_SEND_XRP_PATHS,
-		"temBAD_SEND_XRP_LIMIT":  TemBAD_SEND_XRP_LIMIT,
+		"temMALFORMED":              TemMALFORMED,
+		"temBAD_AMOUNT":             TemBAD_AMOUNT,
+		"temBAD_CURRENCY":           TemBAD_CURRENCY,
+		"temBAD_EXPIRATION":         TemBAD_EXPIRATION,
+		"temBAD_FEE":                TemBAD_FEE,
+		"temBAD_ISSUER":             TemBAD_ISSUER,
+		"temBAD_LIMIT":              TemBAD_LIMIT,
+		"temBAD_OFFER":              TemBAD_OFFER,
+		"temBAD_PATH":               TemBAD_PATH,
+		"temBAD_PATH_LOOP":          TemBAD_PATH_LOOP,
+		"temBAD_REGKEY":             TemBAD_REGKEY,
+		"temBAD_SEQUENCE":           TemBAD_SEQUENCE,
+		"temBAD_SIGNATURE":          TemBAD_SIGNATURE,
+		"temBAD_SRC_ACCOUNT":        TemBAD_SRC_ACCOUNT,
+		"temBAD_TRANSFER_RATE":      TemBAD_TRANSFER_RATE,
+		"temDST_IS_SRC":             TemDST_IS_SRC,
+		"temDST_NEEDED":             TemDST_NEEDED,
+		"temINVALID":                TemINVALID,
+		"temINVALID_FLAG":           TemINVALID_FLAG,
+		"temREDUNDANT":              TemREDUNDANT,
+		"temRIPPLE_EMPTY":           TemRIPPLE_EMPTY,
+		"temDISABLED":               TemDISABLED,
+		"temBAD_SIGNER":             TemBAD_SIGNER,
+		"temBAD_QUORUM":             TemBAD_QUORUM,
+		"temBAD_WEIGHT":             TemBAD_WEIGHT,
+		"temBAD_TICK_SIZE":          TemBAD_TICK_SIZE,
+		"temINVALID_ACCOUNT_ID":     TemINVALID_ACCOUNT_ID,
+		"temUNCERTAIN":              TemUNCERTAIN,
+		"temUNKNOWN":                TemUNKNOWN,
+		"temSEQ_AND_TICKET":         TemSEQ_AND_TICKET,
+		"temBAD_SEND_XRP_MAX":       TemBAD_SEND_XRP_MAX,
+		"temBAD_SEND_XRP_PARTIAL":   TemBAD_SEND_XRP_PARTIAL,
+		"temBAD_SEND_XRP_PATHS":     TemBAD_SEND_XRP_PATHS,
+		"temBAD_SEND_XRP_LIMIT":     TemBAD_SEND_XRP_LIMIT,
 		"temBAD_SEND_XRP_NO_DIRECT": TemBAD_SEND_XRP_NO_DIRECT,
-		"temCAN_NOT_PREAUTH_SELF": TemCAN_NOT_PREAUTH_SELF,
+		"temCAN_NOT_PREAUTH_SELF":   TemCAN_NOT_PREAUTH_SELF,
 	}
 
 	// Check if the message starts with any known TER code

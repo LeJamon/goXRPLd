@@ -6,19 +6,32 @@ import (
 	"math/big"
 )
 
-// ToIOU converts an Amount to an IOUAmount.
+// ToIOUAmountLegacy converts an Amount to the legacy IOUAmount type (big.Float based).
 // For native XRP amounts, this is not meaningful but returns a zero IOUAmount.
-func (a Amount) ToIOU() IOUAmount {
+func (a Amount) ToIOUAmountLegacy() IOUAmount {
 	if a.IsNative() {
-		drops, _ := ParseDropsString(a.Value)
 		return IOUAmount{
-			Value: new(big.Float).SetUint64(drops),
+			Value: new(big.Float).SetPrec(128).SetInt64(a.Drops()),
 		}
 	}
-	v, _, _ := big.ParseFloat(a.Value, 10, 128, big.ToNearestEven)
-	if v == nil {
-		v = new(big.Float)
+	// Convert mantissa/exponent to big.Float WITHOUT going through float64
+	// value = mantissa × 10^exponent
+	iou := a.iou
+	mantissa := iou.Mantissa()
+	exponent := iou.Exponent()
+
+	// Create big.Float from mantissa with high precision
+	v := new(big.Float).SetPrec(128).SetInt64(mantissa)
+
+	// Apply exponent using precise integer powers of 10
+	if exponent > 0 {
+		multiplier := new(big.Float).SetPrec(128).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exponent)), nil))
+		v.Mul(v, multiplier)
+	} else if exponent < 0 {
+		divisor := new(big.Float).SetPrec(128).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-exponent)), nil))
+		v.Quo(v, divisor)
 	}
+
 	return IOUAmount{
 		Value:    v,
 		Currency: a.Currency,
@@ -47,23 +60,16 @@ func FormatDrops(drops uint64) string {
 // Both amounts must be the same type (both XRP or same IOU currency).
 func SubtractAmount(a, b Amount) Amount {
 	if a.IsNative() {
-		aDrops, _ := ParseDropsString(a.Value)
-		bDrops, _ := ParseDropsString(b.Value)
+		aDrops := a.Drops()
+		bDrops := b.Drops()
 		if aDrops >= bDrops {
-			return NewXRPAmount(FormatDrops(aDrops - bDrops))
+			return NewXRPAmountFromInt(aDrops - bDrops)
 		}
-		return NewXRPAmount("0")
+		return NewXRPAmountFromInt(0)
 	}
-	aVal, _, _ := big.ParseFloat(a.Value, 10, 128, big.ToNearestEven)
-	bVal, _, _ := big.ParseFloat(b.Value, 10, 128, big.ToNearestEven)
-	if aVal == nil {
-		aVal = new(big.Float)
-	}
-	if bVal == nil {
-		bVal = new(big.Float)
-	}
-	result := new(big.Float).Sub(aVal, bVal)
-	return NewIssuedAmount(FormatIOUValue(result), a.Currency, a.Issuer)
+	// For IOU amounts, use the built-in subtraction
+	result, _ := a.Sub(b)
+	return result
 }
 
 // ApplyTransferFee applies a transfer rate to an amount.
@@ -75,15 +81,12 @@ func ApplyTransferFee(amount Amount, transferRate uint32) Amount {
 	if amount.IsNative() {
 		return amount // No transfer fee on XRP
 	}
-	aVal, _, _ := big.ParseFloat(amount.Value, 10, 128, big.ToNearestEven)
-	if aVal == nil {
-		return amount
-	}
-	rate := new(big.Float).SetUint64(uint64(transferRate))
-	billion := new(big.Float).SetUint64(1000000000)
-	multiplier := new(big.Float).Quo(rate, billion)
-	result := new(big.Float).Mul(aVal, multiplier)
-	return NewIssuedAmount(FormatIOUValue(result), amount.Currency, amount.Issuer)
+	// Apply transfer rate: newAmount = amount * transferRate / 1000000000
+	// Use float64 for the calculation
+	value := amount.Float64()
+	multiplier := float64(transferRate) / 1000000000.0
+	result := value * multiplier
+	return NewIssuedAmountFromFloat64(result, amount.Currency, amount.Issuer)
 }
 
 // EncodeAccountIDSafe encodes a 20-byte account ID, returning empty string on error

@@ -3,12 +3,11 @@ package amm
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 	"math"
-	"strconv"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
 // Internal constants (lowercase aliases of exported AMM constants)
@@ -65,17 +64,24 @@ type AuctionSlotData struct {
 	AuthAccounts [][20]byte
 }
 
-// parseAmount parses a string amount value to uint64 (drops for XRP, raw for IOU).
-func parseAmount(value string) uint64 {
-	amount, err := strconv.ParseUint(value, 10, 64)
-	if err != nil {
-		f, err := strconv.ParseFloat(value, 64)
-		if err != nil {
+// parseAmountFromTx parses a tx.Amount to uint64 (drops for XRP, scaled for IOU).
+func parseAmountFromTx(amt *tx.Amount) uint64 {
+	if amt == nil {
+		return 0
+	}
+	if amt.IsNative() {
+		drops := amt.Drops()
+		if drops < 0 {
 			return 0
 		}
-		return uint64(f * 1000000)
+		return uint64(drops)
 	}
-	return amount
+	// For IOU, use float value and scale to drops-equivalent
+	f := amt.Float64()
+	if f < 0 {
+		return 0
+	}
+	return uint64(f * 1000000)
 }
 
 // computeAMMKeylet computes the AMM keylet from the asset pair.

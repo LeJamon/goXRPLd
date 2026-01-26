@@ -6,14 +6,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
-	"strconv"
 
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
 func init() {
@@ -127,7 +126,7 @@ func (p *PaymentChannelCreate) Validate() error {
 	}
 
 	// Amount is required and must be XRP
-	if p.Amount.Value == "" {
+	if p.Amount.IsZero() {
 		return ErrPayChanAmountRequired
 	}
 
@@ -136,8 +135,7 @@ func (p *PaymentChannelCreate) Validate() error {
 	}
 
 	// Amount must be positive
-	amountVal, err := strconv.ParseInt(p.Amount.Value, 10, 64)
-	if err != nil || amountVal <= 0 {
+	if p.Amount.Drops() <= 0 {
 		return ErrPayChanAmountNotPositive
 	}
 
@@ -226,7 +224,7 @@ func (p *PaymentChannelFund) Validate() error {
 	}
 
 	// Amount is required and must be XRP
-	if p.Amount.Value == "" {
+	if p.Amount.IsZero() {
 		return ErrPayChanAmountRequired
 	}
 
@@ -235,8 +233,7 @@ func (p *PaymentChannelFund) Validate() error {
 	}
 
 	// Amount must be positive
-	amountVal, err := strconv.ParseInt(p.Amount.Value, 10, 64)
-	if err != nil || amountVal <= 0 {
+	if p.Amount.Drops() <= 0 {
 		return ErrPayChanAmountNotPositive
 	}
 
@@ -322,8 +319,8 @@ func (p *PaymentChannelClaim) Validate() error {
 		if !p.Balance.IsNative() {
 			return errors.New("temBAD_AMOUNT: Balance must be XRP")
 		}
-		balVal, err := strconv.ParseInt(p.Balance.Value, 10, 64)
-		if err != nil || balVal <= 0 {
+		balVal := p.Balance.Drops()
+		if balVal <= 0 {
 			return errors.New("temBAD_AMOUNT: Balance must be positive")
 		}
 	}
@@ -333,16 +330,16 @@ func (p *PaymentChannelClaim) Validate() error {
 		if !p.Amount.IsNative() {
 			return errors.New("temBAD_AMOUNT: Amount must be XRP")
 		}
-		amtVal, err := strconv.ParseInt(p.Amount.Value, 10, 64)
-		if err != nil || amtVal <= 0 {
+		amtVal := p.Amount.Drops()
+		if amtVal <= 0 {
 			return errors.New("temBAD_AMOUNT: Amount must be positive")
 		}
 	}
 
 	// Balance cannot exceed Amount
 	if p.Balance != nil && p.Amount != nil {
-		balVal, _ := strconv.ParseInt(p.Balance.Value, 10, 64)
-		amtVal, _ := strconv.ParseInt(p.Amount.Value, 10, 64)
+		balVal := p.Balance.Drops()
+		amtVal := p.Amount.Drops()
 		if balVal > amtVal {
 			return ErrPayChanBalanceGTAmount
 		}
@@ -405,10 +402,7 @@ func (p *PaymentChannelClaim) IsRenew() bool {
 // Apply applies a PaymentChannelCreate transaction
 func (pc *PaymentChannelCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Parse the amount
-	amount, err := strconv.ParseUint(pc.Amount.Value, 10, 64)
-	if err != nil {
-		return tx.TemINVALID
-	}
+	amount := uint64(pc.Amount.Drops())
 
 	// Check balance
 	if ctx.Account.Balance < amount {
@@ -484,10 +478,7 @@ func (pf *PaymentChannelFund) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	// Parse amount to add
-	amount, err := strconv.ParseUint(pf.Amount.Value, 10, 64)
-	if err != nil {
-		return tx.TemINVALID
-	}
+	amount := uint64(pf.Amount.Drops())
 
 	// Check balance
 	if ctx.Account.Balance < amount {
@@ -553,10 +544,7 @@ func (pcl *PaymentChannelClaim) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Handle claim with signature
 	if pcl.Balance != nil && pcl.Amount != nil && pcl.Signature != "" {
 		// Parse claimed balance
-		claimBalance, err := strconv.ParseUint(pcl.Balance.Value, 10, 64)
-		if err != nil {
-			return tx.TemINVALID
-		}
+		claimBalance := uint64(pcl.Balance.Drops())
 
 		// Verify claim is valid (would verify signature in full implementation)
 		if claimBalance > channel.Amount {

@@ -39,7 +39,7 @@ type DirectoryNode struct {
 // Returns uint64 encoded as: (exponent+100) << 56 | mantissa
 func GetRate(offerOut, offerIn Amount) uint64 {
 	// Handle zero case - check offerOut since we divide by it
-	if offerOut.Value == "" || offerOut.Value == "0" {
+	if offerOut.IsZero() {
 		return 0
 	}
 
@@ -48,30 +48,50 @@ func GetRate(offerOut, offerIn Amount) uint64 {
 
 	if offerOut.IsNative() {
 		// XRP amount in drops
-		drops, _ := ParseDropsString(offerOut.Value)
-		outFloat = new(big.Float).SetUint64(drops)
+		outFloat = new(big.Float).SetPrec(128).SetInt64(offerOut.Drops())
 	} else {
-		// IOU amount
-		outFloat, _ = new(big.Float).SetString(offerOut.Value)
-		if outFloat == nil {
+		// IOU amount - use mantissa/exponent for precision
+		// value = mantissa × 10^exponent
+		iou := offerOut.IOU()
+		mantissa := iou.Mantissa()
+		exponent := iou.Exponent()
+		if mantissa == 0 {
 			return 0
+		}
+		// Create big.Float from mantissa
+		outFloat = new(big.Float).SetPrec(128).SetInt64(mantissa)
+		// Apply exponent: multiply or divide by powers of 10
+		if exponent > 0 {
+			multiplier := new(big.Float).SetPrec(128).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exponent)), nil))
+			outFloat.Mul(outFloat, multiplier)
+		} else if exponent < 0 {
+			divisor := new(big.Float).SetPrec(128).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-exponent)), nil))
+			outFloat.Quo(outFloat, divisor)
 		}
 	}
 
 	if offerIn.IsNative() {
 		// XRP amount in drops
-		drops, _ := ParseDropsString(offerIn.Value)
-		inFloat = new(big.Float).SetUint64(drops)
+		inFloat = new(big.Float).SetPrec(128).SetInt64(offerIn.Drops())
 	} else {
-		// IOU amount
-		inFloat, _ = new(big.Float).SetString(offerIn.Value)
-		if inFloat == nil {
-			return 0
+		// IOU amount - use mantissa/exponent for precision
+		iou := offerIn.IOU()
+		mantissa := iou.Mantissa()
+		exponent := iou.Exponent()
+		// Create big.Float from mantissa
+		inFloat = new(big.Float).SetPrec(128).SetInt64(mantissa)
+		// Apply exponent
+		if exponent > 0 {
+			multiplier := new(big.Float).SetPrec(128).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exponent)), nil))
+			inFloat.Mul(inFloat, multiplier)
+		} else if exponent < 0 {
+			divisor := new(big.Float).SetPrec(128).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-exponent)), nil))
+			inFloat.Quo(inFloat, divisor)
 		}
 	}
 
 	// Calculate rate = in / out (rippled convention: offerIn/offerOut)
-	rate := new(big.Float).Quo(inFloat, outFloat)
+	rate := new(big.Float).SetPrec(128).Quo(inFloat, outFloat)
 
 	// Convert to mantissa and exponent
 	// XRPL uses: mantissa × 10^exponent where mantissa is 10^15 to 10^16-1

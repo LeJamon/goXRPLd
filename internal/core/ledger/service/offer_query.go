@@ -98,23 +98,23 @@ func (s *Service) GetBookOffers(takerGets, takerPays tx.Amount, ledgerIndex stri
 
 		// Format TakerGets
 		if offer.TakerGets.IsNative() {
-			bookOffer.TakerGets = offer.TakerGets.Value
+			bookOffer.TakerGets = offer.TakerGets.Value()
 		} else {
 			bookOffer.TakerGets = map[string]string{
 				"currency": offer.TakerGets.Currency,
 				"issuer":   offer.TakerGets.Issuer,
-				"value":    offer.TakerGets.Value,
+				"value":    offer.TakerGets.Value(),
 			}
 		}
 
 		// Format TakerPays
 		if offer.TakerPays.IsNative() {
-			bookOffer.TakerPays = offer.TakerPays.Value
+			bookOffer.TakerPays = offer.TakerPays.Value()
 		} else {
 			bookOffer.TakerPays = map[string]string{
 				"currency": offer.TakerPays.Currency,
 				"issuer":   offer.TakerPays.Issuer,
-				"value":    offer.TakerPays.Value,
+				"value":    offer.TakerPays.Value(),
 			}
 		}
 

@@ -2,7 +2,6 @@ package nftoken
 
 import (
 	"encoding/hex"
-	"strconv"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
@@ -363,10 +362,7 @@ func (c *NFTokenCreateOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 	var amountXRP uint64
 	if c.Amount.Currency == "" {
 		// XRP amount
-		amountXRP, err = strconv.ParseUint(c.Amount.Value, 10, 64)
-		if err != nil {
-			return tx.TemMALFORMED
-		}
+		amountXRP = uint64(c.Amount.Drops())
 	}
 
 	// For buy offers, escrow the funds

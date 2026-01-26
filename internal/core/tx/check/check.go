@@ -4,14 +4,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
-	"strconv"
 
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
 func init() {
@@ -70,7 +69,7 @@ func (c *CheckCreate) Validate() error {
 		return errors.New("Destination is required")
 	}
 
-	if c.SendMax.Value == "" {
+	if c.SendMax.IsZero() {
 		return errors.New("SendMax is required")
 	}
 
@@ -225,10 +224,9 @@ func (c *CheckCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	// Parse SendMax - only XRP supported for now
-	sendMax, err := strconv.ParseUint(c.SendMax.Value, 10, 64)
-	if err != nil {
-		// May be an IOU amount
-		sendMax = 0
+	var sendMax uint64
+	if c.SendMax.IsNative() {
+		sendMax = uint64(c.SendMax.Drops())
 	}
 
 	// Check balance for XRP checks
@@ -301,19 +299,13 @@ func (c *CheckCash) Apply(ctx *tx.ApplyContext) tx.Result {
 	var cashAmount uint64
 	if c.Amount != nil {
 		// Exact amount
-		cashAmount, err = strconv.ParseUint(c.Amount.Value, 10, 64)
-		if err != nil {
-			return tx.TemINVALID
-		}
+		cashAmount = uint64(c.Amount.Drops())
 		if cashAmount > check.SendMax {
 			return tx.TecPATH_PARTIAL
 		}
 	} else if c.DeliverMin != nil {
 		// Minimum amount - use full SendMax for simplicity
-		deliverMin, err := strconv.ParseUint(c.DeliverMin.Value, 10, 64)
-		if err != nil {
-			return tx.TemINVALID
-		}
+		deliverMin := uint64(c.DeliverMin.Drops())
 		if check.SendMax < deliverMin {
 			return tx.TecPATH_PARTIAL
 		}

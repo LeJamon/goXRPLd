@@ -369,23 +369,23 @@ func (s *Service) GetAccountOffers(account string, ledgerIndex string, limit uin
 
 		// Format TakerGets
 		if offer.TakerGets.IsNative() {
-			accountOffer.TakerGets = offer.TakerGets.Value
+			accountOffer.TakerGets = offer.TakerGets.Value()
 		} else {
 			accountOffer.TakerGets = map[string]string{
 				"currency": offer.TakerGets.Currency,
 				"issuer":   offer.TakerGets.Issuer,
-				"value":    offer.TakerGets.Value,
+				"value":    offer.TakerGets.Value(),
 			}
 		}
 
 		// Format TakerPays
 		if offer.TakerPays.IsNative() {
-			accountOffer.TakerPays = offer.TakerPays.Value
+			accountOffer.TakerPays = offer.TakerPays.Value()
 		} else {
 			accountOffer.TakerPays = map[string]string{
 				"currency": offer.TakerPays.Currency,
 				"issuer":   offer.TakerPays.Issuer,
-				"value":    offer.TakerPays.Value,
+				"value":    offer.TakerPays.Value(),
 			}
 		}
 

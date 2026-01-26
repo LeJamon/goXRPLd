@@ -93,7 +93,7 @@ func (p *Payment) Validate() error {
 		return errors.New("Destination is required")
 	}
 
-	if p.Amount.Value == "" {
+	if p.Amount.IsZero() {
 		return errors.New("Amount is required")
 	}
 
@@ -119,12 +119,8 @@ func (p *Payment) Validate() error {
 	// Validate DeliverMin if present
 	// Reference: rippled Payment.cpp:216-238
 	if p.DeliverMin != nil {
-		// DeliverMin must be positive (not zero, not empty, not negative)
-		if p.DeliverMin.Value == "" || p.DeliverMin.Value == "0" {
-			return errors.New("temBAD_AMOUNT: DeliverMin must be positive")
-		}
-		// Check for negative values
-		if len(p.DeliverMin.Value) > 0 && p.DeliverMin.Value[0] == '-' {
+		// DeliverMin must be positive (not zero, not negative)
+		if p.DeliverMin.IsZero() || p.DeliverMin.IsNegative() {
 			return errors.New("temBAD_AMOUNT: DeliverMin must be positive")
 		}
 
@@ -188,11 +184,12 @@ func (p *Payment) Apply(ctx *tx.ApplyContext) tx.Result {
 // applyXRPPayment applies an XRP-to-XRP payment
 // Reference: rippled/src/xrpld/app/tx/detail/Payment.cpp doApply() for XRP direct payments
 func (p *Payment) applyXRPPayment(ctx *tx.ApplyContext) tx.Result {
-	// Parse the amount
-	amountDrops, err := strconv.ParseUint(p.Amount.Value, 10, 64)
-	if err != nil || amountDrops == 0 {
+	// Get the amount in drops
+	drops := p.Amount.Drops()
+	if drops <= 0 {
 		return tx.TemBAD_AMOUNT
 	}
+	amountDrops := uint64(drops)
 
 	// Parse the fee from the transaction
 	feeDrops, err := strconv.ParseUint(p.Fee, 10, 64)
@@ -382,12 +379,11 @@ func (p *Payment) applyXRPPayment(ctx *tx.ApplyContext) tx.Result {
 // applyIOUPayment applies an IOU (issued currency) payment
 // Reference: rippled/src/xrpld/app/tx/detail/Payment.cpp
 func (p *Payment) applyIOUPayment(ctx *tx.ApplyContext) tx.Result {
-	// Parse the amount
-	amount := sle.NewIOUAmount(p.Amount.Value, p.Amount.Currency, p.Amount.Issuer)
-	if amount.IsZero() {
+	// Validate the amount
+	if p.Amount.IsZero() {
 		return tx.TemBAD_AMOUNT
 	}
-	if amount.IsNegative() {
+	if p.Amount.IsNegative() {
 		return tx.TemBAD_AMOUNT
 	}
 
@@ -406,6 +402,9 @@ func (p *Payment) applyIOUPayment(ctx *tx.ApplyContext) tx.Result {
 	if err != nil {
 		return tx.TemBAD_ISSUER
 	}
+
+	// Convert the tx.Amount to sle.IOUAmount for internal use
+	amount := p.Amount.ToIOUAmountLegacy()
 
 	// Detect payments that require RippleCalc (path finding)
 	// Reference: rippled Payment.cpp:435-436:
@@ -507,7 +506,7 @@ func (p *Payment) applyIOUPayment(ctx *tx.ApplyContext) tx.Result {
 	if result == tx.TesSUCCESS && p.DeliverMin != nil {
 		flags := p.GetFlags()
 		if (flags & PaymentFlagPartialPayment) != 0 {
-			deliverMin := sle.NewIOUAmount(p.DeliverMin.Value, p.DeliverMin.Currency, p.DeliverMin.Issuer)
+			deliverMin := p.DeliverMin.ToIOUAmountLegacy()
 			if deliveredAmount.Compare(deliverMin) < 0 {
 				return tx.TecPATH_PARTIAL
 			}

@@ -28,19 +28,19 @@ func FromRippleTime(rippleTime uint32) time.Time {
 type EscrowCreateBuilder struct {
 	from        *testing.Account
 	to          *testing.Account
-	amount      uint64 // XRP in drops
+	amount      int64 // XRP in drops
 	finishAfter *uint32
 	cancelAfter *uint32
 	condition   []byte
 	destTag     *uint32
 	sourceTag   *uint32
-	fee         uint64
+	fee         int64
 	sequence    *uint32
 }
 
 // EscrowCreate creates a new EscrowCreateBuilder.
 // The amount is specified in drops (1 XRP = 1,000,000 drops).
-func EscrowCreate(from, to *testing.Account, amount uint64) *EscrowCreateBuilder {
+func EscrowCreate(from, to *testing.Account, amount int64) *EscrowCreateBuilder {
 	return &EscrowCreateBuilder{
 		from:   from,
 		to:     to,
@@ -103,7 +103,7 @@ func (b *EscrowCreateBuilder) SourceTag(tag uint32) *EscrowCreateBuilder {
 
 // Fee sets the transaction fee in drops.
 func (b *EscrowCreateBuilder) Fee(f uint64) *EscrowCreateBuilder {
-	b.fee = f
+	b.fee = int64(f)
 	return b
 }
 
@@ -115,7 +115,7 @@ func (b *EscrowCreateBuilder) Sequence(seq uint32) *EscrowCreateBuilder {
 
 // Build constructs the EscrowCreate transaction.
 func (b *EscrowCreateBuilder) Build() tx.Transaction {
-	amount := tx.NewXRPAmount(fmt.Sprintf("%d", b.amount))
+	amount := tx.NewXRPAmount(b.amount)
 	e := escrowtx.NewEscrowCreate(b.from.Address, b.to.Address, amount)
 	e.Fee = fmt.Sprintf("%d", b.fee)
 

@@ -3,7 +3,6 @@ package payment
 import (
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 	"math/big"
-	"strconv"
 
 	tx "github.com/LeJamon/goXRPLd/internal/core/tx"
 )
@@ -463,22 +462,17 @@ type FlowResult struct {
 // ToEitherAmount converts a tx.Amount to EitherAmount
 func ToEitherAmount(amt tx.Amount) EitherAmount {
 	if amt.IsNative() {
-		drops, _ := strconv.ParseInt(amt.Value, 10, 64)
-		return NewXRPEitherAmount(drops)
+		return NewXRPEitherAmount(amt.Drops())
 	}
-	return NewIOUEitherAmount(amt.ToIOU())
+	return NewIOUEitherAmount(amt.ToIOUAmountLegacy())
 }
 
 // FromEitherAmount converts EitherAmount back to tx.Amount
 func FromEitherAmount(e EitherAmount) tx.Amount {
 	if e.IsNative {
-		return tx.NewXRPAmount(strconv.FormatInt(e.XRP, 10))
+		return tx.NewXRPAmount(e.XRP)
 	}
-	return tx.Amount{
-		Value:    sle.FormatIOUValue(e.IOU.Value),
-		Currency: e.IOU.Currency,
-		Issuer:   e.IOU.Issuer,
-	}
+	return e.IOU.ToAmount()
 }
 
 // GetIssue extracts the Issue from a tx.Amount

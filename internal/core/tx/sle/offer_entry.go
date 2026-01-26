@@ -54,10 +54,10 @@ func SerializeLedgerOffer(offer *LedgerOffer) ([]byte, error) {
 	// Helper function to convert Amount to JSON format
 	amountToJSON := func(amt Amount) any {
 		if amt.IsNative() {
-			return amt.Value
+			return amt.Value()
 		}
 		return map[string]any{
-			"value":    amt.Value,
+			"value":    amt.Value(),
 			"currency": amt.Currency,
 			"issuer":   amt.Issuer,
 		}
@@ -194,11 +194,7 @@ func parseLedgerOffer(data []byte) (*LedgerOffer, error) {
 				}
 				iou, err := ParseIOUAmountBinary(data[offset : offset+48])
 				if err == nil {
-					amt := Amount{
-						Value:    FormatIOUValue(iou.Value),
-						Currency: iou.Currency,
-						Issuer:   iou.Issuer,
-					}
+					amt := iou.ToAmount()
 					switch fieldCode {
 					case 4: // TakerPays
 						offer.TakerPays = amt
@@ -212,7 +208,7 @@ func parseLedgerOffer(data []byte) (*LedgerOffer, error) {
 					return offer, nil
 				}
 				drops := binary.BigEndian.Uint64(data[offset:offset+8]) & 0x3FFFFFFFFFFFFFFF
-				amt := Amount{Value: formatDrops(drops)}
+				amt := NewXRPAmountFromInt(int64(drops))
 				switch fieldCode {
 				case 4: // TakerPays
 					offer.TakerPays = amt
