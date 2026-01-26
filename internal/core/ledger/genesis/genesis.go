@@ -7,16 +7,16 @@ import (
 	"fmt"
 	"time"
 
+	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
+	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
 	ledgerentries "github.com/LeJamon/goXRPLd/internal/core/ledger/entry/entries"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/header"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/protocol"
 	"github.com/LeJamon/goXRPLd/internal/core/shamap"
-	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
-	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
-	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
 	secp256k1 "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/secp256k1"
+	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
 )
 
 const (
@@ -43,9 +43,9 @@ type DefaultFees struct {
 // StandardFees returns the standard XRPL fee configuration
 func StandardFees() DefaultFees {
 	return DefaultFees{
-		BaseFee:          XRPAmount.NewXRPAmount(10),                    // 10 drops
-		ReserveBase:      XRPAmount.DropsPerXRP * 10,                    // 10 XRP
-		ReserveIncrement: XRPAmount.DropsPerXRP * 2,                     // 2 XRP
+		BaseFee:          XRPAmount.NewXRPAmount(10), // 10 drops
+		ReserveBase:      XRPAmount.DropsPerXRP * 10, // 10 XRP
+		ReserveIncrement: XRPAmount.DropsPerXRP * 2,  // 2 XRP
 	}
 }
 
@@ -99,11 +99,11 @@ func DefaultConfig() Config {
 
 // GenesisLedger represents a freshly created genesis ledger
 type GenesisLedger struct {
-	Header          header.LedgerHeader
-	StateMap        *shamap.SHAMap
-	TxMap           *shamap.SHAMap
-	GenesisAccount  [20]byte
-	GenesisAddress  string
+	Header         header.LedgerHeader
+	StateMap       *shamap.SHAMap
+	TxMap          *shamap.SHAMap
+	GenesisAccount [20]byte
+	GenesisAddress string
 }
 
 // GenerateGenesisAccountID derives the genesis account ID from the default master passphrase.
@@ -292,7 +292,7 @@ func createGenesisAccountWithBalance(stateMap *shamap.SHAMap, accountID [20]byte
 	}
 
 	// Serialize the account entry
-	data, err := serializeAccountRoot(account)
+	data, err := SerializeAccountRoot(account)
 	if err != nil {
 		return err
 	}
@@ -323,7 +323,7 @@ func createInitialAccount(stateMap *shamap.SHAMap, accountID [20]byte, balance u
 	}
 
 	// Serialize the account entry
-	data, err := serializeAccountRoot(account)
+	data, err := SerializeAccountRoot(account)
 	if err != nil {
 		return err
 	}
@@ -434,7 +434,7 @@ func CalculateLedgerHash(h header.LedgerHeader) [32]byte {
 }
 
 // serializeAccountRoot serializes an AccountRoot entry to bytes using the XRPL binary codec.
-func serializeAccountRoot(a *ledgerentries.AccountRoot) ([]byte, error) {
+func SerializeAccountRoot(a *ledgerentries.AccountRoot) ([]byte, error) {
 	// Convert account ID to classic address
 	address, err := addresscodec.EncodeAccountIDToClassicAddress(a.Account[:])
 	if err != nil {

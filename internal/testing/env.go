@@ -1,6 +1,7 @@
 package testing
 
 import (
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/genesis"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/payment"
 )
 
 // TestEnv manages a test ledger environment for transaction testing.
@@ -65,16 +67,16 @@ func NewTestEnv(t *testing.T) *TestEnv {
 	}
 
 	env := &TestEnv{
-		t:              t,
-		ledger:         openLedger,
-		clock:          clock,
-		accounts:       make(map[string]*Account),
-		genesisLedger:  genesisLedger,
-		ledgerHistory:  make(map[uint32]*ledger.Ledger),
-		currentSeq:     2,
-		baseFee:        10,
-		reserveBase:    10_000_000,  // 10 XRP
-		reserveIncrement: 2_000_000, // 2 XRP
+		t:                t,
+		ledger:           openLedger,
+		clock:            clock,
+		accounts:         make(map[string]*Account),
+		genesisLedger:    genesisLedger,
+		ledgerHistory:    make(map[uint32]*ledger.Ledger),
+		currentSeq:       2,
+		baseFee:          10,
+		reserveBase:      10_000_000, // 10 XRP
+		reserveIncrement: 2_000_000,  // 2 XRP
 	}
 
 	// Store genesis in history
@@ -112,15 +114,15 @@ func NewTestEnvWithConfig(t *testing.T, cfg genesis.Config) *TestEnv {
 	}
 
 	env := &TestEnv{
-		t:              t,
-		ledger:         openLedger,
-		clock:          clock,
-		accounts:       make(map[string]*Account),
-		genesisLedger:  genesisLedger,
-		ledgerHistory:  make(map[uint32]*ledger.Ledger),
-		currentSeq:     2,
-		baseFee:        uint64(cfg.Fees.BaseFee.Drops()),
-		reserveBase:    uint64(cfg.Fees.ReserveBase.Drops()),
+		t:                t,
+		ledger:           openLedger,
+		clock:            clock,
+		accounts:         make(map[string]*Account),
+		genesisLedger:    genesisLedger,
+		ledgerHistory:    make(map[uint32]*ledger.Ledger),
+		currentSeq:       2,
+		baseFee:          uint64(cfg.Fees.BaseFee.Drops()),
+		reserveBase:      uint64(cfg.Fees.ReserveBase.Drops()),
 		reserveIncrement: uint64(cfg.Fees.ReserveIncrement.Drops()),
 	}
 
@@ -156,12 +158,12 @@ func (e *TestEnv) FundAmount(acc *Account, amount uint64) {
 
 	// Create payment transaction
 	seq := e.Seq(master)
-	payment := tx.NewPayment(master.Address, acc.Address, tx.NewXRPAmount(formatUint64(amount)))
+	payment := payment.NewPayment(master.Address, acc.Address, tx.NewXRPAmount(formatUint64(amount)))
 	payment.Fee = formatUint64(e.baseFee)
 	payment.Sequence = &seq
 
 	// Submit the payment
-	result := e.Submit(&payment)
+	result := e.Submit(payment)
 	if !result.Success {
 		e.t.Fatalf("Failed to fund account %s: %s", acc.Name, result.Code)
 	}
@@ -199,6 +201,8 @@ func (e *TestEnv) Close() {
 }
 
 // Submit submits a transaction to the current open ledger.
+// If the transaction doesn't have a sequence number set, it will be auto-filled
+// from the account's current sequence in the ledger.
 func (e *TestEnv) Submit(transaction interface{}) TxResult {
 	e.t.Helper()
 
@@ -207,6 +211,36 @@ func (e *TestEnv) Submit(transaction interface{}) TxResult {
 	if !ok {
 		e.t.Fatalf("Transaction does not implement tx.Transaction interface")
 		return TxResult{Code: "temINVALID", Success: false, Message: "Invalid transaction type"}
+	}
+
+	// Auto-fill sequence if not set
+	common := txn.GetCommon()
+	if common.Sequence == nil {
+		// Look up the account to get current sequence
+		_, accountID, err := addresscodec.DecodeClassicAddressToAccountID(common.Account)
+		if err != nil {
+			e.t.Fatalf("Failed to decode account address: %v", err)
+			return TxResult{Code: "temINVALID", Success: false, Message: "Invalid account address"}
+		}
+
+		var id [20]byte
+		copy(id[:], accountID)
+		accountKey := keylet.Account(id)
+
+		data, err := e.ledger.Read(accountKey)
+		if err != nil || data == nil {
+			e.t.Fatalf("Failed to read account for sequence auto-fill: %v", err)
+			return TxResult{Code: "terNO_ACCOUNT", Success: false, Message: "Account not found"}
+		}
+
+		accountRoot, err := sle.ParseAccountRootFromBytes(data)
+		if err != nil {
+			e.t.Fatalf("Failed to parse account root: %v", err)
+			return TxResult{Code: "temINVALID", Success: false, Message: "Failed to parse account"}
+		}
+
+		seq := accountRoot.Sequence
+		common.Sequence = &seq
 	}
 
 	// Create engine config
@@ -224,9 +258,11 @@ func (e *TestEnv) Submit(transaction interface{}) TxResult {
 	// Apply the transaction
 	applyResult := engine.Apply(txn)
 
+	// Success should only be true for tesSUCCESS, not for tec codes
+	// (tec codes are "applied" but not "successful" - fee is charged but operation failed)
 	return TxResult{
 		Code:     applyResult.Result.String(),
-		Success:  applyResult.Applied,
+		Success:  applyResult.Result.IsSuccess(),
 		Message:  applyResult.Message,
 		Metadata: nil, // Could serialize metadata if needed
 	}
@@ -257,7 +293,7 @@ func (e *TestEnv) Balance(acc *Account) uint64 {
 	}
 
 	// Parse account root to get balance
-	accountRoot, err := tx.ParseAccountRootFromBytes(data)
+	accountRoot, err := sle.ParseAccountRootFromBytes(data)
 	if err != nil {
 		e.t.Fatalf("Failed to parse account data: %v", err)
 		return 0
@@ -296,7 +332,7 @@ func (e *TestEnv) Seq(acc *Account) uint32 {
 	}
 
 	// Parse account root to get sequence
-	accountRoot, err := tx.ParseAccountRootFromBytes(data)
+	accountRoot, err := sle.ParseAccountRootFromBytes(data)
 	if err != nil {
 		e.t.Fatalf("Failed to parse account data: %v", err)
 		return 1
@@ -359,7 +395,7 @@ func (e *TestEnv) AccountInfo(acc *Account) *AccountInfo {
 		return nil
 	}
 
-	accountRoot, err := tx.ParseAccountRootFromBytes(data)
+	accountRoot, err := sle.ParseAccountRootFromBytes(data)
 	if err != nil {
 		return nil
 	}

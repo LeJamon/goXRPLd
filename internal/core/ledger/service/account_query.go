@@ -2,13 +2,13 @@ package service
 
 import (
 	"errors"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 	"math/big"
 	"strconv"
 
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
-	"github.com/LeJamon/goXRPLd/internal/core/tx"
 )
 
 // AccountInfoResult contains account information from the ledger
@@ -93,7 +93,7 @@ func (s *Service) GetAccountInfo(account string, ledgerIndex string) (*AccountIn
 	}
 
 	// Parse the account root
-	accountRoot, err := tx.ParseAccountRootFromBytes(data)
+	accountRoot, err := sle.ParseAccountRootFromBytes(data)
 	if err != nil {
 		return nil, errors.New("failed to parse account data: " + err.Error())
 	}
@@ -202,7 +202,7 @@ func (s *Service) GetAccountLines(account string, ledgerIndex string, peer strin
 		}
 
 		// Parse the RippleState
-		rs, err := tx.ParseRippleStateFromBytes(data)
+		rs, err := sle.ParseRippleStateFromBytes(data)
 		if err != nil {
 			return true
 		}
@@ -350,7 +350,7 @@ func (s *Service) GetAccountOffers(account string, ledgerIndex string, limit uin
 		}
 
 		// Parse the Offer
-		offer, err := tx.ParseLedgerOfferFromBytes(data)
+		offer, err := sle.ParseLedgerOfferFromBytes(data)
 		if err != nil {
 			return true
 		}
@@ -589,7 +589,7 @@ func (s *Service) GetAccountChannels(account string, destinationAccount string, 
 		}
 
 		// Parse the PayChannel
-		payChan, err := tx.ParsePayChannelFromBytes(data)
+		payChan, err := sle.ParsePayChannelFromBytes(data)
 		if err != nil {
 			return true
 		}
@@ -716,7 +716,7 @@ func (s *Service) GetAccountCurrencies(account string, ledgerIndex string) (*Acc
 		}
 
 		// Parse the RippleState
-		rs, err := tx.ParseRippleStateFromBytes(data)
+		rs, err := sle.ParseRippleStateFromBytes(data)
 		if err != nil {
 			return true
 		}
@@ -916,7 +916,7 @@ func (s *Service) GetAccountNFTs(account string, ledgerIndex string, limit uint3
 		}
 
 		// Parse the NFTokenPage
-		page, err := tx.ParseNFTokenPageFromBytes(data)
+		page, err := sle.ParseNFTokenPageFromBytes(data)
 		if err != nil {
 			return true
 		}
@@ -1004,7 +1004,7 @@ func (s *Service) GetGatewayBalances(account string, hotWallets []string, ledger
 	}
 
 	// Maps to collect results
-	obligations := make(map[string]*tx.IOUAmount)    // currency -> total obligations
+	obligations := make(map[string]*sle.IOUAmount)    // currency -> total obligations
 	hotBalances := make(map[string][]CurrencyBalance) // account -> balances
 	frozenBalances := make(map[string][]CurrencyBalance)
 	assets := make(map[string][]CurrencyBalance)
@@ -1025,7 +1025,7 @@ func (s *Service) GetGatewayBalances(account string, hotWallets []string, ledger
 		}
 
 		// Parse the RippleState
-		rs, err := tx.ParseRippleStateFromBytes(data)
+		rs, err := sle.ParseRippleStateFromBytes(data)
 		if err != nil {
 			return true
 		}
@@ -1055,7 +1055,7 @@ func (s *Service) GetGatewayBalances(account string, hotWallets []string, ledger
 		// Get the balance from the gateway's perspective
 		// RippleState balance: positive = low owes high, negative = high owes low
 		// Gateway perspective: negative = we owe them (obligations), positive = they owe us (assets)
-		var gatewayBalance *tx.IOUAmount
+		var gatewayBalance *sle.IOUAmount
 		if isLowAccount {
 			// We are low, balance from our view is negated
 			neg := rs.Balance.Negate()
@@ -1074,10 +1074,10 @@ func (s *Service) GetGatewayBalances(account string, hotWallets []string, ledger
 		var isFrozen bool
 		if isLowAccount {
 			// We are low, check if peer (high) has frozen us
-			isFrozen = (rs.Flags & tx.LsfHighFreeze) != 0
+			isFrozen = (rs.Flags & sle.LsfHighFreeze) != 0
 		} else {
 			// We are high, check if peer (low) has frozen us
-			isFrozen = (rs.Flags & tx.LsfLowFreeze) != 0
+			isFrozen = (rs.Flags & sle.LsfLowFreeze) != 0
 		}
 
 		// Check what category this balance falls into
@@ -1220,7 +1220,7 @@ func (s *Service) GetNoRippleCheck(account string, role string, ledgerIndex stri
 		return nil, errors.New("failed to read account: " + err.Error())
 	}
 
-	accountRoot, err := tx.ParseAccountRootFromBytes(data)
+	accountRoot, err := sle.ParseAccountRootFromBytes(data)
 	if err != nil {
 		return nil, errors.New("failed to parse account data: " + err.Error())
 	}
@@ -1237,7 +1237,7 @@ func (s *Service) GetNoRippleCheck(account string, role string, ledgerIndex stri
 	}
 
 	// Check DefaultRipple flag
-	bDefaultRipple := (accountRoot.Flags & tx.LsfDefaultRipple) != 0
+	bDefaultRipple := (accountRoot.Flags & sle.LsfDefaultRipple) != 0
 
 	var problems []string
 	var suggestedTxs []SuggestedTransaction
@@ -1286,7 +1286,7 @@ func (s *Service) GetNoRippleCheck(account string, role string, ledgerIndex stri
 		}
 
 		// Parse the RippleState
-		rs, err := tx.ParseRippleStateFromBytes(entryData)
+		rs, err := sle.ParseRippleStateFromBytes(entryData)
 		if err != nil {
 			return true
 		}
@@ -1311,9 +1311,9 @@ func (s *Service) GetNoRippleCheck(account string, role string, ledgerIndex stri
 		// Check NoRipple flag for this account's side
 		var bNoRipple bool
 		if isLowAccount {
-			bNoRipple = (rs.Flags & tx.LsfLowNoRipple) != 0
+			bNoRipple = (rs.Flags & sle.LsfLowNoRipple) != 0
 		} else {
-			bNoRipple = (rs.Flags & tx.LsfHighNoRipple) != 0
+			bNoRipple = (rs.Flags & sle.LsfHighNoRipple) != 0
 		}
 
 		currency := rs.Balance.Currency
@@ -1482,13 +1482,13 @@ func (s *Service) GetDepositAuthorized(sourceAccount string, destinationAccount 
 		return nil, errors.New("failed to read destination account: " + err.Error())
 	}
 
-	dstAccountRoot, err := tx.ParseAccountRootFromBytes(dstData)
+	dstAccountRoot, err := sle.ParseAccountRootFromBytes(dstData)
 	if err != nil {
 		return nil, errors.New("failed to parse destination account data: " + err.Error())
 	}
 
 	// Check if DepositAuth flag is set on destination
-	depositAuthRequired := (dstAccountRoot.Flags & tx.LsfDepositAuth) != 0
+	depositAuthRequired := (dstAccountRoot.Flags & sle.LsfDepositAuth) != 0
 
 	// If source == destination, deposit is always authorized (self-deposit)
 	sameAccount := srcID == dstID

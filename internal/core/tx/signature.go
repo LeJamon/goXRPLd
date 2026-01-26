@@ -9,17 +9,18 @@ import (
 
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 	ed25519algo "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/ed25519"
 	secp256k1algo "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/secp256k1"
 )
 
 // Signature verification errors
 var (
-	ErrMissingSignature    = errors.New("transaction is not signed")
-	ErrMissingPublicKey    = errors.New("signing public key is missing")
-	ErrInvalidSignature    = errors.New("signature is invalid")
-	ErrPublicKeyMismatch   = errors.New("public key does not match account")
-	ErrUnknownKeyType      = errors.New("unknown public key type")
+	ErrMissingSignature  = errors.New("transaction is not signed")
+	ErrMissingPublicKey  = errors.New("signing public key is missing")
+	ErrInvalidSignature  = errors.New("signature is invalid")
+	ErrPublicKeyMismatch = errors.New("public key does not match account")
+	ErrUnknownKeyType    = errors.New("unknown public key type")
 )
 
 // Multi-signature specific errors (matching rippled error codes)
@@ -46,35 +47,20 @@ var (
 	ErrSignersNotSorted = errors.New("signers must be sorted by account")
 )
 
-// AccountSignerEntry represents an entry in an account's SignerList
-// This corresponds to the SignerEntry structure in rippled
-type AccountSignerEntry struct {
-	Account       string // The account address that can sign
-	SignerWeight  uint16 // The weight of this signer
-	WalletLocator string // Optional 256-bit tag (hex string)
-}
-
-// SignerListInfo contains the signer list configuration for an account
-type SignerListInfo struct {
-	SignerQuorum  uint32               // The minimum weight required for a valid multi-signature
-	SignerEntries []AccountSignerEntry // The list of authorized signers and their weights
-	SignerListID  uint32               // The ID of the signer list (currently always 0)
-}
-
 // SignerListLookup is the interface for looking up an account's signer list
 // This must be implemented by the ledger/state layer
 type SignerListLookup interface {
 	// GetSignerList returns the signer list for an account
 	// Returns nil, nil if the account has no signer list
 	// Returns nil, error if there was an error looking up the signer list
-	GetSignerList(account string) (*SignerListInfo, error)
+	GetSignerList(account string) (*sle.SignerListInfo, error)
 
 	// GetAccountInfo returns account information needed for signer validation
 	// Returns the account's flags (to check if master key is disabled) and regular key
 	GetAccountInfo(account string) (flags uint32, regularKey string, err error)
 }
 
-// Note: lsfDisableMaster is defined in account_root.go (0x00100000)
+// Note: sle.LsfDisableMaster is defined in account_root.go (0x00100000)
 
 // IsMultiSigned returns true if the transaction is multi-signed
 // A transaction is multi-signed if it has a Signers array and an empty SigningPubKey
@@ -161,13 +147,13 @@ func VerifyMultiSignature(tx Transaction, lookup SignerListLookup) error {
 	}
 
 	// Build a map of authorized signers for quick lookup
-	authorizedSigners := make(map[string]AccountSignerEntry)
+	authorizedSigners := make(map[string]sle.AccountSignerEntry)
 	for _, entry := range signerList.SignerEntries {
 		authorizedSigners[entry.Account] = entry
 	}
 
 	// Sort the authorized signers by account for the matching algorithm
-	sortedAuthSigners := make([]AccountSignerEntry, len(signerList.SignerEntries))
+	sortedAuthSigners := make([]sle.AccountSignerEntry, len(signerList.SignerEntries))
 	copy(sortedAuthSigners, signerList.SignerEntries)
 	sort.Slice(sortedAuthSigners, func(i, j int) bool {
 		return sortedAuthSigners[i].Account < sortedAuthSigners[j].Account
@@ -241,7 +227,7 @@ func VerifyMultiSignature(tx Transaction, lookup SignerListLookup) error {
 			if lookupErr == nil {
 				// Account exists - this is the Master Key case
 				// Check if master key is disabled
-				if flags&lsfDisableMaster != 0 {
+				if flags&sle.LsfDisableMaster != 0 {
 					return ErrMasterDisabled
 				}
 			}
@@ -417,23 +403,6 @@ func SignTransaction(tx Transaction, privateKeyHex string) (string, error) {
 	}
 
 	return strings.ToUpper(signature), nil
-}
-
-// DeriveKeypairFromSeed derives a public/private keypair from a seed
-func DeriveKeypairFromSeed(seed string) (privateKey, publicKey string, err error) {
-	// Decode the seed to get the entropy and algorithm
-	entropy, algo, err := addresscodec.DecodeSeed(seed)
-	if err != nil {
-		return "", "", errors.New("invalid seed: " + err.Error())
-	}
-
-	// Derive the keypair
-	privateKey, publicKey, err = algo.DeriveKeypair(entropy, false)
-	if err != nil {
-		return "", "", errors.New("failed to derive keypair: " + err.Error())
-	}
-
-	return privateKey, publicKey, nil
 }
 
 // DeriveAddressFromPublicKey derives a classic address from a public key

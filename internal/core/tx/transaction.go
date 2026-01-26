@@ -1,19 +1,20 @@
 package tx
 
 import (
-	"encoding/json"
 	"errors"
+
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
 // Common errors
 var (
-	ErrMissingRequiredField = errors.New("missing required field")
+	ErrMissingRequiredField   = errors.New("missing required field")
 	ErrInvalidTransactionType = errors.New("invalid transaction type")
-	ErrInvalidAmount        = errors.New("invalid amount")
-	ErrInvalidDestination   = errors.New("invalid destination")
-	ErrInvalidAccount       = errors.New("invalid account")
-	ErrInvalidFlags         = errors.New("invalid flags")
-	ErrInvalidSequence      = errors.New("invalid sequence")
+	ErrInvalidAmount          = errors.New("invalid amount")
+	ErrInvalidDestination     = errors.New("invalid destination")
+	ErrInvalidAccount         = errors.New("invalid account")
+	ErrInvalidFlags           = errors.New("invalid flags")
+	ErrInvalidSequence        = errors.New("invalid sequence")
 )
 
 // Transaction is the interface that all transaction types must implement
@@ -42,76 +43,23 @@ type Transaction interface {
 	RequiredAmendments() []string
 }
 
-// Amount represents either XRP (as drops string) or an issued currency amount
-type Amount struct {
-	// For XRP amounts, only Value is set (as drops string)
-	Value string `json:"value,omitempty"`
-
-	// For issued currency amounts
-	Currency string `json:"currency,omitempty"`
-	Issuer   string `json:"issuer,omitempty"`
-
-	// Native indicates if this is XRP (true) or issued currency (false)
-	native bool
+// Appliable is implemented by transaction types that can apply themselves to ledger state.
+// This replaces the central switch statement in Engine.doApply().
+type Appliable interface {
+	Apply(ctx *ApplyContext) Result
 }
+
+// Amount is an alias for sle.Amount — represents either XRP (as drops string) or an issued currency amount
+type Amount = sle.Amount
 
 // NewXRPAmount creates an XRP amount in drops
 func NewXRPAmount(drops string) Amount {
-	return Amount{Value: drops, native: true}
+	return sle.NewXRPAmount(drops)
 }
 
 // NewIssuedAmount creates an issued currency amount
 func NewIssuedAmount(value, currency, issuer string) Amount {
-	return Amount{
-		Value:    value,
-		Currency: currency,
-		Issuer:   issuer,
-		native:   false,
-	}
-}
-
-// IsNative returns true if this is an XRP amount
-func (a Amount) IsNative() bool {
-	return a.native || (a.Currency == "" && a.Issuer == "")
-}
-
-// MarshalJSON implements custom JSON marshaling
-func (a Amount) MarshalJSON() ([]byte, error) {
-	if a.IsNative() {
-		return json.Marshal(a.Value)
-	}
-	return json.Marshal(map[string]string{
-		"value":    a.Value,
-		"currency": a.Currency,
-		"issuer":   a.Issuer,
-	})
-}
-
-// UnmarshalJSON implements custom JSON unmarshaling
-func (a *Amount) UnmarshalJSON(data []byte) error {
-	// Try as string first (XRP drops)
-	var strVal string
-	if err := json.Unmarshal(data, &strVal); err == nil {
-		a.Value = strVal
-		a.native = true
-		return nil
-	}
-
-	// Try as object (issued currency)
-	var objVal struct {
-		Value    string `json:"value"`
-		Currency string `json:"currency"`
-		Issuer   string `json:"issuer"`
-	}
-	if err := json.Unmarshal(data, &objVal); err != nil {
-		return err
-	}
-
-	a.Value = objVal.Value
-	a.Currency = objVal.Currency
-	a.Issuer = objVal.Issuer
-	a.native = false
-	return nil
+	return sle.NewIssuedAmount(value, currency, issuer)
 }
 
 // Memo represents a memo attached to a transaction
@@ -181,10 +129,10 @@ func (c *Common) Validate() error {
 	return nil
 }
 
-// hasField checks if a field was present in the original parsed data.
+// HasField checks if a field was present in the original parsed data.
 // This is used to distinguish between a field being absent vs explicitly set to empty.
 // For example, in DIDSet, an empty URI means "clear the field" while absent means "keep existing".
-func (c *Common) hasField(name string) bool {
+func (c *Common) HasField(name string) bool {
 	if c.PresentFields == nil {
 		return false
 	}

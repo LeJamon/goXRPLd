@@ -11,6 +11,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
 	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
 )
 
@@ -31,6 +32,9 @@ const (
 
 	// DefaultMaxFee is the default maximum fee (1 XRP = 1,000,000 drops)
 	DefaultMaxFee = 1000000
+
+	// QualityOne Per rippled: QUALITY_ONE (1e9 = 1000000000) is treated as default (stored as 0)
+	QualityOne uint32 = 1000000000
 )
 
 // Engine processes transactions against a ledger
@@ -52,8 +56,8 @@ type engineSignerListLookup struct {
 }
 
 // GetSignerList returns the signer list for an account
-func (l *engineSignerListLookup) GetSignerList(account string) (*SignerListInfo, error) {
-	accountID, err := decodeAccountID(account)
+func (l *engineSignerListLookup) GetSignerList(account string) (*sle.SignerListInfo, error) {
+	accountID, err := sle.DecodeAccountID(account)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +78,7 @@ func (l *engineSignerListLookup) GetSignerList(account string) (*SignerListInfo,
 		return nil, err
 	}
 
-	signerList, err := parseSignerList(signerListData)
+	signerList, err := sle.ParseSignerList(signerListData)
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +88,7 @@ func (l *engineSignerListLookup) GetSignerList(account string) (*SignerListInfo,
 
 // GetAccountInfo returns account information needed for signer validation
 func (l *engineSignerListLookup) GetAccountInfo(account string) (flags uint32, regularKey string, err error) {
-	accountID, err := decodeAccountID(account)
+	accountID, err := sle.DecodeAccountID(account)
 	if err != nil {
 		return 0, "", err
 	}
@@ -103,7 +107,7 @@ func (l *engineSignerListLookup) GetAccountInfo(account string) (flags uint32, r
 		return 0, "", err
 	}
 
-	accountRoot, err := parseAccountRoot(accountData)
+	accountRoot, err := sle.ParseAccountRoot(accountData)
 	if err != nil {
 		return 0, "", err
 	}
@@ -207,32 +211,8 @@ type Metadata struct {
 	DeliveredAmount *Amount
 }
 
-// AffectedNode represents a ledger entry that was changed
-type AffectedNode struct {
-	// NodeType is "CreatedNode", "ModifiedNode", or "DeletedNode"
-	NodeType string
-
-	// LedgerEntryType is the type of ledger entry
-	LedgerEntryType string
-
-	// LedgerIndex is the key of the entry
-	LedgerIndex string
-
-	// PreviousTxnLgrSeq is the ledger sequence of the previous transaction that modified this entry
-	PreviousTxnLgrSeq uint32
-
-	// PreviousTxnID is the hash of the previous transaction that modified this entry
-	PreviousTxnID string
-
-	// FinalFields contains the final state (for Modified/Deleted)
-	FinalFields map[string]any
-
-	// PreviousFields contains the previous state (for Modified)
-	PreviousFields map[string]any
-
-	// NewFields contains the new state (for Created)
-	NewFields map[string]any
-}
+// AffectedNode is an alias for sle.AffectedNode
+type AffectedNode = sle.AffectedNode
 
 // MarshalJSON implements custom JSON marshaling for Metadata to match rippled format
 func (m Metadata) MarshalJSON() ([]byte, error) {
@@ -249,7 +229,7 @@ func (m Metadata) MarshalJSON() ([]byte, error) {
 	// AffectedNodes with nested structure
 	affectedNodes := make([]map[string]any, 0, len(sortedNodes))
 	for _, node := range sortedNodes {
-		nodeJSON, err := node.toRippledFormat()
+		nodeJSON, err := affectedNodeToRippledFormat(node)
 		if err != nil {
 			return nil, err
 		}
@@ -273,7 +253,7 @@ func (m Metadata) MarshalJSON() ([]byte, error) {
 }
 
 // toRippledFormat converts an AffectedNode to rippled's nested format
-func (n AffectedNode) toRippledFormat() (map[string]any, error) {
+func affectedNodeToRippledFormat(n AffectedNode) (map[string]any, error) {
 	// Build the inner node content
 	inner := make(map[string]any)
 
@@ -370,6 +350,12 @@ func computeTransactionHash(tx Transaction) ([32]byte, error) {
 
 // Apply processes a transaction and applies it to the ledger
 func (e *Engine) Apply(tx Transaction) ApplyResult {
+	// Check if this is a pseudo-transaction (Amendment, SetFee, UNLModify)
+	txType := tx.TxType()
+	if txType.IsPseudoTransaction() {
+		return e.applyPseudoTransaction(tx)
+	}
+
 	// Step 1: Preflight checks (syntax validation)
 	result := e.preflight(tx)
 	if !result.IsSuccess() {
@@ -425,6 +411,76 @@ func (e *Engine) Apply(tx Transaction) ApplyResult {
 		Result:   result,
 		Applied:  result.IsApplied(),
 		Fee:      fee,
+		Metadata: metadata,
+		Message:  result.Message(),
+	}
+}
+
+// applyPseudoTransaction handles pseudo-transactions (Amendment, SetFee, UNLModify).
+// These transactions have special handling:
+// - No source account (account is zero/empty)
+// - No fee (fee is 0)
+// - No signature
+// - No sequence number checks
+// Reference: rippled Change.cpp
+func (e *Engine) applyPseudoTransaction(tx Transaction) ApplyResult {
+	// Compute transaction hash
+	txHash, err := computeTransactionHash(tx)
+	if err != nil {
+		return ApplyResult{
+			Result:  TefINTERNAL,
+			Applied: false,
+			Message: "failed to compute transaction hash: " + err.Error(),
+		}
+	}
+
+	// Create metadata
+	metadata := &Metadata{
+		AffectedNodes:     make([]AffectedNode, 0),
+		TransactionResult: TesSUCCESS,
+	}
+
+	// Create ApplyStateTable to track changes
+	table := NewApplyStateTable(e.view, txHash, e.config.LedgerSequence)
+
+	// Create a minimal ApplyContext for pseudo-transactions
+	ctx := &ApplyContext{
+		View:     table,
+		Account:  nil, // No account for pseudo-transactions
+		Config:   e.config,
+		TxHash:   txHash,
+		Metadata: metadata,
+		Engine:   e,
+	}
+
+	// Apply the transaction
+	var result Result
+	if appliable, ok := tx.(Appliable); ok {
+		result = appliable.Apply(ctx)
+	} else {
+		result = TesSUCCESS
+	}
+
+	metadata.TransactionResult = result
+
+	// Apply all tracked changes to the base view and generate metadata
+	if result.IsSuccess() {
+		generatedMeta, err := table.Apply()
+		if err != nil {
+			return ApplyResult{
+				Result:   TefINTERNAL,
+				Applied:  false,
+				Metadata: metadata,
+				Message:  "failed to apply state changes: " + err.Error(),
+			}
+		}
+		metadata.AffectedNodes = generatedMeta.AffectedNodes
+	}
+
+	return ApplyResult{
+		Result:   result,
+		Applied:  result.IsApplied(),
+		Fee:      0, // Pseudo-transactions have no fee
 		Metadata: metadata,
 		Message:  result.Message(),
 	}
@@ -515,10 +571,73 @@ func (e *Engine) preflight(tx Transaction) Result {
 
 	// Transaction-specific validation
 	if err := tx.Validate(); err != nil {
-		return TemINVALID
+		// Try to extract a specific TER code from the error message
+		// Many Validate() implementations include the TER code as a prefix (e.g., "temREDUNDANT: message")
+		return parseValidationError(err)
 	}
 
 	return TesSUCCESS
+}
+
+// parseValidationError extracts a TER result code from a validation error message.
+// If the error message starts with a valid TER code prefix (e.g., "temREDUNDANT:"),
+// it returns the corresponding Result. Otherwise, it returns TemINVALID.
+func parseValidationError(err error) Result {
+	msg := err.Error()
+
+	// Check for known TER code prefixes
+	// Common tem (malformed) codes
+	terCodes := map[string]Result{
+		"temMALFORMED":           TemMALFORMED,
+		"temBAD_AMOUNT":          TemBAD_AMOUNT,
+		"temBAD_CURRENCY":        TemBAD_CURRENCY,
+		"temBAD_EXPIRATION":      TemBAD_EXPIRATION,
+		"temBAD_FEE":             TemBAD_FEE,
+		"temBAD_ISSUER":          TemBAD_ISSUER,
+		"temBAD_LIMIT":           TemBAD_LIMIT,
+		"temBAD_OFFER":           TemBAD_OFFER,
+		"temBAD_PATH":            TemBAD_PATH,
+		"temBAD_PATH_LOOP":       TemBAD_PATH_LOOP,
+		"temBAD_REGKEY":          TemBAD_REGKEY,
+		"temBAD_SEQUENCE":        TemBAD_SEQUENCE,
+		"temBAD_SIGNATURE":       TemBAD_SIGNATURE,
+		"temBAD_SRC_ACCOUNT":     TemBAD_SRC_ACCOUNT,
+		"temBAD_TRANSFER_RATE":   TemBAD_TRANSFER_RATE,
+		"temDST_IS_SRC":          TemDST_IS_SRC,
+		"temDST_NEEDED":          TemDST_NEEDED,
+		"temINVALID":             TemINVALID,
+		"temINVALID_FLAG":        TemINVALID_FLAG,
+		"temREDUNDANT":           TemREDUNDANT,
+		"temRIPPLE_EMPTY":        TemRIPPLE_EMPTY,
+		"temDISABLED":            TemDISABLED,
+		"temBAD_SIGNER":          TemBAD_SIGNER,
+		"temBAD_QUORUM":          TemBAD_QUORUM,
+		"temBAD_WEIGHT":          TemBAD_WEIGHT,
+		"temBAD_TICK_SIZE":       TemBAD_TICK_SIZE,
+		"temINVALID_ACCOUNT_ID":  TemINVALID_ACCOUNT_ID,
+		"temUNCERTAIN":           TemUNCERTAIN,
+		"temUNKNOWN":             TemUNKNOWN,
+		"temSEQ_AND_TICKET":      TemSEQ_AND_TICKET,
+		"temBAD_SEND_XRP_MAX":    TemBAD_SEND_XRP_MAX,
+		"temBAD_SEND_XRP_PARTIAL": TemBAD_SEND_XRP_PARTIAL,
+		"temBAD_SEND_XRP_PATHS":  TemBAD_SEND_XRP_PATHS,
+		"temBAD_SEND_XRP_LIMIT":  TemBAD_SEND_XRP_LIMIT,
+		"temBAD_SEND_XRP_NO_DIRECT": TemBAD_SEND_XRP_NO_DIRECT,
+		"temCAN_NOT_PREAUTH_SELF": TemCAN_NOT_PREAUTH_SELF,
+	}
+
+	// Check if the message starts with any known TER code
+	for code, result := range terCodes {
+		if len(msg) >= len(code) && msg[:len(code)] == code {
+			// Check that it's followed by a colon, space, or is the entire message
+			if len(msg) == len(code) || msg[len(code)] == ':' || msg[len(code)] == ' ' {
+				return result
+			}
+		}
+	}
+
+	// Default to temINVALID
+	return TemINVALID
 }
 
 // validateNetworkID validates the NetworkID field according to rippled rules
@@ -682,7 +801,7 @@ func (e *Engine) preclaim(tx Transaction) Result {
 	common := tx.GetCommon()
 
 	// Check that the source account exists
-	accountID, err := decodeAccountID(common.Account)
+	accountID, err := sle.DecodeAccountID(common.Account)
 	if err != nil {
 		return TemBAD_SRC_ACCOUNT
 	}
@@ -703,7 +822,7 @@ func (e *Engine) preclaim(tx Transaction) Result {
 	}
 
 	// Parse account and check sequence
-	account, err := parseAccountRoot(accountData)
+	account, err := sle.ParseAccountRoot(accountData)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -744,7 +863,7 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 
 	// Deduct fee from sender
 	common := tx.GetCommon()
-	accountID, _ := decodeAccountID(common.Account)
+	accountID, _ := sle.DecodeAccountID(common.Account)
 	accountKey := keylet.Account(accountID)
 
 	// Read sender account through the table (tracks it for metadata)
@@ -753,7 +872,7 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 		return TefINTERNAL
 	}
 
-	account, err := parseAccountRoot(accountData)
+	account, err := sle.ParseAccountRoot(accountData)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -772,140 +891,25 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 
 	// Type-specific application - all operations go through the table
 	var result Result
-	switch t := tx.(type) {
-	case *Payment:
-		result = e.applyPayment(t, account, metadata, table)
-	case *AccountSet:
-		result = e.applyAccountSet(t, account, table)
-	case *TrustSet:
-		result = e.applyTrustSet(t, account, table)
-	case *OfferCreate:
-		result = e.applyOfferCreate(t, account, table)
-	case *OfferCancel:
-		result = e.applyOfferCancel(t, account, table)
-	case *SetRegularKey:
-		result = e.applySetRegularKey(t, account, table)
-	case *SignerListSet:
-		result = e.applySignerListSet(t, account, table)
-	case *TicketCreate:
-		result = e.applyTicketCreate(t, account, table)
-	case *DepositPreauth:
-		result = e.applyDepositPreauth(t, account, table)
-	case *AccountDelete:
-		result = e.applyAccountDelete(t, account, table)
-	case *EscrowCreate:
-		result = e.applyEscrowCreate(t, account, table)
-	case *EscrowFinish:
-		result = e.applyEscrowFinish(t, account, table)
-	case *EscrowCancel:
-		result = e.applyEscrowCancel(t, account, table)
-	case *PaymentChannelCreate:
-		result = e.applyPaymentChannelCreate(t, account, table)
-	case *PaymentChannelFund:
-		result = e.applyPaymentChannelFund(t, account, table)
-	case *PaymentChannelClaim:
-		result = e.applyPaymentChannelClaim(t, account, table)
-	case *CheckCreate:
-		result = e.applyCheckCreate(t, account, table)
-	case *CheckCash:
-		result = e.applyCheckCash(t, account, table)
-	case *CheckCancel:
-		result = e.applyCheckCancel(t, account, table)
-	case *NFTokenMint:
-		result = e.applyNFTokenMint(t, account, table)
-	case *NFTokenBurn:
-		result = e.applyNFTokenBurn(t, account, table)
-	case *NFTokenCreateOffer:
-		result = e.applyNFTokenCreateOffer(t, account, table)
-	case *NFTokenCancelOffer:
-		result = e.applyNFTokenCancelOffer(t, account, table)
-	case *NFTokenAcceptOffer:
-		result = e.applyNFTokenAcceptOffer(t, account, table)
-	case *AMMCreate:
-		result = e.applyAMMCreate(t, account, table)
-	case *AMMDeposit:
-		result = e.applyAMMDeposit(t, account, table)
-	case *AMMWithdraw:
-		result = e.applyAMMWithdraw(t, account, table)
-	case *AMMVote:
-		result = e.applyAMMVote(t, account, table)
-	case *AMMBid:
-		result = e.applyAMMBid(t, account, table)
-	case *AMMDelete:
-		result = e.applyAMMDelete(t, account, table)
-	case *AMMClawback:
-		result = e.applyAMMClawback(t, account, table)
-	case *XChainCreateBridge:
-		result = e.applyXChainCreateBridge(t, account, table)
-	case *XChainModifyBridge:
-		result = e.applyXChainModifyBridge(t, account, table)
-	case *XChainCreateClaimID:
-		result = e.applyXChainCreateClaimID(t, account, table)
-	case *XChainCommit:
-		result = e.applyXChainCommit(t, account, table)
-	case *XChainClaim:
-		result = e.applyXChainClaim(t, account, table)
-	case *XChainAccountCreateCommit:
-		result = e.applyXChainAccountCreateCommit(t, account, table)
-	case *XChainAddClaimAttestation:
-		result = e.applyXChainAddClaimAttestation(t, account, table)
-	case *XChainAddAccountCreateAttestation:
-		result = e.applyXChainAddAccountCreateAttestation(t, account, table)
-	case *DIDSet:
-		result = e.applyDIDSet(t, account, table)
-	case *DIDDelete:
-		result = e.applyDIDDelete(t, account, table)
-	case *OracleSet:
-		result = e.applyOracleSet(t, account, table)
-	case *OracleDelete:
-		result = e.applyOracleDelete(t, account, table)
-	case *MPTokenIssuanceCreate:
-		result = e.applyMPTokenIssuanceCreate(t, account, table)
-	case *MPTokenIssuanceDestroy:
-		result = e.applyMPTokenIssuanceDestroy(t, account, table)
-	case *MPTokenIssuanceSet:
-		result = e.applyMPTokenIssuanceSet(t, account, table)
-	case *MPTokenAuthorize:
-		result = e.applyMPTokenAuthorize(t, account, table)
-	case *Clawback:
-		result = e.applyClawback(t, account, table)
-	case *NFTokenModify:
-		result = e.applyNFTokenModify(t, account, table)
-	case *CredentialCreate:
-		result = e.applyCredentialCreate(t, account, table)
-	case *CredentialAccept:
-		result = e.applyCredentialAccept(t, account, table)
-	case *CredentialDelete:
-		result = e.applyCredentialDelete(t, account, table)
-	case *PermissionedDomainSet:
-		result = e.applyPermissionedDomainSet(t, account, table)
-	case *PermissionedDomainDelete:
-		result = e.applyPermissionedDomainDelete(t, account, table)
-	case *DelegateSet:
-		result = e.applyDelegateSet(t, account, table)
-	case *VaultCreate:
-		result = e.applyVaultCreate(t, account, table)
-	case *VaultSet:
-		result = e.applyVaultSet(t, account, table)
-	case *VaultDelete:
-		result = e.applyVaultDelete(t, account, table)
-	case *VaultDeposit:
-		result = e.applyVaultDeposit(t, account, table)
-	case *VaultWithdraw:
-		result = e.applyVaultWithdraw(t, account, table)
-	case *VaultClawback:
-		result = e.applyVaultClawback(t, account, table)
-	case *Batch:
-		result = e.applyBatch(t, account, table)
-	case *LedgerStateFix:
-		result = e.applyLedgerStateFix(t, account, table)
-	default:
-		// For unimplemented transaction types, just update the account
+
+	// All transaction types implement Appliable
+	ctx := &ApplyContext{
+		View:      table,
+		Account:   account,
+		AccountID: accountID,
+		Config:    e.config,
+		TxHash:    txHash,
+		Metadata:  metadata,
+		Engine:    e,
+	}
+	if appliable, ok := tx.(Appliable); ok {
+		result = appliable.Apply(ctx)
+	} else {
 		result = TesSUCCESS
 	}
 
 	// Update the source account through the table
-	updatedData, err := serializeAccountRoot(account)
+	updatedData, err := sle.SerializeAccountRoot(account)
 	if err != nil {
 		return TefINTERNAL
 	}

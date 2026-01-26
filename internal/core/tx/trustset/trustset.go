@@ -1,0 +1,567 @@
+package trustset
+
+import (
+	"errors"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
+
+	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
+	"github.com/LeJamon/goXRPLd/internal/core/tx"
+)
+
+func init() {
+	tx.Register(tx.TypeTrustSet, func() tx.Transaction {
+		return &TrustSet{BaseTx: *tx.NewBaseTx(tx.TypeTrustSet, "")}
+	})
+}
+
+// TrustSet creates or modifies a trust line between two accounts.
+type TrustSet struct {
+	tx.BaseTx
+
+	// LimitAmount defines the trust line (required)
+	// The issuer field is the account to trust
+	LimitAmount tx.Amount `json:"LimitAmount" xrpl:"LimitAmount,amount"`
+
+	// QualityIn is the quality in (1e9 = 1:1) - optional
+	QualityIn *uint32 `json:"QualityIn,omitempty" xrpl:"QualityIn,omitempty"`
+
+	// QualityOut is the quality out (1e9 = 1:1) - optional
+	QualityOut *uint32 `json:"QualityOut,omitempty" xrpl:"QualityOut,omitempty"`
+}
+
+// TrustSet transaction flags
+// Reference: rippled SetTrust.cpp
+const (
+	// tfSetfAuth authorizes the other party to hold currency
+	TrustSetFlagSetfAuth uint32 = 0x00010000
+	// tfSetNoRipple blocks rippling on this trust line
+	TrustSetFlagSetNoRipple uint32 = 0x00020000
+	// tfClearNoRipple clears the no ripple flag
+	TrustSetFlagClearNoRipple uint32 = 0x00040000
+	// tfSetFreeze freezes the trust line
+	TrustSetFlagSetFreeze uint32 = 0x00100000
+	// tfClearFreeze clears the freeze flag
+	TrustSetFlagClearFreeze uint32 = 0x00200000
+	// tfSetDeepFreeze deep freezes the trust line (requires featureDeepFreeze)
+	TrustSetFlagSetDeepFreeze uint32 = 0x00400000
+	// tfClearDeepFreeze clears the deep freeze flag
+	TrustSetFlagClearDeepFreeze uint32 = 0x00800000
+
+	// tfTrustSetMask is the mask for valid TrustSet transaction flags
+	TrustSetFlagMask uint32 = ^(TrustSetFlagSetfAuth |
+		TrustSetFlagSetNoRipple |
+		TrustSetFlagClearNoRipple |
+		TrustSetFlagSetFreeze |
+		TrustSetFlagClearFreeze |
+		TrustSetFlagSetDeepFreeze |
+		TrustSetFlagClearDeepFreeze |
+		tx.TfFullyCanonicalSig)
+)
+
+// NewTrustSet creates a new TrustSet transaction
+func NewTrustSet(account string, limitAmount tx.Amount) *TrustSet {
+	return &TrustSet{
+		BaseTx:      *tx.NewBaseTx(tx.TypeTrustSet, account),
+		LimitAmount: limitAmount,
+	}
+}
+
+// TxType returns the transaction type
+func (t *TrustSet) TxType() tx.Type {
+	return tx.TypeTrustSet
+}
+
+// Validate validates the TrustSet transaction
+// Reference: rippled SetTrust.cpp preflight()
+func (t *TrustSet) Validate() error {
+	if err := t.BaseTx.Validate(); err != nil {
+		return err
+	}
+
+	txFlags := t.GetFlags()
+
+	// Check for invalid transaction flags
+	if txFlags&TrustSetFlagMask != 0 {
+		return errors.New("temINVALID_FLAG: invalid transaction flags")
+	}
+
+	// LimitAmount must be an issued currency, not XRP
+	if t.LimitAmount.IsNative() {
+		return errors.New("temBAD_LIMIT: cannot create trust line for XRP")
+	}
+
+	if t.LimitAmount.Currency == "" {
+		return errors.New("temBAD_CURRENCY: currency is required")
+	}
+
+	// Check for XRP currency code
+	if t.LimitAmount.Currency == "XRP" {
+		return errors.New("temBAD_CURRENCY: cannot use XRP as IOU currency")
+	}
+
+	// Negative limit is not allowed
+	if len(t.LimitAmount.Value) > 0 && t.LimitAmount.Value[0] == '-' {
+		return errors.New("temBAD_LIMIT: negative credit limit")
+	}
+
+	// Check if destination makes sense
+	if t.LimitAmount.Issuer == "" {
+		return errors.New("temDST_NEEDED: issuer is required")
+	}
+
+	// Cannot create trust line to self
+	if t.LimitAmount.Issuer == t.Account {
+		return errors.New("temDST_IS_SRC: cannot create trust line to self")
+	}
+
+	// Check for contradictory NoRipple flags
+	setNoRipple := txFlags&TrustSetFlagSetNoRipple != 0
+	clearNoRipple := txFlags&TrustSetFlagClearNoRipple != 0
+	if setNoRipple && clearNoRipple {
+		return errors.New("temINVALID_FLAG: cannot set and clear NoRipple")
+	}
+
+	// Check for contradictory Freeze flags
+	setFreeze := txFlags&TrustSetFlagSetFreeze != 0
+	clearFreeze := txFlags&TrustSetFlagClearFreeze != 0
+	setDeepFreeze := txFlags&TrustSetFlagSetDeepFreeze != 0
+	clearDeepFreeze := txFlags&TrustSetFlagClearDeepFreeze != 0
+
+	if (setFreeze || setDeepFreeze) && (clearFreeze || clearDeepFreeze) {
+		return errors.New("temINVALID_FLAG: cannot set and clear freeze in same transaction")
+	}
+
+	return nil
+}
+
+// Flatten returns a flat map of all transaction fields
+func (t *TrustSet) Flatten() (map[string]any, error) {
+	return tx.ReflectFlatten(t)
+}
+
+// SetNoRipple sets the no ripple flag on this trust line
+func (t *TrustSet) SetNoRipple() {
+	flags := t.GetFlags() | TrustSetFlagSetNoRipple
+	t.SetFlags(flags)
+}
+
+// ClearNoRipple clears the no ripple flag on this trust line
+func (t *TrustSet) ClearNoRipple() {
+	flags := t.GetFlags() | TrustSetFlagClearNoRipple
+	t.SetFlags(flags)
+}
+
+// SetFreeze freezes this trust line
+func (t *TrustSet) SetFreeze() {
+	flags := t.GetFlags() | TrustSetFlagSetFreeze
+	t.SetFlags(flags)
+}
+
+// Apply applies a TrustSet transaction to the ledger state.
+// Reference: rippled SetTrust.cpp doApply
+func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
+	// Cannot create trust line to self
+	if t.LimitAmount.Issuer == ctx.Account.Account {
+		return tx.TemDST_IS_SRC
+	}
+
+	// Get the issuer account ID
+	issuerAccountID, err := sle.DecodeAccountID(t.LimitAmount.Issuer)
+	if err != nil {
+		return tx.TemBAD_ISSUER
+	}
+	issuerKey := keylet.Account(issuerAccountID)
+
+	// Check issuer exists and get issuer account for flag checks
+	issuerData, err := ctx.View.Read(issuerKey)
+	if err != nil {
+		return tx.TecNO_ISSUER
+	}
+	issuerAccount, err := sle.ParseAccountRoot(issuerData)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	// Get the account ID
+	accountID, _ := sle.DecodeAccountID(ctx.Account.Account)
+
+	// Determine low/high accounts (for consistent trust line ordering)
+	bHigh := sle.CompareAccountIDsForLine(accountID, issuerAccountID) > 0
+
+	// Get or create the trust line
+	trustLineKey := keylet.Line(accountID, issuerAccountID, t.LimitAmount.Currency)
+
+	trustLineExists, err := ctx.View.Exists(trustLineKey)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	// Parse transaction flags
+	txFlags := uint32(0)
+	if t.Flags != nil {
+		txFlags = *t.Flags
+	}
+
+	bSetAuth := (txFlags & TrustSetFlagSetfAuth) != 0
+	bSetNoRipple := (txFlags & TrustSetFlagSetNoRipple) != 0
+	bClearNoRipple := (txFlags & TrustSetFlagClearNoRipple) != 0
+	bSetFreeze := (txFlags & TrustSetFlagSetFreeze) != 0
+	bClearFreeze := (txFlags & TrustSetFlagClearFreeze) != 0
+	bSetDeepFreeze := (txFlags & TrustSetFlagSetDeepFreeze) != 0
+	bClearDeepFreeze := (txFlags & TrustSetFlagClearDeepFreeze) != 0
+
+	// Validate tfSetfAuth - requires issuer to have lsfRequireAuth set
+	if bSetAuth && (ctx.Account.Flags&sle.LsfRequireAuth) == 0 {
+		return tx.TefNO_AUTH_REQUIRED
+	}
+
+	// Validate freeze flags - cannot freeze if account has lsfNoFreeze set
+	bNoFreeze := (ctx.Account.Flags & sle.LsfNoFreeze) != 0
+	if bNoFreeze && (bSetFreeze || bSetDeepFreeze) {
+		return tx.TecNO_PERMISSION
+	}
+
+	// Parse quality values from transaction
+	const qualityOne uint32 = 1000000000
+	var uQualityIn, uQualityOut uint32
+	bQualityIn := t.QualityIn != nil
+	bQualityOut := t.QualityOut != nil
+
+	if bQualityIn {
+		uQualityIn = *t.QualityIn
+		if uQualityIn == qualityOne {
+			uQualityIn = 0
+		}
+	}
+	if bQualityOut {
+		uQualityOut = *t.QualityOut
+		if uQualityOut == qualityOne {
+			uQualityOut = 0
+		}
+	}
+
+	// Parse the limit amount
+	limitAmount := sle.NewIOUAmount(t.LimitAmount.Value, t.LimitAmount.Currency, ctx.Account.Account)
+
+	if !trustLineExists {
+		// Check if setting zero limit without existing trust line
+		if limitAmount.IsZero() && !bSetAuth && (!bQualityIn || uQualityIn == 0) && (!bQualityOut || uQualityOut == 0) {
+			return tx.TesSUCCESS
+		}
+
+		// Check account has reserve for new trust line
+		reserveCreate := ctx.ReserveForNewObject(ctx.Account.OwnerCount)
+		if ctx.Account.Balance < reserveCreate {
+			return tx.TecINSUF_RESERVE_LINE
+		}
+
+		// Create new RippleState
+		rs := &sle.RippleState{
+			Balance:           sle.NewIOUAmount("0", t.LimitAmount.Currency, t.LimitAmount.Issuer),
+			Flags:             0,
+			LowNode:           0,
+			HighNode:          0,
+			PreviousTxnID:     ctx.TxHash,
+			PreviousTxnLgrSeq: ctx.Config.LedgerSequence,
+		}
+
+		// Set the limit based on which side this account is
+		if !bHigh {
+			rs.LowLimit = limitAmount
+			rs.HighLimit = sle.NewIOUAmount("0", t.LimitAmount.Currency, t.LimitAmount.Issuer)
+			rs.Flags |= sle.LsfLowReserve
+		} else {
+			rs.LowLimit = sle.NewIOUAmount("0", t.LimitAmount.Currency, t.LimitAmount.Issuer)
+			rs.HighLimit = limitAmount
+			rs.Flags |= sle.LsfHighReserve
+		}
+
+		// Handle Auth flag for new trust line
+		if bSetAuth {
+			if bHigh {
+				rs.Flags |= sle.LsfHighAuth
+			} else {
+				rs.Flags |= sle.LsfLowAuth
+			}
+		}
+
+		// Handle NoRipple flag from transaction
+		if bSetNoRipple && !bClearNoRipple {
+			if bHigh {
+				rs.Flags |= sle.LsfHighNoRipple
+			} else {
+				rs.Flags |= sle.LsfLowNoRipple
+			}
+		}
+
+		// Handle Freeze flag for new trust line
+		if bSetFreeze && !bClearFreeze && !bNoFreeze {
+			if bHigh {
+				rs.Flags |= sle.LsfHighFreeze
+			} else {
+				rs.Flags |= sle.LsfLowFreeze
+			}
+		}
+
+		// Handle DeepFreeze flag for new trust line
+		if bSetDeepFreeze && !bClearDeepFreeze && !bNoFreeze {
+			if bHigh {
+				rs.Flags |= sle.LsfHighDeepFreeze
+			} else {
+				rs.Flags |= sle.LsfLowDeepFreeze
+			}
+		}
+
+		// Handle QualityIn/QualityOut for new trust line
+		if bQualityIn && uQualityIn != 0 {
+			if bHigh {
+				rs.HighQualityIn = uQualityIn
+			} else {
+				rs.LowQualityIn = uQualityIn
+			}
+		}
+		if bQualityOut && uQualityOut != 0 {
+			if bHigh {
+				rs.HighQualityOut = uQualityOut
+			} else {
+				rs.LowQualityOut = uQualityOut
+			}
+		}
+
+		// Determine the LOW and HIGH account IDs for directory operations
+		var lowAccountID, highAccountID [20]byte
+		if !bHigh {
+			lowAccountID = accountID
+			highAccountID = issuerAccountID
+		} else {
+			lowAccountID = issuerAccountID
+			highAccountID = accountID
+		}
+
+		// Add trust line to LOW account's owner directory
+		lowDirKey := keylet.OwnerDir(lowAccountID)
+		lowDirResult, err := sle.DirInsert(ctx.View, lowDirKey, trustLineKey.Key, func(dir *sle.DirectoryNode) {
+			dir.Owner = lowAccountID
+		})
+		if err != nil {
+			return tx.TefINTERNAL
+		}
+
+		// Add trust line to HIGH account's owner directory
+		highDirKey := keylet.OwnerDir(highAccountID)
+		highDirResult, err := sle.DirInsert(ctx.View, highDirKey, trustLineKey.Key, func(dir *sle.DirectoryNode) {
+			dir.Owner = highAccountID
+		})
+		if err != nil {
+			return tx.TefINTERNAL
+		}
+
+		// Set LowNode and HighNode on the RippleState (deletion hints)
+		rs.LowNode = lowDirResult.Page
+		rs.HighNode = highDirResult.Page
+
+		// Serialize and insert the trust line
+		trustLineData, err := sle.SerializeRippleState(rs)
+		if err != nil {
+			return tx.TefINTERNAL
+		}
+
+		if err := ctx.View.Insert(trustLineKey, trustLineData); err != nil {
+			return tx.TefINTERNAL
+		}
+
+		// Increment owner count for the transaction sender
+		ctx.Account.OwnerCount++
+
+	} else {
+		// Modify existing trust line
+		trustLineData, err := ctx.View.Read(trustLineKey)
+		if err != nil {
+			return tx.TefINTERNAL
+		}
+
+		rs, err := sle.ParseRippleState(trustLineData)
+		if err != nil {
+			return tx.TefINTERNAL
+		}
+
+		// Update the limit
+		if !bHigh {
+			rs.LowLimit = limitAmount
+		} else {
+			rs.HighLimit = limitAmount
+		}
+
+		// Handle Auth flag (can only be set, not cleared per rippled)
+		if bSetAuth {
+			if bHigh {
+				rs.Flags |= sle.LsfHighAuth
+			} else {
+				rs.Flags |= sle.LsfLowAuth
+			}
+		}
+
+		// Handle NoRipple flag
+		if bSetNoRipple && !bClearNoRipple {
+			balanceFromPerspective := true
+			if rs.Balance.Value != nil {
+				if bHigh {
+					balanceFromPerspective = rs.Balance.Value.Sign() <= 0
+				} else {
+					balanceFromPerspective = rs.Balance.Value.Sign() >= 0
+				}
+			}
+			if balanceFromPerspective {
+				if bHigh {
+					rs.Flags |= sle.LsfHighNoRipple
+				} else {
+					rs.Flags |= sle.LsfLowNoRipple
+				}
+			}
+		} else if bClearNoRipple && !bSetNoRipple {
+			if bHigh {
+				rs.Flags &^= sle.LsfHighNoRipple
+			} else {
+				rs.Flags &^= sle.LsfLowNoRipple
+			}
+		}
+
+		// Handle Freeze flag
+		if bSetFreeze && !bClearFreeze && !bNoFreeze {
+			if bHigh {
+				rs.Flags |= sle.LsfHighFreeze
+			} else {
+				rs.Flags |= sle.LsfLowFreeze
+			}
+		} else if bClearFreeze && !bSetFreeze {
+			if bHigh {
+				rs.Flags &^= sle.LsfHighFreeze
+			} else {
+				rs.Flags &^= sle.LsfLowFreeze
+			}
+		}
+
+		// Handle DeepFreeze flag
+		if bSetDeepFreeze && !bClearDeepFreeze && !bNoFreeze {
+			if bHigh {
+				rs.Flags |= sle.LsfHighDeepFreeze
+			} else {
+				rs.Flags |= sle.LsfLowDeepFreeze
+			}
+		} else if bClearDeepFreeze && !bSetDeepFreeze {
+			if bHigh {
+				rs.Flags &^= sle.LsfHighDeepFreeze
+			} else {
+				rs.Flags &^= sle.LsfLowDeepFreeze
+			}
+		}
+
+		// Handle QualityIn
+		if bQualityIn {
+			if uQualityIn != 0 {
+				if bHigh {
+					rs.HighQualityIn = uQualityIn
+				} else {
+					rs.LowQualityIn = uQualityIn
+				}
+			} else {
+				if bHigh {
+					rs.HighQualityIn = 0
+				} else {
+					rs.LowQualityIn = 0
+				}
+			}
+		}
+
+		// Handle QualityOut
+		if bQualityOut {
+			if uQualityOut != 0 {
+				if bHigh {
+					rs.HighQualityOut = uQualityOut
+				} else {
+					rs.LowQualityOut = uQualityOut
+				}
+			} else {
+				if bHigh {
+					rs.HighQualityOut = 0
+				} else {
+					rs.LowQualityOut = 0
+				}
+			}
+		}
+
+		// Normalize quality values
+		if rs.LowQualityIn == qualityOne {
+			rs.LowQualityIn = 0
+		}
+		if rs.LowQualityOut == qualityOne {
+			rs.LowQualityOut = 0
+		}
+		if rs.HighQualityIn == qualityOne {
+			rs.HighQualityIn = 0
+		}
+		if rs.HighQualityOut == qualityOne {
+			rs.HighQualityOut = 0
+		}
+
+		// Check if trust line should be deleted
+		bLowDefRipple := (issuerAccount.Flags & sle.LsfDefaultRipple) != 0
+		bHighDefRipple := (ctx.Account.Flags & sle.LsfDefaultRipple) != 0
+		if bHigh {
+			bLowDefRipple = (issuerAccount.Flags & sle.LsfDefaultRipple) != 0
+			bHighDefRipple = (ctx.Account.Flags & sle.LsfDefaultRipple) != 0
+		} else {
+			bLowDefRipple = (ctx.Account.Flags & sle.LsfDefaultRipple) != 0
+			bHighDefRipple = (issuerAccount.Flags & sle.LsfDefaultRipple) != 0
+		}
+
+		bLowReserveSet := rs.LowQualityIn != 0 || rs.LowQualityOut != 0 ||
+			((rs.Flags&sle.LsfLowNoRipple) == 0) != bLowDefRipple ||
+			(rs.Flags&sle.LsfLowFreeze) != 0 || !rs.LowLimit.IsZero() ||
+			(rs.Balance.Value != nil && rs.Balance.Value.Sign() > 0)
+
+		bHighReserveSet := rs.HighQualityIn != 0 || rs.HighQualityOut != 0 ||
+			((rs.Flags&sle.LsfHighNoRipple) == 0) != bHighDefRipple ||
+			(rs.Flags&sle.LsfHighFreeze) != 0 || !rs.HighLimit.IsZero() ||
+			(rs.Balance.Value != nil && rs.Balance.Value.Sign() < 0)
+
+		bDefault := !bLowReserveSet && !bHighReserveSet
+
+		if bDefault && rs.Balance.IsZero() {
+			// Delete the trust line
+			if err := ctx.View.Erase(trustLineKey); err != nil {
+				return tx.TefINTERNAL
+			}
+
+			// Decrement owner count
+			if ctx.Account.OwnerCount > 0 {
+				ctx.Account.OwnerCount--
+			}
+		} else {
+			// Update reserve flags
+			if bLowReserveSet && (rs.Flags&sle.LsfLowReserve) == 0 {
+				rs.Flags |= sle.LsfLowReserve
+			} else if !bLowReserveSet && (rs.Flags&sle.LsfLowReserve) != 0 {
+				rs.Flags &^= sle.LsfLowReserve
+			}
+
+			if bHighReserveSet && (rs.Flags&sle.LsfHighReserve) == 0 {
+				rs.Flags |= sle.LsfHighReserve
+			} else if !bHighReserveSet && (rs.Flags&sle.LsfHighReserve) != 0 {
+				rs.Flags &^= sle.LsfHighReserve
+			}
+
+			// Update the trust line
+			updatedData, err := sle.SerializeRippleState(rs)
+			if err != nil {
+				return tx.TefINTERNAL
+			}
+
+			if err := ctx.View.Update(trustLineKey, updatedData); err != nil {
+				return tx.TefINTERNAL
+			}
+		}
+	}
+
+	return tx.TesSUCCESS
+}

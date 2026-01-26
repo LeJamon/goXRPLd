@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 	"strings"
 
 	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
@@ -34,11 +35,11 @@ type TrackedEntry struct {
 // ApplyStateTable wraps a LedgerView and tracks all modifications
 // for automatic metadata generation, similar to rippled's ApplyStateTable
 type ApplyStateTable struct {
-	base    LedgerView
-	items   map[[32]byte]*TrackedEntry
-	drops   XRPAmount.XRPAmount
-	txHash  [32]byte
-	txSeq   uint32
+	base   LedgerView
+	items  map[[32]byte]*TrackedEntry
+	drops  XRPAmount.XRPAmount
+	txHash [32]byte
+	txSeq  uint32
 }
 
 // NewApplyStateTable creates a new ApplyStateTable wrapping the given base view
@@ -388,7 +389,7 @@ func (t *ApplyStateTable) buildCreatedNode(key [32]byte, data []byte) (AffectedN
 
 	// For CreatedNode, include all non-default fields with sMD_Create | sMD_Always
 	for name, value := range fields {
-		if shouldIncludeInCreate(name) && !isDefaultValue(value) {
+		if shouldIncludeInCreate(name) && !sle.IsDefaultValue(value) {
 			node.NewFields[name] = value
 		}
 	}

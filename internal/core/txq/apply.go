@@ -4,6 +4,7 @@ import (
 	"strconv"
 
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/payment"
 )
 
 // ApplyResult represents the result of trying to apply or queue a transaction.
@@ -302,17 +303,12 @@ func computeConsequences(txn tx.Transaction, seqProxy SeqProxy) TxConsequences {
 
 	// Compute potential spend
 	switch t := txn.(type) {
-	case *tx.Payment:
+	case *payment.Payment:
 		if t.Amount.IsNative() {
-			// Parse drops value
 			drops := parseDrops(t.Amount.Value)
 			cons.PotentialSpend = drops
 		}
-	case *tx.OfferCreate:
-		if t.TakerGets.IsNative() {
-			drops := parseDrops(t.TakerGets.Value)
-			cons.PotentialSpend = drops
-		}
+		// TODO: Add offer.OfferCreate case when offer package is re-enabled
 	}
 
 	return cons
