@@ -126,38 +126,27 @@ func (s *BookStep) Rev(
 
 	remainingOut := out
 
-	fmt.Printf("DEBUG Rev: remainingOut=%+v, book.In=%v, book.Out=%v\n", remainingOut, s.book.In, s.book.Out)
-
 	// Iterate through offers
 	for s.offersUsed_ < s.maxOffersToConsume && !remainingOut.IsZero() {
 		// Get next offer at best quality
 		offer, offerKey, err := s.getNextOffer(sb, afView, ofrsToRm)
 		if err != nil {
-			fmt.Printf("DEBUG Rev: getNextOffer error: %v\n", err)
 			break
 		}
 		if offer == nil {
-			fmt.Printf("DEBUG Rev: no more offers\n")
 			break // No more offers
 		}
 
-		fmt.Printf("DEBUG Rev: got offer from %s, TakerPays=%+v, TakerGets=%+v\n",
-			offer.Account, offer.TakerPays, offer.TakerGets)
-
 		// Check if offer is funded
 		if !s.isOfferFunded(sb, offer) {
-			fmt.Printf("DEBUG Rev: offer not funded, removing\n")
 			ofrsToRm[offerKey] = true
 			s.offersUsed_++
 			continue
 		}
 
-		fmt.Printf("DEBUG Rev: offer is funded, processing\n")
-
 		// Check quality limit - if offer quality is worse than limit, stop
 		offerQuality := s.offerQuality(offer)
 		if s.qualityLimit != nil && offerQuality.WorseThan(*s.qualityLimit) {
-			fmt.Printf("DEBUG Rev: offer quality %d exceeds limit %d, stopping\n", offerQuality.Value, s.qualityLimit.Value)
 			break
 		}
 
@@ -537,9 +526,6 @@ func (s *BookStep) getNextOffer(sb *PaymentSandbox, afView *PaymentSandbox, ofrs
 		return bytes.Compare(dirs[i].key[24:], dirs[j].key[24:]) < 0
 	})
 
-	fmt.Printf("DEBUG getNextOffer: bookPrefix=%x, entries=%d, dirs=%d\n",
-		bookPrefix, entryCount, len(dirs))
-
 	// Iterate through directories to find first non-removed offer
 	for _, d := range dirs {
 		dir, err := sle.ParseDirectoryNode(d.data)
@@ -616,8 +602,8 @@ func (s *BookStep) getOfferFundedAmount(sb *PaymentSandbox, offer *sle.LedgerOff
 		// Available XRP = balance - reserve
 		// Reserve = base_reserve + owner_count * increment_reserve
 		// Use approximate values for now
-		baseReserve := int64(10000000)       // 10 XRP base reserve
-		incrementReserve := int64(2000000)   // 2 XRP per owned object
+		baseReserve := int64(10000000)     // 10 XRP base reserve
+		incrementReserve := int64(2000000) // 2 XRP per owned object
 		reserve := baseReserve + int64(account.OwnerCount)*incrementReserve
 		available := int64(account.Balance) - reserve
 

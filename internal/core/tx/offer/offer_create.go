@@ -120,12 +120,10 @@ func (o *OfferCreate) SetFillOrKill() {
 // 4. Offer placement if not fully filled
 // Reference: rippled CreateOffer.cpp doApply()
 func (o *OfferCreate) Apply(ctx *tx.ApplyContext) tx.Result {
-	fmt.Printf("DEBUG OfferCreate.Apply called\n")
 
 	// Run preflight validation with amendment rules
 	// Reference: rippled CreateOffer.cpp preflight()
 	if err := o.Preflight(ctx.Rules()); err != nil {
-		fmt.Printf("DEBUG OfferCreate.Apply: preflight error: %v\n", err)
 		// Convert preflight error to appropriate TER code
 		return tx.TemMALFORMED
 	}
@@ -373,15 +371,12 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 
 	crossed := false
 
-	fmt.Printf("DEBUG applyGuts: bPassive=%v, result=%v\n", bPassive, result)
-
 	if result == tx.TesSUCCESS {
 		// Apply tick size rounding if applicable
 		// Reference: lines 643-685
 		saTakerPays, saTakerGets = applyTickSize(ctx.View, saTakerPays, saTakerGets, bSell, rules)
 		if isAmountZeroOrNegative(saTakerPays) || isAmountZeroOrNegative(saTakerGets) {
 			// Offer rounded to zero
-			fmt.Printf("DEBUG applyGuts: offer rounded to zero\n")
 			return tx.TesSUCCESS
 		}
 
@@ -390,7 +385,6 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 
 		// Perform offer crossing
 		// Reference: lines 687-768
-		fmt.Printf("DEBUG applyGuts: before FlowCross, !bPassive=%v\n", !bPassive)
 		if !bPassive {
 			var placeOffer struct {
 				in  tx.Amount
@@ -426,12 +420,7 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 			// Apply sandbox changes to the main ledger view
 			// Reference: rippled CreateOffer.cpp - sandbox changes must be applied
 			if crossResult.Sandbox != nil {
-				fmt.Printf("DEBUG applyGuts: applying sandbox with %d mods, %d inserts, %d deletes\n",
-					len(crossResult.Sandbox.GetModifications()),
-					len(crossResult.Sandbox.GetInsertions()),
-					len(crossResult.Sandbox.GetDeletions()))
 				if err := crossResult.Sandbox.ApplyToView(ctx.View); err != nil {
-					fmt.Printf("DEBUG applyGuts: ApplyToView error: %v\n", err)
 					return tx.TefINTERNAL
 				}
 			} else {
@@ -443,7 +432,6 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 			// Reference: The taker paid XRP for the crossing
 			if placeOffer.in.IsNative() {
 				paidDrops, _ := sle.ParseDropsString(placeOffer.in.Value)
-				fmt.Printf("DEBUG applyGuts: updating ctx.Account.Balance, paid %d drops\n", paidDrops)
 				if ctx.Account.Balance >= paidDrops {
 					ctx.Account.Balance -= paidDrops
 				}
@@ -472,9 +460,6 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 			// Remaining offer = original - consumed
 			remainingGets := subtractAmounts(saTakerGets, placeOffer.in)
 			remainingPays := subtractAmounts(saTakerPays, placeOffer.out)
-
-			fmt.Printf("DEBUG applyGuts: crossing done, remainingGets=%s, remainingPays=%s\n",
-				remainingGets.Value, remainingPays.Value)
 
 			// Check if offer is fully filled
 			// Reference: lines 757-761
@@ -521,11 +506,8 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 	// Reference: lines 815-834
 	reserve := ctx.AccountReserve(ctx.Account.OwnerCount + 1)
 	priorBalance := ctx.Account.Balance + parseFee(ctx)
-	fmt.Printf("DEBUG reserve check: balance=%d, fee=%d, priorBalance=%d, ownerCount=%d, reserve=%d, crossed=%v\n",
-		ctx.Account.Balance, parseFee(ctx), priorBalance, ctx.Account.OwnerCount, reserve, crossed)
 	if priorBalance < reserve {
 		if !crossed {
-			fmt.Printf("DEBUG reserve check: returning TecINSUF_RESERVE_OFFER\n")
 			return tx.TecINSUF_RESERVE_OFFER
 		}
 		return tx.TesSUCCESS

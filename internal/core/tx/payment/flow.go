@@ -8,20 +8,20 @@ import (
 )
 
 // DebugFlow enables debug output for flow execution
-var DebugFlow = true
+var DebugFlow = false
 
 // Flow executes payment across multiple strands, selecting the best quality paths.
 //
 // The algorithm:
-// 1. Calculate quality upper bound for each strand
-// 2. Sort strands by quality (best first)
-// 3. For each iteration:
-//    a. Execute each active strand with remaining output
-//    b. Select the strand with best actual quality
-//    c. Apply that strand's changes
-//    d. Accumulate results
-//    e. Remove exhausted strands
-// 4. Continue until output satisfied or all strands dry
+//  1. Calculate quality upper bound for each strand
+//  2. Sort strands by quality (best first)
+//  3. For each iteration:
+//     a. Execute each active strand with remaining output
+//     b. Select the strand with best actual quality
+//     c. Apply that strand's changes
+//     d. Accumulate results
+//     e. Remove exhausted strands
+//  4. Continue until output satisfied or all strands dry
 //
 // Parameters:
 //   - baseView: PaymentSandbox with ledger state

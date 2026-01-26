@@ -1,8 +1,6 @@
 package payment
 
 import (
-	"fmt"
-
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	tx "github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
@@ -51,7 +49,6 @@ func FlowCross(
 	txHash [32]byte,
 	ledgerSeq uint32,
 ) FlowCrossResult {
-	fmt.Printf("DEBUG FlowCross: takerGets=%+v, takerPays=%+v\n", takerGets, takerPays)
 
 	// Create sandbox for tracking changes
 	sandbox := NewPaymentSandbox(view)
@@ -63,15 +60,11 @@ func FlowCross(
 	outAmt := ToEitherAmount(takerGets) // Taker pays this out
 	inAmt := ToEitherAmount(takerPays)  // Taker receives this
 
-	fmt.Printf("DEBUG FlowCross: outAmt=%+v, inAmt=%+v\n", outAmt, inAmt)
-
 	// Build the book step for crossing
 	// The opposite book is: TakerPays currency -> TakerGets currency
 	// i.e., offers where someone is selling what we want to buy
 	inIssue := GetIssue(takerPays)  // What we want to receive
 	outIssue := GetIssue(takerGets) // What we're paying
-
-	fmt.Printf("DEBUG FlowCross: book.In=%+v, book.Out=%+v\n", outIssue, inIssue)
 
 	// Calculate quality limit for offer crossing
 	// Quality = what you pay / what you get (from the crossing perspective)
@@ -82,7 +75,6 @@ func FlowCross(
 	// This must match offerQuality = TakerPays/TakerGets (of matching offers)
 	// Reference: rippled CreateOffer.cpp - quality threshold for offer crossing
 	takerQuality := QualityFromAmounts(outAmt, inAmt)
-	fmt.Printf("DEBUG FlowCross: takerQuality=%+v\n", takerQuality)
 
 	// Create a single BookStep for the opposite order book WITH quality limit
 	// For offer crossing, we search the book where:
@@ -100,8 +92,6 @@ func FlowCross(
 	// Only cross offers at quality <= taker's quality
 	result := Flow(sandbox, []Strand{strand}, inAmt, true, &takerQuality, &outAmt)
 
-	fmt.Printf("DEBUG FlowCross: result=%+v, Out=%+v, In=%+v\n", result.Result, result.Out, result.In)
-
 	// Apply the flow sandbox changes to our root sandbox
 	// Reference: rippled CreateOffer.cpp line 711: psbFlow.apply(sb)
 	if result.Sandbox != nil {
@@ -109,9 +99,9 @@ func FlowCross(
 	}
 
 	return FlowCrossResult{
-		TakerGot:        result.Out,  // What taker received
-		TakerPaid:       result.In,   // What taker paid
-		Sandbox:         sandbox,     // Return the root sandbox, not the child
+		TakerGot:        result.Out, // What taker received
+		TakerPaid:       result.In,  // What taker paid
+		Sandbox:         sandbox,    // Return the root sandbox, not the child
 		RemovableOffers: result.RemovableOffers,
 		Result:          result.Result,
 	}
