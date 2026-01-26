@@ -1,71 +1,16 @@
-package builders
+package accountset
 
 import (
 	"fmt"
 
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-)
-
-// Account represents a test account with its address and optional metadata.
-// This is a simplified representation for building test transactions.
-type Account struct {
-	// Address is the r-address of the account (e.g., "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh")
-	Address string
-
-	// Sequence is the next sequence number for the account (optional)
-	Sequence uint32
-
-	// Balance in drops (optional, for test tracking)
-	Balance uint64
-}
-
-// NewAccount creates a new test account with the given address.
-func NewAccount(address string) *Account {
-	return &Account{
-		Address:  address,
-		Sequence: 1, // Default starting sequence
-	}
-}
-
-// NewAccountWithSeq creates a new test account with the given address and sequence.
-func NewAccountWithSeq(address string, sequence uint32) *Account {
-	return &Account{
-		Address:  address,
-		Sequence: sequence,
-	}
-}
-
-// NextSeq returns the current sequence and increments it for the next use.
-func (a *Account) NextSeq() uint32 {
-	seq := a.Sequence
-	a.Sequence++
-	return seq
-}
-
-// Well-known test accounts from rippled
-var (
-	// Genesis account - the well-known genesis account with all initial XRP
-	Genesis = NewAccount("rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh")
-
-	// Alice - commonly used test account
-	Alice = NewAccount("rN7n3473SaZBCG4dFL83w7a1RXtXtbk2D9")
-
-	// Bob - commonly used test account
-	Bob = NewAccount("rPMh7Pi9ct699iZUTWaytJUoHcJ7cgyziK")
-
-	// Carol - commonly used test account
-	Carol = NewAccount("rH4KEcG9dEwGwpn6AyoWK9cZPLL4RLSmWW")
-
-	// Dave - commonly used test account
-	Dave = NewAccount("rG1QQv2nh2gr7RCZ1P8YYcBUKCCN633jCn")
-
-	// Gateway - commonly used as an issuer for test currencies
-	Gateway = NewAccount("rGWrZyQqhTp9Xu7G5Pkayo7bXjH4k4QYpf")
+	accounttx "github.com/LeJamon/goXRPLd/internal/core/tx/account"
+	"github.com/LeJamon/goXRPLd/internal/testing"
 )
 
 // AccountSetBuilder provides a fluent interface for building AccountSet transactions.
 type AccountSetBuilder struct {
-	account      *Account
+	account      *testing.Account
 	setFlag      *uint32
 	clearFlag    *uint32
 	domain       string
@@ -77,7 +22,7 @@ type AccountSetBuilder struct {
 }
 
 // AccountSet creates a new AccountSetBuilder.
-func AccountSet(account *Account) *AccountSetBuilder {
+func AccountSet(account *testing.Account) *AccountSetBuilder {
 	return &AccountSetBuilder{
 		account: account,
 		fee:     10, // Default fee: 10 drops
@@ -128,91 +73,91 @@ func (b *AccountSetBuilder) Sequence(seq uint32) *AccountSetBuilder {
 
 // RequireDest enables the require destination tag flag.
 func (b *AccountSetBuilder) RequireDest() *AccountSetBuilder {
-	flag := tx.AccountSetFlagRequireDest
+	flag := accounttx.AccountSetFlagRequireDest
 	b.setFlag = &flag
 	return b
 }
 
 // RequireAuth enables the require authorization flag.
 func (b *AccountSetBuilder) RequireAuth() *AccountSetBuilder {
-	flag := tx.AccountSetFlagRequireAuth
+	flag := accounttx.AccountSetFlagRequireAuth
 	b.setFlag = &flag
 	return b
 }
 
 // DisallowXRP enables the disallow XRP flag.
 func (b *AccountSetBuilder) DisallowXRP() *AccountSetBuilder {
-	flag := tx.AccountSetFlagDisallowXRP
+	flag := accounttx.AccountSetFlagDisallowXRP
 	b.setFlag = &flag
 	return b
 }
 
 // DefaultRipple enables the default ripple flag.
 func (b *AccountSetBuilder) DefaultRipple() *AccountSetBuilder {
-	flag := tx.AccountSetFlagDefaultRipple
+	flag := accounttx.AccountSetFlagDefaultRipple
 	b.setFlag = &flag
 	return b
 }
 
 // DepositAuth enables the deposit authorization flag.
 func (b *AccountSetBuilder) DepositAuth() *AccountSetBuilder {
-	flag := tx.AccountSetFlagDepositAuth
+	flag := accounttx.AccountSetFlagDepositAuth
 	b.setFlag = &flag
 	return b
 }
 
 // NoFreeze enables the no freeze flag (cannot be disabled once set).
 func (b *AccountSetBuilder) NoFreeze() *AccountSetBuilder {
-	flag := tx.AccountSetFlagNoFreeze
+	flag := accounttx.AccountSetFlagNoFreeze
 	b.setFlag = &flag
 	return b
 }
 
 // GlobalFreeze enables the global freeze flag.
 func (b *AccountSetBuilder) GlobalFreeze() *AccountSetBuilder {
-	flag := tx.AccountSetFlagGlobalFreeze
+	flag := accounttx.AccountSetFlagGlobalFreeze
 	b.setFlag = &flag
 	return b
 }
 
 // AllowClawback enables the clawback flag (cannot be disabled once set).
 func (b *AccountSetBuilder) AllowClawback() *AccountSetBuilder {
-	flag := tx.AccountSetFlagAllowTrustLineClawback
+	flag := accounttx.AccountSetFlagAllowTrustLineClawback
 	b.setFlag = &flag
 	return b
 }
 
 // Build constructs the AccountSet transaction.
 func (b *AccountSetBuilder) Build() tx.Transaction {
-	accountSet := tx.NewAccountSet(b.account.Address)
-	accountSet.Fee = fmt.Sprintf("%d", b.fee)
+	as := accounttx.NewAccountSet(b.account.Address)
+	as.Fee = fmt.Sprintf("%d", b.fee)
 
 	if b.setFlag != nil {
-		accountSet.SetFlag = b.setFlag
+		as.SetFlag = b.setFlag
 	}
 	if b.clearFlag != nil {
-		accountSet.ClearFlag = b.clearFlag
+		as.ClearFlag = b.clearFlag
 	}
 	if b.domain != "" {
-		accountSet.Domain = b.domain
+		as.Domain = b.domain
 	}
 	if b.transferRate != nil {
-		accountSet.TransferRate = b.transferRate
+		as.TransferRate = b.transferRate
 	}
 	if b.tickSize != nil {
-		accountSet.TickSize = b.tickSize
+		as.TickSize = b.tickSize
 	}
 	if b.sequence != nil {
-		accountSet.SetSequence(*b.sequence)
+		as.SetSequence(*b.sequence)
 	}
 	if b.flags != 0 {
-		accountSet.SetFlags(b.flags)
+		as.SetFlags(b.flags)
 	}
 
-	return accountSet
+	return as
 }
 
-// BuildAccountSet is a convenience method that returns the concrete *tx.AccountSet type.
-func (b *AccountSetBuilder) BuildAccountSet() *tx.AccountSet {
-	return b.Build().(*tx.AccountSet)
+// BuildAccountSet is a convenience method that returns the concrete *accounttx.AccountSet type.
+func (b *AccountSetBuilder) BuildAccountSet() *accounttx.AccountSet {
+	return b.Build().(*accounttx.AccountSet)
 }

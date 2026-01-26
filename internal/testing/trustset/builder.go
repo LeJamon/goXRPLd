@@ -1,15 +1,16 @@
-package builders
+package trustset
 
 import (
 	"fmt"
 
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	trustsettx "github.com/LeJamon/goXRPLd/internal/core/tx/trustset"
+	"github.com/LeJamon/goXRPLd/internal/testing"
 )
 
 // TrustSetBuilder provides a fluent interface for building TrustSet transactions.
 type TrustSetBuilder struct {
-	account     *Account
+	account     *testing.Account
 	limitAmount tx.Amount
 	qualityIn   *uint32
 	qualityOut  *uint32
@@ -20,7 +21,7 @@ type TrustSetBuilder struct {
 
 // TrustSet creates a new TrustSetBuilder.
 // The limitAmount specifies the currency, issuer, and maximum balance to trust.
-func TrustSet(account *Account, limitAmount tx.Amount) *TrustSetBuilder {
+func TrustSet(account *testing.Account, limitAmount tx.Amount) *TrustSetBuilder {
 	return &TrustSetBuilder{
 		account:     account,
 		limitAmount: limitAmount,
@@ -30,23 +31,23 @@ func TrustSet(account *Account, limitAmount tx.Amount) *TrustSetBuilder {
 
 // TrustLine is a convenience function to create a trust line builder.
 // limit is the maximum amount the account will trust the issuer for.
-func TrustLine(account *Account, currency string, issuer *Account, limit string) *TrustSetBuilder {
+func TrustLine(account *testing.Account, currency string, issuer *testing.Account, limit string) *TrustSetBuilder {
 	limitAmount := tx.NewIssuedAmount(limit, currency, issuer.Address)
 	return TrustSet(account, limitAmount)
 }
 
 // TrustUSD creates a trust line for USD with the specified issuer and limit.
-func TrustUSD(account *Account, issuer *Account, limit string) *TrustSetBuilder {
+func TrustUSD(account *testing.Account, issuer *testing.Account, limit string) *TrustSetBuilder {
 	return TrustLine(account, "USD", issuer, limit)
 }
 
 // TrustEUR creates a trust line for EUR with the specified issuer and limit.
-func TrustEUR(account *Account, issuer *Account, limit string) *TrustSetBuilder {
+func TrustEUR(account *testing.Account, issuer *testing.Account, limit string) *TrustSetBuilder {
 	return TrustLine(account, "EUR", issuer, limit)
 }
 
 // TrustBTC creates a trust line for BTC with the specified issuer and limit.
-func TrustBTC(account *Account, issuer *Account, limit string) *TrustSetBuilder {
+func TrustBTC(account *testing.Account, issuer *testing.Account, limit string) *TrustSetBuilder {
 	return TrustLine(account, "BTC", issuer, limit)
 }
 
@@ -113,23 +114,23 @@ func (b *TrustSetBuilder) ClearFreeze() *TrustSetBuilder {
 
 // Build constructs the TrustSet transaction.
 func (b *TrustSetBuilder) Build() tx.Transaction {
-	trustSet := trustsettx.NewTrustSet(b.account.Address, b.limitAmount)
-	trustSet.Fee = fmt.Sprintf("%d", b.fee)
+	ts := trustsettx.NewTrustSet(b.account.Address, b.limitAmount)
+	ts.Fee = fmt.Sprintf("%d", b.fee)
 
 	if b.qualityIn != nil {
-		trustSet.QualityIn = b.qualityIn
+		ts.QualityIn = b.qualityIn
 	}
 	if b.qualityOut != nil {
-		trustSet.QualityOut = b.qualityOut
+		ts.QualityOut = b.qualityOut
 	}
 	if b.sequence != nil {
-		trustSet.SetSequence(*b.sequence)
+		ts.SetSequence(*b.sequence)
 	}
 	if b.flags != 0 {
-		trustSet.SetFlags(b.flags)
+		ts.SetFlags(b.flags)
 	}
 
-	return trustSet
+	return ts
 }
 
 // BuildTrustSet is a convenience method that returns the concrete *trustsettx.TrustSet type.

@@ -1,7 +1,7 @@
 // Package builders provides fluent transaction builder helpers for testing.
 // These builders make it easy to construct transactions for test scenarios
 // without dealing with the full complexity of the transaction types.
-package builders
+package payment
 
 import (
 	"fmt"

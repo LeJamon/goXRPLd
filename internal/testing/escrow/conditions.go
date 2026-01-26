@@ -1,4 +1,4 @@
-package builders
+package escrow
 
 // Pre-computed crypto conditions and fulfillments for testing escrows.
 // These are derived from rippled's test vectors in src/test/app/Escrow_test.cpp

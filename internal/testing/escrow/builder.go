@@ -1,4 +1,4 @@
-package builders
+package escrow
 
 import (
 	"encoding/hex"
@@ -6,7 +6,8 @@ import (
 	"time"
 
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/escrow"
+	escrowtx "github.com/LeJamon/goXRPLd/internal/core/tx/escrow"
+	"github.com/LeJamon/goXRPLd/internal/testing"
 )
 
 // RippleEpoch is the Unix timestamp for the Ripple epoch (January 1, 2000 00:00:00 UTC).
@@ -25,8 +26,8 @@ func FromRippleTime(rippleTime uint32) time.Time {
 
 // EscrowCreateBuilder provides a fluent interface for building EscrowCreate transactions.
 type EscrowCreateBuilder struct {
-	from        *Account
-	to          *Account
+	from        *testing.Account
+	to          *testing.Account
 	amount      uint64 // XRP in drops
 	finishAfter *uint32
 	cancelAfter *uint32
@@ -39,7 +40,7 @@ type EscrowCreateBuilder struct {
 
 // EscrowCreate creates a new EscrowCreateBuilder.
 // The amount is specified in drops (1 XRP = 1,000,000 drops).
-func EscrowCreate(from, to *Account, amount uint64) *EscrowCreateBuilder {
+func EscrowCreate(from, to *testing.Account, amount uint64) *EscrowCreateBuilder {
 	return &EscrowCreateBuilder{
 		from:   from,
 		to:     to,
@@ -115,7 +116,7 @@ func (b *EscrowCreateBuilder) Sequence(seq uint32) *EscrowCreateBuilder {
 // Build constructs the EscrowCreate transaction.
 func (b *EscrowCreateBuilder) Build() tx.Transaction {
 	amount := tx.NewXRPAmount(fmt.Sprintf("%d", b.amount))
-	e := escrow.NewEscrowCreate(b.from.Address, b.to.Address, amount)
+	e := escrowtx.NewEscrowCreate(b.from.Address, b.to.Address, amount)
 	e.Fee = fmt.Sprintf("%d", b.fee)
 
 	if b.finishAfter != nil {
@@ -140,15 +141,15 @@ func (b *EscrowCreateBuilder) Build() tx.Transaction {
 	return e
 }
 
-// BuildEscrowCreate is a convenience method that returns the concrete *escrow.EscrowCreate type.
-func (b *EscrowCreateBuilder) BuildEscrowCreate() *escrow.EscrowCreate {
-	return b.Build().(*escrow.EscrowCreate)
+// BuildEscrowCreate is a convenience method that returns the concrete *escrowtx.EscrowCreate type.
+func (b *EscrowCreateBuilder) BuildEscrowCreate() *escrowtx.EscrowCreate {
+	return b.Build().(*escrowtx.EscrowCreate)
 }
 
 // EscrowFinishBuilder provides a fluent interface for building EscrowFinish transactions.
 type EscrowFinishBuilder struct {
-	finisher    *Account
-	owner       *Account
+	finisher    *testing.Account
+	owner       *testing.Account
 	offerSeq    uint32
 	condition   []byte
 	fulfillment []byte
@@ -159,7 +160,7 @@ type EscrowFinishBuilder struct {
 // EscrowFinish creates a new EscrowFinishBuilder.
 // The finisher is the account submitting the transaction, owner is who created the escrow,
 // and offerSeq is the sequence number of the EscrowCreate transaction.
-func EscrowFinish(finisher *Account, owner *Account, offerSeq uint32) *EscrowFinishBuilder {
+func EscrowFinish(finisher *testing.Account, owner *testing.Account, offerSeq uint32) *EscrowFinishBuilder {
 	return &EscrowFinishBuilder{
 		finisher: finisher,
 		owner:    owner,
@@ -218,7 +219,7 @@ func (b *EscrowFinishBuilder) Sequence(seq uint32) *EscrowFinishBuilder {
 
 // Build constructs the EscrowFinish transaction.
 func (b *EscrowFinishBuilder) Build() tx.Transaction {
-	e := escrow.NewEscrowFinish(b.finisher.Address, b.owner.Address, b.offerSeq)
+	e := escrowtx.NewEscrowFinish(b.finisher.Address, b.owner.Address, b.offerSeq)
 	e.Fee = fmt.Sprintf("%d", b.fee)
 
 	if b.condition != nil {
@@ -234,15 +235,15 @@ func (b *EscrowFinishBuilder) Build() tx.Transaction {
 	return e
 }
 
-// BuildEscrowFinish is a convenience method that returns the concrete *escrow.EscrowFinish type.
-func (b *EscrowFinishBuilder) BuildEscrowFinish() *escrow.EscrowFinish {
-	return b.Build().(*escrow.EscrowFinish)
+// BuildEscrowFinish is a convenience method that returns the concrete *escrowtx.EscrowFinish type.
+func (b *EscrowFinishBuilder) BuildEscrowFinish() *escrowtx.EscrowFinish {
+	return b.Build().(*escrowtx.EscrowFinish)
 }
 
 // EscrowCancelBuilder provides a fluent interface for building EscrowCancel transactions.
 type EscrowCancelBuilder struct {
-	canceller *Account
-	owner     *Account
+	canceller *testing.Account
+	owner     *testing.Account
 	offerSeq  uint32
 	fee       uint64
 	sequence  *uint32
@@ -251,7 +252,7 @@ type EscrowCancelBuilder struct {
 // EscrowCancel creates a new EscrowCancelBuilder.
 // The canceller is the account submitting the transaction, owner is who created the escrow,
 // and offerSeq is the sequence number of the EscrowCreate transaction.
-func EscrowCancel(canceller *Account, owner *Account, offerSeq uint32) *EscrowCancelBuilder {
+func EscrowCancel(canceller *testing.Account, owner *testing.Account, offerSeq uint32) *EscrowCancelBuilder {
 	return &EscrowCancelBuilder{
 		canceller: canceller,
 		owner:     owner,
@@ -274,7 +275,7 @@ func (b *EscrowCancelBuilder) Sequence(seq uint32) *EscrowCancelBuilder {
 
 // Build constructs the EscrowCancel transaction.
 func (b *EscrowCancelBuilder) Build() tx.Transaction {
-	e := escrow.NewEscrowCancel(b.canceller.Address, b.owner.Address, b.offerSeq)
+	e := escrowtx.NewEscrowCancel(b.canceller.Address, b.owner.Address, b.offerSeq)
 	e.Fee = fmt.Sprintf("%d", b.fee)
 
 	if b.sequence != nil {
@@ -284,7 +285,7 @@ func (b *EscrowCancelBuilder) Build() tx.Transaction {
 	return e
 }
 
-// BuildEscrowCancel is a convenience method that returns the concrete *escrow.EscrowCancel type.
-func (b *EscrowCancelBuilder) BuildEscrowCancel() *escrow.EscrowCancel {
-	return b.Build().(*escrow.EscrowCancel)
+// BuildEscrowCancel is a convenience method that returns the concrete *escrowtx.EscrowCancel type.
+func (b *EscrowCancelBuilder) BuildEscrowCancel() *escrowtx.EscrowCancel {
+	return b.Build().(*escrowtx.EscrowCancel)
 }

@@ -1,15 +1,16 @@
-package builders
+package offer
 
 import (
 	"fmt"
 
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	offertx "github.com/LeJamon/goXRPLd/internal/core/tx/offer"
+	"github.com/LeJamon/goXRPLd/internal/testing"
 )
 
 // OfferCreateBuilder provides a fluent interface for building OfferCreate transactions.
 type OfferCreateBuilder struct {
-	account       *Account
+	account       *testing.Account
 	takerPays     tx.Amount
 	takerGets     tx.Amount
 	expiration    *uint32
@@ -21,7 +22,7 @@ type OfferCreateBuilder struct {
 
 // OfferCreate creates a new OfferCreateBuilder.
 // takerPays is what the offer creator receives, takerGets is what they pay.
-func OfferCreate(account *Account, takerPays, takerGets tx.Amount) *OfferCreateBuilder {
+func OfferCreate(account *testing.Account, takerPays, takerGets tx.Amount) *OfferCreateBuilder {
 	return &OfferCreateBuilder{
 		account:   account,
 		takerPays: takerPays,
@@ -33,7 +34,7 @@ func OfferCreate(account *Account, takerPays, takerGets tx.Amount) *OfferCreateB
 // OfferCreateXRP creates an offer where one side is XRP.
 // If buyXRP is true, creates an offer to buy XRP with issued currency.
 // If buyXRP is false, creates an offer to sell XRP for issued currency.
-func OfferCreateXRP(account *Account, xrpAmount uint64, issuedAmount tx.Amount, buyXRP bool) *OfferCreateBuilder {
+func OfferCreateXRP(account *testing.Account, xrpAmount uint64, issuedAmount tx.Amount, buyXRP bool) *OfferCreateBuilder {
 	xrp := tx.NewXRPAmount(fmt.Sprintf("%d", xrpAmount))
 	if buyXRP {
 		// Offer creator receives XRP, pays issued currency
@@ -96,23 +97,23 @@ func (b *OfferCreateBuilder) Sell() *OfferCreateBuilder {
 
 // Build constructs the OfferCreate transaction.
 func (b *OfferCreateBuilder) Build() tx.Transaction {
-	offer := offertx.NewOfferCreate(b.account.Address, b.takerGets, b.takerPays)
-	offer.Fee = fmt.Sprintf("%d", b.fee)
+	o := offertx.NewOfferCreate(b.account.Address, b.takerGets, b.takerPays)
+	o.Fee = fmt.Sprintf("%d", b.fee)
 
 	if b.expiration != nil {
-		offer.Expiration = b.expiration
+		o.Expiration = b.expiration
 	}
 	if b.offerSequence != nil {
-		offer.OfferSequence = b.offerSequence
+		o.OfferSequence = b.offerSequence
 	}
 	if b.sequence != nil {
-		offer.SetSequence(*b.sequence)
+		o.SetSequence(*b.sequence)
 	}
 	if b.flags != 0 {
-		offer.SetFlags(b.flags)
+		o.SetFlags(b.flags)
 	}
 
-	return offer
+	return o
 }
 
 // BuildOfferCreate is a convenience method that returns the concrete *offertx.OfferCreate type.
@@ -122,7 +123,7 @@ func (b *OfferCreateBuilder) BuildOfferCreate() *offertx.OfferCreate {
 
 // OfferCancelBuilder provides a fluent interface for building OfferCancel transactions.
 type OfferCancelBuilder struct {
-	account  *Account
+	account  *testing.Account
 	offerSeq uint32
 	fee      uint64
 	sequence *uint32
@@ -130,7 +131,7 @@ type OfferCancelBuilder struct {
 
 // OfferCancel creates a new OfferCancelBuilder.
 // offerSeq is the sequence number of the OfferCreate transaction to cancel.
-func OfferCancel(account *Account, offerSeq uint32) *OfferCancelBuilder {
+func OfferCancel(account *testing.Account, offerSeq uint32) *OfferCancelBuilder {
 	return &OfferCancelBuilder{
 		account:  account,
 		offerSeq: offerSeq,
@@ -152,50 +153,17 @@ func (b *OfferCancelBuilder) Sequence(seq uint32) *OfferCancelBuilder {
 
 // Build constructs the OfferCancel transaction.
 func (b *OfferCancelBuilder) Build() tx.Transaction {
-	offer := offertx.NewOfferCancel(b.account.Address, b.offerSeq)
-	offer.Fee = fmt.Sprintf("%d", b.fee)
+	o := offertx.NewOfferCancel(b.account.Address, b.offerSeq)
+	o.Fee = fmt.Sprintf("%d", b.fee)
 
 	if b.sequence != nil {
-		offer.SetSequence(*b.sequence)
+		o.SetSequence(*b.sequence)
 	}
 
-	return offer
+	return o
 }
 
 // BuildOfferCancel is a convenience method that returns the concrete *offertx.OfferCancel type.
 func (b *OfferCancelBuilder) BuildOfferCancel() *offertx.OfferCancel {
 	return b.Build().(*offertx.OfferCancel)
-}
-
-// Amount helpers for creating amounts in tests
-
-// XRP creates an XRP amount from drops.
-func XRP(drops uint64) tx.Amount {
-	return tx.NewXRPAmount(fmt.Sprintf("%d", drops))
-}
-
-// XRPFromAmount creates an XRP amount from a whole XRP value (e.g., 100 XRP).
-func XRPFromAmount(xrp float64) tx.Amount {
-	drops := uint64(xrp * 1_000_000)
-	return tx.NewXRPAmount(fmt.Sprintf("%d", drops))
-}
-
-// IssuedCurrency creates an issued currency amount.
-func IssuedCurrency(value, currency, issuer string) tx.Amount {
-	return tx.NewIssuedAmount(value, currency, issuer)
-}
-
-// USD creates a USD amount with the specified value and issuer.
-func USD(value string, issuer *Account) tx.Amount {
-	return tx.NewIssuedAmount(value, "USD", issuer.Address)
-}
-
-// EUR creates a EUR amount with the specified value and issuer.
-func EUR(value string, issuer *Account) tx.Amount {
-	return tx.NewIssuedAmount(value, "EUR", issuer.Address)
-}
-
-// BTC creates a BTC amount with the specified value and issuer.
-func BTC(value string, issuer *Account) tx.Amount {
-	return tx.NewIssuedAmount(value, "BTC", issuer.Address)
 }
