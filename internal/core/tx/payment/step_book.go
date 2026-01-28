@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"math/big"
 	"sort"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
@@ -222,13 +221,9 @@ func (s *BookStep) Fwd(
 	fmt.Printf("DEBUG Fwd: in=%+v, book.In=%v, book.Out=%v\n", in, s.book.In, s.book.Out)
 
 	// Clear cache from any previous execution to allow fresh computation
-	// This is needed when Fwd is called with different constraints than a prior Rev
 	prevCache := s.cache
 	s.cache = nil
 	s.offersUsed_ = 0
-
-	// We'll restore the old cache for limiting ONLY if this is a continuation
-	// of a Rev pass (indicated by prevCache being set and matching constraints)
 	_ = prevCache
 
 	// Get transfer rates
@@ -488,19 +483,14 @@ func (s *BookStep) GetAccountTransferRate(sb *PaymentSandbox, issuer [20]byte) u
 // getNextOffer returns the next offer at the best quality, skipping offers in ofrsToRm
 func (s *BookStep) getNextOffer(sb *PaymentSandbox, afView *PaymentSandbox, ofrsToRm map[[32]byte]bool) (*sle.LedgerOffer, [32]byte, error) {
 	// Get the order book directory base key
-	// Convert Issues to the format expected by keylet.BookDir
 	takerPaysCurrency := sle.GetCurrencyBytes(s.book.In.Currency)
 	takerPaysIssuer := s.book.In.Issuer
 	takerGetsCurrency := sle.GetCurrencyBytes(s.book.Out.Currency)
 	takerGetsIssuer := s.book.Out.Issuer
 	bookBase := keylet.BookDir(takerPaysCurrency, takerPaysIssuer, takerGetsCurrency, takerGetsIssuer)
 
-	// The first 24 bytes of the book key are the book prefix
-	// Book directories are sorted by quality (encoded in last 8 bytes)
-	// We need to find directories that match this prefix
 	bookPrefix := bookBase.Key[:24]
 
-	// Collect all book directories sorted by quality
 	type dirEntry struct {
 		key  [32]byte
 		data []byte
@@ -510,41 +500,35 @@ func (s *BookStep) getNextOffer(sb *PaymentSandbox, afView *PaymentSandbox, ofrs
 
 	err := sb.ForEach(func(key [32]byte, data []byte) bool {
 		entryCount++
-		// Check if this key matches our book prefix
 		if bytes.Equal(key[:24], bookPrefix) {
 			dirs = append(dirs, dirEntry{key: key, data: data})
 		}
-		return true // Continue iterating
+		return true
 	})
 	if err != nil {
 		return nil, [32]byte{}, err
 	}
 
-	// Sort directories by quality (lower value = better quality)
 	sort.Slice(dirs, func(i, j int) bool {
 		return bytes.Compare(dirs[i].key[24:], dirs[j].key[24:]) < 0
 	})
 
-	// Iterate through directories to find first non-removed offer
 	for _, d := range dirs {
 		dir, err := sle.ParseDirectoryNode(d.data)
 		if err != nil || len(dir.Indexes) == 0 {
 			continue
 		}
 
-		// Iterate through offers in this directory
 		for _, idx := range dir.Indexes {
 			var offerKey [32]byte
 			copy(offerKey[:], idx[:])
 
-			// Skip if marked for removal
 			if ofrsToRm != nil && ofrsToRm[offerKey] {
 				continue
 			}
 
 			offerData, err := sb.Read(keylet.Keylet{Key: offerKey})
 			if err != nil || offerData == nil {
-				// Offer was deleted, skip
 				continue
 			}
 
@@ -557,7 +541,7 @@ func (s *BookStep) getNextOffer(sb *PaymentSandbox, afView *PaymentSandbox, ofrs
 		}
 	}
 
-	return nil, [32]byte{}, nil // No offers found
+	return nil, [32]byte{}, nil
 }
 
 // isOfferFunded checks if an offer has sufficient funding
@@ -568,25 +552,20 @@ func (s *BookStep) isOfferFunded(sb *PaymentSandbox, offer *sle.LedgerOffer) boo
 	if offer.TakerGets.IsZero() {
 		return false
 	}
-	// Check if actual funded amount is effectively > 0
 	funded := s.getOfferFundedAmount(sb, offer)
 	return !funded.IsEffectivelyZero()
 }
 
 // getOfferFundedAmount returns the actual amount an offer can deliver based on owner's balance.
-// The offer's TakerGets may be larger than what the owner can actually fund.
-// Reference: rippled's offer_auto.cpp and accountHolds()
 func (s *BookStep) getOfferFundedAmount(sb *PaymentSandbox, offer *sle.LedgerOffer) EitherAmount {
 	offerOwner, err := sle.DecodeAccountID(offer.Account)
 	if err != nil {
 		return ZeroXRPEitherAmount()
 	}
 
-	// Get the offer's stated TakerGets
 	offerTakerGets := s.offerTakerGets(offer)
 
 	if s.book.Out.IsXRP() {
-		// For XRP TakerGets: check owner's XRP balance
 		accountKey := keylet.Account(offerOwner)
 		accountData, err := sb.Read(accountKey)
 		if err != nil || accountData == nil {
@@ -598,11 +577,8 @@ func (s *BookStep) getOfferFundedAmount(sb *PaymentSandbox, offer *sle.LedgerOff
 			return ZeroXRPEitherAmount()
 		}
 
-		// Available XRP = balance - reserve
-		// Reserve = base_reserve + owner_count * increment_reserve
-		// Use approximate values for now
-		baseReserve := int64(10000000)     // 10 XRP base reserve
-		incrementReserve := int64(2000000) // 2 XRP per owned object
+		baseReserve := int64(10000000)
+		incrementReserve := int64(2000000)
 		reserve := baseReserve + int64(account.OwnerCount)*incrementReserve
 		available := int64(account.Balance) - reserve
 
@@ -610,7 +586,6 @@ func (s *BookStep) getOfferFundedAmount(sb *PaymentSandbox, offer *sle.LedgerOff
 			return ZeroXRPEitherAmount()
 		}
 
-		// Return minimum of available and TakerGets
 		if available < offerTakerGets.XRP {
 			return NewXRPEitherAmount(available)
 		}
@@ -621,20 +596,15 @@ func (s *BookStep) getOfferFundedAmount(sb *PaymentSandbox, offer *sle.LedgerOff
 	issuer := s.book.Out.Issuer
 	currency := s.book.Out.Currency
 
-	// Get owner's balance on trustline with issuer
 	ownerBalance := s.getIOUBalance(sb, offerOwner, issuer, currency)
 
-	// The owner can sell up to their positive balance
-	// If balance is negative (owes issuer), they can't sell
 	if ownerBalance.IsNegative() || ownerBalance.IsZero() {
-		// Check if owner IS the issuer (can issue unlimited)
 		if offerOwner == issuer {
 			return offerTakerGets
 		}
 		return ZeroIOUEitherAmount(currency, sle.EncodeAccountIDSafe(issuer))
 	}
 
-	// Return minimum of owner balance and TakerGets
 	if ownerBalance.Compare(offerTakerGets) < 0 {
 		return ownerBalance
 	}
@@ -647,12 +617,7 @@ func (s *BookStep) getIOUBalance(sb *PaymentSandbox, account, issuer [20]byte, c
 
 	if account == issuer {
 		// Issuer has unlimited balance for their own currency
-		// Return a very large amount
-		return NewIOUEitherAmount(sle.IOUAmount{
-			Value:    new(big.Float).SetFloat64(1e15),
-			Currency: currency,
-			Issuer:   issuerStr,
-		})
+		return NewIOUEitherAmount(tx.NewIssuedAmount(1000000000000000, 15, currency, issuerStr))
 	}
 
 	lineKey := keylet.Line(account, issuer, currency)
@@ -669,21 +634,15 @@ func (s *BookStep) getIOUBalance(sb *PaymentSandbox, account, issuer [20]byte, c
 	// Balance is stored from the low account's perspective
 	accountIsLow := sle.CompareAccountIDsForLine(account, issuer) < 0
 
-	var balanceValue *big.Float
+	var balance tx.Amount
 	if accountIsLow {
-		// Balance is from account's perspective: positive means account owns that IOU
-		balanceValue = rs.Balance.Value
+		balance = rs.Balance
 	} else {
-		// Account is high: balance is negated
-		balanceValue = new(big.Float).Neg(rs.Balance.Value)
+		balance = rs.Balance.Negate()
 	}
 
-	// Return with correct issuer (not the trustline placeholder)
-	return NewIOUEitherAmount(sle.IOUAmount{
-		Value:    balanceValue,
-		Currency: currency,
-		Issuer:   issuerStr,
-	})
+	// Create new Amount with correct issuer
+	return NewIOUEitherAmount(sle.NewIssuedAmountFromValue(balance.IOU().Mantissa(), balance.IOU().Exponent(), currency, issuerStr))
 }
 
 // offerTakerGets returns what the taker gets from this offer
@@ -691,7 +650,7 @@ func (s *BookStep) offerTakerGets(offer *sle.LedgerOffer) EitherAmount {
 	if s.book.Out.IsXRP() {
 		return NewXRPEitherAmount(offer.TakerGets.Drops())
 	}
-	return NewIOUEitherAmount(offer.TakerGets.ToIOUAmountLegacy())
+	return NewIOUEitherAmount(offer.TakerGets)
 }
 
 // offerTakerPays returns what the taker pays to this offer
@@ -699,7 +658,7 @@ func (s *BookStep) offerTakerPays(offer *sle.LedgerOffer) EitherAmount {
 	if s.book.In.IsXRP() {
 		return NewXRPEitherAmount(offer.TakerPays.Drops())
 	}
-	return NewIOUEitherAmount(offer.TakerPays.ToIOUAmountLegacy())
+	return NewIOUEitherAmount(offer.TakerPays)
 }
 
 // offerQuality returns the quality of an offer
@@ -712,91 +671,64 @@ func (s *BookStep) offerQuality(offer *sle.LedgerOffer) Quality {
 // applyQuality applies quality and transfer rates to convert output to input
 // input = output * quality * trIn / trOut (for reverse: given output, find input)
 func (s *BookStep) applyQuality(out EitherAmount, q Quality, trIn, trOut uint32, roundUp bool) EitherAmount {
-	// Calculate: in = out * quality * trIn / trOut
-	// Quality is already in/out ratio, so we multiply
-	// The result type depends on book.In (what we're paying), not on what we're receiving
-
-	// Get the output value as a float for calculation
 	var outValue float64
 	if out.IsNative {
 		outValue = float64(out.XRP)
 	} else {
-		outValue, _ = out.IOU.Value.Float64()
+		outValue = out.IOU.Float64()
 	}
 
-	// Calculate the input amount
 	result := outValue * (float64(q.Value) / float64(QualityOne))
 	result = result * (float64(trIn) / float64(trOut))
 
-	// Return appropriate type based on book.In (what we're paying)
 	if s.book.In.IsXRP() {
-		// XRP result
 		if roundUp && result != float64(int64(result)) {
 			return NewXRPEitherAmount(int64(result) + 1)
 		}
 		return NewXRPEitherAmount(int64(result))
 	}
 
-	// IOU result
-	return NewIOUEitherAmount(sle.IOUAmount{
-		Value:    new(big.Float).SetFloat64(result),
-		Currency: s.book.In.Currency,
-		Issuer:   sle.EncodeAccountIDSafe(s.book.In.Issuer),
-	})
+	return NewIOUEitherAmount(tx.NewIssuedAmountFromFloat64(result, s.book.In.Currency, sle.EncodeAccountIDSafe(s.book.In.Issuer)))
 }
 
 // reverseQuality applies reverse quality to convert input to output
 // output = input / quality * trOut / trIn
-// The output type is always book.Out (what we're receiving)
 func (s *BookStep) reverseQuality(in EitherAmount, q Quality, trIn, trOut uint32, roundUp bool) EitherAmount {
-	// Get input value as float for calculation
 	var inValue float64
 	if in.IsNative {
 		inValue = float64(in.XRP)
 	} else {
-		inValue, _ = in.IOU.Value.Float64()
+		inValue = in.IOU.Float64()
 	}
 
-	// Calculate: output = input / quality * trOut / trIn
 	result := inValue / (float64(q.Value) / float64(QualityOne))
 	result = result * (float64(trOut) / float64(trIn))
 
-	// Return appropriate type based on book.Out (what we're receiving)
 	if s.book.Out.IsXRP() {
-		// XRP result
 		if roundUp && result != float64(int64(result)) {
 			return NewXRPEitherAmount(int64(result) + 1)
 		}
 		return NewXRPEitherAmount(int64(result))
 	}
 
-	// IOU result
-	return NewIOUEitherAmount(sle.IOUAmount{
-		Value:    new(big.Float).SetFloat64(result),
-		Currency: s.book.Out.Currency,
-		Issuer:   sle.EncodeAccountIDSafe(s.book.Out.Issuer),
-	})
+	return NewIOUEitherAmount(tx.NewIssuedAmountFromFloat64(result, s.book.Out.Currency, sle.EncodeAccountIDSafe(s.book.Out.Issuer)))
 }
 
 // consumeOffer reduces the offer's amounts by the consumed amounts and transfers funds.
-// Reference: rippled BookStep.cpp consumeOffer()
 func (s *BookStep) consumeOffer(sb *PaymentSandbox, offer *sle.LedgerOffer, consumedIn, consumedOut EitherAmount) error {
 	offerOwner, err := sle.DecodeAccountID(offer.Account)
 	if err != nil {
 		return err
 	}
 
-	// Get transaction context for PreviousTxnID updates
 	txHash, ledgerSeq := sb.GetTransactionContext()
 
 	// 1. Transfer input currency: taker (strandSrc) -> offer owner
-	// The taker pays consumedIn to the offer owner
 	if err := s.transferFunds(sb, s.strandSrc, offerOwner, consumedIn, s.book.In); err != nil {
 		return err
 	}
 
 	// 2. Transfer output currency: offer owner -> taker (strandDst)
-	// The offer owner pays consumedOut to the taker
 	if err := s.transferFunds(sb, offerOwner, s.strandDst, consumedOut, s.book.Out); err != nil {
 		return err
 	}
@@ -804,32 +736,19 @@ func (s *BookStep) consumeOffer(sb *PaymentSandbox, offer *sle.LedgerOffer, cons
 	// 3. Update offer's remaining amounts
 	offerKey := keylet.Offer(offerOwner, offer.Sequence)
 
-	// Calculate new amounts
 	newTakerPays := s.subtractFromAmount(s.offerTakerPays(offer), consumedIn)
 	newTakerGets := s.subtractFromAmount(s.offerTakerGets(offer), consumedOut)
 
-	// Check if offer is fully consumed OR becomes unfunded after partial consume
 	if newTakerPays.IsZero() || newTakerGets.IsZero() {
-		// Offer fully consumed - delete it
-		// Reference: rippled offerDelete() in View.cpp
 		if err := s.deleteOffer(sb, offer, offerOwner, txHash, ledgerSeq); err != nil {
 			return err
 		}
 	} else {
-		// Update offer with remaining amounts temporarily to check if still funded
 		offer.TakerPays = s.eitherAmountToTxAmount(newTakerPays, s.book.In)
 		offer.TakerGets = s.eitherAmountToTxAmount(newTakerGets, s.book.Out)
-		// Note: DON'T update PreviousTxnID/PreviousTxnLgrSeq here yet - threading
-		// will be applied by ApplyStateTable for entries that survive
 
-		// Check if the remaining offer is still funded
 		remainingFunded := s.getOfferFundedAmount(sb, offer)
 		if remainingFunded.IsEffectivelyZero() {
-			// Offer became unfunded after partial consume - delete it
-			// First update the offer with reduced amounts so metadata shows PreviousFields correctly
-			// Reference: rippled records the partial consumption before deletion
-			// Note: For deleted entries, DON'T update PreviousTxnID/PreviousTxnLgrSeq
-			// as rippled's FinalFields shows the original values
 			fmt.Printf("DEBUG consumeOffer: remaining offer unfunded (funded=%+v), deleting\n", remainingFunded)
 			offerData, err := sle.SerializeLedgerOffer(offer)
 			if err != nil {
@@ -842,7 +761,6 @@ func (s *BookStep) consumeOffer(sb *PaymentSandbox, offer *sle.LedgerOffer, cons
 				return err
 			}
 		} else {
-			// Offer still funded - update with remaining amounts AND threading info
 			offer.PreviousTxnID = txHash
 			offer.PreviousTxnLgrSeq = ledgerSeq
 			offerData, err := sle.SerializeLedgerOffer(offer)
@@ -859,43 +777,31 @@ func (s *BookStep) consumeOffer(sb *PaymentSandbox, offer *sle.LedgerOffer, cons
 }
 
 // deleteOffer properly deletes an offer from the ledger.
-// Reference: rippled offerDelete() in View.cpp
-// Steps:
-// 1. Remove from owner's directory
-// 2. Remove from book directory (delete directory if empty)
-// 3. Adjust owner count
-// 4. Erase the offer
 func (s *BookStep) deleteOffer(sb *PaymentSandbox, offer *sle.LedgerOffer, owner [20]byte, txHash [32]byte, ledgerSeq uint32) error {
 	offerKey := keylet.Offer(owner, offer.Sequence)
 
-	// 1. Remove from owner's directory
 	ownerDirKey := keylet.OwnerDir(owner)
 	ownerResult, err := sle.DirRemove(sb, ownerDirKey, offer.OwnerNode, offerKey.Key, false)
 	if err != nil {
 		fmt.Printf("DEBUG deleteOffer: error removing from owner dir: %v\n", err)
 	}
-	// Apply the directory changes to sandbox
 	if ownerResult != nil {
 		s.applyDirRemoveResult(sb, ownerResult)
 	}
 
-	// 2. Remove from book directory (keepRoot=false - delete if empty)
 	bookDirKey := keylet.Keylet{Key: offer.BookDirectory}
 	bookResult, err := sle.DirRemove(sb, bookDirKey, offer.BookNode, offerKey.Key, false)
 	if err != nil {
 		fmt.Printf("DEBUG deleteOffer: error removing from book dir: %v\n", err)
 	}
-	// Apply the directory changes to sandbox
 	if bookResult != nil {
 		s.applyDirRemoveResult(sb, bookResult)
 	}
 
-	// 3. Adjust owner count (decrement by 1)
 	if err := s.adjustOwnerCount(sb, owner, -1, txHash, ledgerSeq); err != nil {
 		return err
 	}
 
-	// 4. Erase the offer
 	if err := sb.Erase(offerKey); err != nil {
 		return err
 	}
@@ -905,7 +811,6 @@ func (s *BookStep) deleteOffer(sb *PaymentSandbox, offer *sle.LedgerOffer, owner
 
 // applyDirRemoveResult applies directory removal changes to the sandbox
 func (s *BookStep) applyDirRemoveResult(sb *PaymentSandbox, result *sle.DirRemoveResult) {
-	// Apply modifications
 	for _, mod := range result.ModifiedNodes {
 		isBookDir := mod.NewState.TakerPaysCurrency != [20]byte{} || mod.NewState.TakerGetsCurrency != [20]byte{}
 		data, err := sle.SerializeDirectoryNode(mod.NewState, isBookDir)
@@ -918,7 +823,6 @@ func (s *BookStep) applyDirRemoveResult(sb *PaymentSandbox, result *sle.DirRemov
 		}
 	}
 
-	// Apply deletions
 	for _, del := range result.DeletedNodes {
 		if err := sb.Erase(keylet.Keylet{Key: del.Key}); err != nil {
 			fmt.Printf("DEBUG applyDirRemoveResult: error erasing: %v\n", err)
@@ -942,7 +846,6 @@ func (s *BookStep) adjustOwnerCount(sb *PaymentSandbox, account [20]byte, delta 
 		return err
 	}
 
-	// Adjust owner count
 	newCount := int(accountRoot.OwnerCount) + delta
 	if newCount < 0 {
 		newCount = 0
@@ -951,7 +854,6 @@ func (s *BookStep) adjustOwnerCount(sb *PaymentSandbox, account [20]byte, delta 
 	accountRoot.PreviousTxnID = txHash
 	accountRoot.PreviousTxnLgrSeq = ledgerSeq
 
-	// Serialize and update
 	newData, err := sle.SerializeAccountRoot(accountRoot)
 	if err != nil {
 		return err
@@ -960,10 +862,9 @@ func (s *BookStep) adjustOwnerCount(sb *PaymentSandbox, account [20]byte, delta 
 }
 
 // transferFunds transfers an amount between two accounts.
-// Reference: rippled accountSend()
 func (s *BookStep) transferFunds(sb *PaymentSandbox, from, to [20]byte, amount EitherAmount, issue Issue) error {
 	if from == to {
-		return nil // No transfer needed
+		return nil
 	}
 
 	if amount.IsZero() {
@@ -973,17 +874,14 @@ func (s *BookStep) transferFunds(sb *PaymentSandbox, from, to [20]byte, amount E
 	txHash, ledgerSeq := sb.GetTransactionContext()
 
 	if issue.IsXRP() {
-		// XRP transfer
 		return s.transferXRP(sb, from, to, amount.XRP, txHash, ledgerSeq)
 	}
 
-	// IOU transfer
 	return s.transferIOU(sb, from, to, amount.IOU, issue, txHash, ledgerSeq)
 }
 
 // transferXRP transfers XRP between accounts
 func (s *BookStep) transferXRP(sb *PaymentSandbox, from, to [20]byte, drops int64, txHash [32]byte, ledgerSeq uint32) error {
-	// Update sender balance
 	fromKey := keylet.Account(from)
 	fromData, err := sb.Read(fromKey)
 	if err != nil {
@@ -1014,7 +912,6 @@ func (s *BookStep) transferXRP(sb *PaymentSandbox, from, to [20]byte, drops int6
 		return err
 	}
 
-	// Update receiver balance
 	toKey := keylet.Account(to)
 	toData, err := sb.Read(toKey)
 	if err != nil {
@@ -1045,20 +942,16 @@ func (s *BookStep) transferXRP(sb *PaymentSandbox, from, to [20]byte, drops int6
 }
 
 // transferIOU transfers IOU between accounts via trustline
-func (s *BookStep) transferIOU(sb *PaymentSandbox, from, to [20]byte, amount sle.IOUAmount, issue Issue, txHash [32]byte, ledgerSeq uint32) error {
+func (s *BookStep) transferIOU(sb *PaymentSandbox, from, to [20]byte, amount tx.Amount, issue Issue, txHash [32]byte, ledgerSeq uint32) error {
 	issuer := issue.Issuer
 
-	// Handle direct issuer transfers (minting/burning)
 	if from == issuer {
-		// Issuer sending to someone - credit the receiver's trustline
 		return s.creditTrustline(sb, to, issuer, amount, txHash, ledgerSeq)
 	}
 	if to == issuer {
-		// Someone sending to issuer - debit the sender's trustline
 		return s.debitTrustline(sb, from, issuer, amount, txHash, ledgerSeq)
 	}
 
-	// Third-party transfer: debit sender, credit receiver
 	if err := s.debitTrustline(sb, from, issuer, amount, txHash, ledgerSeq); err != nil {
 		return err
 	}
@@ -1066,15 +959,13 @@ func (s *BookStep) transferIOU(sb *PaymentSandbox, from, to [20]byte, amount sle
 }
 
 // creditTrustline increases an account's IOU balance
-func (s *BookStep) creditTrustline(sb *PaymentSandbox, account, issuer [20]byte, amount sle.IOUAmount, txHash [32]byte, ledgerSeq uint32) error {
+func (s *BookStep) creditTrustline(sb *PaymentSandbox, account, issuer [20]byte, amount tx.Amount, txHash [32]byte, ledgerSeq uint32) error {
 	lineKey := keylet.Line(account, issuer, amount.Currency)
 	lineData, err := sb.Read(lineKey)
 	if err != nil {
 		return err
 	}
 	if lineData == nil {
-		// No trustline exists - this would need to be created
-		// For now, return error (trustline should exist for offer crossing)
 		return errors.New("trustline not found for credit")
 	}
 
@@ -1083,14 +974,11 @@ func (s *BookStep) creditTrustline(sb *PaymentSandbox, account, issuer [20]byte,
 		return err
 	}
 
-	// Determine balance direction based on canonical ordering
 	accountIsLow := sle.CompareAccountIDsForLine(account, issuer) < 0
 	if accountIsLow {
-		// Account is low, balance is from account's perspective
-		rs.Balance = rs.Balance.Add(amount)
+		rs.Balance, _ = rs.Balance.Add(amount)
 	} else {
-		// Account is high, balance is negated
-		rs.Balance = rs.Balance.Sub(amount)
+		rs.Balance, _ = rs.Balance.Sub(amount)
 	}
 
 	rs.PreviousTxnID = txHash
@@ -1104,7 +992,7 @@ func (s *BookStep) creditTrustline(sb *PaymentSandbox, account, issuer [20]byte,
 }
 
 // debitTrustline decreases an account's IOU balance
-func (s *BookStep) debitTrustline(sb *PaymentSandbox, account, issuer [20]byte, amount sle.IOUAmount, txHash [32]byte, ledgerSeq uint32) error {
+func (s *BookStep) debitTrustline(sb *PaymentSandbox, account, issuer [20]byte, amount tx.Amount, txHash [32]byte, ledgerSeq uint32) error {
 	lineKey := keylet.Line(account, issuer, amount.Currency)
 	lineData, err := sb.Read(lineKey)
 	if err != nil {
@@ -1119,14 +1007,11 @@ func (s *BookStep) debitTrustline(sb *PaymentSandbox, account, issuer [20]byte, 
 		return err
 	}
 
-	// Determine balance direction based on canonical ordering
 	accountIsLow := sle.CompareAccountIDsForLine(account, issuer) < 0
 	if accountIsLow {
-		// Account is low, balance is from account's perspective
-		rs.Balance = rs.Balance.Sub(amount)
+		rs.Balance, _ = rs.Balance.Sub(amount)
 	} else {
-		// Account is high, balance is negated
-		rs.Balance = rs.Balance.Add(amount)
+		rs.Balance, _ = rs.Balance.Add(amount)
 	}
 
 	rs.PreviousTxnID = txHash
@@ -1144,11 +1029,8 @@ func (s *BookStep) subtractFromAmount(original, consumed EitherAmount) EitherAmo
 	if original.IsNative {
 		return NewXRPEitherAmount(original.XRP - consumed.XRP)
 	}
-	return NewIOUEitherAmount(sle.IOUAmount{
-		Value:    new(big.Float).Sub(original.IOU.Value, consumed.IOU.Value),
-		Currency: original.IOU.Currency,
-		Issuer:   original.IOU.Issuer,
-	})
+	result, _ := original.IOU.Sub(consumed.IOU)
+	return NewIOUEitherAmount(result)
 }
 
 // eitherAmountToTxAmount converts EitherAmount to tx.Amount
@@ -1156,7 +1038,7 @@ func (s *BookStep) eitherAmountToTxAmount(ea EitherAmount, issue Issue) tx.Amoun
 	if ea.IsNative {
 		return tx.NewXRPAmount(ea.XRP)
 	}
-	return sle.NewIssuedAmountFromDecimalString(ea.IOU.String(), issue.Currency, sle.EncodeAccountIDSafe(issue.Issuer))
+	return ea.IOU
 }
 
 // getTipQuality gets the best quality available in the order book
@@ -1172,7 +1054,6 @@ func (s *BookStep) getTipQuality(sb *PaymentSandbox) *Quality {
 
 // Check validates the BookStep before use
 func (s *BookStep) Check(sb *PaymentSandbox) tx.Result {
-	// Check that the book has at least some liquidity
 	offer, _, err := s.getNextOffer(sb, sb, nil)
 	if err != nil {
 		return tx.TefINTERNAL
@@ -1183,5 +1064,3 @@ func (s *BookStep) Check(sb *PaymentSandbox) tx.Result {
 
 	return tx.TesSUCCESS
 }
-
-// Note: parseOfferForBookStep removed - now using tx.ParseLedgerOffer directly

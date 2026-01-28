@@ -128,9 +128,9 @@ func AccountFunds(view LedgerView, accountID [20]byte, amount Amount, fhZeroIfFr
 	}
 
 	// Only return positive balance as available funds
-	if balance.Value == nil || balance.Value.Sign() <= 0 {
+	if balance.Signum() <= 0 {
 		return NewIssuedAmount(0, 0, amount.Currency, amount.Issuer)
 	}
 
-	return sle.NewIssuedAmountFromDecimalString(balance.String(), amount.Currency, amount.Issuer)
+	return sle.NewIssuedAmountFromValue(balance.IOU().Mantissa(), balance.IOU().Exponent(), amount.Currency, amount.Issuer)
 }

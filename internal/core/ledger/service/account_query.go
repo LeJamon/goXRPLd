@@ -2,13 +2,13 @@ package service
 
 import (
 	"errors"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
-	"math/big"
 	"strconv"
 
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
+	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
 // AccountInfoResult contains account information from the ledger
@@ -244,9 +244,9 @@ func (s *Service) GetAccountLines(account string, ledgerIndex string, peer strin
 			// We are low account
 			// Balance is positive if low owes high (we owe them) -> negative for us
 			// Balance is negative if high owes low (they owe us) -> positive for us
-			line.Balance = rs.Balance.Value.Neg(rs.Balance.Value).Text('f', -1)
-			line.Limit = rs.LowLimit.Value.Text('f', -1)
-			line.LimitPeer = rs.HighLimit.Value.Text('f', -1)
+			line.Balance = rs.Balance.Negate().Value()
+			line.Limit = rs.LowLimit.Value()
+			line.LimitPeer = rs.HighLimit.Value()
 			line.NoRipple = (rs.Flags & 0x00020000) != 0       // lsfLowNoRipple
 			line.NoRipplePeer = (rs.Flags & 0x00040000) != 0   // lsfHighNoRipple
 			line.Authorized = (rs.Flags & 0x00010000) != 0     // lsfLowAuth
@@ -255,9 +255,9 @@ func (s *Service) GetAccountLines(account string, ledgerIndex string, peer strin
 			line.FreezePeer = (rs.Flags & 0x00800000) != 0     // lsfHighFreeze
 		} else {
 			// We are high account
-			line.Balance = rs.Balance.Value.Text('f', -1)
-			line.Limit = rs.HighLimit.Value.Text('f', -1)
-			line.LimitPeer = rs.LowLimit.Value.Text('f', -1)
+			line.Balance = rs.Balance.Value()
+			line.Limit = rs.HighLimit.Value()
+			line.LimitPeer = rs.LowLimit.Value()
 			line.NoRipple = (rs.Flags & 0x00040000) != 0       // lsfHighNoRipple
 			line.NoRipplePeer = (rs.Flags & 0x00020000) != 0   // lsfLowNoRipple
 			line.Authorized = (rs.Flags & 0x00080000) != 0     // lsfHighAuth
@@ -751,43 +751,43 @@ func (s *Service) GetAccountCurrencies(account string, ledgerIndex string) (*Acc
 			// If rs.Balance > 0, we owe peer (balance < 0 from our view)
 			// If rs.Balance < 0, peer owes us (balance > 0 from our view)
 
-			// Our limit is rs.LowLimit.Value
+			// Our limit is rs.LowLimit
 			// We can receive if: limit > balance from our perspective
-			// From our perspective: balance = -rs.Balance.Value
-			// So we can receive if: limit > -rs.Balance.Value
-			// i.e., limit + rs.Balance.Value > 0
+			// From our perspective: balance = -rs.Balance
+			// So we can receive if: limit > -rs.Balance
+			// i.e., limit + rs.Balance > 0
 
-			limit := rs.LowLimit.Value
-			balance := rs.Balance.Value.Neg(rs.Balance.Value) // Our perspective
+			limit := rs.LowLimit
+			balance := rs.Balance.Negate() // Our perspective
 
 			// Can receive if limit > balance (more room to receive)
-			if limit.Sign() > 0 && limit.Cmp(balance) > 0 {
+			if limit.Signum() > 0 && limit.Compare(balance) > 0 {
 				receiveCurrencies[currency] = true
 			}
 
 			// Can send if balance > 0 (we have some to send)
-			if balance.Sign() > 0 {
+			if balance.Signum() > 0 {
 				sendCurrencies[currency] = true
 			}
 		} else {
 			// We are high account
 			// Balance value: positive means low owes high (we hold IOU from low's perspective)
-			// From high's perspective: balance = rs.Balance.Value (same sign)
+			// From high's perspective: balance = rs.Balance (same sign)
 
-			// Our limit is rs.HighLimit.Value
+			// Our limit is rs.HighLimit
 			// We can receive if: limit > balance
 			// We can send if balance > 0
 
-			limit := rs.HighLimit.Value
-			balance := rs.Balance.Value
+			limit := rs.HighLimit
+			balance := rs.Balance
 
 			// Can receive if limit > balance (more room to receive)
-			if limit.Sign() > 0 && limit.Cmp(balance) > 0 {
+			if limit.Signum() > 0 && limit.Compare(balance) > 0 {
 				receiveCurrencies[currency] = true
 			}
 
 			// Can send if balance > 0 (we have some to send)
-			if balance.Sign() > 0 {
+			if balance.Signum() > 0 {
 				sendCurrencies[currency] = true
 			}
 		}
@@ -1004,7 +1004,7 @@ func (s *Service) GetGatewayBalances(account string, hotWallets []string, ledger
 	}
 
 	// Maps to collect results
-	obligations := make(map[string]*sle.IOUAmount)    // currency -> total obligations
+	obligations := make(map[string]tx.Amount)         // currency -> total obligations
 	hotBalances := make(map[string][]CurrencyBalance) // account -> balances
 	frozenBalances := make(map[string][]CurrencyBalance)
 	assets := make(map[string][]CurrencyBalance)
@@ -1048,21 +1048,20 @@ func (s *Service) GetGatewayBalances(account string, hotWallets []string, ledger
 		}
 
 		// Check if balance is zero
-		if rs.Balance.Value == nil || rs.Balance.Value.Sign() == 0 {
+		if rs.Balance.IsZero() {
 			return true
 		}
 
 		// Get the balance from the gateway's perspective
 		// RippleState balance: positive = low owes high, negative = high owes low
 		// Gateway perspective: negative = we owe them (obligations), positive = they owe us (assets)
-		var gatewayBalance *sle.IOUAmount
+		var gatewayBalance tx.Amount
 		if isLowAccount {
 			// We are low, balance from our view is negated
-			neg := rs.Balance.Negate()
-			gatewayBalance = &neg
+			gatewayBalance = rs.Balance.Negate()
 		} else {
 			// We are high, balance from our view is the same
-			gatewayBalance = &rs.Balance
+			gatewayBalance = rs.Balance
 		}
 
 		// Get peer address
@@ -1084,24 +1083,24 @@ func (s *Service) GetGatewayBalances(account string, hotWallets []string, ledger
 		if hotWalletIDs[peerID] {
 			// This is a hot wallet - add to balances
 			// For hot wallets, we report the balance they hold (negated from gateway perspective)
-			if gatewayBalance.Value.Sign() < 0 {
+			if gatewayBalance.Signum() < 0 {
 				// Gateway owes hot wallet (hot wallet holds currency)
-				balanceText := formatIOUValue(gatewayBalance.Value.Neg(gatewayBalance.Value))
+				balanceText := gatewayBalance.Negate().Value()
 				hotBalances[peerAddr] = append(hotBalances[peerAddr], CurrencyBalance{
 					Currency: currency,
 					Value:    balanceText,
 				})
 			}
-		} else if gatewayBalance.Value.Sign() > 0 {
+		} else if gatewayBalance.Signum() > 0 {
 			// Gateway has a positive balance (holds currency from peer) - unusual, add to assets
-			balanceText := formatIOUValue(gatewayBalance.Value)
+			balanceText := gatewayBalance.Value()
 			assets[peerAddr] = append(assets[peerAddr], CurrencyBalance{
 				Currency: currency,
 				Value:    balanceText,
 			})
 		} else if isFrozen {
 			// This is a frozen obligation
-			balanceText := formatIOUValue(gatewayBalance.Value.Neg(gatewayBalance.Value))
+			balanceText := gatewayBalance.Negate().Value()
 			frozenBalances[peerAddr] = append(frozenBalances[peerAddr], CurrencyBalance{
 				Currency: currency,
 				Value:    balanceText,
@@ -1111,10 +1110,10 @@ func (s *Service) GetGatewayBalances(account string, hotWallets []string, ledger
 			// Balance is negative (we owe them), so negate for the amount we owe
 			owedAmount := gatewayBalance.Negate()
 			if existing, ok := obligations[currency]; ok {
-				sum := existing.Add(owedAmount)
-				obligations[currency] = &sum
+				sum, _ := existing.Add(owedAmount)
+				obligations[currency] = sum
 			} else {
-				obligations[currency] = &owedAmount
+				obligations[currency] = owedAmount
 			}
 		}
 
@@ -1124,7 +1123,7 @@ func (s *Service) GetGatewayBalances(account string, hotWallets []string, ledger
 	// Convert obligations map to string values
 	obligationsStr := make(map[string]string)
 	for curr, amt := range obligations {
-		obligationsStr[curr] = formatIOUValue(amt.Value)
+		obligationsStr[curr] = amt.Value()
 	}
 
 	result := &GatewayBalancesResult{
@@ -1148,15 +1147,6 @@ func (s *Service) GetGatewayBalances(account string, hotWallets []string, ledger
 	}
 
 	return result, nil
-}
-
-// formatIOUValue formats a big.Float value for IOU display
-func formatIOUValue(v *big.Float) string {
-	if v == nil {
-		return "0"
-	}
-	// Use Text with 'g' format for compact representation
-	return v.Text('f', -1)
 }
 
 // NoRippleCheckResult contains the result of noripple_check RPC
@@ -1337,17 +1327,9 @@ func (s *Service) GetNoRippleCheck(account string, role string, ledgerIndex stri
 				// Get our limit for this trust line
 				var limitValue string
 				if isLowAccount {
-					if rs.LowLimit.Value != nil {
-						limitValue = rs.LowLimit.Value.Text('f', -1)
-					} else {
-						limitValue = "0"
-					}
+					limitValue = rs.LowLimit.Value()
 				} else {
-					if rs.HighLimit.Value != nil {
-						limitValue = rs.HighLimit.Value.Text('f', -1)
-					} else {
-						limitValue = "0"
-					}
+					limitValue = rs.HighLimit.Value()
 				}
 
 				// Build TrustSet transaction

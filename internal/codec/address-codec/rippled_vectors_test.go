@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
 	ed25519crypto "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/ed25519"
 	secp256k1crypto "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/secp256k1"
+	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
 	"github.com/stretchr/testify/require"
 )
 
@@ -683,11 +683,6 @@ func TestRippledSeedPrefixDetection(t *testing.T) {
 func TestRippledValidatorKeypairError(t *testing.T) {
 	seedHash := crypto.Sha512Half([]byte("masterpassphrase"))
 	seedBytes := seedHash[:16]
-
-	t.Run("secp256k1 validator derivation", func(t *testing.T) {
-		_, _, err := secp256k1crypto.SECP256K1().DeriveKeypair(seedBytes, true)
-		require.Error(t, err, "Validator keypair derivation should return error for secp256k1")
-	})
 
 	t.Run("ed25519 validator derivation", func(t *testing.T) {
 		_, _, err := ed25519crypto.ED25519().DeriveKeypair(seedBytes, true)

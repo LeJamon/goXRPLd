@@ -240,8 +240,8 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 	}
 
-	// Parse the limit amount
-	limitAmount := t.LimitAmount.ToIOUAmountLegacy()
+	// Use the limit amount directly (it's already a tx.Amount)
+	limitAmount := t.LimitAmount
 
 	if !trustLineExists {
 		// Check if setting zero limit without existing trust line
@@ -257,7 +257,7 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 
 		// Create new RippleState
 		rs := &sle.RippleState{
-			Balance:           sle.NewIOUAmount("0", t.LimitAmount.Currency, t.LimitAmount.Issuer),
+			Balance:           tx.NewIssuedAmount(0, -100, t.LimitAmount.Currency, t.LimitAmount.Issuer),
 			Flags:             0,
 			LowNode:           0,
 			HighNode:          0,
@@ -268,10 +268,10 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 		// Set the limit based on which side this account is
 		if !bHigh {
 			rs.LowLimit = limitAmount
-			rs.HighLimit = sle.NewIOUAmount("0", t.LimitAmount.Currency, t.LimitAmount.Issuer)
+			rs.HighLimit = tx.NewIssuedAmount(0, -100, t.LimitAmount.Currency, t.LimitAmount.Issuer)
 			rs.Flags |= sle.LsfLowReserve
 		} else {
-			rs.LowLimit = sle.NewIOUAmount("0", t.LimitAmount.Currency, t.LimitAmount.Issuer)
+			rs.LowLimit = tx.NewIssuedAmount(0, -100, t.LimitAmount.Currency, t.LimitAmount.Issuer)
 			rs.HighLimit = limitAmount
 			rs.Flags |= sle.LsfHighReserve
 		}
@@ -403,13 +403,11 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 
 		// Handle NoRipple flag
 		if bSetNoRipple && !bClearNoRipple {
-			balanceFromPerspective := true
-			if rs.Balance.Value != nil {
-				if bHigh {
-					balanceFromPerspective = rs.Balance.Value.Sign() <= 0
-				} else {
-					balanceFromPerspective = rs.Balance.Value.Sign() >= 0
-				}
+			var balanceFromPerspective bool
+			if bHigh {
+				balanceFromPerspective = rs.Balance.Signum() <= 0
+			} else {
+				balanceFromPerspective = rs.Balance.Signum() >= 0
 			}
 			if balanceFromPerspective {
 				if bHigh {
@@ -518,12 +516,12 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 		bLowReserveSet := rs.LowQualityIn != 0 || rs.LowQualityOut != 0 ||
 			((rs.Flags&sle.LsfLowNoRipple) == 0) != bLowDefRipple ||
 			(rs.Flags&sle.LsfLowFreeze) != 0 || !rs.LowLimit.IsZero() ||
-			(rs.Balance.Value != nil && rs.Balance.Value.Sign() > 0)
+			rs.Balance.Signum() > 0
 
 		bHighReserveSet := rs.HighQualityIn != 0 || rs.HighQualityOut != 0 ||
 			((rs.Flags&sle.LsfHighNoRipple) == 0) != bHighDefRipple ||
 			(rs.Flags&sle.LsfHighFreeze) != 0 || !rs.HighLimit.IsZero() ||
-			(rs.Balance.Value != nil && rs.Balance.Value.Sign() < 0)
+			rs.Balance.Signum() < 0
 
 		bDefault := !bLowReserveSet && !bHighReserveSet
 

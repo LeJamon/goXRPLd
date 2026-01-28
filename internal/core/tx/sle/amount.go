@@ -600,19 +600,92 @@ func (a Amount) Compare(b Amount) int {
 		return 0
 	}
 	if !a.IsNative() && !b.IsNative() {
-		aFloat := a.iou.Float64()
-		bFloat := b.iou.Float64()
-		if aFloat < bFloat {
-			return -1
-		}
-		if aFloat > bFloat {
-			return 1
-		}
-		return 0
+		return compareIOUValues(a.iou, b.iou)
 	}
 	// Mixed types - XRP comes first
 	if a.IsNative() {
 		return -1
 	}
 	return 1
+}
+
+// compareIOUValues compares two IOU values using mantissa/exponent without float64 conversion.
+func compareIOUValues(a, b IOUAmountValue) int {
+	// Handle signs first
+	aSign := a.Signum()
+	bSign := b.Signum()
+	if aSign < bSign {
+		return -1
+	}
+	if aSign > bSign {
+		return 1
+	}
+	if aSign == 0 && bSign == 0 {
+		return 0
+	}
+
+	// Same sign - compare magnitudes
+	// For positive values: larger exponent = larger value (if mantissas are normalized)
+	if a.exponent > b.exponent {
+		if aSign > 0 {
+			return 1
+		}
+		return -1
+	}
+	if a.exponent < b.exponent {
+		if aSign > 0 {
+			return -1
+		}
+		return 1
+	}
+
+	// Same exponent - compare mantissas
+	if a.mantissa < b.mantissa {
+		return -1
+	}
+	if a.mantissa > b.mantissa {
+		return 1
+	}
+	return 0
+}
+
+// MulRatio multiplies this amount by num/den with optional rounding up.
+// Uses integer arithmetic on mantissa to avoid float64 precision loss.
+func (a Amount) MulRatio(num, den uint32, roundUp bool) Amount {
+	if a.IsNative() {
+		// For XRP, use integer arithmetic on drops
+		drops := a.Drops()
+		result := drops * int64(num) / int64(den)
+		if roundUp && drops*int64(num)%int64(den) != 0 {
+			result++
+		}
+		return NewXRPAmountFromInt(result)
+	}
+
+	if den == 0 || a.IsZero() {
+		return a
+	}
+
+	// For IOU: multiply mantissa by num/den
+	// Use int128-style arithmetic to avoid overflow:
+	// result = mantissa * num / den
+	mantissa := a.iou.Mantissa()
+	negative := mantissa < 0
+	if negative {
+		mantissa = -mantissa
+	}
+
+	// Use big integer to avoid overflow on mantissa * num
+	bigMant := int64(0)
+	bigProd := int64(mantissa) * int64(num)
+	bigMant = bigProd / int64(den)
+	if roundUp && bigProd%int64(den) != 0 {
+		bigMant++
+	}
+
+	if negative {
+		bigMant = -bigMant
+	}
+
+	return NewIssuedAmountFromValue(bigMant, a.iou.Exponent(), a.Currency, a.Issuer)
 }

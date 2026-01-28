@@ -3,41 +3,7 @@ package sle
 import (
 	"bytes"
 	"fmt"
-	"math/big"
 )
-
-// ToIOUAmountLegacy converts an Amount to the legacy IOUAmount type (big.Float based).
-// For native XRP amounts, this is not meaningful but returns a zero IOUAmount.
-func (a Amount) ToIOUAmountLegacy() IOUAmount {
-	if a.IsNative() {
-		return IOUAmount{
-			Value: new(big.Float).SetPrec(128).SetInt64(a.Drops()),
-		}
-	}
-	// Convert mantissa/exponent to big.Float WITHOUT going through float64
-	// value = mantissa × 10^exponent
-	iou := a.iou
-	mantissa := iou.Mantissa()
-	exponent := iou.Exponent()
-
-	// Create big.Float from mantissa with high precision
-	v := new(big.Float).SetPrec(128).SetInt64(mantissa)
-
-	// Apply exponent using precise integer powers of 10
-	if exponent > 0 {
-		multiplier := new(big.Float).SetPrec(128).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exponent)), nil))
-		v.Mul(v, multiplier)
-	} else if exponent < 0 {
-		divisor := new(big.Float).SetPrec(128).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-exponent)), nil))
-		v.Quo(v, divisor)
-	}
-
-	return IOUAmount{
-		Value:    v,
-		Currency: a.Currency,
-		Issuer:   a.Issuer,
-	}
-}
 
 // CompareAccountIDs compares two 20-byte account IDs lexicographically.
 // Returns -1, 0, or 1.
@@ -67,7 +33,6 @@ func SubtractAmount(a, b Amount) Amount {
 		}
 		return NewXRPAmountFromInt(0)
 	}
-	// For IOU amounts, use the built-in subtraction
 	result, _ := a.Sub(b)
 	return result
 }
@@ -81,12 +46,7 @@ func ApplyTransferFee(amount Amount, transferRate uint32) Amount {
 	if amount.IsNative() {
 		return amount // No transfer fee on XRP
 	}
-	// Apply transfer rate: newAmount = amount * transferRate / 1000000000
-	// Use float64 for the calculation
-	value := amount.Float64()
-	multiplier := float64(transferRate) / 1000000000.0
-	result := value * multiplier
-	return NewIssuedAmountFromFloat64(result, amount.Currency, amount.Issuer)
+	return amount.MulRatio(transferRate, 1000000000, true)
 }
 
 // EncodeAccountIDSafe encodes a 20-byte account ID, returning empty string on error

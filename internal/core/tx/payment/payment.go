@@ -403,8 +403,8 @@ func (p *Payment) applyIOUPayment(ctx *tx.ApplyContext) tx.Result {
 		return tx.TemBAD_ISSUER
 	}
 
-	// Convert the tx.Amount to sle.IOUAmount for internal use
-	amount := p.Amount.ToIOUAmountLegacy()
+	// Use the tx.Amount directly (no conversion needed)
+	amount := p.Amount
 
 	// Detect payments that require RippleCalc (path finding)
 	// Reference: rippled Payment.cpp:435-436:
@@ -484,7 +484,7 @@ func (p *Payment) applyIOUPayment(ctx *tx.ApplyContext) tx.Result {
 	// 3. Neither - transfer between accounts via trust lines
 
 	var result tx.Result
-	var deliveredAmount sle.IOUAmount
+	var deliveredAmount tx.Amount
 
 	if senderIsIssuer {
 		// Sender is issuing their own currency to destination
@@ -506,8 +506,7 @@ func (p *Payment) applyIOUPayment(ctx *tx.ApplyContext) tx.Result {
 	if result == tx.TesSUCCESS && p.DeliverMin != nil {
 		flags := p.GetFlags()
 		if (flags & PaymentFlagPartialPayment) != 0 {
-			deliverMin := p.DeliverMin.ToIOUAmountLegacy()
-			if deliveredAmount.Compare(deliverMin) < 0 {
+			if deliveredAmount.Compare(*p.DeliverMin) < 0 {
 				return tx.TecPATH_PARTIAL
 			}
 		}
@@ -574,7 +573,7 @@ func (p *Payment) applyIOUPaymentWithPaths(ctx *tx.ApplyContext, senderID, destI
 }
 
 // applyIOUIssue handles when sender is the issuer creating new tokens
-func (p *Payment) applyIOUIssue(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID [20]byte, amount sle.IOUAmount) tx.Result {
+func (p *Payment) applyIOUIssue(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID [20]byte, amount tx.Amount) tx.Result {
 	// Look up the trust line between destination and issuer (sender)
 	trustLineKey := keylet.Line(destID, senderID, amount.Currency)
 
@@ -603,7 +602,7 @@ func (p *Payment) applyIOUIssue(ctx *tx.ApplyContext, dest *sle.AccountRoot, sen
 	destIsLow := sle.CompareAccountIDsForLine(destID, senderID) < 0
 
 	// Get the trust limit set by the destination (recipient)
-	var trustLimit sle.IOUAmount
+	var trustLimit tx.Amount
 	if destIsLow {
 		trustLimit = rippleState.LowLimit
 	} else {
@@ -614,17 +613,17 @@ func (p *Payment) applyIOUIssue(ctx *tx.ApplyContext, dest *sle.AccountRoot, sen
 	// RippleState balance semantics:
 	// - Negative balance = LOW owes HIGH (HIGH holds tokens)
 	// - Positive balance = HIGH owes LOW (LOW holds tokens)
-	var newBalance sle.IOUAmount
+	var newBalance tx.Amount
 	if destIsLow {
 		// Dest is LOW, sender (issuer) is HIGH
 		// Issuing means issuer (HIGH) now owes dest (LOW) more
 		// Positive balance = HIGH owes LOW, so make MORE positive
-		newBalance = rippleState.Balance.Add(amount)
+		newBalance, _ = rippleState.Balance.Add(amount)
 	} else {
 		// Dest is HIGH, sender (issuer) is LOW
 		// Issuing means issuer (LOW) now owes dest (HIGH) more
 		// Negative balance = LOW owes HIGH, so make MORE negative
-		newBalance = rippleState.Balance.Sub(amount)
+		newBalance, _ = rippleState.Balance.Sub(amount)
 	}
 
 	// Check if the new balance exceeds the trust limit
@@ -669,7 +668,7 @@ func (p *Payment) applyIOUIssue(ctx *tx.ApplyContext, dest *sle.AccountRoot, sen
 }
 
 // applyIOURedeem handles when destination is the issuer (redeeming tokens)
-func (p *Payment) applyIOURedeem(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID [20]byte, amount sle.IOUAmount) tx.Result {
+func (p *Payment) applyIOURedeem(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID [20]byte, amount tx.Amount) tx.Result {
 	// Look up the trust line between sender and issuer (destination)
 	trustLineKey := keylet.Line(senderID, destID, amount.Currency)
 
@@ -701,7 +700,7 @@ func (p *Payment) applyIOURedeem(ctx *tx.ApplyContext, dest *sle.AccountRoot, se
 	// RippleState balance semantics:
 	// - Negative balance = LOW owes HIGH (HIGH holds tokens)
 	// - Positive balance = HIGH owes LOW (LOW holds tokens)
-	var senderBalance sle.IOUAmount
+	var senderBalance tx.Amount
 	if senderIsLow {
 		// Sender is LOW, issuer (dest) is HIGH
 		// Positive balance = sender holds tokens (HIGH owes LOW)
@@ -720,15 +719,15 @@ func (p *Payment) applyIOURedeem(ctx *tx.ApplyContext, dest *sle.AccountRoot, se
 
 	// Update balance by reducing sender's holding
 	// When redeeming, the issuer owes less to the sender
-	var newBalance sle.IOUAmount
+	var newBalance tx.Amount
 	if senderIsLow {
 		// Sender is LOW, issuer is HIGH
 		// Positive balance = sender holds. Reduce by subtracting.
-		newBalance = rippleState.Balance.Sub(amount)
+		newBalance, _ = rippleState.Balance.Sub(amount)
 	} else {
 		// Sender is HIGH, issuer is LOW
 		// Negative balance = sender holds. Make less negative by adding.
-		newBalance = rippleState.Balance.Add(amount)
+		newBalance, _ = rippleState.Balance.Add(amount)
 	}
 
 	// Ensure the new balance has the correct currency and issuer
@@ -761,7 +760,7 @@ func (p *Payment) applyIOURedeem(ctx *tx.ApplyContext, dest *sle.AccountRoot, se
 }
 
 // applyIOUTransfer handles transfer between two non-issuer accounts
-func (p *Payment) applyIOUTransfer(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID, issuerID [20]byte, amount sle.IOUAmount) tx.Result {
+func (p *Payment) applyIOUTransfer(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID, issuerID [20]byte, amount tx.Amount) tx.Result {
 	// Both sender and destination need trust lines to the issuer
 	// This is a simplified implementation - full path finding is more complex
 
@@ -810,7 +809,7 @@ func (p *Payment) applyIOUTransfer(ctx *tx.ApplyContext, dest *sle.AccountRoot, 
 	// - Negative balance = LOW owes HIGH (HIGH holds tokens)
 	// - Positive balance = HIGH owes LOW (LOW holds tokens)
 	senderIsLowWithIssuer := sle.CompareAccountIDsForLine(senderID, issuerID) < 0
-	var senderBalance sle.IOUAmount
+	var senderBalance tx.Amount
 	if senderIsLowWithIssuer {
 		// Sender is LOW, issuer is HIGH
 		// Positive balance = sender holds tokens (HIGH/issuer owes LOW/sender)
@@ -828,7 +827,7 @@ func (p *Payment) applyIOUTransfer(ctx *tx.ApplyContext, dest *sle.AccountRoot, 
 
 	// Calculate destination's current balance and trust limit
 	destIsLowWithIssuer := sle.CompareAccountIDsForLine(destID, issuerID) < 0
-	var destBalance, destLimit sle.IOUAmount
+	var destBalance, destLimit tx.Amount
 	if destIsLowWithIssuer {
 		// Dest is LOW, issuer is HIGH
 		// Positive balance = dest holds tokens
@@ -842,19 +841,19 @@ func (p *Payment) applyIOUTransfer(ctx *tx.ApplyContext, dest *sle.AccountRoot, 
 	}
 
 	// Check destination trust limit
-	newDestBalance := destBalance.Add(amount)
+	newDestBalance, _ := destBalance.Add(amount)
 	if !destLimit.IsZero() && newDestBalance.Compare(destLimit) > 0 {
 		return tx.TecPATH_PARTIAL
 	}
 
 	// Update sender's trust line (decrease balance - sender loses tokens)
-	var newSenderRippleBalance sle.IOUAmount
+	var newSenderRippleBalance tx.Amount
 	if senderIsLowWithIssuer {
 		// Sender is LOW, positive balance = holdings. Decrease by subtracting.
-		newSenderRippleBalance = senderRippleState.Balance.Sub(amount)
+		newSenderRippleBalance, _ = senderRippleState.Balance.Sub(amount)
 	} else {
 		// Sender is HIGH, negative balance = holdings. Make less negative by adding.
-		newSenderRippleBalance = senderRippleState.Balance.Add(amount)
+		newSenderRippleBalance, _ = senderRippleState.Balance.Add(amount)
 	}
 	// Ensure the new balance has the correct currency and issuer
 	newSenderRippleBalance.Currency = amount.Currency
@@ -862,13 +861,13 @@ func (p *Payment) applyIOUTransfer(ctx *tx.ApplyContext, dest *sle.AccountRoot, 
 	senderRippleState.Balance = newSenderRippleBalance
 
 	// Update destination's trust line (increase balance - dest gains tokens)
-	var newDestRippleBalance sle.IOUAmount
+	var newDestRippleBalance tx.Amount
 	if destIsLowWithIssuer {
 		// Dest is LOW, positive balance = holdings. Increase by adding.
-		newDestRippleBalance = destRippleState.Balance.Add(amount)
+		newDestRippleBalance, _ = destRippleState.Balance.Add(amount)
 	} else {
 		// Dest is HIGH, negative balance = holdings. Make more negative by subtracting.
-		newDestRippleBalance = destRippleState.Balance.Sub(amount)
+		newDestRippleBalance, _ = destRippleState.Balance.Sub(amount)
 	}
 	// Ensure the new balance has the correct currency and issuer
 	newDestRippleBalance.Currency = amount.Currency
@@ -902,31 +901,31 @@ func (p *Payment) applyIOUTransfer(ctx *tx.ApplyContext, dest *sle.AccountRoot, 
 }
 
 // applyIOUIssueWithDelivered wraps applyIOUIssue to return the delivered amount
-func (p *Payment) applyIOUIssueWithDelivered(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID [20]byte, amount sle.IOUAmount) (tx.Result, sle.IOUAmount) {
+func (p *Payment) applyIOUIssueWithDelivered(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID [20]byte, amount tx.Amount) (tx.Result, tx.Amount) {
 	result := p.applyIOUIssue(ctx, dest, senderID, destID, amount)
 	if result == tx.TesSUCCESS {
 		// For successful issue, the full amount is delivered
 		return result, amount
 	}
-	return result, sle.IOUAmount{}
+	return result, tx.Amount{}
 }
 
 // applyIOURedeemWithDelivered wraps applyIOURedeem to return the delivered amount
-func (p *Payment) applyIOURedeemWithDelivered(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID [20]byte, amount sle.IOUAmount) (tx.Result, sle.IOUAmount) {
+func (p *Payment) applyIOURedeemWithDelivered(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID [20]byte, amount tx.Amount) (tx.Result, tx.Amount) {
 	result := p.applyIOURedeem(ctx, dest, senderID, destID, amount)
 	if result == tx.TesSUCCESS {
 		// For successful redeem, the full amount is delivered
 		return result, amount
 	}
-	return result, sle.IOUAmount{}
+	return result, tx.Amount{}
 }
 
 // applyIOUTransferWithDelivered wraps applyIOUTransfer to return the delivered amount
-func (p *Payment) applyIOUTransferWithDelivered(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID, issuerID [20]byte, amount sle.IOUAmount) (tx.Result, sle.IOUAmount) {
+func (p *Payment) applyIOUTransferWithDelivered(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID, issuerID [20]byte, amount tx.Amount) (tx.Result, tx.Amount) {
 	result := p.applyIOUTransfer(ctx, dest, senderID, destID, issuerID, amount)
 	if result == tx.TesSUCCESS {
 		// For successful transfer, the full amount is delivered
 		return result, amount
 	}
-	return result, sle.IOUAmount{}
+	return result, tx.Amount{}
 }

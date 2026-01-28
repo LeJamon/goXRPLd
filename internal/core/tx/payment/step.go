@@ -2,7 +2,6 @@ package payment
 
 import (
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
-	"math/big"
 
 	tx "github.com/LeJamon/goXRPLd/internal/core/tx"
 )
@@ -50,7 +49,7 @@ type EitherAmount struct {
 	XRP int64
 
 	// IOU holds the IOU amount (only valid if IsNative is false)
-	IOU sle.IOUAmount
+	IOU tx.Amount
 }
 
 // NewXRPEitherAmount creates an EitherAmount for XRP
@@ -62,7 +61,7 @@ func NewXRPEitherAmount(drops int64) EitherAmount {
 }
 
 // NewIOUEitherAmount creates an EitherAmount for IOU
-func NewIOUEitherAmount(amount sle.IOUAmount) EitherAmount {
+func NewIOUEitherAmount(amount tx.Amount) EitherAmount {
 	return EitherAmount{
 		IsNative: false,
 		IOU:      amount,
@@ -81,7 +80,7 @@ func ZeroXRPEitherAmount() EitherAmount {
 func ZeroIOUEitherAmount(currency, issuer string) EitherAmount {
 	return EitherAmount{
 		IsNative: false,
-		IOU:      sle.NewIOUAmount("0", currency, issuer),
+		IOU:      tx.NewIssuedAmount(0, -100, currency, issuer),
 	}
 }
 
@@ -93,18 +92,12 @@ func (e EitherAmount) IsZero() bool {
 	return e.IOU.IsZero()
 }
 
-// IsEffectivelyZero returns true if the amount is effectively zero (< 1e-10 for IOU)
-// This handles floating point imprecision when checking if an offer is unfunded
+// IsEffectivelyZero returns true if the amount is effectively zero
 func (e EitherAmount) IsEffectivelyZero() bool {
 	if e.IsNative {
 		return e.XRP == 0
 	}
-	if e.IOU.Value == nil {
-		return true
-	}
-	val, _ := e.IOU.Value.Float64()
-	// Use 1e-10 as threshold for "effectively zero" for IOUs
-	return val < 1e-10 && val > -1e-10
+	return e.IOU.IsZero()
 }
 
 // IsNegative returns true if the amount is negative
@@ -120,7 +113,8 @@ func (e EitherAmount) Add(other EitherAmount) EitherAmount {
 	if e.IsNative {
 		return NewXRPEitherAmount(e.XRP + other.XRP)
 	}
-	return NewIOUEitherAmount(e.IOU.Add(other.IOU))
+	result, _ := e.IOU.Add(other.IOU)
+	return NewIOUEitherAmount(result)
 }
 
 // Sub subtracts other from e (must be same type)
@@ -128,7 +122,8 @@ func (e EitherAmount) Sub(other EitherAmount) EitherAmount {
 	if e.IsNative {
 		return NewXRPEitherAmount(e.XRP - other.XRP)
 	}
-	return NewIOUEitherAmount(e.IOU.Sub(other.IOU))
+	result, _ := e.IOU.Sub(other.IOU)
+	return NewIOUEitherAmount(result)
 }
 
 // Compare compares two EitherAmounts
@@ -168,12 +163,12 @@ func (e EitherAmount) DivideFloat(other EitherAmount) float64 {
 	if e.IsNative {
 		eVal = float64(e.XRP)
 	} else {
-		eVal, _ = e.IOU.Value.Float64()
+		eVal = e.IOU.Float64()
 	}
 	if other.IsNative {
 		otherVal = float64(other.XRP)
 	} else {
-		otherVal, _ = other.IOU.Value.Float64()
+		otherVal = other.IOU.Float64()
 	}
 	if otherVal == 0 {
 		return 0
@@ -186,13 +181,9 @@ func (e EitherAmount) MultiplyFloat(factor float64) EitherAmount {
 	if e.IsNative {
 		return NewXRPEitherAmount(int64(float64(e.XRP) * factor))
 	}
-	val, _ := e.IOU.Value.Float64()
+	val := e.IOU.Float64()
 	newVal := val * factor
-	return NewIOUEitherAmount(sle.IOUAmount{
-		Value:    new(big.Float).SetFloat64(newVal),
-		Currency: e.IOU.Currency,
-		Issuer:   e.IOU.Issuer,
-	})
+	return NewIOUEitherAmount(tx.NewIssuedAmountFromFloat64(newVal, e.IOU.Currency, e.IOU.Issuer))
 }
 
 // Quality represents an exchange rate as output/input ratio.
@@ -211,48 +202,36 @@ type Quality struct {
 // Reference: rippled's getRate() in STAmount.cpp
 func QualityFromAmounts(in, out EitherAmount) Quality {
 	if out.IsZero() {
-		return Quality{Value: 0} // Invalid quality - division by zero
+		return Quality{Value: 0}
 	}
 
 	if in.IsZero() {
-		return Quality{Value: 0} // Zero quality - best possible (getting something for nothing)
+		return Quality{Value: 0}
 	}
 
-	var ratio *big.Float
-	if in.IsNative && out.IsNative {
-		// XRP to XRP
-		ratio = new(big.Float).Quo(
-			new(big.Float).SetInt64(in.XRP),
-			new(big.Float).SetInt64(out.XRP),
-		)
-	} else if in.IsNative && !out.IsNative {
-		// XRP to IOU
-		inFloat := new(big.Float).SetInt64(in.XRP)
-		ratio = new(big.Float).Quo(inFloat, out.IOU.Value)
-	} else if !in.IsNative && out.IsNative {
-		// IOU to XRP
-		outFloat := new(big.Float).SetInt64(out.XRP)
-		ratio = new(big.Float).Quo(in.IOU.Value, outFloat)
+	var inVal, outVal float64
+	if in.IsNative {
+		inVal = float64(in.XRP)
 	} else {
-		// IOU to IOU
-		ratio = new(big.Float).Quo(in.IOU.Value, out.IOU.Value)
+		inVal = in.IOU.Float64()
+	}
+	if out.IsNative {
+		outVal = float64(out.XRP)
+	} else {
+		outVal = out.IOU.Float64()
 	}
 
-	// Encode using STAmount-like format:
-	// - Upper 8 bits: exponent + 100
-	// - Lower 56 bits: mantissa
-	// STAmount mantissa range: 10^15 to 10^16 - 1
-	// Reference: rippled Quality.cpp getRate()
+	if outVal == 0 {
+		return Quality{Value: 0}
+	}
 
-	f64, _ := ratio.Float64()
+	f64 := inVal / outVal
 	if f64 <= 0 {
 		return Quality{Value: 0}
 	}
 
 	// Calculate exponent and mantissa
 	// We want mantissa in range [10^15, 10^16)
-	// So: f64 = mantissa * 10^(exponent-15)
-	// Where mantissa is in [10^15, 10^16)
 	exponent := 0
 	mantissa := f64
 
@@ -272,20 +251,16 @@ func QualityFromAmounts(in, out EitherAmount) Quality {
 	}
 
 	// Clamp exponent to valid range [-100, 155]
-	// (stored exponent = exponent + 100, must fit in 8 bits as 0-255)
 	if exponent < -100 {
-		// Value too small - return 0
 		return Quality{Value: 0}
 	}
 	if exponent > 155 {
-		// Value too large - return max
 		return Quality{Value: ^uint64(0)}
 	}
 
 	storedExponent := uint64(exponent + 100)
 	storedMantissa := uint64(mantissa)
 
-	// Combine into quality value: exponent in upper 8 bits, mantissa in lower 56 bits
 	return Quality{Value: (storedExponent << 56) | (storedMantissa & 0x00FFFFFFFFFFFFFF)}
 }
 
@@ -314,7 +289,6 @@ func (q Quality) WorseThan(other Quality) bool {
 
 // Compose multiplies two qualities together
 func (q Quality) Compose(other Quality) Quality {
-	// Simplified multiplication - in production use proper fixed-point math
 	product := (float64(q.Value) * float64(other.Value)) / float64(QualityOne)
 	return Quality{Value: uint64(product)}
 }
@@ -341,122 +315,42 @@ type Strand []Step
 
 // Step is a single unit of payment flow in a strand.
 // Steps transform amounts from one currency/account to another.
-//
-// The interface supports two modes of operation:
-// - Rev (reverse): Given desired output, calculate required input
-// - Fwd (forward): Given input, calculate and execute actual output
 type Step interface {
-	// Rev calculates the input needed to produce the requested output.
-	// This is called during the reverse pass of strand execution.
-	//
-	// Parameters:
-	//   sb: PaymentSandbox with strand's state of balances/offers
-	//   afView: View of balances before strand runs (for unfunded offer detection)
-	//   ofrsToRm: Set to collect unfunded/errored offers for removal
-	//   out: Requested output amount
-	//
-	// Returns: (actualInput, actualOutput) - may be less than requested if liquidity limited
 	Rev(sb *PaymentSandbox, afView *PaymentSandbox, ofrsToRm map[[32]byte]bool, out EitherAmount) (EitherAmount, EitherAmount)
-
-	// Fwd calculates and executes the output given input.
-	// This is called during the forward pass of strand execution.
-	//
-	// Parameters:
-	//   sb: PaymentSandbox with strand's state
-	//   afView: View of balances before strand runs
-	//   ofrsToRm: Set to collect unfunded offers
-	//   in: Input amount to process
-	//
-	// Returns: (actualInput, actualOutput)
 	Fwd(sb *PaymentSandbox, afView *PaymentSandbox, ofrsToRm map[[32]byte]bool, in EitherAmount) (EitherAmount, EitherAmount)
-
-	// CachedIn returns the input amount from the last Rev() call
 	CachedIn() *EitherAmount
-
-	// CachedOut returns the output amount from the last Rev() call
 	CachedOut() *EitherAmount
-
-	// DebtDirection returns whether this step is issuing or redeeming
-	// based on current balances and flow direction
 	DebtDirection(sb *PaymentSandbox, dir StrandDirection) DebtDirection
-
-	// QualityUpperBound returns the worst-case quality for this step
-	// and indicates whether this step redeems or issues.
-	// Returns (nil, _) if the step is dry (no liquidity).
 	QualityUpperBound(v *PaymentSandbox, prevStepDir DebtDirection) (*Quality, DebtDirection)
-
-	// IsZero returns true if the given amount is effectively zero for this step
 	IsZero(amt EitherAmount) bool
-
-	// EqualIn returns true if the input portions of two amounts are equal
 	EqualIn(a, b EitherAmount) bool
-
-	// EqualOut returns true if the output portions of two amounts are equal
 	EqualOut(a, b EitherAmount) bool
-
-	// Inactive returns true if this step should not be used again
-	// (e.g., consumed too many offers)
 	Inactive() bool
-
-	// OffersUsed returns the number of offers consumed in the last execution
 	OffersUsed() uint32
-
-	// DirectStepAccts returns the (src, dst) accounts if this is a DirectStep,
-	// or nil if this is a BookStep
 	DirectStepAccts() *[2][20]byte
-
-	// BookStepBook returns the Book if this is a BookStep, or nil for DirectStep
 	BookStepBook() *Book
-
-	// LineQualityIn returns the QualityIn for the destination's trust line
-	// (only meaningful for DirectStep, returns QualityOne for others)
 	LineQualityIn(v *PaymentSandbox) uint32
-
-	// ValidFwd validates that the step can correctly execute in forward direction
-	// Returns (valid, output) where valid is true if step executed correctly
 	ValidFwd(sb *PaymentSandbox, afView *PaymentSandbox, in EitherAmount) (bool, EitherAmount)
 }
 
 // StrandResult captures the outcome of executing a single strand
 type StrandResult struct {
-	// Success indicates whether the strand executed successfully
-	Success bool
-
-	// In is the total input consumed
-	In EitherAmount
-
-	// Out is the total output produced
-	Out EitherAmount
-
-	// Sandbox contains state changes (nil on failure)
-	Sandbox *PaymentSandbox
-
-	// OffsToRm contains offer hashes that should be removed (unfunded/expired)
-	OffsToRm map[[32]byte]bool
-
-	// OffersUsed is the total number of offers consumed
+	Success    bool
+	In         EitherAmount
+	Out        EitherAmount
+	Sandbox    *PaymentSandbox
+	OffsToRm   map[[32]byte]bool
 	OffersUsed uint32
-
-	// Inactive indicates the strand is depleted of liquidity
-	Inactive bool
+	Inactive   bool
 }
 
 // FlowResult captures the overall result of payment flow execution
 type FlowResult struct {
-	// In is the actual input amount consumed
-	In EitherAmount
-
-	// Out is the actual output amount delivered
-	Out EitherAmount
-
-	// Sandbox contains accumulated state changes
-	Sandbox *PaymentSandbox
-
-	// RemovableOffers contains offer hashes to remove
+	In              EitherAmount
+	Out             EitherAmount
+	Sandbox         *PaymentSandbox
 	RemovableOffers map[[32]byte]bool
-
-	// Result is the transaction result code
-	Result tx.Result
+	Result          tx.Result
 }
 
 // ToEitherAmount converts a tx.Amount to EitherAmount
@@ -464,7 +358,7 @@ func ToEitherAmount(amt tx.Amount) EitherAmount {
 	if amt.IsNative() {
 		return NewXRPEitherAmount(amt.Drops())
 	}
-	return NewIOUEitherAmount(amt.ToIOUAmountLegacy())
+	return NewIOUEitherAmount(amt)
 }
 
 // FromEitherAmount converts EitherAmount back to tx.Amount
@@ -472,7 +366,7 @@ func FromEitherAmount(e EitherAmount) tx.Amount {
 	if e.IsNative {
 		return tx.NewXRPAmount(e.XRP)
 	}
-	return e.IOU.ToAmount()
+	return e.IOU
 }
 
 // GetIssue extracts the Issue from a tx.Amount
@@ -493,14 +387,12 @@ func GetIssue(amt tx.Amount) Issue {
 }
 
 // MulRatio multiplies an amount by a ratio (num/den)
-// Used for quality calculations
 func MulRatio(amt EitherAmount, num, den uint32, roundUp bool) EitherAmount {
 	if den == 0 {
 		return amt
 	}
 
 	if amt.IsNative {
-		// For XRP, use integer math
 		result := (int64(amt.XRP) * int64(num)) / int64(den)
 		if roundUp && (int64(amt.XRP)*int64(num))%int64(den) != 0 {
 			result++
@@ -508,17 +400,7 @@ func MulRatio(amt EitherAmount, num, den uint32, roundUp bool) EitherAmount {
 		return NewXRPEitherAmount(result)
 	}
 
-	// For IOU, use big.Float
-	numF := new(big.Float).SetUint64(uint64(num))
-	denF := new(big.Float).SetUint64(uint64(den))
-	ratio := new(big.Float).Quo(numF, denF)
-	result := new(big.Float).Mul(amt.IOU.Value, ratio)
-
-	return NewIOUEitherAmount(sle.IOUAmount{
-		Value:    result,
-		Currency: amt.IOU.Currency,
-		Issuer:   amt.IOU.Issuer,
-	})
+	return NewIOUEitherAmount(amt.IOU.MulRatio(num, den, roundUp))
 }
 
 // DivRatio divides an amount by a ratio (num/den) = amt * den / num

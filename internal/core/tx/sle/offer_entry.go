@@ -192,9 +192,8 @@ func parseLedgerOffer(data []byte) (*LedgerOffer, error) {
 				if offset+48 > len(data) {
 					return offer, nil
 				}
-				iou, err := ParseIOUAmountBinary(data[offset : offset+48])
+				amt, err := ParseIOUAmountBinary(data[offset : offset+48])
 				if err == nil {
-					amt := iou.ToAmount()
 					switch fieldCode {
 					case 4: // TakerPays
 						offer.TakerPays = amt
