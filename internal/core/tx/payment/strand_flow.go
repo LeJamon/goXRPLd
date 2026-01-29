@@ -1,7 +1,5 @@
 package payment
 
-import "fmt"
-
 // ExecuteStrand executes a strand using the two-pass algorithm.
 //
 // The algorithm works as follows:
@@ -74,6 +72,9 @@ func executeReversePass(
 
 		// Call Rev to get how much input produces this output
 		actualIn, actualOut := step.Rev(sb, afView, ofrsToRm, out)
+
+		// fmt.Printf("DEBUG Rev step %d: requested out=%+v, actual out=%+v, actual in=%+v, equal=%v\n",
+		//	i, out, actualOut, actualIn, step.EqualOut(actualOut, out))
 
 		// Check if this step limited the flow
 		if !step.EqualOut(actualOut, out) {
@@ -151,7 +152,7 @@ func executeWithLimitingStep(
 	limitingStep int,
 	ofrsToRm map[[32]byte]bool,
 ) StrandResult {
-	fmt.Printf("DEBUG executeWithLimitingStep: limitingStep=%d, strandLen=%d\n", limitingStep, len(strand))
+	// // fmt.Printf("DEBUG executeWithLimitingStep: limitingStep=%d, strandLen=%d\n", limitingStep, len(strand))
 
 	// Reset sandbox state
 	sb.Reset()
@@ -160,7 +161,7 @@ func executeWithLimitingStep(
 	// Re-execute reverse pass up to the limiting step
 	limitStepCachedOut := strand[limitingStep].CachedOut()
 	if limitStepCachedOut == nil {
-		fmt.Printf("DEBUG executeWithLimitingStep: limitStepCachedOut is nil\n")
+		// // fmt.Printf("DEBUG executeWithLimitingStep: limitStepCachedOut is nil\n")
 		return StrandResult{
 			Success:  false,
 			In:       ZeroXRPEitherAmount(),
@@ -172,13 +173,12 @@ func executeWithLimitingStep(
 	}
 
 	out := *limitStepCachedOut
-	fmt.Printf("DEBUG executeWithLimitingStep: starting second rev pass with out=%+v\n", out)
+	// // fmt.Printf("DEBUG executeWithLimitingStep: starting second rev pass with out=%+v\n", out)
 
 	// Execute reverse pass from limiting step backwards
 	for i := limitingStep; i >= 0; i-- {
 		step := strand[i]
-		actualIn, actualOut := step.Rev(sb, afView, ofrsToRm, out)
-		fmt.Printf("DEBUG executeWithLimitingStep: second rev i=%d, actualIn=%+v, actualOut=%+v\n", i, actualIn, actualOut)
+		actualIn, _ := step.Rev(sb, afView, ofrsToRm, out)
 		out = actualIn
 	}
 
@@ -186,7 +186,7 @@ func executeWithLimitingStep(
 	// Execute forward from limiting step to the end
 	limitStepCachedIn := strand[limitingStep].CachedIn()
 	if limitStepCachedIn == nil {
-		fmt.Printf("DEBUG executeWithLimitingStep: limitStepCachedIn is nil\n")
+		// // fmt.Printf("DEBUG executeWithLimitingStep: limitStepCachedIn is nil\n")
 		return StrandResult{
 			Success:  false,
 			In:       ZeroXRPEitherAmount(),
@@ -198,19 +198,27 @@ func executeWithLimitingStep(
 	}
 
 	in := *limitStepCachedIn
-	fmt.Printf("DEBUG executeWithLimitingStep: starting fwd pass with in=%+v\n", in)
+	// // fmt.Printf("DEBUG executeWithLimitingStep: starting fwd pass with in=%+v\n", in)
 
-	// Forward pass starts AFTER the limiting step (limitingStep + 1)
-	// The limiting step's results are already computed by Rev()
+	// For BookSteps, we need to execute Fwd on the limiting step itself to consume offers.
+	// Rev only calculates what would be consumed, Fwd actually does the consumption.
+	// This is especially important when the strand has only one step (just the BookStep).
+	if strand[limitingStep].BookStepBook() != nil {
+		step := strand[limitingStep]
+		_, actualOut := step.Fwd(sb, afView, ofrsToRm, in)
+		in = actualOut
+	}
+
+	// Forward pass continues AFTER the limiting step (limitingStep + 1)
 	// Reference: rippled StrandFlow.h line 226: for (auto i = limitingStep + 1; i < s; ++i)
 	for i := limitingStep + 1; i < len(strand); i++ {
 		step := strand[i]
 
 		// Validate forward direction
 		valid, expectedOut := step.ValidFwd(sb, afView, in)
-		fmt.Printf("DEBUG executeWithLimitingStep: ValidFwd i=%d, valid=%v, expectedOut=%+v\n", i, valid, expectedOut)
+		// // fmt.Printf("DEBUG executeWithLimitingStep: ValidFwd i=%d, valid=%v, expectedOut=%+v\n", i, valid, expectedOut)
 		if !valid {
-			fmt.Printf("DEBUG executeWithLimitingStep: ValidFwd failed\n")
+			// // fmt.Printf("DEBUG executeWithLimitingStep: ValidFwd failed\n")
 			return StrandResult{
 				Success:  false,
 				In:       ZeroXRPEitherAmount(),
@@ -223,11 +231,11 @@ func executeWithLimitingStep(
 
 		// Execute forward
 		actualIn, actualOut := step.Fwd(sb, afView, ofrsToRm, in)
-		fmt.Printf("DEBUG executeWithLimitingStep: Fwd i=%d, actualIn=%+v, actualOut=%+v\n", i, actualIn, actualOut)
+		// // fmt.Printf("DEBUG executeWithLimitingStep: Fwd i=%d, actualIn=%+v, actualOut=%+v\n", i, actualIn, actualOut)
 
 		// Check consistency
 		if step.IsZero(actualOut) && !step.IsZero(in) {
-			fmt.Printf("DEBUG executeWithLimitingStep: zero output with non-zero input\n")
+			// // fmt.Printf("DEBUG executeWithLimitingStep: zero output with non-zero input\n")
 			return StrandResult{
 				Success:  false,
 				In:       ZeroXRPEitherAmount(),
@@ -249,10 +257,10 @@ func executeWithLimitingStep(
 	firstCachedIn := strand[0].CachedIn()
 	lastCachedOut := strand[len(strand)-1].CachedOut()
 
-	fmt.Printf("DEBUG executeWithLimitingStep: firstCachedIn=%v, lastCachedOut=%v\n", firstCachedIn, lastCachedOut)
+	// // fmt.Printf("DEBUG executeWithLimitingStep: firstCachedIn=%v, lastCachedOut=%v\n", firstCachedIn, lastCachedOut)
 
 	if firstCachedIn == nil || lastCachedOut == nil {
-		fmt.Printf("DEBUG executeWithLimitingStep: final cache is nil\n")
+		// // fmt.Printf("DEBUG executeWithLimitingStep: final cache is nil\n")
 		return StrandResult{
 			Success:  false,
 			In:       ZeroXRPEitherAmount(),
@@ -291,7 +299,7 @@ func executeWithMaxIn(
 	maxIn EitherAmount,
 	ofrsToRm map[[32]byte]bool,
 ) StrandResult {
-	fmt.Printf("DEBUG executeWithMaxIn: maxIn=%+v, strandLen=%d\n", maxIn, len(strand))
+	// // fmt.Printf("DEBUG executeWithMaxIn: maxIn=%+v, strandLen=%d\n", maxIn, len(strand))
 
 	// Create fresh sandbox
 	sb := NewChildSandbox(baseView)
@@ -302,11 +310,11 @@ func executeWithMaxIn(
 	for i := 0; i < len(strand); i++ {
 		step := strand[i]
 
-		fmt.Printf("DEBUG executeWithMaxIn: calling Fwd for step %d with in=%+v\n", i, in)
+		// // fmt.Printf("DEBUG executeWithMaxIn: calling Fwd for step %d with in=%+v\n", i, in)
 
 		// Execute forward
 		actualIn, actualOut := step.Fwd(sb, baseView, ofrsToRm, in)
-		fmt.Printf("DEBUG executeWithMaxIn: Fwd returned actualIn=%+v, actualOut=%+v\n", actualIn, actualOut)
+		// // fmt.Printf("DEBUG executeWithMaxIn: Fwd returned actualIn=%+v, actualOut=%+v\n", actualIn, actualOut)
 
 		// Check if step consumed all input
 		if step.IsZero(actualOut) && !step.IsZero(in) {

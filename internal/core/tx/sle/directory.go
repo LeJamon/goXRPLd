@@ -31,159 +31,110 @@ type DirectoryNode struct {
 	ExchangeRate      uint64 // Quality encoded as uint64
 }
 
+// cMinValue is the minimum normalized mantissa value (10^15)
+const cMinValue uint64 = 1000000000000000
+
+// tenTo17 is 10^17
+var tenTo17 = new(big.Int).Exp(big.NewInt(10), big.NewInt(17), nil)
+
 // GetRate calculates the quality/exchange rate for an offer.
 // This matches rippled's getRate(offerOut, offerIn) which returns in/out.
 // Reference: rippled STAmount.h line 693-694:
 //   "Rate: smaller is better, the taker wants the most out: in/out"
 // Lower rate value = better for taker (they pay less per unit they get)
 // Returns uint64 encoded as: (exponent+100) << 56 | mantissa
+//
+// Uses the same integer arithmetic as rippled's divide() function in STAmount.cpp:
+//   muldiv(numVal, tenTo17, denVal) + 5
+// where muldiv does (a * b) / c with 128-bit precision.
 func GetRate(offerOut, offerIn Amount) uint64 {
 	// Handle zero case - check offerOut since we divide by it
-	if offerOut.IsZero() {
+	if offerOut.IsZero() || offerIn.IsZero() {
 		return 0
 	}
 
-	// Convert amounts to big.Float for precise calculation
-	var outFloat, inFloat *big.Float
-
-	if offerOut.IsNative() {
-		// XRP amount in drops
-		outFloat = new(big.Float).SetPrec(128).SetInt64(offerOut.Drops())
-	} else {
-		// IOU amount - use mantissa/exponent for precision
-		// value = mantissa × 10^exponent
-		iou := offerOut.IOU()
-		mantissa := iou.Mantissa()
-		exponent := iou.Exponent()
-		if mantissa == 0 {
-			return 0
-		}
-		// Create big.Float from mantissa
-		outFloat = new(big.Float).SetPrec(128).SetInt64(mantissa)
-		// Apply exponent: multiply or divide by powers of 10
-		if exponent > 0 {
-			multiplier := new(big.Float).SetPrec(128).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exponent)), nil))
-			outFloat.Mul(outFloat, multiplier)
-		} else if exponent < 0 {
-			divisor := new(big.Float).SetPrec(128).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-exponent)), nil))
-			outFloat.Quo(outFloat, divisor)
-		}
-	}
-
+	// Get mantissa and exponent for numerator (offerIn)
+	var numVal uint64
+	var numOffset int
 	if offerIn.IsNative() {
-		// XRP amount in drops
-		inFloat = new(big.Float).SetPrec(128).SetInt64(offerIn.Drops())
+		numVal = uint64(offerIn.Drops())
+		numOffset = 0
 	} else {
-		// IOU amount - use mantissa/exponent for precision
 		iou := offerIn.IOU()
 		mantissa := iou.Mantissa()
-		exponent := iou.Exponent()
-		// Create big.Float from mantissa
-		inFloat = new(big.Float).SetPrec(128).SetInt64(mantissa)
-		// Apply exponent
-		if exponent > 0 {
-			multiplier := new(big.Float).SetPrec(128).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exponent)), nil))
-			inFloat.Mul(inFloat, multiplier)
-		} else if exponent < 0 {
-			divisor := new(big.Float).SetPrec(128).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-exponent)), nil))
-			inFloat.Quo(inFloat, divisor)
+		if mantissa < 0 {
+			mantissa = -mantissa
+		}
+		numVal = uint64(mantissa)
+		numOffset = iou.Exponent()
+	}
+
+	// Get mantissa and exponent for denominator (offerOut)
+	var denVal uint64
+	var denOffset int
+	if offerOut.IsNative() {
+		denVal = uint64(offerOut.Drops())
+		denOffset = 0
+	} else {
+		iou := offerOut.IOU()
+		mantissa := iou.Mantissa()
+		if mantissa < 0 {
+			mantissa = -mantissa
+		}
+		denVal = uint64(mantissa)
+		denOffset = iou.Exponent()
+	}
+
+	// Normalize native amounts to have mantissa in [10^15, 10^16)
+	// This matches rippled's divide() function behavior
+	if offerIn.IsNative() {
+		for numVal < cMinValue && numVal > 0 {
+			numVal *= 10
+			numOffset--
 		}
 	}
 
-	// Calculate rate = in / out (rippled convention: offerIn/offerOut)
-	rate := new(big.Float).SetPrec(128).Quo(inFloat, outFloat)
+	if offerOut.IsNative() {
+		for denVal < cMinValue && denVal > 0 {
+			denVal *= 10
+			denOffset--
+		}
+	}
 
-	// Convert to mantissa and exponent
-	// XRPL uses: mantissa × 10^exponent where mantissa is 10^15 to 10^16-1
-	// Quality encoding: (exponent+100) << 56 | mantissa
-
-	if rate.Sign() == 0 {
+	if numVal == 0 || denVal == 0 {
 		return 0
 	}
 
-	// Normalize to get mantissa in range [10^15, 10^16)
-	mantissa, exponent := normalizeForQuality(rate)
+	// Calculate (numVal * 10^17) / denVal using big.Int for 128-bit precision
+	// This matches rippled's muldiv(numVal, tenTo17, denVal)
+	bigNum := new(big.Int).SetUint64(numVal)
+	bigDen := new(big.Int).SetUint64(denVal)
+
+	// product = numVal * 10^17
+	product := new(big.Int).Mul(bigNum, tenTo17)
+
+	// result = product / denVal (truncated integer division)
+	result := new(big.Int).Div(product, bigDen)
+
+	// Add 5 for rounding (matches rippled: muldiv(...) + 5)
+	result.Add(result, big.NewInt(5))
+
+	// Calculate exponent
+	resultOffset := numOffset - denOffset - 17
+
+	// Normalize result to mantissa in [10^15, 10^16)
+	mantissa := result.Uint64()
+	for mantissa < cMinValue && mantissa > 0 {
+		mantissa *= 10
+		resultOffset--
+	}
+	for mantissa >= 10*cMinValue {
+		mantissa /= 10
+		resultOffset++
+	}
 
 	// Encode: upper 8 bits = exponent+100, lower 56 bits = mantissa
-	return uint64(exponent+100)<<56 | mantissa
-}
-
-// normalizeForQuality converts a big.Float to mantissa and exponent
-// where mantissa is in range [10^15, 10^16)
-func normalizeForQuality(f *big.Float) (uint64, int) {
-	if f.Sign() == 0 {
-		return 0, 0
-	}
-
-	// Get the value as a string with high precision
-	text := f.Text('e', 15) // Scientific notation with 15 digits
-
-	// Parse the mantissa and exponent from scientific notation
-	// Format: "1.234567890123456e+05" or "1.234567890123456e-05"
-	var mantissaStr string
-	var expStr string
-	if idx := strings.Index(text, "e"); idx >= 0 {
-		mantissaStr = text[:idx]
-		expStr = text[idx+1:]
-	} else {
-		mantissaStr = text
-		expStr = "0"
-	}
-
-	// Remove decimal point and parse mantissa
-	mantissaStr = strings.Replace(mantissaStr, ".", "", 1)
-
-	// Parse exponent
-	var exp int
-	if len(expStr) > 0 {
-		if expStr[0] == '+' {
-			expStr = expStr[1:]
-		}
-		for _, c := range expStr {
-			if c == '-' {
-				continue
-			}
-			exp = exp*10 + int(c-'0')
-		}
-		if len(expStr) > 0 && expStr[0] == '-' {
-			exp = -exp
-		}
-	}
-
-	// Adjust for the decimal point position
-	// We want mantissa to be an integer in [10^15, 10^16)
-	mantissaLen := len(mantissaStr)
-	if mantissaLen > 16 {
-		mantissaStr = mantissaStr[:16]
-	}
-
-	// Parse mantissa as uint64
-	var mantissa uint64
-	for _, c := range mantissaStr {
-		if c >= '0' && c <= '9' {
-			mantissa = mantissa*10 + uint64(c-'0')
-		}
-	}
-
-	// Adjust exponent based on mantissa normalization
-	// Original: mantissa × 10^exp where mantissa has a decimal point after first digit
-	// (e.g., "6.648e+09" means 6.648 × 10^9)
-	// After removing decimal, we have integer mantissa (e.g., 6648000000000000)
-	// The relationship: original = integer_mantissa × 10^(exp - (digits_after_decimal))
-	// Since we have 15 digits after decimal, newExp = exp - 15
-	newExp := exp - (mantissaLen - 1)
-
-	// Ensure mantissa is in proper range
-	for mantissa < 1000000000000000 && mantissa > 0 {
-		mantissa *= 10
-		newExp--
-	}
-	for mantissa >= 10000000000000000 {
-		mantissa /= 10
-		newExp++
-	}
-
-	return mantissa, newExp
+	return uint64(resultOffset+100)<<56 | mantissa
 }
 
 // SerializeDirectoryNode serializes a DirectoryNode to binary format

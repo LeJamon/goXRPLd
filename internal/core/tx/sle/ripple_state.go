@@ -77,8 +77,12 @@ const (
 	fieldCodeHighQualityOut = 23 // UInt32 field code for HighQualityOut
 )
 
-// ACCOUNT_ONE is the special issuer address used for Balance in RippleState
-const accountOne = "rrrrrrrrrrrrrrrrrrrrBZbvji"
+// AccountOneAddress is the special issuer address used for Balance in RippleState
+// This is ACCOUNT_ONE in rippled - a special address that represents no account
+const AccountOneAddress = "rrrrrrrrrrrrrrrrrrrrBZbvji"
+
+// Keep internal alias for backwards compatibility within the package
+const accountOne = AccountOneAddress
 
 // ParseRippleState parses a RippleState from binary data
 func ParseRippleState(data []byte) (*RippleState, error) {
@@ -100,7 +104,7 @@ func ParseRippleState(data []byte) (*RippleState, error) {
 		typeCode := (header >> 4) & 0x0F
 		fieldCode := header & 0x0F
 
-		if typeCode == 0 {
+			if typeCode == 0 {
 			if offset >= len(data) {
 				break
 			}

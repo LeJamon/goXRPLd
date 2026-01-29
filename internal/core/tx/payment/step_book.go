@@ -3,7 +3,7 @@ package payment
 import (
 	"bytes"
 	"errors"
-	"fmt"
+	"math/big"
 	"sort"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
@@ -101,7 +101,10 @@ func (s *BookStep) Rev(
 	s.offersUsed_ = 0
 
 	// Get transfer rates
-	prevStepDebtDir := DebtDirectionIssues
+	// Default to DebtDirectionRedeems for first step - this applies transfer rate
+	// when the source account is sending IOU through the issuer (typical case)
+	// Reference: rippled BookStep.cpp - first step in strand typically redeems
+	prevStepDebtDir := DebtDirectionRedeems
 	if s.prevStep != nil {
 		prevStepDebtDir = s.prevStep.DebtDirection(sb, StrandDirectionReverse)
 	}
@@ -124,10 +127,14 @@ func (s *BookStep) Rev(
 
 	remainingOut := out
 
+	// Track visited offers to avoid processing the same offer multiple times
+	// This is separate from ofrsToRm which tracks offers to remove from ledger
+	visited := make(map[[32]byte]bool)
+
 	// Iterate through offers
 	for s.offersUsed_ < s.maxOffersToConsume && !remainingOut.IsZero() {
 		// Get next offer at best quality
-		offer, offerKey, err := s.getNextOffer(sb, afView, ofrsToRm)
+		offer, offerKey, err := s.getNextOfferSkipVisited(sb, afView, ofrsToRm, visited)
 		if err != nil {
 			break
 		}
@@ -135,8 +142,12 @@ func (s *BookStep) Rev(
 			break // No more offers
 		}
 
+		// Mark as visited so we don't process it again in this execution
+		visited[offerKey] = true
+
 		// Check if offer is funded
 		if !s.isOfferFunded(sb, offer) {
+			// // fmt.Printf("DEBUG BookStep.Rev: offer not funded, skipping\n")
 			ofrsToRm[offerKey] = true
 			s.offersUsed_++
 			continue
@@ -145,6 +156,7 @@ func (s *BookStep) Rev(
 		// Check quality limit - if offer quality is worse than limit, stop
 		offerQuality := s.offerQuality(offer)
 		if s.qualityLimit != nil && offerQuality.WorseThan(*s.qualityLimit) {
+			// // fmt.Printf("DEBUG BookStep.Rev: offer quality %v worse than limit %v, stopping\n", offerQuality, s.qualityLimit)
 			break
 		}
 
@@ -152,42 +164,46 @@ func (s *BookStep) Rev(
 		// Use funded amount, which may be less than stated TakerGets
 		offerTakerGetsStated := s.offerTakerGets(offer)
 		offerOut := s.getOfferFundedAmount(sb, offer)
-		offerIn := s.offerTakerPays(offer)
+		offerIn := s.offerTakerPays(offer) // This is NET (what offer owner expects)
 
 		// Scale offerIn proportionally if funded amount is less than stated
 		if offerOut.Compare(offerTakerGetsStated) < 0 && !offerTakerGetsStated.IsZero() {
-			// fundedRatio = fundedOut / statedOut
-			// fundedIn = statedIn * fundedRatio
 			ratio := offerOut.DivideFloat(offerTakerGetsStated)
 			offerIn = offerIn.MultiplyFloat(ratio)
 		}
 
-		fmt.Printf("DEBUG Rev: offerOut=%+v (funded), offerIn=%+v, remainingOut=%+v\n", offerOut, offerIn, remainingOut)
+		// Convert offerIn (NET) to GROSS for proper accounting
+		// GROSS = NET * trIn / QualityOne
+		// Use roundUp=false to match rippled's behavior. In rippled, the multiplication
+		// uses muldiv_round which divides by 10^14 with rounding, but subsequent
+		// normalization (dividing by 10 repeatedly) truncates. The net effect is that
+		// the rounding gets "washed away" for results that need normalization.
+		grossOfferIn := offerIn
+		if trIn != QualityOne && !s.book.In.IsXRP() {
+			grossOfferIn = MulRatio(offerIn, trIn, QualityOne, false)
+		}
 
 		// Limit by what we still need
 		var actualOut, actualIn EitherAmount
 		if offerOut.Compare(remainingOut) <= 0 {
-			// Take entire offer - use pre-calculated offerIn to avoid rounding errors
+			// Take entire offer - use GROSS for proper transfer fee accounting
 			actualOut = offerOut
-			actualIn = offerIn
+			actualIn = grossOfferIn
 		} else {
-			// Partial take
+			// Partial take - applyQuality returns GROSS
 			actualOut = remainingOut
 			actualIn = s.applyQuality(actualOut, offerQuality, trIn, trOut, true)
 
-			// Ensure we don't exceed offer's input
-			maxIn := offerIn
-			if actualIn.Compare(maxIn) > 0 {
-				actualIn = maxIn
+			// Ensure we don't exceed offer's GROSS input
+			if actualIn.Compare(grossOfferIn) > 0 {
+				actualIn = grossOfferIn
 				actualOut = s.reverseQuality(actualIn, offerQuality, trIn, trOut, false)
 			}
 		}
 
-		// Consume the offer
-		err = s.consumeOffer(sb, offer, actualIn, actualOut)
-		if err != nil {
-			break
-		}
+		// Rev does NOT consume offers - it only calculates what WOULD be consumed
+		// The actual consumption happens in Fwd
+		// Reference: rippled's Rev only caches amounts, Fwd applies changes
 
 		// Accumulate
 		totalIn = totalIn.Add(actualIn)
@@ -201,7 +217,6 @@ func (s *BookStep) Rev(
 		s.inactive_ = true
 	}
 
-	fmt.Printf("DEBUG Rev: final totalIn=%+v, totalOut=%+v, offersUsed=%d\n", totalIn, totalOut, s.offersUsed_)
 
 	s.cache = &bookCache{
 		in:  totalIn,
@@ -218,7 +233,6 @@ func (s *BookStep) Fwd(
 	ofrsToRm map[[32]byte]bool,
 	in EitherAmount,
 ) (EitherAmount, EitherAmount) {
-	fmt.Printf("DEBUG Fwd: in=%+v, book.In=%v, book.Out=%v\n", in, s.book.In, s.book.Out)
 
 	// Clear cache from any previous execution to allow fresh computation
 	prevCache := s.cache
@@ -227,7 +241,10 @@ func (s *BookStep) Fwd(
 	_ = prevCache
 
 	// Get transfer rates
-	prevStepDebtDir := DebtDirectionIssues
+	// Default to DebtDirectionRedeems for first step - this applies transfer rate
+	// when the source account is sending IOU through the issuer (typical case)
+	// Reference: rippled BookStep.cpp - first step in strand typically redeems
+	prevStepDebtDir := DebtDirectionRedeems
 	if s.prevStep != nil {
 		prevStepDebtDir = s.prevStep.DebtDirection(sb, StrandDirectionForward)
 	}
@@ -235,7 +252,6 @@ func (s *BookStep) Fwd(
 	trIn := s.transferRateIn(sb, prevStepDebtDir)
 	trOut := s.transferRateOut(sb)
 
-	fmt.Printf("DEBUG Fwd: trIn=%d, trOut=%d\n", trIn, trOut)
 
 	// Initialize accumulators
 	var totalIn, totalOut EitherAmount
@@ -252,25 +268,23 @@ func (s *BookStep) Fwd(
 
 	remainingIn := in
 
-	fmt.Printf("DEBUG Fwd: starting loop, remainingIn=%+v\n", remainingIn)
+	// Track visited offers to avoid processing the same offer multiple times
+	visited := make(map[[32]byte]bool)
 
 	// Iterate through offers
 	for s.offersUsed_ < s.maxOffersToConsume && !remainingIn.IsZero() {
-		offer, offerKey, err := s.getNextOffer(sb, afView, ofrsToRm)
+		offer, offerKey, err := s.getNextOfferSkipVisited(sb, afView, ofrsToRm, visited)
 		if err != nil {
-			fmt.Printf("DEBUG Fwd: getNextOffer error: %v\n", err)
 			break
 		}
 		if offer == nil {
-			fmt.Printf("DEBUG Fwd: no more offers\n")
 			break
 		}
 
-		fmt.Printf("DEBUG Fwd: got offer from %s, TakerPays=%+v, TakerGets=%+v, offerKey=%x\n",
-			offer.Account, offer.TakerPays, offer.TakerGets, offerKey)
+		// Mark as visited so we don't process it again in this execution
+		visited[offerKey] = true
 
 		if !s.isOfferFunded(sb, offer) {
-			fmt.Printf("DEBUG Fwd: offer not funded, skipping\n")
 			s.offersUsed_++
 			continue
 		}
@@ -278,7 +292,6 @@ func (s *BookStep) Fwd(
 		// Check quality limit - if offer quality is worse than limit, stop
 		offerQuality := s.offerQuality(offer)
 		if s.qualityLimit != nil && offerQuality.WorseThan(*s.qualityLimit) {
-			fmt.Printf("DEBUG Fwd: offer quality %d exceeds limit %d, stopping\n", offerQuality.Value, s.qualityLimit.Value)
 			break
 		}
 
@@ -293,40 +306,83 @@ func (s *BookStep) Fwd(
 			offerIn = offerIn.MultiplyFloat(ratio)
 		}
 
-		fmt.Printf("DEBUG Fwd: fundedOut=%+v, offerIn=%+v (scaled)\n", fundedOut, offerIn)
 
 		// Calculate how much we can use from this offer
-		var actualIn, actualOut EitherAmount
-		if offerIn.Compare(remainingIn) >= 0 {
-			// Partial use of offer
-			actualIn = remainingIn
-		} else {
-			// Use entire offer (up to funded amount)
-			actualIn = offerIn
+		// offerIn is the NET amount (what offer owner expects to receive)
+		// remainingIn is GROSS (what taker has left to spend including transfer fees)
+		//
+		// To compare properly, convert offerIn (NET) to GROSS for comparison:
+		// grossOfferIn = offerIn * trIn / QualityOne
+		// Use roundUp=false to match rippled's behavior (see Rev() comment for details).
+		grossOfferIn := offerIn
+		if trIn != QualityOne && !s.book.In.IsXRP() {
+			grossOfferIn = MulRatio(offerIn, trIn, QualityOne, false)
 		}
 
-		actualOut = s.reverseQuality(actualIn, offerQuality, trIn, trOut, false)
+		var actualIn, actualInNet, actualOut EitherAmount
+		var isFullConsumption bool
+		if grossOfferIn.Compare(remainingIn) <= 0 {
+			// Full consumption - can use entire offer (grossOfferIn <= remainingIn)
+			actualIn = grossOfferIn
+			actualInNet = offerIn // Use the original offer's TakerPays (NET) directly to avoid rounding errors
+			isFullConsumption = true
+		} else {
+			// Partial use of offer - grossOfferIn > remainingIn
+			actualIn = remainingIn
+			// Calculate NET from GROSS for partial consumption
+			actualInNet = actualIn
+			if trIn != QualityOne && !actualIn.IsNative {
+				actualInNet = MulRatio(actualIn, QualityOne, trIn, false)
+			}
+			isFullConsumption = false
+		}
+
+		// fmt.Printf("DEBUG BookStep.Fwd: offer TakerGets=%+v, TakerPays=%+v, fundedOut=%+v\n", offerTakerGetsStated, offerIn, fundedOut)
+		// fmt.Printf("DEBUG BookStep.Fwd: offerIn=%+v, grossOfferIn=%+v, remainingIn=%+v, actualIn=%+v, actualInNet=%+v, trIn=%d, trOut=%d\n", offerIn, grossOfferIn, remainingIn, actualIn, actualInNet, trIn, trOut)
+
+		// Calculate output:
+		// actualIn is always GROSS (what taker pays including transfer fee)
+		if isFullConsumption {
+			// Full consumption: get the full funded output
+			actualOut = fundedOut
+			// fmt.Printf("DEBUG BookStep.Fwd: FULL consumption, actualOut=%+v\n", actualOut)
+		} else {
+			// Partial consumption: compute output from GROSS input
+			actualOut = s.computeOutputFromInputWithTransferRate(actualIn, offerIn, fundedOut, trIn)
+			// fmt.Printf("DEBUG BookStep.Fwd: PARTIAL consumption, actualOut=%+v\n", actualOut)
+		}
 
 		// Limit output to funded amount
 		if actualOut.Compare(fundedOut) > 0 {
+			// // fmt.Printf("DEBUG BookStep.Fwd: limiting to fundedOut=%+v\n", fundedOut)
 			actualOut = fundedOut
 			actualIn = s.applyQuality(actualOut, offerQuality, trIn, trOut, true)
+			// Recalculate NET from GROSS when limited
+			actualInNet = actualIn
+			if trIn != QualityOne && !actualIn.IsNative {
+				actualInNet = MulRatio(actualIn, QualityOne, trIn, false)
+			}
 		}
 
 		// Limit output to cached value to prevent forward > reverse
 		if s.cache != nil {
 			remainingCacheOut := s.cache.out.Sub(totalOut)
+			// // fmt.Printf("DEBUG BookStep.Fwd: cache check, cacheOut=%+v, totalOut=%+v, remaining=%+v\n", s.cache.out, totalOut, remainingCacheOut)
 			if actualOut.Compare(remainingCacheOut) > 0 {
 				actualOut = remainingCacheOut
 				actualIn = s.applyQuality(actualOut, offerQuality, trIn, trOut, true)
+				// Recalculate NET from GROSS when limited
+				actualInNet = actualIn
+				if trIn != QualityOne && !actualIn.IsNative {
+					actualInNet = MulRatio(actualIn, QualityOne, trIn, false)
+				}
 			}
 		}
 
-		fmt.Printf("DEBUG Fwd: consuming offer, actualIn=%+v, actualOut=%+v\n", actualIn, actualOut)
+		// fmt.Printf("DEBUG BookStep.Fwd: FINAL actualIn=%+v, actualInNet=%+v, actualOut=%+v (adding to total)\n", actualIn, actualInNet, actualOut)
 
-		err = s.consumeOffer(sb, offer, actualIn, actualOut)
+		err = s.consumeOffer(sb, offer, actualIn, actualInNet, actualOut)
 		if err != nil {
-			fmt.Printf("DEBUG Fwd: consumeOffer error: %v\n", err)
 			break
 		}
 
@@ -335,14 +391,12 @@ func (s *BookStep) Fwd(
 		remainingIn = remainingIn.Sub(actualIn)
 		s.offersUsed_++
 
-		fmt.Printf("DEBUG Fwd: after consume, totalIn=%+v, totalOut=%+v, remainingIn=%+v\n", totalIn, totalOut, remainingIn)
 	}
 
 	if s.offersUsed_ >= s.maxOffersToConsume {
 		s.inactive_ = true
 	}
 
-	fmt.Printf("DEBUG Fwd: final totalIn=%+v, totalOut=%+v, offersUsed=%d\n", totalIn, totalOut, s.offersUsed_)
 
 	s.cache = &bookCache{
 		in:  totalIn,
@@ -480,6 +534,72 @@ func (s *BookStep) GetAccountTransferRate(sb *PaymentSandbox, issuer [20]byte) u
 	return account.TransferRate
 }
 
+// getNextOfferSkipVisited returns the next offer at the best quality, skipping offers in ofrsToRm and visited
+func (s *BookStep) getNextOfferSkipVisited(sb *PaymentSandbox, afView *PaymentSandbox, ofrsToRm map[[32]byte]bool, visited map[[32]byte]bool) (*sle.LedgerOffer, [32]byte, error) {
+	// Get the order book directory base key
+	takerPaysCurrency := sle.GetCurrencyBytes(s.book.In.Currency)
+	takerPaysIssuer := s.book.In.Issuer
+	takerGetsCurrency := sle.GetCurrencyBytes(s.book.Out.Currency)
+	takerGetsIssuer := s.book.Out.Issuer
+	bookBase := keylet.BookDir(takerPaysCurrency, takerPaysIssuer, takerGetsCurrency, takerGetsIssuer)
+
+	bookPrefix := bookBase.Key[:24]
+
+	type dirEntry struct {
+		key  [32]byte
+		data []byte
+	}
+	var dirs []dirEntry
+
+	err := sb.ForEach(func(key [32]byte, data []byte) bool {
+		if bytes.Equal(key[:24], bookPrefix) {
+			dirs = append(dirs, dirEntry{key: key, data: data})
+		}
+		return true
+	})
+	if err != nil {
+		return nil, [32]byte{}, err
+	}
+
+	sort.Slice(dirs, func(i, j int) bool {
+		return bytes.Compare(dirs[i].key[24:], dirs[j].key[24:]) < 0
+	})
+
+	for _, d := range dirs {
+		dir, err := sle.ParseDirectoryNode(d.data)
+		if err != nil || len(dir.Indexes) == 0 {
+			continue
+		}
+
+		for _, idx := range dir.Indexes {
+			var offerKey [32]byte
+			copy(offerKey[:], idx[:])
+
+			// Skip offers already in ofrsToRm or visited
+			if ofrsToRm != nil && ofrsToRm[offerKey] {
+				continue
+			}
+			if visited != nil && visited[offerKey] {
+				continue
+			}
+
+			offerData, err := sb.Read(keylet.Keylet{Key: offerKey})
+			if err != nil || offerData == nil {
+				continue
+			}
+
+			offer, err := sle.ParseLedgerOffer(offerData)
+			if err != nil {
+				continue
+			}
+
+			return offer, offerKey, nil
+		}
+	}
+
+	return nil, [32]byte{}, nil
+}
+
 // getNextOffer returns the next offer at the best quality, skipping offers in ofrsToRm
 func (s *BookStep) getNextOffer(sb *PaymentSandbox, afView *PaymentSandbox, ofrsToRm map[[32]byte]bool) (*sle.LedgerOffer, [32]byte, error) {
 	// Get the order book directory base key
@@ -557,6 +677,8 @@ func (s *BookStep) isOfferFunded(sb *PaymentSandbox, offer *sle.LedgerOffer) boo
 }
 
 // getOfferFundedAmount returns the actual amount an offer can deliver based on owner's balance.
+// This matches rippled's calculation of funded amounts for offers.
+// Reference: rippled OfferStream.cpp uses accountFundsHelper which calls accountHolds.
 func (s *BookStep) getOfferFundedAmount(sb *PaymentSandbox, offer *sle.LedgerOffer) EitherAmount {
 	offerOwner, err := sle.DecodeAccountID(offer.Account)
 	if err != nil {
@@ -577,10 +699,22 @@ func (s *BookStep) getOfferFundedAmount(sb *PaymentSandbox, offer *sle.LedgerOff
 			return ZeroXRPEitherAmount()
 		}
 
-		baseReserve := int64(10000000)
-		incrementReserve := int64(2000000)
-		reserve := baseReserve + int64(account.OwnerCount)*incrementReserve
-		available := int64(account.Balance) - reserve
+		// Use OwnerCountHook to get adjusted owner count (accounts for pending changes)
+		// Reference: rippled View.cpp xrpLiquid() line 627-628
+		ownerCount := sb.OwnerCountHook(offerOwner, account.OwnerCount)
+
+		// Read reserve values from ledger's FeeSettings
+		// Reference: rippled View.cpp xrpLiquid() reads reserves from fees keylet
+		baseReserve, incrementReserve := GetLedgerReserves(sb)
+		reserve := baseReserve + int64(ownerCount)*incrementReserve
+
+		// Use BalanceHook to get adjusted balance (accounts for pending credits)
+		// Reference: rippled View.cpp xrpLiquid() line 637
+		// For XRP, issuer is the zero account (xrpAccount)
+		xrpIssuer := [20]byte{}
+		xrpAmount := tx.NewXRPAmount(int64(account.Balance))
+		adjustedBalance := sb.BalanceHook(offerOwner, xrpIssuer, xrpAmount)
+		available := adjustedBalance.Drops() - reserve
 
 		if available <= 0 {
 			return ZeroXRPEitherAmount()
@@ -661,61 +795,470 @@ func (s *BookStep) offerTakerPays(offer *sle.LedgerOffer) EitherAmount {
 	return NewIOUEitherAmount(offer.TakerPays)
 }
 
-// offerQuality returns the quality of an offer
+// offerQuality returns the quality of an offer by extracting it from the BookDirectory key.
+// The quality is stored in the last 8 bytes of the BookDirectory, encoded as big-endian uint64.
+// This is the original quality set when the offer was created, which remains constant
+// even as the offer is partially filled.
+// Reference: rippled's getQuality() in Indexes.cpp
 func (s *BookStep) offerQuality(offer *sle.LedgerOffer) Quality {
+	// Compute quality from actual TakerPays/TakerGets for precision.
+	// The BookDirectory quality is a "price tier" for ordering, but for
+	// accurate calculations we need the exact ratio from the offer amounts.
+	// Reference: rippled calculates quality as in/out for flow calculations
 	takerPays := s.offerTakerPays(offer)
 	takerGets := s.offerTakerGets(offer)
 	return QualityFromAmounts(takerPays, takerGets)
 }
 
 // applyQuality applies quality and transfer rates to convert output to input
-// input = output * quality * trIn / trOut (for reverse: given output, find input)
+// input = output * quality_rate * trIn / trOut (for reverse: given output, find input)
+// Quality rate = in/out, so: new_in = out * (in/out) = in
+// Reference: rippled's Quality::ceil_out_impl which does: result.in = MulRound(limit, quality.rate(), ...)
 func (s *BookStep) applyQuality(out EitherAmount, q Quality, trIn, trOut uint32, roundUp bool) EitherAmount {
-	var outValue float64
+	// Use precise Amount arithmetic instead of float64
+	// Reference: rippled uses mulRound(limit, quality.rate(), asset, roundUp)
+
+	// Convert output to Amount for precise multiplication
+	var outAmt tx.Amount
 	if out.IsNative {
-		outValue = float64(out.XRP)
+		outAmt = tx.NewXRPAmount(out.XRP)
 	} else {
-		outValue = out.IOU.Float64()
+		outAmt = out.IOU
 	}
 
-	result := outValue * (float64(q.Value) / float64(QualityOne))
-	result = result * (float64(trIn) / float64(trOut))
+	// Multiply by quality rate using precise arithmetic
+	// result = out * quality.rate()
+	qRate := q.Rate()
+	result := outAmt.Mul(qRate, roundUp)
+
+	// Apply transfer rate: result = result * trIn / trOut
+	if trIn != trOut && trOut != 0 {
+		result = result.MulRatio(trIn, trOut, roundUp)
+	}
 
 	if s.book.In.IsXRP() {
-		if roundUp && result != float64(int64(result)) {
-			return NewXRPEitherAmount(int64(result) + 1)
+		// Convert mantissa/exponent to drops with proper rounding
+		// Reference: rippled's canonicalize for XRP
+		drops := result.Mantissa()
+		exp := result.Exponent()
+		for exp > 0 {
+			drops *= 10
+			exp--
 		}
-		return NewXRPEitherAmount(int64(result))
+		// When dividing (negative exponent), apply rounding
+		if exp < 0 {
+			for exp < -1 {
+				drops /= 10
+				exp++
+			}
+			// Last division with rounding
+			if roundUp {
+				drops = (drops + 9) / 10 // Round up
+			} else {
+				drops /= 10 // Round down (truncate)
+			}
+		}
+		return NewXRPEitherAmount(drops)
 	}
 
-	return NewIOUEitherAmount(tx.NewIssuedAmountFromFloat64(result, s.book.In.Currency, sle.EncodeAccountIDSafe(s.book.In.Issuer)))
+	// For IOU, ensure correct currency/issuer
+	return NewIOUEitherAmount(tx.NewIssuedAmount(
+		result.Mantissa(), result.Exponent(),
+		s.book.In.Currency, sle.EncodeAccountIDSafe(s.book.In.Issuer)))
 }
 
 // reverseQuality applies reverse quality to convert input to output
-// output = input / quality * trOut / trIn
+// output = (input / transferRate) / quality_rate = NET_input / quality_rate
+// Quality rate = in/out, so: new_out = NET_in / (in/out) = out
+// Reference: rippled's Quality::ceil_in_impl which does: result.out = DivRound(limit, quality.rate(), ...)
 func (s *BookStep) reverseQuality(in EitherAmount, q Quality, trIn, trOut uint32, roundUp bool) EitherAmount {
-	var inValue float64
-	if in.IsNative {
-		inValue = float64(in.XRP)
-	} else {
-		inValue = in.IOU.Float64()
+	// Use precise Amount arithmetic instead of float64
+	// Reference: rippled uses divRound(limit, quality.rate(), asset, roundUp)
+
+	qRate := q.Rate()
+	if qRate.IsZero() {
+		if s.book.Out.IsXRP() {
+			return ZeroXRPEitherAmount()
+		}
+		return ZeroIOUEitherAmount(s.book.Out.Currency, sle.EncodeAccountIDSafe(s.book.Out.Issuer))
 	}
 
-	result := inValue / (float64(q.Value) / float64(QualityOne))
-	result = result * (float64(trOut) / float64(trIn))
+	// Convert input to Amount for precise division
+	var inAmt tx.Amount
+	if in.IsNative {
+		inAmt = tx.NewXRPAmount(in.XRP)
+	} else {
+		inAmt = in.IOU
+	}
+
+	// Apply transfer rate to convert GROSS input to NET input
+	// NET = GROSS * trOut / trIn (since trIn > QualityOne for fees)
+	// This accounts for the transfer fee: offer owner receives less than taker sends
+	// Round DOWN (not up) to be conservative - less NET means less output
+	if trIn != trOut && trIn != 0 && !in.IsNative {
+		inAmt = inAmt.MulRatio(trOut, trIn, roundUp)
+	}
+
+	// Divide by quality rate using precise arithmetic
+	// result = NET_in / quality.rate()
+	// The quality rate is in/out, so: out = NET_in / (in/out) = out
+	result := inAmt.Div(qRate, roundUp)
 
 	if s.book.Out.IsXRP() {
-		if roundUp && result != float64(int64(result)) {
-			return NewXRPEitherAmount(int64(result) + 1)
+		// Convert mantissa/exponent to drops with proper rounding
+		// Reference: rippled's canonicalize for XRP
+		drops := result.Mantissa()
+		exp := result.Exponent()
+		for exp > 0 {
+			drops *= 10
+			exp--
 		}
-		return NewXRPEitherAmount(int64(result))
+		// When dividing (negative exponent), apply rounding
+		if exp < 0 {
+			for exp < -1 {
+				drops /= 10
+				exp++
+			}
+			// Last division with rounding
+			if roundUp {
+				drops = (drops + 9) / 10 // Round up
+			} else {
+				drops /= 10 // Round down (truncate)
+			}
+		}
+		return NewXRPEitherAmount(drops)
 	}
 
-	return NewIOUEitherAmount(tx.NewIssuedAmountFromFloat64(result, s.book.Out.Currency, sle.EncodeAccountIDSafe(s.book.Out.Issuer)))
+	// For IOU, ensure correct currency/issuer
+	return NewIOUEitherAmount(tx.NewIssuedAmount(
+		result.Mantissa(), result.Exponent(),
+		s.book.Out.Currency, sle.EncodeAccountIDSafe(s.book.Out.Issuer)))
+}
+
+// computeOutputFromInputWithTransferRate calculates output for PARTIAL offer consumption.
+// The input is GROSS (what taker pays including transfer fee).
+// Steps:
+// 1. Convert GROSS to NET: netIn = grossIn × QualityOne / trIn
+// 2. Compute output: output = netIn × offerGets / offerPays
+// Reference: rippled's limitStepIn with offer.limitIn using quality
+func (s *BookStep) computeOutputFromInputWithTransferRate(input, offerPays, offerGets EitherAmount, trIn uint32) EitherAmount {
+	// Convert input to Amount
+	var inputAmt tx.Amount
+	if input.IsNative {
+		inputAmt = tx.NewXRPAmount(input.XRP)
+	} else {
+		inputAmt = input.IOU
+	}
+
+	// Convert offer amounts to Amount
+	var paysAmt, getsAmt tx.Amount
+	if offerPays.IsNative {
+		paysAmt = tx.NewXRPAmount(offerPays.XRP)
+	} else {
+		paysAmt = offerPays.IOU
+	}
+	if offerGets.IsNative {
+		getsAmt = tx.NewXRPAmount(offerGets.XRP)
+	} else {
+		getsAmt = offerGets.IOU
+	}
+
+	if paysAmt.IsZero() {
+		if s.book.Out.IsXRP() {
+			return ZeroXRPEitherAmount()
+		}
+		return ZeroIOUEitherAmount(s.book.Out.Currency, sle.EncodeAccountIDSafe(s.book.Out.Issuer))
+	}
+
+	// For XRP output with IOU input: use big.Int for maximum precision
+	if s.book.Out.IsXRP() && !inputAmt.IsNative() && offerGets.IsNative && !offerPays.IsNative {
+		inputMant := big.NewInt(inputAmt.Mantissa())
+		inputExp := inputAmt.Exponent()
+		getsDrops := big.NewInt(offerGets.XRP)
+		paysMant := big.NewInt(offerPays.IOU.Mantissa())
+		paysExp := offerPays.IOU.Exponent()
+
+		// numerator = inputMant × QualityOne × getsDrops
+		// (we'll divide by trIn later, along with paysMant)
+		numerator := new(big.Int).Set(inputMant)
+		numerator.Mul(numerator, big.NewInt(int64(QualityOne)))
+		numerator.Mul(numerator, getsDrops)
+
+		// denominator = trIn × paysMant
+		denominator := new(big.Int).SetInt64(int64(trIn))
+		denominator.Mul(denominator, paysMant)
+
+		// Apply exponent difference
+		expDiff := inputExp - paysExp
+		if expDiff > 0 {
+			multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(expDiff)), nil)
+			numerator.Mul(numerator, multiplier)
+		} else if expDiff < 0 {
+			multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-expDiff)), nil)
+			denominator.Mul(denominator, multiplier)
+		}
+
+		// Round UP: (numerator + denominator - 1) / denominator
+		numerator.Add(numerator, denominator)
+		numerator.Sub(numerator, big.NewInt(1))
+		result := new(big.Int).Div(numerator, denominator)
+
+		return NewXRPEitherAmount(result.Int64())
+	}
+
+	// For other cases: convert GROSS to NET, then use Amount arithmetic
+	// netIn = grossIn × QualityOne / trIn
+	netInputAmt := inputAmt.MulRatio(QualityOne, trIn, false) // round down for NET
+
+	// output = netIn × offerGets / offerPays (round up)
+	temp := netInputAmt.Mul(getsAmt, true)
+	result := temp.Div(paysAmt, true)
+
+	if s.book.Out.IsXRP() {
+		drops := result.Mantissa()
+		exp := result.Exponent()
+		for exp > 0 {
+			drops *= 10
+			exp--
+		}
+		if exp < 0 {
+			for exp < -1 {
+				drops /= 10
+				exp++
+			}
+			drops = (drops + 9) / 10 // Round up
+		}
+		return NewXRPEitherAmount(drops)
+	}
+
+	return NewIOUEitherAmount(tx.NewIssuedAmount(
+		result.Mantissa(), result.Exponent(),
+		s.book.Out.Currency, sle.EncodeAccountIDSafe(s.book.Out.Issuer)))
+}
+
+// computeOutputFromInputNoTransferRate calculates output from input using just offer quality.
+// output = input * offerGets / offerPays
+// Used for partial offer consumption where input is NET (what offer owner receives).
+// Reference: rippled's Quality::ceil_in uses roundUp=true for output calculation.
+func (s *BookStep) computeOutputFromInputNoTransferRate(input, offerPays, offerGets EitherAmount) EitherAmount {
+	// Convert input to Amount
+	var inputAmt tx.Amount
+	if input.IsNative {
+		inputAmt = tx.NewXRPAmount(input.XRP)
+	} else {
+		inputAmt = input.IOU
+	}
+
+	// Convert offer amounts to Amount
+	var paysAmt, getsAmt tx.Amount
+	if offerPays.IsNative {
+		paysAmt = tx.NewXRPAmount(offerPays.XRP)
+	} else {
+		paysAmt = offerPays.IOU
+	}
+	if offerGets.IsNative {
+		getsAmt = tx.NewXRPAmount(offerGets.XRP)
+	} else {
+		getsAmt = offerGets.IOU
+	}
+
+	if paysAmt.IsZero() {
+		if s.book.Out.IsXRP() {
+			return ZeroXRPEitherAmount()
+		}
+		return ZeroIOUEitherAmount(s.book.Out.Currency, sle.EncodeAccountIDSafe(s.book.Out.Issuer))
+	}
+
+	// For XRP output with IOU input: use big.Int for maximum precision
+	if s.book.Out.IsXRP() && !inputAmt.IsNative() && offerGets.IsNative && !offerPays.IsNative {
+		inputMant := big.NewInt(inputAmt.Mantissa())
+		inputExp := inputAmt.Exponent()
+		getsDrops := big.NewInt(offerGets.XRP)
+		paysMant := big.NewInt(offerPays.IOU.Mantissa())
+		paysExp := offerPays.IOU.Exponent()
+
+		// numerator = inputMant × getsDrops
+		numerator := new(big.Int).Set(inputMant)
+		numerator.Mul(numerator, getsDrops)
+
+		// denominator = paysMant
+		denominator := new(big.Int).Set(paysMant)
+
+		// Apply exponent difference
+		expDiff := inputExp - paysExp
+		if expDiff > 0 {
+			multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(expDiff)), nil)
+			numerator.Mul(numerator, multiplier)
+		} else if expDiff < 0 {
+			multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-expDiff)), nil)
+			denominator.Mul(denominator, multiplier)
+		}
+
+		// Round UP: (numerator + denominator - 1) / denominator
+		numerator.Add(numerator, denominator)
+		numerator.Sub(numerator, big.NewInt(1))
+		result := new(big.Int).Div(numerator, denominator)
+
+		return NewXRPEitherAmount(result.Int64())
+	}
+
+	// For other cases: use Amount arithmetic with roundUp=true
+	temp := inputAmt.Mul(getsAmt, true)
+	result := temp.Div(paysAmt, true)
+
+	if s.book.Out.IsXRP() {
+		drops := result.Mantissa()
+		exp := result.Exponent()
+		for exp > 0 {
+			drops *= 10
+			exp--
+		}
+		if exp < 0 {
+			for exp < -1 {
+				drops /= 10
+				exp++
+			}
+			drops = (drops + 9) / 10 // Round up
+		}
+		return NewXRPEitherAmount(drops)
+	}
+
+	return NewIOUEitherAmount(tx.NewIssuedAmount(
+		result.Mantissa(), result.Exponent(),
+		s.book.Out.Currency, sle.EncodeAccountIDSafe(s.book.Out.Issuer)))
+}
+
+// computeOutputFromInput calculates output amount directly from input using offer amounts.
+// This avoids precision loss from quality encoding/decoding.
+// output = (input / transferRate) * (offerGets / offerPays)
+// Uses big.Int arithmetic with a single division at the end for maximum precision.
+func (s *BookStep) computeOutputFromInput(input, offerPays, offerGets EitherAmount, trIn, trOut uint32) EitherAmount {
+	// Convert input to Amount
+	var inputAmt tx.Amount
+	if input.IsNative {
+		inputAmt = tx.NewXRPAmount(input.XRP)
+	} else {
+		inputAmt = input.IOU
+	}
+
+	// Convert offer amounts to Amount
+	var paysAmt, getsAmt tx.Amount
+	if offerPays.IsNative {
+		paysAmt = tx.NewXRPAmount(offerPays.XRP)
+	} else {
+		paysAmt = offerPays.IOU
+	}
+	if offerGets.IsNative {
+		getsAmt = tx.NewXRPAmount(offerGets.XRP)
+	} else {
+		getsAmt = offerGets.IOU
+	}
+
+	if paysAmt.IsZero() {
+		if s.book.Out.IsXRP() {
+			return ZeroXRPEitherAmount()
+		}
+		return ZeroIOUEitherAmount(s.book.Out.Currency, sle.EncodeAccountIDSafe(s.book.Out.Issuer))
+	}
+
+	// output = (input * trOut / trIn) * offerGets / offerPays
+	// For XRP output with IOU input: use big.Int with single division for maximum precision
+	if s.book.Out.IsXRP() && !inputAmt.IsNative() && offerGets.IsNative && !offerPays.IsNative {
+		// netInput is IOU (mantissa × 10^exp)
+		// offerGets is XRP drops
+		// offerPays is IOU (mantissa × 10^exp)
+		//
+		// output = (inputMant × 10^inputExp × trOut / trIn) × getsDrops / (paysMant × 10^paysExp)
+		//
+		// To minimize precision loss, we combine into one fraction:
+		// numerator = inputMant × trOut × getsDrops × 10^(inputExp - paysExp) [if exp diff > 0]
+		// denominator = paysMant × trIn × 10^(paysExp - inputExp) [if exp diff < 0]
+		// Then perform ONE division at the end.
+
+		inputMant := big.NewInt(inputAmt.Mantissa())
+		inputExp := inputAmt.Exponent()
+		getsDrops := big.NewInt(offerGets.XRP)
+		paysMant := big.NewInt(offerPays.IOU.Mantissa())
+		paysExp := offerPays.IOU.Exponent()
+
+		// Build numerator: inputMant × trOut × getsDrops
+		numerator := new(big.Int).Set(inputMant)
+		if trIn != trOut && trIn != 0 {
+			numerator.Mul(numerator, big.NewInt(int64(trOut)))
+		}
+		numerator.Mul(numerator, getsDrops)
+
+		// Build denominator: paysMant × trIn
+		denominator := new(big.Int).Set(paysMant)
+		if trIn != trOut && trIn != 0 {
+			denominator.Mul(denominator, big.NewInt(int64(trIn)))
+		}
+
+		// Apply exponent difference to either numerator or denominator
+		// to avoid intermediate truncation
+		expDiff := inputExp - paysExp
+		if expDiff > 0 {
+			// Multiply numerator by 10^expDiff
+			multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(expDiff)), nil)
+			numerator.Mul(numerator, multiplier)
+		} else if expDiff < 0 {
+			// Multiply denominator by 10^|expDiff|
+			multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-expDiff)), nil)
+			denominator.Mul(denominator, multiplier)
+		}
+
+		// Single division at the end with rounding UP
+		// Reference: rippled's Quality::ceil_in uses roundUp=true for output
+		// Round up: (numerator + denominator - 1) / denominator
+		numerator.Add(numerator, denominator)
+		numerator.Sub(numerator, big.NewInt(1))
+		result := new(big.Int).Div(numerator, denominator)
+
+		return NewXRPEitherAmount(result.Int64())
+	}
+
+	// Apply transfer rate for non-XRP output cases
+	if trIn != trOut && trIn != 0 && !input.IsNative {
+		inputAmt = inputAmt.MulRatio(trOut, trIn, false) // round down
+	}
+
+	// For other cases: use Amount arithmetic
+	// Reference: rippled's Quality::ceil_in uses roundUp=true
+	temp := inputAmt.Mul(getsAmt, true)
+	result := temp.Div(paysAmt, true)
+
+	if s.book.Out.IsXRP() {
+		drops := result.Mantissa()
+		exp := result.Exponent()
+		for exp > 0 {
+			drops *= 10
+			exp--
+		}
+		// When converting with negative exponent, round UP
+		if exp < 0 {
+			for exp < -1 {
+				drops /= 10
+				exp++
+			}
+			// Last division with rounding up
+			drops = (drops + 9) / 10
+		}
+		return NewXRPEitherAmount(drops)
+	}
+
+	// For IOU output
+	return NewIOUEitherAmount(tx.NewIssuedAmount(
+		result.Mantissa(), result.Exponent(),
+		s.book.Out.Currency, sle.EncodeAccountIDSafe(s.book.Out.Issuer)))
 }
 
 // consumeOffer reduces the offer's amounts by the consumed amounts and transfers funds.
-func (s *BookStep) consumeOffer(sb *PaymentSandbox, offer *sle.LedgerOffer, consumedIn, consumedOut EitherAmount) error {
+// consumedInGross is the GROSS amount (what taker pays, includes transfer fee)
+// consumedInNet is the NET amount (what offer owner receives, after transfer fee)
+// consumedOut is the amount the taker receives (offer's TakerGets)
+// Note: We pass both GROSS and NET to avoid rounding errors from recalculating NET from GROSS.
+func (s *BookStep) consumeOffer(sb *PaymentSandbox, offer *sle.LedgerOffer, consumedInGross, consumedInNet, consumedOut EitherAmount) error {
+	// // fmt.Printf("DEBUG consumeOffer: offer seq=%d, consumedInGross=%+v, consumedInNet=%+v, consumedOut=%+v\n", offer.Sequence, consumedInGross, consumedInNet, consumedOut)
 	offerOwner, err := sle.DecodeAccountID(offer.Account)
 	if err != nil {
 		return err
@@ -723,8 +1266,13 @@ func (s *BookStep) consumeOffer(sb *PaymentSandbox, offer *sle.LedgerOffer, cons
 
 	txHash, ledgerSeq := sb.GetTransactionContext()
 
-	// 1. Transfer input currency: taker (strandSrc) -> offer owner
-	if err := s.transferFunds(sb, s.strandSrc, offerOwner, consumedIn, s.book.In); err != nil {
+	grossIn := consumedInGross
+	netIn := consumedInNet
+
+	// 1. Transfer input currency with transfer fee:
+	//    - Taker (strandSrc) is debited GROSS amount (grossIn)
+	//    - Offer owner is credited NET amount (netIn)
+	if err := s.transferFundsWithFee(sb, s.strandSrc, offerOwner, grossIn, netIn, s.book.In); err != nil {
 		return err
 	}
 
@@ -733,13 +1281,31 @@ func (s *BookStep) consumeOffer(sb *PaymentSandbox, offer *sle.LedgerOffer, cons
 		return err
 	}
 
-	// 3. Update offer's remaining amounts
+	// 3. Update offer's remaining amounts (use NET input for offer consumption)
 	offerKey := keylet.Offer(offerOwner, offer.Sequence)
 
-	newTakerPays := s.subtractFromAmount(s.offerTakerPays(offer), consumedIn)
+	newTakerPays := s.subtractFromAmount(s.offerTakerPays(offer), netIn)
 	newTakerGets := s.subtractFromAmount(s.offerTakerGets(offer), consumedOut)
 
+	// fmt.Printf("DEBUG consumeOffer: newTakerPays=%+v (isZero=%v), newTakerGets=%+v (isZero=%v)\n",
+	//	newTakerPays, newTakerPays.IsZero(), newTakerGets, newTakerGets.IsZero())
+
 	if newTakerPays.IsZero() || newTakerGets.IsZero() {
+		// // fmt.Printf("DEBUG consumeOffer: deleting offer seq=%d\n", offer.Sequence)
+		// Before deleting, update the offer with zero amounts
+		// This is needed for correct metadata generation:
+		// - PreviousFields should show the original (non-zero) amounts
+		// - FinalFields should show the final (zero) amounts
+		// Reference: rippled's metadata tracks the state changes before deletion
+		offer.TakerPays = s.eitherAmountToTxAmount(newTakerPays, s.book.In)
+		offer.TakerGets = s.eitherAmountToTxAmount(newTakerGets, s.book.Out)
+		offerData, err := sle.SerializeLedgerOffer(offer)
+		if err != nil {
+			return err
+		}
+		if err := sb.Update(offerKey, offerData); err != nil {
+			return err
+		}
 		if err := s.deleteOffer(sb, offer, offerOwner, txHash, ledgerSeq); err != nil {
 			return err
 		}
@@ -749,7 +1315,6 @@ func (s *BookStep) consumeOffer(sb *PaymentSandbox, offer *sle.LedgerOffer, cons
 
 		remainingFunded := s.getOfferFundedAmount(sb, offer)
 		if remainingFunded.IsEffectivelyZero() {
-			fmt.Printf("DEBUG consumeOffer: remaining offer unfunded (funded=%+v), deleting\n", remainingFunded)
 			offerData, err := sle.SerializeLedgerOffer(offer)
 			if err != nil {
 				return err
@@ -780,21 +1345,25 @@ func (s *BookStep) consumeOffer(sb *PaymentSandbox, offer *sle.LedgerOffer, cons
 func (s *BookStep) deleteOffer(sb *PaymentSandbox, offer *sle.LedgerOffer, owner [20]byte, txHash [32]byte, ledgerSeq uint32) error {
 	offerKey := keylet.Offer(owner, offer.Sequence)
 
+	// // fmt.Printf("DEBUG deleteOffer: seq=%d, offerKey=%x, bookDir=%x\n", offer.Sequence, offerKey.Key[:8], offer.BookDirectory[:8])
+
 	ownerDirKey := keylet.OwnerDir(owner)
 	ownerResult, err := sle.DirRemove(sb, ownerDirKey, offer.OwnerNode, offerKey.Key, false)
 	if err != nil {
-		fmt.Printf("DEBUG deleteOffer: error removing from owner dir: %v\n", err)
+		// // fmt.Printf("DEBUG deleteOffer: ownerDir remove error: %v\n", err)
 	}
 	if ownerResult != nil {
+		// // fmt.Printf("DEBUG deleteOffer: ownerDir removed, modified=%d, deleted=%d\n", len(ownerResult.ModifiedNodes), len(ownerResult.DeletedNodes))
 		s.applyDirRemoveResult(sb, ownerResult)
 	}
 
 	bookDirKey := keylet.Keylet{Key: offer.BookDirectory}
 	bookResult, err := sle.DirRemove(sb, bookDirKey, offer.BookNode, offerKey.Key, false)
 	if err != nil {
-		fmt.Printf("DEBUG deleteOffer: error removing from book dir: %v\n", err)
+		// // fmt.Printf("DEBUG deleteOffer: bookDir remove error: %v\n", err)
 	}
 	if bookResult != nil {
+		// // fmt.Printf("DEBUG deleteOffer: bookDir removed, modified=%d, deleted=%d\n", len(bookResult.ModifiedNodes), len(bookResult.DeletedNodes))
 		s.applyDirRemoveResult(sb, bookResult)
 	}
 
@@ -815,17 +1384,14 @@ func (s *BookStep) applyDirRemoveResult(sb *PaymentSandbox, result *sle.DirRemov
 		isBookDir := mod.NewState.TakerPaysCurrency != [20]byte{} || mod.NewState.TakerGetsCurrency != [20]byte{}
 		data, err := sle.SerializeDirectoryNode(mod.NewState, isBookDir)
 		if err != nil {
-			fmt.Printf("DEBUG applyDirRemoveResult: error serializing: %v\n", err)
 			continue
 		}
 		if err := sb.Update(keylet.Keylet{Key: mod.Key}, data); err != nil {
-			fmt.Printf("DEBUG applyDirRemoveResult: error updating: %v\n", err)
 		}
 	}
 
 	for _, del := range result.DeletedNodes {
 		if err := sb.Erase(keylet.Keylet{Key: del.Key}); err != nil {
-			fmt.Printf("DEBUG applyDirRemoveResult: error erasing: %v\n", err)
 		}
 	}
 }
@@ -880,7 +1446,46 @@ func (s *BookStep) transferFunds(sb *PaymentSandbox, from, to [20]byte, amount E
 	return s.transferIOU(sb, from, to, amount.IOU, issue, txHash, ledgerSeq)
 }
 
+// transferFundsWithFee transfers an IOU amount with transfer fee handling.
+// grossAmount is debited from sender, netAmount is credited to receiver.
+// This handles the XRPL transfer fee mechanism where sender pays more than receiver gets.
+func (s *BookStep) transferFundsWithFee(sb *PaymentSandbox, from, to [20]byte, grossAmount, netAmount EitherAmount, issue Issue) error {
+	if from == to {
+		return nil
+	}
+
+	if grossAmount.IsZero() || netAmount.IsZero() {
+		return nil
+	}
+
+	txHash, ledgerSeq := sb.GetTransactionContext()
+
+	// For XRP, there's no transfer fee - just use regular transfer
+	if issue.IsXRP() {
+		return s.transferXRP(sb, from, to, grossAmount.XRP, txHash, ledgerSeq)
+	}
+
+	// For IOUs: debit sender by gross, credit receiver by net
+	issuer := issue.Issuer
+
+	// Special case: if from is issuer, just credit receiver
+	if from == issuer {
+		return s.creditTrustline(sb, to, issuer, netAmount.IOU, txHash, ledgerSeq)
+	}
+	// Special case: if to is issuer, just debit sender
+	if to == issuer {
+		return s.debitTrustline(sb, from, issuer, grossAmount.IOU, txHash, ledgerSeq)
+	}
+
+	// Normal case: debit sender by gross, credit receiver by net
+	if err := s.debitTrustline(sb, from, issuer, grossAmount.IOU, txHash, ledgerSeq); err != nil {
+		return err
+	}
+	return s.creditTrustline(sb, to, issuer, netAmount.IOU, txHash, ledgerSeq)
+}
+
 // transferXRP transfers XRP between accounts
+// Reference: rippled View.cpp accountSend() lines 1904-1939
 func (s *BookStep) transferXRP(sb *PaymentSandbox, from, to [20]byte, drops int64, txHash [32]byte, ledgerSeq uint32) error {
 	fromKey := keylet.Account(from)
 	fromData, err := sb.Read(fromKey)
@@ -899,6 +1504,13 @@ func (s *BookStep) transferXRP(sb *PaymentSandbox, from, to [20]byte, drops int6
 	if int64(fromAccount.Balance) < drops {
 		return errors.New("insufficient XRP balance")
 	}
+
+	// Record the credit via CreditHook BEFORE updating balance
+	// Reference: rippled View.cpp line 1923: view.creditHook(uSenderID, xrpAccount(), saAmount, sndBal)
+	xrpIssuer := [20]byte{} // xrpAccount() is the zero account
+	preCreditBalance := tx.NewXRPAmount(int64(fromAccount.Balance))
+	amount := tx.NewXRPAmount(drops)
+	sb.CreditHook(from, xrpIssuer, amount, preCreditBalance)
 
 	fromAccount.Balance -= uint64(drops)
 	fromAccount.PreviousTxnID = txHash
@@ -925,6 +1537,11 @@ func (s *BookStep) transferXRP(sb *PaymentSandbox, from, to [20]byte, drops int6
 	if err != nil {
 		return err
 	}
+
+	// Record the credit to receiver
+	// Reference: rippled View.cpp line 1936: view.creditHook(xrpAccount(), uReceiverID, saAmount, -rcvBal)
+	receiverPreBalance := tx.NewXRPAmount(-int64(toAccount.Balance))
+	sb.CreditHook(xrpIssuer, to, amount, receiverPreBalance)
 
 	toAccount.Balance += uint64(drops)
 	toAccount.PreviousTxnID = txHash
@@ -1063,4 +1680,33 @@ func (s *BookStep) Check(sb *PaymentSandbox) tx.Result {
 	}
 
 	return tx.TesSUCCESS
+}
+
+// LedgerReader is an interface for reading ledger entries.
+// PaymentSandbox and other views can implement this.
+type LedgerReader interface {
+	Read(key keylet.Keylet) ([]byte, error)
+}
+
+// GetLedgerReserves reads the reserve values from the ledger's FeeSettings entry.
+// Returns (baseReserve, incrementReserve) in drops.
+// If FeeSettings cannot be read, returns default values (10 XRP, 2 XRP).
+// Reference: rippled View.cpp uses fees keylet to read reserves
+func GetLedgerReserves(view LedgerReader) (baseReserve, incrementReserve int64) {
+	// Default values (modern mainnet values)
+	defaultBase := int64(10_000_000)      // 10 XRP
+	defaultIncrement := int64(2_000_000)  // 2 XRP
+
+	feesKey := keylet.Fees()
+	feesData, err := view.Read(feesKey)
+	if err != nil || feesData == nil {
+		return defaultBase, defaultIncrement
+	}
+
+	feeSettings, err := sle.ParseFeeSettings(feesData)
+	if err != nil {
+		return defaultBase, defaultIncrement
+	}
+
+	return int64(feeSettings.GetReserveBase()), int64(feeSettings.GetReserveIncrement())
 }

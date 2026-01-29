@@ -3,6 +3,7 @@ package tx
 import (
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"sort"
 
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
@@ -160,6 +161,8 @@ func CreateTxWithMetaBlob(txBlob []byte, meta *Metadata) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	fmt.Printf("DEBUG metaBlob: %s\n", hex.EncodeToString(metaBlob))
 
 	vlMeta, err := EncodeWithVL(metaBlob)
 	if err != nil {

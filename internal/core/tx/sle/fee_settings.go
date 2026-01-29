@@ -33,16 +33,17 @@ type FeeSettings struct {
 const ledgerEntryTypeFeeSettings uint16 = 0x0073
 
 // Field codes for FeeSettings
+// Reference: XRPL binary codec field definitions
 const (
-	// UInt32 fields
-	fieldCodeReferenceFeeUnits uint8 = 10 // sfReferenceFeeUnits
-	fieldCodeReserveBase       uint8 = 20 // sfReserveBase (legacy)
-	fieldCodeReserveIncrement  uint8 = 21 // sfReserveIncrement (legacy)
+	// UInt32 fields (legacy)
+	fieldCodeReferenceFeeUnits uint8 = 30 // sfReferenceFeeUnits
+	fieldCodeReserveBase       uint8 = 31 // sfReserveBase (legacy)
+	fieldCodeReserveIncrement  uint8 = 32 // sfReserveIncrement (legacy)
 
 	// UInt64 fields
 	fieldCodeBaseFee uint8 = 5 // sfBaseFee (legacy)
 
-	// XRPAmount fields (Amount type)
+	// XRPAmount fields (Amount type) - modern XRPFees amendment
 	fieldCodeBaseFeeDrops          uint8 = 26 // sfBaseFeeDrops
 	fieldCodeReserveBaseDrops      uint8 = 27 // sfReserveBaseDrops
 	fieldCodeReserveIncrementDrops uint8 = 28 // sfReserveIncrementDrops

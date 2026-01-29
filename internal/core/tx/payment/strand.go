@@ -535,7 +535,9 @@ func GetStrandQuality(strand Strand, view *PaymentSandbox) *Quality {
 	}
 
 	// Compose qualities from all steps
-	composedQuality := Quality{Value: uint64(QualityOne)}
+	// Start with quality 1.0 (identity for multiplication)
+	// Must use proper STAmount encoding, not raw QualityOne value
+	composedQuality := qualityFromFloat64(1.0)
 	prevDir := DebtDirectionIssues
 
 	for i, step := range strand {

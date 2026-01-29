@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"strconv"
 	"strings"
 )
@@ -274,12 +275,14 @@ func NewXRPAmountFromInt(drops int64) Amount {
 
 // NewIssuedAmountFromValue creates an issued currency amount from mantissa/exponent
 func NewIssuedAmountFromValue(mantissa int64, exponent int, currency, issuer string) Amount {
-	return Amount{
-		iou:      NewIOUAmountValue(mantissa, exponent),
+	iouVal := NewIOUAmountValue(mantissa, exponent)
+	result := Amount{
+		iou:      iouVal,
 		Currency: currency,
 		Issuer:   issuer,
 		Native:   false,
 	}
+	return result
 }
 
 // NewIssuedAmountFromFloat64 creates an issued currency amount from a float64 value.
@@ -342,7 +345,10 @@ func NewIssuedAmountFromDecimalString(value, currency, issuer string) Amount {
 
 // IsNative returns true if this is an XRP amount
 func (a Amount) IsNative() bool {
-	return a.Native || (a.Currency == "" && a.Issuer == "")
+	// Only check the Native field, which is explicitly set during construction.
+	// Do NOT check for empty Currency/Issuer as that would incorrectly classify
+	// arithmetic-only Amounts (like Quality rates) as native XRP.
+	return a.Native
 }
 
 // Drops returns the XRP amount in drops (only valid for native amounts)
@@ -650,7 +656,7 @@ func compareIOUValues(a, b IOUAmountValue) int {
 }
 
 // MulRatio multiplies this amount by num/den with optional rounding up.
-// Uses integer arithmetic on mantissa to avoid float64 precision loss.
+// Uses big.Int arithmetic to avoid overflow on large mantissa * num products.
 func (a Amount) MulRatio(num, den uint32, roundUp bool) Amount {
 	if a.IsNative() {
 		// For XRP, use integer arithmetic on drops
@@ -667,25 +673,246 @@ func (a Amount) MulRatio(num, den uint32, roundUp bool) Amount {
 	}
 
 	// For IOU: multiply mantissa by num/den
-	// Use int128-style arithmetic to avoid overflow:
-	// result = mantissa * num / den
+	// Use big.Int to avoid overflow: mantissa can be ~10^15, num ~10^9
+	// so mantissa * num can be ~10^24 which exceeds int64 (~9.2×10^18)
 	mantissa := a.iou.Mantissa()
 	negative := mantissa < 0
 	if negative {
 		mantissa = -mantissa
 	}
 
-	// Use big integer to avoid overflow on mantissa * num
-	bigMant := int64(0)
-	bigProd := int64(mantissa) * int64(num)
-	bigMant = bigProd / int64(den)
-	if roundUp && bigProd%int64(den) != 0 {
-		bigMant++
+	// Use big.Int for the multiplication to avoid overflow
+	bigMant := new(big.Int).SetInt64(mantissa)
+	bigNum := new(big.Int).SetUint64(uint64(num))
+	bigDen := new(big.Int).SetUint64(uint64(den))
+
+	// bigProd = mantissa * num
+	bigProd := new(big.Int).Mul(bigMant, bigNum)
+
+	// result = bigProd / den
+	bigResult := new(big.Int).Div(bigProd, bigDen)
+
+	// Handle rounding up if needed
+	if roundUp {
+		remainder := new(big.Int).Mod(bigProd, bigDen)
+		if remainder.Sign() != 0 {
+			bigResult.Add(bigResult, big.NewInt(1))
+		}
+	}
+
+	// Convert back to int64 - may need to adjust exponent if result is too large
+	resultMant := bigResult.Int64()
+	resultExp := a.iou.Exponent()
+
+	// Normalize if mantissa is too large for int64 representation
+	// The mantissa should be in range [10^15, 10^16) for normalized form
+	for resultMant >= 1e16 {
+		resultMant /= 10
+		resultExp++
 	}
 
 	if negative {
-		bigMant = -bigMant
+		resultMant = -resultMant
 	}
 
-	return NewIssuedAmountFromValue(bigMant, a.iou.Exponent(), a.Currency, a.Issuer)
+	return NewIssuedAmountFromValue(resultMant, resultExp, a.Currency, a.Issuer)
+}
+
+// Mul multiplies this Amount by another Amount.
+// Reference: rippled's mulRound() in STAmount.cpp
+// For IOU * IOU: result = (m1 * m2) * 10^(e1 + e2)
+func (a Amount) Mul(other Amount, roundUp bool) Amount {
+	if a.IsZero() || other.IsZero() {
+		if a.IsNative() {
+			return NewXRPAmountFromInt(0)
+		}
+		return NewIssuedAmountFromValue(0, -100, a.Currency, a.Issuer)
+	}
+
+	// Handle XRP * XRP case
+	if a.IsNative() && other.IsNative() {
+		result := a.Drops() * other.Drops()
+		return NewXRPAmountFromInt(result)
+	}
+
+	// For IOU multiplication, use precise big.Int arithmetic
+	// result = (a.mantissa * other.mantissa) * 10^(a.exp + other.exp)
+	m1 := a.Mantissa()
+	e1 := a.Exponent()
+	m2 := other.Mantissa()
+	e2 := other.Exponent()
+
+	// Handle sign
+	negative := (m1 < 0) != (m2 < 0)
+	if m1 < 0 {
+		m1 = -m1
+	}
+	if m2 < 0 {
+		m2 = -m2
+	}
+
+	// Use big.Int for multiplication to avoid overflow
+	bigM1 := new(big.Int).SetInt64(m1)
+	bigM2 := new(big.Int).SetInt64(m2)
+	bigProduct := new(big.Int).Mul(bigM1, bigM2)
+
+	resultExp := e1 + e2
+
+	// Normalize the result to mantissa in [10^15, 10^16)
+	minMantissa := new(big.Int).SetInt64(1000000000000000)  // 10^15
+	maxMantissa := new(big.Int).SetInt64(10000000000000000) // 10^16
+	ten := big.NewInt(10)
+	five := big.NewInt(5)
+
+	for bigProduct.Cmp(maxMantissa) >= 0 {
+		// Use DivMod to get remainder for rounding
+		remainder := new(big.Int)
+		bigProduct.DivMod(bigProduct, ten, remainder)
+		// Round up if remainder >= 5 (or if roundUp is true and remainder > 0)
+		if remainder.Cmp(five) >= 0 || (roundUp && remainder.Sign() > 0) {
+			bigProduct.Add(bigProduct, big.NewInt(1))
+		}
+		resultExp++
+	}
+	for bigProduct.Cmp(minMantissa) < 0 && bigProduct.Sign() != 0 {
+		bigProduct.Mul(bigProduct, ten)
+		resultExp--
+	}
+
+	resultMant := bigProduct.Int64()
+	if negative {
+		resultMant = -resultMant
+	}
+
+	if a.IsNative() {
+		// Result is XRP - convert from mantissa/exponent to drops
+		for resultExp > 0 {
+			resultMant *= 10
+			resultExp--
+		}
+		for resultExp < 0 {
+			resultMant /= 10
+			resultExp++
+		}
+		return NewXRPAmountFromInt(resultMant)
+	}
+
+	return NewIssuedAmountFromValue(resultMant, resultExp, a.Currency, a.Issuer)
+}
+
+// Div divides this Amount by another Amount.
+// Reference: rippled's divRound() in STAmount.cpp
+// For IOU / IOU: result = (m1 / m2) * 10^(e1 - e2)
+func (a Amount) Div(other Amount, roundUp bool) Amount {
+	if other.IsZero() {
+		// Division by zero - return zero
+		if a.IsNative() {
+			return NewXRPAmountFromInt(0)
+		}
+		return NewIssuedAmountFromValue(0, -100, a.Currency, a.Issuer)
+	}
+
+	if a.IsZero() {
+		if a.IsNative() {
+			return NewXRPAmountFromInt(0)
+		}
+		return NewIssuedAmountFromValue(0, -100, a.Currency, a.Issuer)
+	}
+
+	// Handle XRP / XRP case
+	if a.IsNative() && other.IsNative() {
+		result := a.Drops() / other.Drops()
+		if roundUp && a.Drops()%other.Drops() != 0 {
+			result++
+		}
+		return NewXRPAmountFromInt(result)
+	}
+
+	// For IOU division, use precise big.Int arithmetic
+	m1 := a.Mantissa()
+	e1 := a.Exponent()
+	m2 := other.Mantissa()
+	e2 := other.Exponent()
+
+	// Handle sign
+	negative := (m1 < 0) != (m2 < 0)
+	if m1 < 0 {
+		m1 = -m1
+	}
+	if m2 < 0 {
+		m2 = -m2
+	}
+
+	// Normalize numerator to have enough precision for division
+	// We need m1 to be large enough that m1/m2 stays in range [10^15, 10^16)
+	bigM1 := new(big.Int).SetInt64(m1)
+	bigM2 := new(big.Int).SetInt64(m2)
+
+	// Scale up m1 to get more precision in the division
+	// Multiply m1 by 10^16 to get enough precision
+	scale := big.NewInt(10000000000000000) // 10^16
+	bigM1.Mul(bigM1, scale)
+
+	resultExp := e1 - e2 - 16 // -16 because we scaled up by 10^16
+
+	// Perform division
+	bigResult := new(big.Int).Div(bigM1, bigM2)
+
+	// Handle rounding up
+	if roundUp {
+		remainder := new(big.Int).Mod(bigM1, bigM2)
+		if remainder.Sign() != 0 {
+			bigResult.Add(bigResult, big.NewInt(1))
+		}
+	}
+
+	// Normalize the result to mantissa in [10^15, 10^16)
+	minMantissa := new(big.Int).SetInt64(1000000000000000)  // 10^15
+	maxMantissa := new(big.Int).SetInt64(10000000000000000) // 10^16
+	ten := big.NewInt(10)
+
+	for bigResult.Cmp(maxMantissa) >= 0 {
+		bigResult.Div(bigResult, ten)
+		resultExp++
+	}
+	for bigResult.Cmp(minMantissa) < 0 && bigResult.Sign() != 0 {
+		bigResult.Mul(bigResult, ten)
+		resultExp--
+	}
+
+	resultMant := bigResult.Int64()
+	if negative {
+		resultMant = -resultMant
+	}
+
+	if a.IsNative() {
+		// Result is XRP - convert from mantissa/exponent to drops
+		for resultExp > 0 {
+			resultMant *= 10
+			resultExp--
+		}
+		for resultExp < 0 {
+			resultMant /= 10
+			resultExp++
+		}
+		return NewXRPAmountFromInt(resultMant)
+	}
+
+	return NewIssuedAmountFromValue(resultMant, resultExp, a.Currency, a.Issuer)
+}
+
+// Mantissa returns the mantissa of the Amount (for IOU) or drops (for XRP).
+func (a Amount) Mantissa() int64 {
+	if a.IsNative() {
+		return a.Drops()
+	}
+	return a.iou.Mantissa()
+}
+
+// Exponent returns the exponent of the Amount (for IOU) or 0 (for XRP).
+func (a Amount) Exponent() int {
+	if a.IsNative() {
+		return 0
+	}
+	return a.iou.Exponent()
 }

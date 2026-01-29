@@ -354,6 +354,13 @@ func (s *PaymentSandbox) Credit(sender, receiver [20]byte, amount tx.Amount, pre
 	s.tab.credit(sender, receiver, amount, preCreditSenderBalance)
 }
 
+// CreditHook records a credit from sender to receiver.
+// This is the hook interface used by View implementations to track credits.
+// Reference: rippled PaymentSandbox::creditHook in PaymentSandbox.cpp
+func (s *PaymentSandbox) CreditHook(sender, receiver [20]byte, amount tx.Amount, preCreditSenderBalance tx.Amount) {
+	s.tab.credit(sender, receiver, amount, preCreditSenderBalance)
+}
+
 // credit records a credit in the deferred credits table
 func (dc *DeferredCredits) credit(sender, receiver [20]byte, amount tx.Amount, preCreditSenderBalance tx.Amount) {
 	if sender == receiver {

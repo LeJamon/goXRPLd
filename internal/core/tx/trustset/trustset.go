@@ -255,9 +255,20 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 			return tx.TecINSUF_RESERVE_LINE
 		}
 
+		// Determine the LOW and HIGH account IDs
+		var lowAccountID, highAccountID [20]byte
+		if !bHigh {
+			lowAccountID = accountID
+			highAccountID = issuerAccountID
+		} else {
+			lowAccountID = issuerAccountID
+			highAccountID = accountID
+		}
+
 		// Create new RippleState
+		// Note: In RippleState, Balance.Issuer is a special "no account" address (ACCOUNT_ONE)
 		rs := &sle.RippleState{
-			Balance:           tx.NewIssuedAmount(0, -100, t.LimitAmount.Currency, t.LimitAmount.Issuer),
+			Balance:           tx.NewIssuedAmount(0, -100, t.LimitAmount.Currency, sle.AccountOneAddress),
 			Flags:             0,
 			LowNode:           0,
 			HighNode:          0,
@@ -266,13 +277,20 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 
 		// Set the limit based on which side this account is
+		// Note: In RippleState, LowLimit.Issuer = LOW account, HighLimit.Issuer = HIGH account
+		// The "issuer" in these Amount fields refers to which account owns that limit
+		lowAccountStr, _ := sle.EncodeAccountID(lowAccountID)
+		highAccountStr, _ := sle.EncodeAccountID(highAccountID)
+
 		if !bHigh {
-			rs.LowLimit = limitAmount
-			rs.HighLimit = tx.NewIssuedAmount(0, -100, t.LimitAmount.Currency, t.LimitAmount.Issuer)
+			// Transaction sender is LOW account
+			rs.LowLimit = tx.NewIssuedAmount(limitAmount.IOU().Mantissa(), limitAmount.IOU().Exponent(), t.LimitAmount.Currency, lowAccountStr)
+			rs.HighLimit = tx.NewIssuedAmount(0, -100, t.LimitAmount.Currency, highAccountStr)
 			rs.Flags |= sle.LsfLowReserve
 		} else {
-			rs.LowLimit = tx.NewIssuedAmount(0, -100, t.LimitAmount.Currency, t.LimitAmount.Issuer)
-			rs.HighLimit = limitAmount
+			// Transaction sender is HIGH account
+			rs.LowLimit = tx.NewIssuedAmount(0, -100, t.LimitAmount.Currency, lowAccountStr)
+			rs.HighLimit = tx.NewIssuedAmount(limitAmount.IOU().Mantissa(), limitAmount.IOU().Exponent(), t.LimitAmount.Currency, highAccountStr)
 			rs.Flags |= sle.LsfHighReserve
 		}
 
@@ -326,16 +344,6 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 			} else {
 				rs.LowQualityOut = uQualityOut
 			}
-		}
-
-		// Determine the LOW and HIGH account IDs for directory operations
-		var lowAccountID, highAccountID [20]byte
-		if !bHigh {
-			lowAccountID = accountID
-			highAccountID = issuerAccountID
-		} else {
-			lowAccountID = issuerAccountID
-			highAccountID = accountID
 		}
 
 		// Add trust line to LOW account's owner directory

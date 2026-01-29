@@ -199,7 +199,9 @@ type Quality struct {
 
 // QualityFromAmounts creates a Quality from input and output amounts.
 // Quality = in / out, encoded using STAmount-like floating point representation.
-// Reference: rippled's getRate() in STAmount.cpp
+// Reference: rippled's getRate(offerOut, offerIn) in STAmount.cpp divides offerIn / offerOut.
+// Despite the parameter order (out, in), it returns in / out.
+// Lower quality value means you pay less per unit received (better for taker).
 func QualityFromAmounts(in, out EitherAmount) Quality {
 	if out.IsZero() {
 		return Quality{Value: 0}
@@ -225,6 +227,7 @@ func QualityFromAmounts(in, out EitherAmount) Quality {
 		return Quality{Value: 0}
 	}
 
+	// Quality = in / out (matching rippled's getRate which does offerIn / offerOut)
 	f64 := inVal / outVal
 	if f64 <= 0 {
 		return Quality{Value: 0}
@@ -287,10 +290,112 @@ func (q Quality) WorseThan(other Quality) bool {
 	return q.Value > other.Value
 }
 
+// Increment returns a Quality that is slightly worse (higher value).
+// This is used for passive offers where we only want to cross against
+// offers with STRICTLY better quality.
+// Reference: rippled CreateOffer.cpp line 364: ++threshold
+func (q Quality) Increment() Quality {
+	if q.Value == ^uint64(0) {
+		return q // Already at max, can't increment
+	}
+	return Quality{Value: q.Value + 1}
+}
+
+// Float64 decodes the quality value to a float64 ratio (in/out).
+// The quality is stored in STAmount format: top 8 bits = exponent+100, lower 56 bits = mantissa.
+// Reference: rippled's amountFromQuality() in STAmount.cpp
+func (q Quality) Float64() float64 {
+	if q.Value == 0 {
+		return 0
+	}
+	mantissa := q.Value & 0x00FFFFFFFFFFFFFF
+	exponent := int((q.Value >> 56)) - 100
+
+	// The encoding already normalized mantissa to [10^15, 10^16) and adjusted
+	// exponent accordingly, so we just decode directly: value = mantissa * 10^exponent
+	return float64(mantissa) * pow10(exponent)
+}
+
+// Rate returns the quality rate as an Amount for precise arithmetic.
+// This is equivalent to rippled's quality.rate() which returns an STAmount.
+// Reference: rippled's amountFromQuality() in STAmount.cpp
+func (q Quality) Rate() tx.Amount {
+	if q.Value == 0 {
+		return tx.NewIssuedAmount(0, -100, "", "")
+	}
+	mantissa := int64(q.Value & 0x00FFFFFFFFFFFFFF)
+	exponent := int((q.Value >> 56)) - 100
+	result := tx.NewIssuedAmount(mantissa, exponent, "", "")
+	return result
+}
+
+// pow10 returns 10^n for small n values
+func pow10(n int) float64 {
+	if n == 0 {
+		return 1
+	}
+	if n > 0 {
+		result := 1.0
+		for i := 0; i < n; i++ {
+			result *= 10
+		}
+		return result
+	}
+	// n < 0
+	result := 1.0
+	for i := 0; i > n; i-- {
+		result /= 10
+	}
+	return result
+}
+
 // Compose multiplies two qualities together
 func (q Quality) Compose(other Quality) Quality {
-	product := (float64(q.Value) * float64(other.Value)) / float64(QualityOne)
-	return Quality{Value: uint64(product)}
+	// Get the actual rates
+	rate1 := q.Float64()
+	rate2 := other.Float64()
+	composedRate := rate1 * rate2
+
+	// Encode back to quality format
+	return qualityFromFloat64(composedRate)
+}
+
+// qualityFromFloat64 encodes a float64 rate back to Quality format
+func qualityFromFloat64(rate float64) Quality {
+	if rate <= 0 {
+		return Quality{Value: 0}
+	}
+
+	// Normalize mantissa to [10^15, 10^16)
+	exponent := 0
+	mantissa := rate
+
+	minMantissa := 1e15
+	maxMantissa := 1e16
+
+	if mantissa != 0 {
+		for mantissa < minMantissa {
+			mantissa *= 10
+			exponent--
+		}
+		for mantissa >= maxMantissa {
+			mantissa /= 10
+			exponent++
+		}
+	}
+
+	// Clamp exponent
+	if exponent < -100 {
+		return Quality{Value: 0}
+	}
+	if exponent > 155 {
+		return Quality{Value: ^uint64(0)}
+	}
+
+	storedExponent := uint64(exponent + 100)
+	storedMantissa := uint64(mantissa)
+
+	return Quality{Value: (storedExponent << 56) | (storedMantissa & 0x00FFFFFFFFFFFFFF)}
 }
 
 // Issue represents a currency/issuer pair
