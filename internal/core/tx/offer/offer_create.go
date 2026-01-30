@@ -692,21 +692,8 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext, sb, sbCancel *payment.Paym
 	offerSequence := o.getOfferSequence()
 	offerKey := keylet.Offer(ctx.AccountID, offerSequence)
 
-	// Add to owner directory
-	// Reference: lines 839-848
-	ownerDirKey := keylet.OwnerDir(ctx.AccountID)
-	ownerDirResult, err := sle.DirInsert(sb, ownerDirKey, offerKey.Key, func(dir *sle.DirectoryNode) {
-		dir.Owner = ctx.AccountID
-	})
-	if err != nil {
-		return tx.TefINTERNAL, false
-	}
-
-	// Increment owner count
-	// Reference: line 851
-	ctx.Account.OwnerCount++
-
-	// Calculate book directory key
+	// Calculate book directory fields first (needed for both owner and book directories
+	// when SortedDirectories is not enabled)
 	// Reference: lines 857-887
 	takerPaysCurrency := sle.GetCurrencyBytes(saTakerPays.Currency)
 	takerPaysIssuer := sle.GetIssuerBytes(saTakerPays.Issuer)
@@ -715,6 +702,38 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext, sb, sbCancel *payment.Paym
 
 	bookBase := keylet.BookDir(takerPaysCurrency, takerPaysIssuer, takerGetsCurrency, takerGetsIssuer)
 	bookDirKey := keylet.Quality(bookBase, uRate)
+
+	// Add to owner directory
+	// Reference: lines 839-848
+	// Before SortedDirectories amendment (enabled Nov 2017), owner directories used
+	// qualityDirDescriber which set book fields (TakerPaysCurrency, etc.) instead of Owner.
+	// After SortedDirectories, owner directories use describeOwnerDir which sets sfOwner.
+	ownerDirKey := keylet.OwnerDir(ctx.AccountID)
+	var ownerDirResult *sle.DirInsertResult
+	var err error
+	if rules.SortedDirectoriesEnabled() {
+		// Modern behavior: set Owner field on owner directory
+		ownerDirResult, err = sle.DirInsert(sb, ownerDirKey, offerKey.Key, func(dir *sle.DirectoryNode) {
+			dir.Owner = ctx.AccountID
+		})
+	} else {
+		// Pre-SortedDirectories behavior: set book fields on owner directory
+		// (same as book directory, this was the historical qualityDirDescriber behavior)
+		ownerDirResult, err = sle.DirInsert(sb, ownerDirKey, offerKey.Key, func(dir *sle.DirectoryNode) {
+			dir.TakerPaysCurrency = takerPaysCurrency
+			dir.TakerPaysIssuer = takerPaysIssuer
+			dir.TakerGetsCurrency = takerGetsCurrency
+			dir.TakerGetsIssuer = takerGetsIssuer
+			dir.ExchangeRate = uRate
+		})
+	}
+	if err != nil {
+		return tx.TefINTERNAL, false
+	}
+
+	// Increment owner count
+	// Reference: line 851
+	ctx.Account.OwnerCount++
 
 	// Check if book exists (for OrderBookDB tracking)
 	bookExisted, _ := sb.Exists(bookDirKey)

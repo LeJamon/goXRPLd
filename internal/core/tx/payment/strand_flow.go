@@ -113,10 +113,14 @@ func executeReversePass(
 		}
 	}
 
-	// If there's a limiting step, we need to re-execute
+	// If there's a limiting step, we need to re-execute with that step as starting point
 	if limitingStep >= 0 {
 		return executeWithLimitingStep(sb, afView, strand, limitingStep, ofrsToRm)
 	}
+
+	// No limiting step - Rev() already applied all changes (like rippled)
+	// Reference: rippled StrandFlow.h - when no limiting step, only Rev() runs
+	// Both DirectStep.Rev() and BookStep.Rev() apply changes via rippleCredit/consumeOffer
 
 	// Calculate total offers used
 	var offersUsed uint32
@@ -200,13 +204,13 @@ func executeWithLimitingStep(
 	in := *limitStepCachedIn
 	// // fmt.Printf("DEBUG executeWithLimitingStep: starting fwd pass with in=%+v\n", in)
 
-	// For BookSteps, we need to execute Fwd on the limiting step itself to consume offers.
-	// Rev only calculates what would be consumed, Fwd actually does the consumption.
-	// This is especially important when the strand has only one step (just the BookStep).
-	if strand[limitingStep].BookStepBook() != nil {
-		step := strand[limitingStep]
-		_, actualOut := step.Fwd(sb, afView, ofrsToRm, in)
-		in = actualOut
+	// Rev() already applied changes for steps 0 to limitingStep (like rippled)
+	// So we start the forward pass AFTER the limiting step
+
+	// For the limiting step, get its output to use as input for subsequent steps
+	limitStepCachedOutAfterRev := strand[limitingStep].CachedOut()
+	if limitStepCachedOutAfterRev != nil {
+		in = *limitStepCachedOutAfterRev
 	}
 
 	// Forward pass continues AFTER the limiting step (limitingStep + 1)
