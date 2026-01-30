@@ -321,7 +321,6 @@ func (o *OfferCreate) Preclaim(ctx *tx.ApplyContext) tx.Result {
 	// Check account has funds for the offer
 	// Reference: lines 172-178
 	funds := tx.AccountFunds(ctx.View, ctx.AccountID, saTakerGets, true)
-	//TODO seems weird, to ensure proper behaviour against rippled
 	diff := sle.SubtractAmount(saTakerGets, funds)
 	if diff.Signum() > 0 {
 		return tx.TecUNFUNDED_OFFER
@@ -705,28 +704,10 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext, sb, sbCancel *payment.Paym
 
 	// Add to owner directory
 	// Reference: lines 839-848
-	// Before SortedDirectories amendment (enabled Nov 2017), owner directories used
-	// qualityDirDescriber which set book fields (TakerPaysCurrency, etc.) instead of Owner.
-	// After SortedDirectories, owner directories use describeOwnerDir which sets sfOwner.
 	ownerDirKey := keylet.OwnerDir(ctx.AccountID)
-	var ownerDirResult *sle.DirInsertResult
-	var err error
-	if rules.SortedDirectoriesEnabled() {
-		// Modern behavior: set Owner field on owner directory
-		ownerDirResult, err = sle.DirInsert(sb, ownerDirKey, offerKey.Key, func(dir *sle.DirectoryNode) {
-			dir.Owner = ctx.AccountID
-		})
-	} else {
-		// Pre-SortedDirectories behavior: set book fields on owner directory
-		// (same as book directory, this was the historical qualityDirDescriber behavior)
-		ownerDirResult, err = sle.DirInsert(sb, ownerDirKey, offerKey.Key, func(dir *sle.DirectoryNode) {
-			dir.TakerPaysCurrency = takerPaysCurrency
-			dir.TakerPaysIssuer = takerPaysIssuer
-			dir.TakerGetsCurrency = takerGetsCurrency
-			dir.TakerGetsIssuer = takerGetsIssuer
-			dir.ExchangeRate = uRate
-		})
-	}
+	ownerDirResult, err := sle.DirInsert(sb, ownerDirKey, offerKey.Key, func(dir *sle.DirectoryNode) {
+		dir.Owner = ctx.AccountID
+	})
 	if err != nil {
 		return tx.TefINTERNAL, false
 	}

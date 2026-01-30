@@ -132,49 +132,39 @@ func (s *BookStep) Rev(
 	visited := make(map[[32]byte]bool)
 
 	// Iterate through offers
-	// fmt.Printf("DEBUG BookStep.Rev: starting, remainingOut=%+v\n", remainingOut)
 
 	for s.offersUsed_ < s.maxOffersToConsume && !remainingOut.IsZero() {
 		// Get next offer at best quality
 		offer, offerKey, err := s.getNextOfferSkipVisited(sb, afView, ofrsToRm, visited)
 		if err != nil {
-			// fmt.Printf("DEBUG BookStep.Rev: getNextOffer error: %v\n", err)
 			break
 		}
 		if offer == nil {
-			// fmt.Printf("DEBUG BookStep.Rev: no more offers\n")
 			break // No more offers
 		}
 
-		// fmt.Printf("DEBUG BookStep.Rev: found offer seq=%d, account=%s\n", offer.Sequence, offer.Account)
 
 		// Mark as visited so we don't process it again in this execution
 		visited[offerKey] = true
 
 		// Check if offer is funded
 		if !s.isOfferFunded(sb, offer) {
-			// fmt.Printf("DEBUG BookStep.Rev: offer not funded, skipping\n")
 			ofrsToRm[offerKey] = true
 			s.offersUsed_++
 			continue
 		}
-		// fmt.Printf("DEBUG BookStep.Rev: offer is funded\n")
 
 		// Check quality limit - if offer quality is worse than limit, stop
 		offerQuality := s.offerQuality(offer)
-		// fmt.Printf("DEBUG BookStep.Rev: offerQuality=%v, qualityLimit=%v\n", offerQuality, s.qualityLimit)
 		if s.qualityLimit != nil && offerQuality.WorseThan(*s.qualityLimit) {
-			// fmt.Printf("DEBUG BookStep.Rev: offer quality %v worse than limit %v, stopping\n", offerQuality, s.qualityLimit)
 			break
 		}
-		// fmt.Printf("DEBUG BookStep.Rev: quality check passed, continuing\n")
 
 		// Calculate how much we can get from this offer
 		// Use funded amount, which may be less than stated TakerGets
 		offerTakerGetsStated := s.offerTakerGets(offer)
 		offerOut := s.getOfferFundedAmount(sb, offer)
 		offerIn := s.offerTakerPays(offer) // This is NET (what offer owner expects)
-		// fmt.Printf("DEBUG BookStep.Rev: offerTakerGetsStated=%+v, offerOut(funded)=%+v, offerIn=%+v\n", offerTakerGetsStated, offerOut, offerIn)
 
 		// Scale offerIn proportionally if funded amount is less than stated
 		if offerOut.Compare(offerTakerGetsStated) < 0 && !offerTakerGetsStated.IsZero() {
@@ -229,7 +219,6 @@ func (s *BookStep) Rev(
 		totalOut = totalOut.Add(actualOut)
 		remainingOut = remainingOut.Sub(actualOut)
 		s.offersUsed_++
-		// fmt.Printf("DEBUG BookStep.Rev: actualIn=%+v, actualOut=%+v, totalIn=%+v, totalOut=%+v\n", actualIn, actualOut, totalIn, totalOut)
 	}
 
 	// Check if we should become inactive
@@ -243,7 +232,6 @@ func (s *BookStep) Rev(
 		out: totalOut,
 	}
 
-	// fmt.Printf("DEBUG BookStep.Rev: FINAL totalIn=%+v, totalOut=%+v\n", totalIn, totalOut)
 	return totalIn, totalOut
 }
 
@@ -358,24 +346,19 @@ func (s *BookStep) Fwd(
 			isFullConsumption = false
 		}
 
-		// fmt.Printf("DEBUG BookStep.Fwd: offer TakerGets=%+v, TakerPays=%+v, fundedOut=%+v\n", offerTakerGetsStated, offerIn, fundedOut)
-		// fmt.Printf("DEBUG BookStep.Fwd: offerIn=%+v, grossOfferIn=%+v, remainingIn=%+v, actualIn=%+v, actualInNet=%+v, trIn=%d, trOut=%d\n", offerIn, grossOfferIn, remainingIn, actualIn, actualInNet, trIn, trOut)
 
 		// Calculate output:
 		// actualIn is always GROSS (what taker pays including transfer fee)
 		if isFullConsumption {
 			// Full consumption: get the full funded output
 			actualOut = fundedOut
-			// fmt.Printf("DEBUG BookStep.Fwd: FULL consumption, actualOut=%+v\n", actualOut)
 		} else {
 			// Partial consumption: compute output from GROSS input
 			actualOut = s.computeOutputFromInputWithTransferRate(actualIn, offerIn, fundedOut, trIn)
-			// fmt.Printf("DEBUG BookStep.Fwd: PARTIAL consumption, actualOut=%+v\n", actualOut)
 		}
 
 		// Limit output to funded amount
 		if actualOut.Compare(fundedOut) > 0 {
-			// // fmt.Printf("DEBUG BookStep.Fwd: limiting to fundedOut=%+v\n", fundedOut)
 			actualOut = fundedOut
 			actualIn = s.applyQuality(actualOut, offerQuality, trIn, trOut, true)
 			// Recalculate NET from GROSS when limited
@@ -388,7 +371,6 @@ func (s *BookStep) Fwd(
 		// Limit output to cached value to prevent forward > reverse
 		if s.cache != nil {
 			remainingCacheOut := s.cache.out.Sub(totalOut)
-			// // fmt.Printf("DEBUG BookStep.Fwd: cache check, cacheOut=%+v, totalOut=%+v, remaining=%+v\n", s.cache.out, totalOut, remainingCacheOut)
 			if actualOut.Compare(remainingCacheOut) > 0 {
 				actualOut = remainingCacheOut
 				actualIn = s.applyQuality(actualOut, offerQuality, trIn, trOut, true)
@@ -400,7 +382,6 @@ func (s *BookStep) Fwd(
 			}
 		}
 
-		// fmt.Printf("DEBUG BookStep.Fwd: FINAL actualIn=%+v, actualInNet=%+v, actualOut=%+v (adding to total)\n", actualIn, actualInNet, actualOut)
 
 		err = s.consumeOffer(sb, offer, actualIn, actualInNet, actualOut)
 		if err != nil {
@@ -630,9 +611,7 @@ func (s *BookStep) getNextOffer(sb *PaymentSandbox, afView *PaymentSandbox, ofrs
 	takerGetsIssuer := s.book.Out.Issuer
 	bookBase := keylet.BookDir(takerPaysCurrency, takerPaysIssuer, takerGetsCurrency, takerGetsIssuer)
 
-	// fmt.Printf("DEBUG getNextOffer: book.In.Currency=%s, book.In.Issuer=%x, book.Out.Currency=%s, book.Out.Issuer=%x\n",
 	// 	s.book.In.Currency, s.book.In.Issuer[:8], s.book.Out.Currency, s.book.Out.Issuer[:8])
-	// fmt.Printf("DEBUG getNextOffer: bookBase.Key=%x\n", bookBase.Key)
 
 	bookPrefix := bookBase.Key[:24]
 
@@ -654,7 +633,6 @@ func (s *BookStep) getNextOffer(sb *PaymentSandbox, afView *PaymentSandbox, ofrs
 		return nil, [32]byte{}, err
 	}
 
-	// fmt.Printf("DEBUG getNextOffer: scanned %d entries, found %d matching dirs\n", entryCount, len(dirs))
 
 	sort.Slice(dirs, func(i, j int) bool {
 		return bytes.Compare(dirs[i].key[24:], dirs[j].key[24:]) < 0
@@ -663,35 +641,28 @@ func (s *BookStep) getNextOffer(sb *PaymentSandbox, afView *PaymentSandbox, ofrs
 	for _, d := range dirs {
 		dir, err := sle.ParseDirectoryNode(d.data)
 		if err != nil || len(dir.Indexes) == 0 {
-			// fmt.Printf("DEBUG getNextOffer: dir parse error or empty, err=%v, indexes=%d\n", err, len(dir.Indexes))
 			continue
 		}
 
-		// fmt.Printf("DEBUG getNextOffer: dir has %d indexes\n", len(dir.Indexes))
 
 		for _, idx := range dir.Indexes {
 			var offerKey [32]byte
 			copy(offerKey[:], idx[:])
 
-			// fmt.Printf("DEBUG getNextOffer: checking offer key=%x\n", offerKey[:8])
 
 			if ofrsToRm != nil && ofrsToRm[offerKey] {
-				// fmt.Printf("DEBUG getNextOffer: skipping offer in ofrsToRm\n")
 				continue
 			}
 
 			offerData, err := sb.Read(keylet.Keylet{Key: offerKey})
 			if err != nil || offerData == nil {
-				// fmt.Printf("DEBUG getNextOffer: offer not found, err=%v\n", err)
 				continue
 			}
 
 			offer, err := sle.ParseLedgerOffer(offerData)
 			if err != nil {
-				// fmt.Printf("DEBUG getNextOffer: offer parse error: %v\n", err)
 				continue
 			}
-			// fmt.Printf("DEBUG getNextOffer: found offer seq=%d, account=%s\n", offer.Sequence, offer.Account)
 
 			return offer, offerKey, nil
 		}
@@ -1294,7 +1265,6 @@ func (s *BookStep) computeOutputFromInput(input, offerPays, offerGets EitherAmou
 // consumedOut is the amount the taker receives (offer's TakerGets)
 // Note: We pass both GROSS and NET to avoid rounding errors from recalculating NET from GROSS.
 func (s *BookStep) consumeOffer(sb *PaymentSandbox, offer *sle.LedgerOffer, consumedInGross, consumedInNet, consumedOut EitherAmount) error {
-	// // fmt.Printf("DEBUG consumeOffer: offer seq=%d, consumedInGross=%+v, consumedInNet=%+v, consumedOut=%+v\n", offer.Sequence, consumedInGross, consumedInNet, consumedOut)
 	offerOwner, err := sle.DecodeAccountID(offer.Account)
 	if err != nil {
 		return err
@@ -1323,11 +1293,9 @@ func (s *BookStep) consumeOffer(sb *PaymentSandbox, offer *sle.LedgerOffer, cons
 	newTakerPays := s.subtractFromAmount(s.offerTakerPays(offer), netIn)
 	newTakerGets := s.subtractFromAmount(s.offerTakerGets(offer), consumedOut)
 
-	// fmt.Printf("DEBUG consumeOffer: newTakerPays=%+v (isZero=%v), newTakerGets=%+v (isZero=%v)\n",
 	//	newTakerPays, newTakerPays.IsZero(), newTakerGets, newTakerGets.IsZero())
 
 	if newTakerPays.IsZero() || newTakerGets.IsZero() {
-		// // fmt.Printf("DEBUG consumeOffer: deleting offer seq=%d\n", offer.Sequence)
 		// Before deleting, update the offer with zero amounts
 		// This is needed for correct metadata generation:
 		// - PreviousFields should show the original (non-zero) amounts
@@ -1381,25 +1349,20 @@ func (s *BookStep) consumeOffer(sb *PaymentSandbox, offer *sle.LedgerOffer, cons
 func (s *BookStep) deleteOffer(sb *PaymentSandbox, offer *sle.LedgerOffer, owner [20]byte, txHash [32]byte, ledgerSeq uint32) error {
 	offerKey := keylet.Offer(owner, offer.Sequence)
 
-	// // fmt.Printf("DEBUG deleteOffer: seq=%d, offerKey=%x, bookDir=%x\n", offer.Sequence, offerKey.Key[:8], offer.BookDirectory[:8])
 
 	ownerDirKey := keylet.OwnerDir(owner)
 	ownerResult, err := sle.DirRemove(sb, ownerDirKey, offer.OwnerNode, offerKey.Key, false)
 	if err != nil {
-		// // fmt.Printf("DEBUG deleteOffer: ownerDir remove error: %v\n", err)
 	}
 	if ownerResult != nil {
-		// // fmt.Printf("DEBUG deleteOffer: ownerDir removed, modified=%d, deleted=%d\n", len(ownerResult.ModifiedNodes), len(ownerResult.DeletedNodes))
 		s.applyDirRemoveResult(sb, ownerResult)
 	}
 
 	bookDirKey := keylet.Keylet{Key: offer.BookDirectory}
 	bookResult, err := sle.DirRemove(sb, bookDirKey, offer.BookNode, offerKey.Key, false)
 	if err != nil {
-		// // fmt.Printf("DEBUG deleteOffer: bookDir remove error: %v\n", err)
 	}
 	if bookResult != nil {
-		// // fmt.Printf("DEBUG deleteOffer: bookDir removed, modified=%d, deleted=%d\n", len(bookResult.ModifiedNodes), len(bookResult.DeletedNodes))
 		s.applyDirRemoveResult(sb, bookResult)
 	}
 

@@ -1,15 +1,10 @@
 package payment
 
 import (
-	"fmt"
-
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	tx "github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
-
-// DebugDirectStep enables debug output for DirectStepI
-var DebugDirectStep = false
 
 // DirectStepI handles IOU transfers between two accounts via trust lines.
 // This step does not use the order book - it directly transfers IOUs along
@@ -70,25 +65,13 @@ func (s *DirectStepI) Rev(
 ) (EitherAmount, EitherAmount) {
 	s.cache = nil
 
-	if DebugDirectStep {
-		srcStr, _ := sle.EncodeAccountID(s.src)
-		dstStr, _ := sle.EncodeAccountID(s.dst)
-		fmt.Printf("DEBUG DirectStepI.Rev: %s -> %s currency=%s out=%+v\n", srcStr, dstStr, s.currency, out)
-	}
-
 	if out.IsNative {
 		// Should never happen - DirectStepI only handles IOU
-		if DebugDirectStep {
-			fmt.Printf("DEBUG DirectStepI.Rev: out is native (unexpected)\n")
-		}
 		return ZeroIOUEitherAmount(s.currency, ""), ZeroIOUEitherAmount(s.currency, "")
 	}
 
 	// Get maximum flow and debt direction
 	maxSrcToDst, srcDebtDir := s.maxPaymentFlow(sb)
-	if DebugDirectStep {
-		fmt.Printf("DEBUG DirectStepI.Rev: maxSrcToDst=%+v srcDebtDir=%d\n", maxSrcToDst, srcDebtDir)
-	}
 
 	// Get qualities
 	srcQOut, dstQIn := s.qualities(sb, srcDebtDir, StrandDirectionReverse)
@@ -468,16 +451,8 @@ func (s *DirectStepI) quality(sb *PaymentSandbox, isIn bool) uint32 {
 // accountHolds returns the balance src holds of dst's IOUs
 func (s *DirectStepI) accountHolds(sb *PaymentSandbox) tx.Amount {
 	trustLineKey := keylet.Line(s.src, s.dst, s.currency)
-	if DebugDirectStep {
-		srcStr, _ := sle.EncodeAccountID(s.src)
-		dstStr, _ := sle.EncodeAccountID(s.dst)
-		fmt.Printf("DEBUG DirectStepI.accountHolds: looking up trust line %s <-> %s currency=%s key=%x\n", srcStr, dstStr, s.currency, trustLineKey.Key)
-	}
 	data, err := sb.Read(trustLineKey)
 	if err != nil || data == nil {
-		if DebugDirectStep {
-			fmt.Printf("DEBUG DirectStepI.accountHolds: trust line not found, err=%v\n", err)
-		}
 		return tx.NewIssuedAmount(0, -100, s.currency, "")
 	}
 
@@ -491,23 +466,12 @@ func (s *DirectStepI) accountHolds(sb *PaymentSandbox) tx.Amount {
 	// Negative balance = LOW OWES HIGH (LOW has debt to HIGH)
 	balance := rs.Balance
 
-	if DebugDirectStep {
-		fmt.Printf("DEBUG DirectStepI.accountHolds: raw balance=%+v\n", balance)
-	}
-
 	if sle.CompareAccountIDs(s.src, s.dst) < 0 {
 		// src is low account
-		if DebugDirectStep {
-			fmt.Printf("DEBUG DirectStepI.accountHolds: src is LOW, returning balance=%+v\n", balance)
-		}
 		return balance
 	}
 	// src is high account
-	result := balance.Negate()
-	if DebugDirectStep {
-		fmt.Printf("DEBUG DirectStepI.accountHolds: src is HIGH, returning negated balance=%+v\n", result)
-	}
-	return result
+	return balance.Negate()
 }
 
 // creditLimit returns the credit limit dst has extended to src

@@ -4,7 +4,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sort"
 	"strconv"
 
@@ -376,7 +375,6 @@ func (e *Engine) Apply(tx Transaction) ApplyResult {
 			Message: result.Message(),
 		}
 	}
-	fmt.Println("PASSED PRECLAIM")
 
 	// Step 3: Calculate and apply fee
 	fee := e.calculateFee(tx)
