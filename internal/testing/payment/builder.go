@@ -127,7 +127,7 @@ func (b *PaymentBuilder) Build() tx.Transaction {
 	if b.issuedAmt != nil {
 		amount = *b.issuedAmt
 	} else {
-		amount = tx.NewXRPAmount(fmt.Sprintf("%d", b.amount))
+		amount = tx.NewXRPAmount(int64(b.amount))
 	}
 
 	payment := payment.NewPayment(b.from.Address, b.to.Address, amount)

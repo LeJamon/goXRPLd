@@ -343,7 +343,7 @@ func (n *NFTokenCreateOffer) Validate() error {
 	if n.Amount.Currency == "" {
 		// XRP amount
 		// For buy offers, zero amount is not allowed
-		if !isSellOffer && n.Amount.Value == "0" {
+		if !isSellOffer && n.Amount.IsZero() {
 			return errors.New("temBAD_AMOUNT: buy offer amount cannot be zero")
 		}
 	} else {
@@ -352,7 +352,7 @@ func (n *NFTokenCreateOffer) Validate() error {
 			return errors.New("temBAD_AMOUNT: NFToken requires XRP only")
 		}
 		// IOU amount of 0 is not allowed
-		if n.Amount.Value == "0" {
+		if n.Amount.IsZero() {
 			return errors.New("temBAD_AMOUNT: IOU amount cannot be zero")
 		}
 	}
@@ -519,7 +519,7 @@ func (n *NFTokenAcceptOffer) Validate() error {
 		}
 		// BrokerFee must be positive (greater than zero)
 		// Reference: rippled NFTokenAcceptOffer.cpp:56 - if (*bf <= beast::zero)
-		if n.NFTokenBrokerFee.Value == "0" || n.NFTokenBrokerFee.Value == "" {
+		if n.NFTokenBrokerFee.IsZero() {
 			return errors.New("temMALFORMED: NFTokenBrokerFee must be greater than zero")
 		}
 	}

@@ -1,14 +1,10 @@
 package payment
 
 import (
-	"fmt"
 	"sort"
 
 	tx "github.com/LeJamon/goXRPLd/internal/core/tx"
 )
-
-// DebugFlow enables debug output for flow execution
-var DebugFlow = false
 
 // Flow executes payment across multiple strands, selecting the best quality paths.
 //
@@ -85,17 +81,10 @@ func Flow(
 		remainingIn = &ri
 	}
 
-	if DebugFlow {
-		fmt.Printf("DEBUG Flow: %d strands, outReq=%+v, sendMax=%+v\n", len(strands), outReq, sendMax)
-	}
-
 	// Sort strands by quality upper bound
 	strandQualities := make([]strandQuality, 0, len(strands))
 	for i, strand := range strands {
 		q := GetStrandQuality(strand, baseView)
-		if DebugFlow {
-			fmt.Printf("DEBUG Flow: strand %d quality=%+v\n", i, q)
-		}
 		if q != nil {
 			strandQualities = append(strandQualities, strandQuality{
 				index:   i,
@@ -103,8 +92,6 @@ func Flow(
 				quality: *q,
 				active:  true,
 			})
-		} else if DebugFlow {
-			fmt.Printf("DEBUG Flow: strand %d has nil quality (dry)\n", i)
 		}
 	}
 
@@ -140,11 +127,6 @@ func Flow(
 
 			// Execute this strand
 			result := ExecuteStrand(accumSandbox, sq.strand, remainingIn, remainingOut)
-
-			if DebugFlow {
-				fmt.Printf("DEBUG Flow: strand %d execution: success=%v out=%+v in=%+v inactive=%v\n",
-					sq.index, result.Success, result.Out, result.In, result.Inactive)
-			}
 
 			if !result.Success || result.Out.IsZero() {
 				sq.active = false
@@ -334,36 +316,3 @@ func FlowV2(
 	return Flow(baseView, strands, outReq, partialPayment, limitQuality, sendMax)
 }
 
-// FlowDebug wraps Flow with additional debugging information
-type FlowDebug struct {
-	// Iterations is the number of flow iterations performed
-	Iterations int
-
-	// StrandResults contains the result of each strand execution
-	StrandResults []StrandResult
-
-	// BestStrandPerIteration tracks which strand was chosen each iteration
-	BestStrandPerIteration []int
-}
-
-// FlowWithDebug executes Flow and returns debugging information
-func FlowWithDebug(
-	baseView *PaymentSandbox,
-	strands []Strand,
-	outReq EitherAmount,
-	partialPayment bool,
-	limitQuality *Quality,
-	sendMax *EitherAmount,
-) (FlowResult, FlowDebug) {
-	result := Flow(baseView, strands, outReq, partialPayment, limitQuality, sendMax)
-
-	// For now, return minimal debug info
-	// A full implementation would track detailed iteration history
-	debug := FlowDebug{
-		Iterations:             0,
-		StrandResults:          nil,
-		BestStrandPerIteration: nil,
-	}
-
-	return result, debug
-}

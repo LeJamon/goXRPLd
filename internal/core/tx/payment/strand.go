@@ -1,15 +1,10 @@
 package payment
 
 import (
-	"fmt"
-
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	tx "github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
-
-// DebugStrands enables debug output for strand building
-var DebugStrands = false
 
 // Path flags - indicate what type of element this path step contains
 // These match rippled's STPathElement types
@@ -41,12 +36,6 @@ func ToStrands(
 	paths [][]PathStep,
 	addDefaultPath bool,
 ) ([]Strand, error) {
-	if DebugStrands {
-		srcStr, _ := sle.EncodeAccountID(src)
-		dstStr, _ := sle.EncodeAccountID(dst)
-		fmt.Printf("DEBUG ToStrands: src=%s dst=%s dstAmt=%+v srcAmt=%+v addDefaultPath=%v\n", srcStr, dstStr, dstAmt, srcAmt, addDefaultPath)
-	}
-
 	dstIssue := GetIssue(dstAmt)
 
 	var srcIssue *Issue
@@ -225,26 +214,7 @@ func ToStrand(
 	}
 
 	if len(normPath) < 2 {
-		if DebugStrands {
-			fmt.Printf("DEBUG ToStrand: normPath too short (%d elements)\n", len(normPath))
-		}
 		return nil, nil // Invalid path
-	}
-
-	if DebugStrands {
-		fmt.Printf("DEBUG ToStrand: normPath has %d elements:\n", len(normPath))
-		for i, n := range normPath {
-			acctStr := "none"
-			if n.hasAccount {
-				acctStr, _ = sle.EncodeAccountID(n.account)
-			}
-			issuerStr := "none"
-			if n.hasIssuer {
-				issuerStr, _ = sle.EncodeAccountID(n.issuer)
-			}
-			fmt.Printf("  [%d] account=%s currency=%s issuer=%s hasAccount=%v hasCurrency=%v hasIssuer=%v\n",
-				i, acctStr, n.currency, issuerStr, n.hasAccount, n.hasCurrency, n.hasIssuer)
-		}
 	}
 
 	// Now convert normalized path to steps
@@ -361,27 +331,8 @@ func ToStrand(
 		}
 	}
 
-	// Debug output
-	if DebugStrands {
-		fmt.Printf("DEBUG ToStrand: created strand with %d steps\n", len(strand))
-		for i, s := range strand {
-			if accts := s.DirectStepAccts(); accts != nil {
-				srcStr, _ := sle.EncodeAccountID(accts[0])
-				dstStr, _ := sle.EncodeAccountID(accts[1])
-				fmt.Printf("  Step %d: DirectStep %s -> %s\n", i, srcStr, dstStr)
-			} else if book := s.BookStepBook(); book != nil {
-				fmt.Printf("  Step %d: BookStep %s/%s -> %s/%s\n", i, book.In.Currency, sle.EncodeAccountIDSafe(book.In.Issuer), book.Out.Currency, sle.EncodeAccountIDSafe(book.Out.Issuer))
-			} else {
-				fmt.Printf("  Step %d: XRPEndpointStep\n", i)
-			}
-		}
-	}
-
 	// Validate the strand
 	if err := validateStrand(strand, view); err != nil {
-		if DebugStrands {
-			fmt.Printf("DEBUG ToStrand: validation failed: %v\n", err)
-		}
 		return nil, err
 	}
 
@@ -535,18 +486,14 @@ func GetStrandQuality(strand Strand, view *PaymentSandbox) *Quality {
 	}
 
 	// Compose qualities from all steps
-	composedQuality := Quality{Value: uint64(QualityOne)}
+	// Start with quality 1.0 (identity for multiplication)
+	// Must use proper STAmount encoding, not raw QualityOne value
+	composedQuality := qualityFromFloat64(1.0)
 	prevDir := DebtDirectionIssues
 
-	for i, step := range strand {
+	for _, step := range strand {
 		stepQuality, stepDir := step.QualityUpperBound(view, prevDir)
-		if DebugStrands {
-			fmt.Printf("DEBUG GetStrandQuality: step %d quality=%+v dir=%d\n", i, stepQuality, stepDir)
-		}
 		if stepQuality == nil {
-			if DebugStrands {
-				fmt.Printf("DEBUG GetStrandQuality: step %d returned nil quality (dry)\n", i)
-			}
 			return nil // Dry step
 		}
 		composedQuality = composedQuality.Compose(*stepQuality)

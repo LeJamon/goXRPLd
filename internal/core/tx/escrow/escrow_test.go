@@ -20,7 +20,7 @@ func TestEscrowCreateValidation(t *testing.T) {
 			name: "valid escrow with finish time",
 			escrow: &EscrowCreate{
 				BaseTx:      *tx.NewBaseTx(tx.TypeEscrowCreate, "rAlice"),
-				Amount:      tx.NewXRPAmount("1000000000"), // 1000 XRP in drops
+				Amount:      tx.NewXRPAmount(1000000000), // 1000 XRP in drops
 				Destination: "rBob",
 				FinishAfter: ptrUint32(700000000), // Some future time
 			},
@@ -30,7 +30,7 @@ func TestEscrowCreateValidation(t *testing.T) {
 			name: "valid escrow with cancel time and condition",
 			escrow: &EscrowCreate{
 				BaseTx:      *tx.NewBaseTx(tx.TypeEscrowCreate, "rAlice"),
-				Amount:      tx.NewXRPAmount("1000000000"),
+				Amount:      tx.NewXRPAmount(1000000000),
 				Destination: "rBob",
 				CancelAfter: ptrUint32(700000100),
 				Condition:   "A0258020E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855810100",
@@ -41,7 +41,7 @@ func TestEscrowCreateValidation(t *testing.T) {
 			name: "valid escrow with both times",
 			escrow: &EscrowCreate{
 				BaseTx:      *tx.NewBaseTx(tx.TypeEscrowCreate, "rAlice"),
-				Amount:      tx.NewXRPAmount("1000000000"),
+				Amount:      tx.NewXRPAmount(1000000000),
 				Destination: "rBob",
 				FinishAfter: ptrUint32(700000000),
 				CancelAfter: ptrUint32(700000100), // CancelAfter > FinishAfter
@@ -52,7 +52,7 @@ func TestEscrowCreateValidation(t *testing.T) {
 			name: "missing destination - temDST_NEEDED equivalent",
 			escrow: &EscrowCreate{
 				BaseTx:      *tx.NewBaseTx(tx.TypeEscrowCreate, "rAlice"),
-				Amount:      tx.NewXRPAmount("1000000000"),
+				Amount:      tx.NewXRPAmount(1000000000),
 				Destination: "",
 				FinishAfter: ptrUint32(700000000),
 			},
@@ -74,7 +74,7 @@ func TestEscrowCreateValidation(t *testing.T) {
 			name: "non-XRP amount - temBAD_AMOUNT equivalent",
 			escrow: &EscrowCreate{
 				BaseTx:      *tx.NewBaseTx(tx.TypeEscrowCreate, "rAlice"),
-				Amount:      tx.NewIssuedAmount("100", "USD", "rGateway"),
+				Amount:      tx.NewIssuedAmountFromFloat64(100.0, "USD", "rGateway"),
 				Destination: "rBob",
 				FinishAfter: ptrUint32(700000000),
 			},
@@ -85,7 +85,7 @@ func TestEscrowCreateValidation(t *testing.T) {
 			name: "negative amount - temBAD_AMOUNT equivalent",
 			escrow: &EscrowCreate{
 				BaseTx:      *tx.NewBaseTx(tx.TypeEscrowCreate, "rAlice"),
-				Amount:      tx.NewXRPAmount("-1000000000"),
+				Amount:      tx.NewXRPAmount(-1000000000),
 				Destination: "rBob",
 				FinishAfter: ptrUint32(700000000),
 			},
@@ -96,7 +96,7 @@ func TestEscrowCreateValidation(t *testing.T) {
 			name: "zero amount - temBAD_AMOUNT equivalent",
 			escrow: &EscrowCreate{
 				BaseTx:      *tx.NewBaseTx(tx.TypeEscrowCreate, "rAlice"),
-				Amount:      tx.NewXRPAmount("0"),
+				Amount:      tx.NewXRPAmount(0),
 				Destination: "rBob",
 				FinishAfter: ptrUint32(700000000),
 			},
@@ -107,7 +107,7 @@ func TestEscrowCreateValidation(t *testing.T) {
 			name: "missing both times - temBAD_EXPIRATION equivalent",
 			escrow: &EscrowCreate{
 				BaseTx:      *tx.NewBaseTx(tx.TypeEscrowCreate, "rAlice"),
-				Amount:      tx.NewXRPAmount("1000000000"),
+				Amount:      tx.NewXRPAmount(1000000000),
 				Destination: "rBob",
 				// No CancelAfter or FinishAfter
 			},
@@ -118,7 +118,7 @@ func TestEscrowCreateValidation(t *testing.T) {
 			name: "cancel only without condition (fix1571) - temMALFORMED equivalent",
 			escrow: &EscrowCreate{
 				BaseTx:      *tx.NewBaseTx(tx.TypeEscrowCreate, "rAlice"),
-				Amount:      tx.NewXRPAmount("1000000000"),
+				Amount:      tx.NewXRPAmount(1000000000),
 				Destination: "rBob",
 				CancelAfter: ptrUint32(700000100),
 				// No FinishAfter and no Condition
@@ -130,7 +130,7 @@ func TestEscrowCreateValidation(t *testing.T) {
 			name: "cancel time equals finish time - temBAD_EXPIRATION equivalent",
 			escrow: &EscrowCreate{
 				BaseTx:      *tx.NewBaseTx(tx.TypeEscrowCreate, "rAlice"),
-				Amount:      tx.NewXRPAmount("1000000000"),
+				Amount:      tx.NewXRPAmount(1000000000),
 				Destination: "rBob",
 				FinishAfter: ptrUint32(700000000),
 				CancelAfter: ptrUint32(700000000), // Equal, should fail
@@ -142,7 +142,7 @@ func TestEscrowCreateValidation(t *testing.T) {
 			name: "cancel time before finish time - temBAD_EXPIRATION equivalent",
 			escrow: &EscrowCreate{
 				BaseTx:      *tx.NewBaseTx(tx.TypeEscrowCreate, "rAlice"),
-				Amount:      tx.NewXRPAmount("1000000000"),
+				Amount:      tx.NewXRPAmount(1000000000),
 				Destination: "rBob",
 				FinishAfter: ptrUint32(700000100),
 				CancelAfter: ptrUint32(700000000), // Before, should fail
@@ -154,7 +154,7 @@ func TestEscrowCreateValidation(t *testing.T) {
 			name: "valid escrow with only condition (fix1571 behavior)",
 			escrow: &EscrowCreate{
 				BaseTx:      *tx.NewBaseTx(tx.TypeEscrowCreate, "rAlice"),
-				Amount:      tx.NewXRPAmount("1000000000"),
+				Amount:      tx.NewXRPAmount(1000000000),
 				Destination: "rBob",
 				CancelAfter: ptrUint32(700000100),
 				Condition:   "A0258020E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855810100",
@@ -165,7 +165,7 @@ func TestEscrowCreateValidation(t *testing.T) {
 			name: "missing account - temBAD_SRC_ACCOUNT equivalent",
 			escrow: &EscrowCreate{
 				BaseTx:      tx.BaseTx{Common: tx.Common{TransactionType: "EscrowCreate"}},
-				Amount:      tx.NewXRPAmount("1000000000"),
+				Amount:      tx.NewXRPAmount(1000000000),
 				Destination: "rBob",
 				FinishAfter: ptrUint32(700000000),
 			},
@@ -380,7 +380,7 @@ func TestEscrowCreateFlatten(t *testing.T) {
 			name: "basic escrow",
 			escrow: &EscrowCreate{
 				BaseTx:      *tx.NewBaseTx(tx.TypeEscrowCreate, "rAlice"),
-				Amount:      tx.NewXRPAmount("1000000000"),
+				Amount:      tx.NewXRPAmount(1000000000),
 				Destination: "rBob",
 				FinishAfter: ptrUint32(700000000),
 			},
@@ -403,7 +403,7 @@ func TestEscrowCreateFlatten(t *testing.T) {
 			name: "escrow with all optional fields",
 			escrow: &EscrowCreate{
 				BaseTx:         *tx.NewBaseTx(tx.TypeEscrowCreate, "rAlice"),
-				Amount:         tx.NewXRPAmount("2000000000"),
+				Amount:         tx.NewXRPAmount(2000000000),
 				Destination:    "rBob",
 				DestinationTag: ptrUint32(42),
 				FinishAfter:    ptrUint32(700000000),
@@ -516,7 +516,7 @@ func TestEscrowCancelFlatten(t *testing.T) {
 // TestEscrowTransactionTypes tests that transaction types are correctly returned.
 func TestEscrowTransactionTypes(t *testing.T) {
 	t.Run("EscrowCreate type", func(t *testing.T) {
-		e := NewEscrowCreate("rAlice", "rBob", tx.NewXRPAmount("1000000"))
+		e := NewEscrowCreate("rAlice", "rBob", tx.NewXRPAmount(1000000))
 		if e.TxType() != tx.TypeEscrowCreate {
 			t.Errorf("expected TypeEscrowCreate, got %v", e.TxType())
 		}
@@ -540,15 +540,15 @@ func TestEscrowTransactionTypes(t *testing.T) {
 // TestNewEscrowConstructors tests the constructor functions.
 func TestNewEscrowConstructors(t *testing.T) {
 	t.Run("NewEscrowCreate", func(t *testing.T) {
-		e := NewEscrowCreate("rAlice", "rBob", tx.NewXRPAmount("1000000"))
+		e := NewEscrowCreate("rAlice", "rBob", tx.NewXRPAmount(1000000))
 		if e.Account != "rAlice" {
 			t.Errorf("expected Account=rAlice, got %v", e.Account)
 		}
 		if e.Destination != "rBob" {
 			t.Errorf("expected Destination=rBob, got %v", e.Destination)
 		}
-		if e.Amount.Value != "1000000" {
-			t.Errorf("expected Amount=1000000, got %v", e.Amount.Value)
+		if e.Amount.Value() != "1000000" {
+			t.Errorf("expected Amount=1000000, got %v", e.Amount.Value())
 		}
 	})
 

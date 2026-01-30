@@ -267,15 +267,16 @@ func (a *LedgerServiceAdapter) GetAccountOffers(account string, ledgerIndex stri
 // GetBookOffers retrieves offers from an order book
 func (a *LedgerServiceAdapter) GetBookOffers(takerGets, takerPays rpc_types.Amount, ledgerIndex string, limit uint32) (*rpc_types.BookOffersResult, error) {
 	// Convert RPC rpc_types.Amount to tx.Amount
-	txTakerGets := tx.Amount{
-		Value:    takerGets.Value,
-		Currency: takerGets.Currency,
-		Issuer:   takerGets.Issuer,
+	var txTakerGets, txTakerPays tx.Amount
+	if takerGets.Currency == "" || takerGets.Currency == "XRP" {
+		txTakerGets = tx.NewXRPAmount(0) // Placeholder - book offers query uses currency/issuer only
+	} else {
+		txTakerGets = tx.NewIssuedAmountFromFloat64(0, takerGets.Currency, takerGets.Issuer)
 	}
-	txTakerPays := tx.Amount{
-		Value:    takerPays.Value,
-		Currency: takerPays.Currency,
-		Issuer:   takerPays.Issuer,
+	if takerPays.Currency == "" || takerPays.Currency == "XRP" {
+		txTakerPays = tx.NewXRPAmount(0)
+	} else {
+		txTakerPays = tx.NewIssuedAmountFromFloat64(0, takerPays.Currency, takerPays.Issuer)
 	}
 
 	result, err := a.svc.GetBookOffers(txTakerGets, txTakerPays, ledgerIndex, limit)

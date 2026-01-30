@@ -1,7 +1,6 @@
 package payment
 
 import (
-	"math/big"
 	"testing"
 
 	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
@@ -85,9 +84,9 @@ func (m *paymentMockLedgerView) createTrustLine(low, high [20]byte, currency str
 	highIssuer := sle.EncodeAccountIDSafe(high)
 
 	rs := &sle.RippleState{
-		Balance:   sle.NewIOUAmount(formatInt64(balanceLow), currency, highIssuer),
-		LowLimit:  sle.NewIOUAmount(formatInt64(limitLow), currency, lowIssuer),
-		HighLimit: sle.NewIOUAmount(formatInt64(limitHigh), currency, highIssuer),
+		Balance:        tx.NewIssuedAmountFromFloat64(float64(balanceLow), currency, highIssuer),
+		LowLimit:       tx.NewIssuedAmountFromFloat64(float64(limitLow), currency, lowIssuer),
+		HighLimit:      tx.NewIssuedAmountFromFloat64(float64(limitHigh), currency, highIssuer),
 		LowQualityIn:   QualityOne,
 		LowQualityOut:  QualityOne,
 		HighQualityIn:  QualityOne,
@@ -96,14 +95,6 @@ func (m *paymentMockLedgerView) createTrustLine(low, high [20]byte, currency str
 	data, _ := sle.SerializeRippleState(rs)
 	key := keylet.Line(low, high, currency)
 	m.data[key.Key] = data
-}
-
-// formatInt64 converts int64 to string for IOUAmount
-func formatInt64(v int64) string {
-	if v >= 0 {
-		return big.NewInt(v).String()
-	}
-	return big.NewInt(v).String()
 }
 
 // ============================================================================
@@ -127,7 +118,7 @@ func TestEitherAmount_XRP(t *testing.T) {
 
 func TestEitherAmount_IOU(t *testing.T) {
 	// Test IOU amount creation
-	iou := sle.NewIOUAmount("100", "USD", "rIssuer123")
+	iou := tx.NewIssuedAmountFromFloat64(100_000_000, "USD", "rIssuer123")
 	amt := NewIOUEitherAmount(iou)
 
 	if amt.IsNative {
@@ -149,13 +140,15 @@ func TestEitherAmount_Add(t *testing.T) {
 	}
 
 	// Test IOU addition
-	iouA := NewIOUEitherAmount(sle.NewIOUAmount("100", "USD", "issuer"))
-	iouB := NewIOUEitherAmount(sle.NewIOUAmount("50", "USD", "issuer"))
+	iouA := NewIOUEitherAmount(tx.NewIssuedAmountFromFloat64(100_000_000, "USD", "issuer"))
+	iouB := NewIOUEitherAmount(tx.NewIssuedAmountFromFloat64(50_000_000, "USD", "issuer"))
 	iouC := iouA.Add(iouB)
 
-	expected := big.NewFloat(150)
-	if iouC.IOU.Value.Cmp(expected) != 0 {
-		t.Errorf("expected IOU sum=150, got %v", iouC.IOU.Value)
+	// Check that the sum is 150M (using Float64 comparison)
+	expectedValue := float64(150_000_000)
+	actualValue := iouC.IOU.Float64()
+	if actualValue != expectedValue {
+		t.Errorf("expected IOU sum=150000000, got %v", actualValue)
 	}
 }
 
@@ -444,7 +437,7 @@ func TestToStrands_WithPaths(t *testing.T) {
 	sandbox := NewPaymentSandbox(view)
 
 	// USD payment with explicit path through gateway
-	dstAmt := tx.NewIssuedAmount("100", "USD", sle.EncodeAccountIDSafe(gateway))
+	dstAmt := tx.NewIssuedAmountFromFloat64(100_000_000, "USD", sle.EncodeAccountIDSafe(gateway))
 	paths := [][]PathStep{
 		{{Currency: "USD", Issuer: sle.EncodeAccountIDSafe(gateway)}},
 	}
@@ -635,7 +628,7 @@ func TestRippleCalculate_XRPPayment(t *testing.T) {
 	view.createAccount(alice, 100_000_000, 0)
 	view.createAccount(bob, 50_000_000, 0)
 
-	dstAmount := tx.NewXRPAmount("10000000") // 10 XRP
+	dstAmount := tx.NewXRPAmount(10_000_000) // 10 XRP
 	var txHash [32]byte
 	ledgerSeq := uint32(1000)
 
@@ -728,15 +721,16 @@ func TestMulRatio_XRP(t *testing.T) {
 }
 
 func TestMulRatio_IOU(t *testing.T) {
-	iou := sle.NewIOUAmount("100", "USD", "issuer")
+	iou := tx.NewIssuedAmountFromFloat64(100_000_000, "USD", "issuer")
 	amt := NewIOUEitherAmount(iou)
 
 	// Multiply by 2 (num=200, den=100)
 	result := MulRatio(amt, 200, 100, false)
 
-	expected := big.NewFloat(200)
-	if result.IOU.Value.Cmp(expected) != 0 {
-		t.Errorf("expected 100 * 2 = 200, got %v", result.IOU.Value)
+	expectedValue := float64(200_000_000)
+	actualValue := result.IOU.Float64()
+	if actualValue != expectedValue {
+		t.Errorf("expected 100 * 2 = 200000000, got %v", actualValue)
 	}
 }
 

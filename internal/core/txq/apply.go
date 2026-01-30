@@ -305,8 +305,7 @@ func computeConsequences(txn tx.Transaction, seqProxy SeqProxy) TxConsequences {
 	switch t := txn.(type) {
 	case *payment.Payment:
 		if t.Amount.IsNative() {
-			drops := parseDrops(t.Amount.Value)
-			cons.PotentialSpend = drops
+			cons.PotentialSpend = uint64(t.Amount.Drops())
 		}
 		// TODO: Add offer.OfferCreate case when offer package is re-enabled
 	}

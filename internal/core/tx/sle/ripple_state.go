@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"math/big"
 	"strings"
 
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
@@ -16,13 +15,13 @@ type RippleState struct {
 	// Balance is the current balance of the trust line
 	// Positive means LowAccount owes HighAccount
 	// Negative means HighAccount owes LowAccount
-	Balance IOUAmount
+	Balance Amount
 
 	// LowLimit is the trust limit set by the low account
-	LowLimit IOUAmount
+	LowLimit Amount
 
 	// HighLimit is the trust limit set by the high account
-	HighLimit IOUAmount
+	HighLimit Amount
 
 	// LowNode is the directory node for the low account
 	LowNode uint64
@@ -46,34 +45,17 @@ type RippleState struct {
 	PreviousTxnLgrSeq uint32
 }
 
-// IOUAmount represents an issued currency amount with decimal precision
-type IOUAmount struct {
-	Value    *big.Float
-	Currency string
-	Issuer   string
-}
-
 // RippleState flags
 const (
-	// LsfLowReserve - low account has reserve
-	LsfLowReserve uint32 = 0x00010000
-	// LsfHighReserve - high account has reserve
-	LsfHighReserve uint32 = 0x00020000
-	// LsfLowAuth - low account has authorized
-	LsfLowAuth uint32 = 0x00040000
-	// LsfHighAuth - high account has authorized
-	LsfHighAuth uint32 = 0x00080000
-	// LsfLowNoRipple - low account has NoRipple flag
-	LsfLowNoRipple uint32 = 0x00100000
-	// LsfHighNoRipple - high account has NoRipple flag
-	LsfHighNoRipple uint32 = 0x00200000
-	// LsfLowFreeze - low side is frozen
-	LsfLowFreeze uint32 = 0x00400000
-	// LsfHighFreeze - high side is frozen
-	LsfHighFreeze uint32 = 0x00800000
-	// LsfLowDeepFreeze - low side has deep freeze
+	LsfLowReserve    uint32 = 0x00010000
+	LsfHighReserve   uint32 = 0x00020000
+	LsfLowAuth       uint32 = 0x00040000
+	LsfHighAuth      uint32 = 0x00080000
+	LsfLowNoRipple   uint32 = 0x00100000
+	LsfHighNoRipple  uint32 = 0x00200000
+	LsfLowFreeze     uint32 = 0x00400000
+	LsfHighFreeze    uint32 = 0x00800000
 	LsfLowDeepFreeze uint32 = 0x02000000
-	// LsfHighDeepFreeze - high side has deep freeze
 	LsfHighDeepFreeze uint32 = 0x04000000
 )
 
@@ -95,113 +77,12 @@ const (
 	fieldCodeHighQualityOut = 23 // UInt32 field code for HighQualityOut
 )
 
-// ACCOUNT_ONE is the special issuer address used for Balance in RippleState
-const accountOne = "rrrrrrrrrrrrrrrrrrrrBZbvji"
+// AccountOneAddress is the special issuer address used for Balance in RippleState
+// This is ACCOUNT_ONE in rippled - a special address that represents no account
+const AccountOneAddress = "rrrrrrrrrrrrrrrrrrrrBZbvji"
 
-// NewIOUAmount creates a new IOU amount
-func NewIOUAmount(value string, currency, issuer string) IOUAmount {
-	v, _, _ := big.ParseFloat(value, 10, 128, big.ToNearestEven)
-	if v == nil {
-		v = big.NewFloat(0)
-	}
-	return IOUAmount{
-		Value:    v,
-		Currency: currency,
-		Issuer:   issuer,
-	}
-}
-
-// IsZero returns true if the amount is zero
-func (a IOUAmount) IsZero() bool {
-	return a.Value == nil || a.Value.Sign() == 0
-}
-
-// IsNegative returns true if the amount is negative
-func (a IOUAmount) IsNegative() bool {
-	return a.Value != nil && a.Value.Sign() < 0
-}
-
-// Negate returns the negated amount
-func (a IOUAmount) Negate() IOUAmount {
-	if a.Value == nil {
-		return a
-	}
-	negated := new(big.Float).Neg(a.Value)
-	return IOUAmount{
-		Value:    negated,
-		Currency: a.Currency,
-		Issuer:   a.Issuer,
-	}
-}
-
-// Add adds two IOU amounts (must have same currency/issuer)
-func (a IOUAmount) Add(b IOUAmount) IOUAmount {
-	if a.Value == nil {
-		return b
-	}
-	if b.Value == nil {
-		return a
-	}
-	result := new(big.Float).Add(a.Value, b.Value)
-	return IOUAmount{
-		Value:    result,
-		Currency: a.Currency,
-		Issuer:   a.Issuer,
-	}
-}
-
-// Sub subtracts two IOU amounts
-func (a IOUAmount) Sub(b IOUAmount) IOUAmount {
-	return a.Add(b.Negate())
-}
-
-// Compare compares two IOU amounts
-// Returns -1 if a < b, 0 if a == b, 1 if a > b
-func (a IOUAmount) Compare(b IOUAmount) int {
-	if a.Value == nil && b.Value == nil {
-		return 0
-	}
-	if a.Value == nil {
-		return -1
-	}
-	if b.Value == nil {
-		return 1
-	}
-	return a.Value.Cmp(b.Value)
-}
-
-// FormatIOUValue formats an IOU value for JSON output, matching rippled's format
-// XRPL IOU amounts can have up to 16 significant digits
-func FormatIOUValue(value *big.Float) string {
-	if value == nil || value.Sign() == 0 {
-		return "0"
-	}
-
-	// Use 'g' format with enough precision to preserve all significant digits
-	// XRPL uses 54-bit mantissa which can represent up to ~16 decimal digits
-	str := value.Text('g', 16)
-
-	// Remove trailing zeros after decimal point, but keep at least one digit after decimal
-	// if there is a decimal point
-	if strings.Contains(str, ".") {
-		str = strings.TrimRight(str, "0")
-		str = strings.TrimRight(str, ".")
-	}
-
-	return str
-}
-
-// FormatIOUValuePrecise formats a float64 value with XRPL precision
-// Used for remainder calculations that use float64 arithmetic
-func FormatIOUValuePrecise(value float64) string {
-	if value == 0 {
-		return "0"
-	}
-
-	// Convert to big.Float for precise formatting
-	bf := new(big.Float).SetPrec(128).SetFloat64(value)
-	return FormatIOUValue(bf)
-}
+// Keep internal alias for backwards compatibility within the package
+const accountOne = AccountOneAddress
 
 // ParseRippleState parses a RippleState from binary data
 func ParseRippleState(data []byte) (*RippleState, error) {
@@ -223,7 +104,7 @@ func ParseRippleState(data []byte) (*RippleState, error) {
 		typeCode := (header >> 4) & 0x0F
 		fieldCode := header & 0x0F
 
-		if typeCode == 0 {
+			if typeCode == 0 {
 			if offset >= len(data) {
 				break
 			}
@@ -261,7 +142,7 @@ func ParseRippleState(data []byte) (*RippleState, error) {
 			switch fieldCode {
 			case fieldCodeFlags:
 				rs.Flags = value
-			case fieldCodePrevTxnLgrSeq: // field code 5
+			case fieldCodePrevTxnLgrSeq:
 				rs.PreviousTxnLgrSeq = value
 			case fieldCodeLowQualityIn:
 				rs.LowQualityIn = value
@@ -287,7 +168,6 @@ func ParseRippleState(data []byte) (*RippleState, error) {
 			}
 
 		case FieldTypeHash256:
-			// Hash256 fields are 32 bytes
 			if offset+32 > len(data) {
 				return rs, nil
 			}
@@ -307,8 +187,7 @@ func ParseRippleState(data []byte) (*RippleState, error) {
 				continue
 			}
 
-			// Parse IOU amount
-			iou, err := ParseIOUAmountBinary(data[offset : offset+48])
+			amt, err := ParseIOUAmountBinary(data[offset : offset+48])
 			if err != nil {
 				offset += 48
 				continue
@@ -316,16 +195,15 @@ func ParseRippleState(data []byte) (*RippleState, error) {
 
 			switch fieldCode {
 			case fieldCodeRSBalance:
-				rs.Balance = iou
+				rs.Balance = amt
 			case fieldCodeLowLimit:
-				rs.LowLimit = iou
+				rs.LowLimit = amt
 			case fieldCodeHighLimit:
-				rs.HighLimit = iou
+				rs.HighLimit = amt
 			}
 			offset += 48
 
 		default:
-			// Unknown type - cannot skip properly without knowing size, break loop
 			return rs, nil
 		}
 	}
@@ -334,9 +212,10 @@ func ParseRippleState(data []byte) (*RippleState, error) {
 }
 
 // ParseIOUAmountBinary parses an IOU amount from 48 bytes of binary data
-func ParseIOUAmountBinary(data []byte) (IOUAmount, error) {
+// and returns a clean Amount with mantissa/exponent representation.
+func ParseIOUAmountBinary(data []byte) (Amount, error) {
 	if len(data) != 48 {
-		return IOUAmount{}, errors.New("invalid IOU amount length")
+		return Amount{}, errors.New("invalid IOU amount length")
 	}
 
 	// First 8 bytes: value (mantissa + exponent)
@@ -345,7 +224,6 @@ func ParseIOUAmountBinary(data []byte) (IOUAmount, error) {
 
 	// Parse currency from the 20-byte currency section (bytes 8-27)
 	// Standard 3-char codes format: [12 zero bytes][3-char code][5 zero bytes]
-	// So within the 48-byte array: bytes 8-19 are zeros, bytes 20-22 are the code
 	currency := ""
 	isStandardCode := true
 	for i := 8; i < 20; i++ {
@@ -355,10 +233,8 @@ func ParseIOUAmountBinary(data []byte) (IOUAmount, error) {
 		}
 	}
 	if isStandardCode {
-		// Standard currency code at bytes 20-22 (offset 12-14 within currency section)
 		currency = string(data[20:23])
 	} else {
-		// Non-standard currency - hex encode the full 20 bytes
 		currency = strings.ToUpper(hex.EncodeToString(data[8:28]))
 	}
 
@@ -375,50 +251,23 @@ func ParseIOUAmountBinary(data []byte) (IOUAmount, error) {
 	rawValue := binary.BigEndian.Uint64(data[0:8])
 
 	if rawValue == 0x8000000000000000 { // Zero
-		return IOUAmount{
-			Value:    big.NewFloat(0),
-			Currency: currency,
-			Issuer:   issuer,
-		}, nil
+		return NewIssuedAmountFromValue(0, zeroExponent, currency, issuer), nil
 	}
 
 	positive := (rawValue & 0x4000000000000000) != 0
 	exponent := int((rawValue>>54)&0xFF) - 97
-	mantissa := rawValue & 0x003FFFFFFFFFFFFF
-
-	// Convert mantissa to big.Int first to avoid float64 precision loss
-	mantissaBigInt := new(big.Int).SetUint64(mantissa)
-
-	// Convert to big.Float with high precision (128 bits)
-	value := new(big.Float).SetPrec(128).SetInt(mantissaBigInt)
-
-	// Apply exponent
-	if exponent > 0 {
-		multiplier := new(big.Float).SetPrec(128).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exponent)), nil))
-		value.Mul(value, multiplier)
-	} else if exponent < 0 {
-		divisor := new(big.Float).SetPrec(128).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-exponent)), nil))
-		value.Quo(value, divisor)
-	}
+	mantissa := int64(rawValue & 0x003FFFFFFFFFFFFF)
 
 	if !positive {
-		value.Neg(value)
+		mantissa = -mantissa
 	}
 
-	return IOUAmount{
-		Value:    value,
-		Currency: currency,
-		Issuer:   issuer,
-	}, nil
+	return NewIssuedAmountFromValue(mantissa, exponent, currency, issuer), nil
 }
 
-// serializeIOUAmount serializes an IOUAmount to a map suitable for binarycodec.Encode
-func serializeIOUAmount(amount IOUAmount, currency string, useAccountOne bool) map[string]any {
-	valueStr := "0"
-	if amount.Value != nil && amount.Value.Sign() != 0 {
-		// XRPL uses 54-bit mantissa = up to 16 decimal digits
-		valueStr = amount.Value.Text('g', 16)
-	}
+// serializeAmount serializes an Amount to a map suitable for binarycodec.Encode
+func serializeAmount(amount Amount, currency string, useAccountOne bool) map[string]any {
+	valueStr := amount.Value()
 	curr := currency
 	if curr == "" {
 		curr = amount.Currency
@@ -444,7 +293,6 @@ func SerializeRippleState(rs *RippleState) ([]byte, error) {
 	// Use Balance's currency for all amounts (LowLimit/HighLimit may have been parsed with null currency)
 	currency := rs.Balance.Currency
 	if currency == "" || currency == "\x00\x00\x00" {
-		// Fallback to LowLimit or HighLimit currency if Balance has null currency
 		if rs.LowLimit.Currency != "" && rs.LowLimit.Currency != "\x00\x00\x00" {
 			currency = rs.LowLimit.Currency
 		} else if rs.HighLimit.Currency != "" && rs.HighLimit.Currency != "\x00\x00\x00" {
@@ -455,14 +303,13 @@ func SerializeRippleState(rs *RippleState) ([]byte, error) {
 	jsonObj := map[string]any{
 		"LedgerEntryType": "RippleState",
 		"Flags":           rs.Flags,
-		"Balance":         serializeIOUAmount(rs.Balance, currency, true),  // Balance always uses ACCOUNT_ONE
-		"LowLimit":        serializeIOUAmount(rs.LowLimit, currency, false),
-		"HighLimit":       serializeIOUAmount(rs.HighLimit, currency, false),
+		"Balance":         serializeAmount(rs.Balance, currency, true),
+		"LowLimit":        serializeAmount(rs.LowLimit, currency, false),
+		"HighLimit":       serializeAmount(rs.HighLimit, currency, false),
 		"LowNode":         fmt.Sprintf("%x", rs.LowNode),
 		"HighNode":        fmt.Sprintf("%x", rs.HighNode),
 	}
 
-	// Add quality fields if set (non-zero values)
 	if rs.LowQualityIn != 0 {
 		jsonObj["LowQualityIn"] = rs.LowQualityIn
 	}
@@ -476,12 +323,10 @@ func SerializeRippleState(rs *RippleState) ([]byte, error) {
 		jsonObj["HighQualityOut"] = rs.HighQualityOut
 	}
 
-	// Add PreviousTxnID if set
 	if rs.PreviousTxnID != [32]byte{} {
 		jsonObj["PreviousTxnID"] = strings.ToUpper(hex.EncodeToString(rs.PreviousTxnID[:]))
 	}
 
-	// Add PreviousTxnLgrSeq if set
 	if rs.PreviousTxnLgrSeq != 0 {
 		jsonObj["PreviousTxnLgrSeq"] = rs.PreviousTxnLgrSeq
 	}
@@ -492,31 +337,4 @@ func SerializeRippleState(rs *RippleState) ([]byte, error) {
 	}
 
 	return hex.DecodeString(hexStr)
-}
-
-// NormalizeIOUValue normalizes a value to mantissa and exponent
-func NormalizeIOUValue(value *big.Float) (uint64, int) {
-	if value.Sign() == 0 {
-		return 0, 0
-	}
-
-	// Get approximate mantissa and exponent
-	f, _ := value.Float64()
-	if f == 0 {
-		return 0, 0
-	}
-
-	// Scale to get ~15 digits of precision
-	exponent := 0
-	for f >= 1e16 {
-		f /= 10
-		exponent++
-	}
-	for f < 1e15 && f != 0 {
-		f *= 10
-		exponent--
-	}
-
-	mantissa := uint64(f)
-	return mantissa, exponent
 }

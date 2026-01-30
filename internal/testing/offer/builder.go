@@ -35,7 +35,7 @@ func OfferCreate(account *testing.Account, takerPays, takerGets tx.Amount) *Offe
 // If buyXRP is true, creates an offer to buy XRP with issued currency.
 // If buyXRP is false, creates an offer to sell XRP for issued currency.
 func OfferCreateXRP(account *testing.Account, xrpAmount uint64, issuedAmount tx.Amount, buyXRP bool) *OfferCreateBuilder {
-	xrp := tx.NewXRPAmount(fmt.Sprintf("%d", xrpAmount))
+	xrp := tx.NewXRPAmount(int64(xrpAmount))
 	if buyXRP {
 		// Offer creator receives XRP, pays issued currency
 		return OfferCreate(account, xrp, issuedAmount)

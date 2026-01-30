@@ -4,7 +4,8 @@ package offer
 
 import (
 	"errors"
-	"fmt"
+	"math/big"
+	"strings"
 
 	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
@@ -16,13 +17,22 @@ import (
 // OfferCreate flag mask - invalid flags
 // Reference: rippled TxFlags.h
 const (
-	// tfOfferCreateMask contains all valid OfferCreate flags
-	// Valid flags: tfPassive (0x00010000), tfImmediateOrCancel (0x00020000),
-	// tfFillOrKill (0x00040000), tfSell (0x00080000), tfHybrid (0x00100000)
-	tfOfferCreateMask uint32 = 0xFF00FFFF
+	// Universal transaction flags (valid on all transaction types)
+	// Reference: rippled TxFlags.h lines 60-62
+	tfFullyCanonicalSig uint32 = 0x80000000
+	tfInnerBatchTxn     uint32 = 0x40000000
+	tfUniversal         uint32 = tfFullyCanonicalSig | tfInnerBatchTxn // 0xC0000000
 
 	// tfHybrid flag for permissioned DEX hybrid offers
 	tfHybrid uint32 = 0x00100000
+
+	// tfOfferCreateMask is the mask for INVALID flags.
+	// Any flags set in this mask are invalid for OfferCreate.
+	// Reference: rippled TxFlags.h lines 103-104
+	// tfOfferCreateMask = ~(tfUniversal | tfPassive | tfImmediateOrCancel | tfFillOrKill | tfSell | tfHybrid)
+	// Valid flags: 0xC0000000 | 0x00010000 | 0x00020000 | 0x00040000 | 0x00080000 | 0x00100000 = 0xC01F0000
+	// Mask for invalid: ~0xC01F0000 = 0x3FE0FFFF
+	tfOfferCreateMask uint32 = 0x3FE0FFFF
 )
 
 // Quality constants
@@ -79,10 +89,10 @@ func (o *OfferCreate) Validate() error {
 	}
 
 	// Check required fields are present
-	if o.TakerGets.Value == "" {
+	if o.TakerGets.IsZero() {
 		return errors.New("temBAD_OFFER: TakerGets is required")
 	}
-	if o.TakerPays.Value == "" {
+	if o.TakerPays.IsZero() {
 		return errors.New("temBAD_OFFER: TakerPays is required")
 	}
 
@@ -112,6 +122,39 @@ func (o *OfferCreate) SetFillOrKill() {
 	o.SetFlags(flags)
 }
 
+// parsePreflightError converts a preflight error message to the appropriate TER code.
+// Reference: rippled uses specific TER codes for different validation failures.
+func parsePreflightError(err error) tx.Result {
+	if err == nil {
+		return tx.TesSUCCESS
+	}
+	msg := err.Error()
+
+	// Map error message prefixes to result codes
+	prefixes := []struct {
+		prefix string
+		result tx.Result
+	}{
+		{"temDISABLED", tx.TemDISABLED},
+		{"temINVALID_FLAG", tx.TemINVALID_FLAG},
+		{"temBAD_EXPIRATION", tx.TemBAD_EXPIRATION},
+		{"temBAD_SEQUENCE", tx.TemBAD_SEQUENCE},
+		{"temBAD_AMOUNT", tx.TemBAD_AMOUNT},
+		{"temBAD_OFFER", tx.TemBAD_OFFER},
+		{"temREDUNDANT", tx.TemREDUNDANT},
+		{"temBAD_CURRENCY", tx.TemBAD_CURRENCY},
+		{"temBAD_ISSUER", tx.TemBAD_ISSUER},
+	}
+
+	for _, p := range prefixes {
+		if strings.HasPrefix(msg, p.prefix) {
+			return p.result
+		}
+	}
+
+	return tx.TemMALFORMED
+}
+
 // Apply applies an OfferCreate transaction to the ledger state.
 // This implements the full rippled CreateOffer flow:
 // 1. Preflight validation (with amendment rules)
@@ -125,7 +168,7 @@ func (o *OfferCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Reference: rippled CreateOffer.cpp preflight()
 	if err := o.Preflight(ctx.Rules()); err != nil {
 		// Convert preflight error to appropriate TER code
-		return tx.TemMALFORMED
+		return parsePreflightError(err)
 	}
 
 	// Run preclaim checks (frozen assets, authorization, funds, etc.)
@@ -265,20 +308,21 @@ func (o *OfferCreate) Preclaim(ctx *tx.ApplyContext) tx.Result {
 	// Check global freeze on both issuers
 	// Reference: lines 165-170
 	if uPaysIssuerID != "" {
-		if isGlobalFrozen(ctx.View, uPaysIssuerID) {
+		if tx.IsGlobalFrozen(ctx.View, uPaysIssuerID) {
 			return tx.TecFROZEN
 		}
 	}
 	if uGetsIssuerID != "" {
-		if isGlobalFrozen(ctx.View, uGetsIssuerID) {
+		if tx.IsGlobalFrozen(ctx.View, uGetsIssuerID) {
 			return tx.TecFROZEN
 		}
 	}
 
 	// Check account has funds for the offer
 	// Reference: lines 172-178
-	funds := accountFunds(ctx.View, ctx.AccountID, saTakerGets, true)
-	if isAmountZeroOrNegative(funds) {
+	funds := tx.AccountFunds(ctx.View, ctx.AccountID, saTakerGets, true)
+	diff := sle.SubtractAmount(saTakerGets, funds)
+	if diff.Signum() > 0 {
 		return tx.TecUNFUNDED_OFFER
 	}
 
@@ -326,13 +370,55 @@ func (o *OfferCreate) Preclaim(ctx *tx.ApplyContext) tx.Result {
 // ApplyCreate applies the OfferCreate transaction to the ledger.
 // This is the main entry point called by the engine.
 // Reference: rippled CreateOffer.cpp doApply() lines 932-949
+//
+// This implements the two-sandbox pattern for FillOrKill (FoK) offers:
+// - sb: main sandbox for crossing and offer placement
+// - sbCancel: cancel sandbox for offer cancellation only
+//
+// For FoK offers that don't fully fill, we apply sbCancel instead of sb,
+// ensuring the cancellation happens but the crossing changes are discarded.
 func (o *OfferCreate) ApplyCreate(ctx *tx.ApplyContext) tx.Result {
-	return o.applyGuts(ctx)
+	// Create TWO independent sandboxes from ctx.View
+	// Reference: rippled CreateOffer.cpp lines 938-941
+	sb := payment.NewPaymentSandbox(ctx.View)
+	sbCancel := payment.NewPaymentSandbox(ctx.View)
+
+	// Set transaction context on both sandboxes
+	sb.SetTransactionContext(ctx.TxHash, ctx.Config.LedgerSequence)
+	sbCancel.SetTransactionContext(ctx.TxHash, ctx.Config.LedgerSequence)
+
+	// Execute applyGuts with both sandboxes
+	result, applyMain := o.applyGuts(ctx, sb, sbCancel)
+
+	// Apply the correct sandbox to the ledger view
+	if applyMain {
+		if err := sb.ApplyToView(ctx.View); err != nil {
+			return tx.TefINTERNAL
+		}
+	} else {
+		if err := sbCancel.ApplyToView(ctx.View); err != nil {
+			return tx.TefINTERNAL
+		}
+	}
+
+	return result
 }
 
-// applyGuts contains the main offer creation logic.
+// applyGuts contains the main offer creation logic with two-sandbox pattern.
 // Reference: rippled CreateOffer.cpp applyGuts() lines 576-929
-func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
+//
+// The two-sandbox pattern ensures FillOrKill offers that don't fully fill
+// only apply the cancellation changes, not the crossing changes.
+//
+// Parameters:
+//   - ctx: the apply context
+//   - sb: main sandbox for crossing and offer placement
+//   - sbCancel: cancel sandbox for offer cancellation only
+//
+// Returns:
+//   - result: the transaction result code
+//   - applyMain: true to apply sb, false to apply sbCancel
+func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext, sb, sbCancel *payment.PaymentSandbox) (tx.Result, bool) {
 	rules := ctx.Rules()
 
 	flags := o.GetFlags()
@@ -348,15 +434,23 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 	// Calculate the original rate (quality) for the offer
 	// Reference: line 601
 	uRate := sle.GetRate(saTakerGets, saTakerPays)
-
 	result := tx.TesSUCCESS
 
 	// Process cancellation request if specified
 	// Reference: lines 608-621
+	// CRITICAL: Offer cancellation must happen in BOTH sandboxes
 	if o.OfferSequence != nil {
 		sleCancel := peekOffer(ctx.View, ctx.AccountID, *o.OfferSequence)
 		if sleCancel != nil {
-			result = offerDelete(ctx, sleCancel)
+			// Delete in main sandbox
+			result = offerDeleteInView(sb, sleCancel)
+			// Delete in cancel sandbox (same operation)
+			_ = offerDeleteInView(sbCancel, sleCancel)
+
+			// Also update owner count (once, since we'll only apply one sandbox)
+			if result == tx.TesSUCCESS && ctx.Account.OwnerCount > 0 {
+				ctx.Account.OwnerCount--
+			}
 		}
 	}
 
@@ -364,9 +458,9 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 	// Reference: lines 623-636
 	if hasExpired(ctx, o.Expiration) {
 		if rules.DepositPreauthEnabled() {
-			return tx.TecEXPIRED
+			return tx.TecEXPIRED, false // Apply cancel sandbox for expired offers
 		}
-		return tx.TesSUCCESS
+		return tx.TesSUCCESS, true
 	}
 
 	crossed := false
@@ -377,129 +471,208 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 		saTakerPays, saTakerGets = applyTickSize(ctx.View, saTakerPays, saTakerGets, bSell, rules)
 		if isAmountZeroOrNegative(saTakerPays) || isAmountZeroOrNegative(saTakerGets) {
 			// Offer rounded to zero
-			return tx.TesSUCCESS
+			return tx.TesSUCCESS, true
 		}
 
 		// Recalculate rate after tick size
 		uRate = sle.GetRate(saTakerGets, saTakerPays)
 
-		// Perform offer crossing
+		// Perform offer crossing using the main sandbox (sb)
 		// Reference: lines 687-768
-		if !bPassive {
-			var placeOffer struct {
-				in  tx.Amount
-				out tx.Amount
-			}
-
-			crossResult := payment.FlowCross(
-				ctx.View,
-				ctx.AccountID,
-				saTakerGets, // What we're selling (taker pays to counterparty)
-				saTakerPays, // What we want (taker receives from counterparty)
-				ctx.TxHash,
-				ctx.Config.LedgerSequence,
-			)
-
-			// Convert result amounts back
-			placeOffer.in = payment.FromEitherAmount(crossResult.TakerPaid) // What we paid out
-			placeOffer.out = payment.FromEitherAmount(crossResult.TakerGot) // What we received
-
-			result = crossResult.Result
-
-			// For offer crossing, tecPATH_DRY means no liquidity found to cross
-			// This is not an error - we just place the offer with original amounts
-			// Reference: rippled's flowCross always returns tesSUCCESS (CreateOffer.cpp line 509)
-			if result == tx.TecPATH_DRY {
-				result = tx.TesSUCCESS
-			}
-
-			if result != tx.TesSUCCESS {
-				return result
-			}
-
-			// Apply sandbox changes to the main ledger view
-			// Reference: rippled CreateOffer.cpp - sandbox changes must be applied
-			if crossResult.Sandbox != nil {
-				if err := crossResult.Sandbox.ApplyToView(ctx.View); err != nil {
-					return tx.TefINTERNAL
-				}
-			} else {
-				fmt.Printf("DEBUG applyGuts: crossResult.Sandbox is nil!\n")
-			}
-
-			// Update ctx.Account.Balance to reflect XRP paid during crossing
-			// The engine writes ctx.Account after Apply(), so we must update it here
-			// Reference: The taker paid XRP for the crossing
-			if placeOffer.in.IsNative() {
-				paidDrops, _ := sle.ParseDropsString(placeOffer.in.Value)
-				if ctx.Account.Balance >= paidDrops {
-					ctx.Account.Balance -= paidDrops
-				}
-			}
-
-			// Remove unfunded/bad offers that were marked during crossing
-			for offerKey := range crossResult.RemovableOffers {
-				offerKeylet := keylet.Keylet{Key: offerKey}
-				if err := ctx.View.Erase(offerKeylet); err != nil {
-					_ = err // Log but don't fail - cleanup operation
-				}
-			}
-
-			// Check if any crossing happened
-			// Reference: line 744-745
-			// Use isAmountZeroOrNegative because FromEitherAmount returns "0" for zero amounts,
-			// not empty string ""
-			if !isAmountZeroOrNegative(placeOffer.in) || !isAmountZeroOrNegative(placeOffer.out) {
-				crossed = true
-			}
-
-			// Calculate remaining amounts for the new offer
-			// Reference: rippled CreateOffer.cpp lines 757-768
-			// placeOffer.in = what we paid out (TakerGets consumed)
-			// placeOffer.out = what we received (TakerPays consumed)
-			// Remaining offer = original - consumed
-			remainingGets := subtractAmounts(saTakerGets, placeOffer.in)
-			remainingPays := subtractAmounts(saTakerPays, placeOffer.out)
-
-			// Check if offer is fully filled
-			// Reference: lines 757-761
-			if isAmountZeroOrNegative(remainingGets) || isAmountZeroOrNegative(remainingPays) {
-				// Offer fully crossed
-				return tx.TesSUCCESS
-			}
-
-			// Adjust amounts for remaining offer
-			// Reference: lines 766-767
-			saTakerPays = remainingPays
-			saTakerGets = remainingGets
+		// Note: Passive offers still cross, but only against offers with STRICTLY better quality.
+		// The passive flag is passed to FlowCross which increments the quality threshold.
+		// Reference: rippled CreateOffer.cpp lines 362-364
+		var placeOffer struct {
+			in  tx.Amount
+			out tx.Amount
 		}
+
+		// FlowCross operates on the main sandbox (sb)
+		crossResult := payment.FlowCross(
+			sb, // Use main sandbox for crossing
+			ctx.AccountID,
+			saTakerGets, // What we're selling (taker pays to counterparty)
+			saTakerPays, // What we want (taker receives from counterparty)
+			ctx.TxHash,
+			ctx.Config.LedgerSequence,
+			bPassive, // For passive offers, only cross against strictly better quality
+		)
+
+		// Convert result amounts back
+		// For remaining offer calculation:
+		// - If GROSS >= originalTakerGets: offer fully consumed, no remaining
+		// - Else: remaining = originalTakerGets - NET (use net delivered amount)
+		// Reference: rippled uses the net amount delivered to matching offers for remaining calculation
+		grossPaid := payment.FromEitherAmount(crossResult.TakerPaid)
+		netPaid := payment.FromEitherAmount(crossResult.TakerPaidNet)
+
+		// Use GROSS for the "fully consumed" check via subtractAmounts clamping
+		// But for actual remaining calculation, use NET when we have a remaining offer
+		// The subtractAmounts function clamps negative to zero, so:
+		// - If GROSS >= original: remaining = 0 (no offer created)
+		// - If GROSS < original: we need remaining = original - NET
+		remainingWithGross := subtractAmounts(saTakerGets, grossPaid)
+		if isAmountZeroOrNegative(remainingWithGross) {
+			// Offer fully consumed with GROSS, use GROSS
+			placeOffer.in = grossPaid
+		} else {
+			// Offer has remainder, use NET for accurate remaining calculation
+			placeOffer.in = netPaid
+		}
+		placeOffer.out = payment.FromEitherAmount(crossResult.TakerGot) // What we received
+
+		result = crossResult.Result
+
+		// For offer crossing, tecPATH_DRY means no liquidity found to cross
+		// This is not an error - we just place the offer with original amounts
+		// Reference: rippled's flowCross always returns tesSUCCESS (CreateOffer.cpp line 509)
+		if result == tx.TecPATH_DRY {
+			result = tx.TesSUCCESS
+		}
+
+		if result != tx.TesSUCCESS {
+			return result, false // Error during crossing - apply cancel sandbox
+		}
+
+		// Apply FlowCross sandbox changes to our main sandbox (sb)
+		// Reference: rippled CreateOffer.cpp - sandbox changes must be applied
+		// FlowCross creates a root sandbox, so we use ApplyToView with sb as the target
+		if crossResult.Sandbox != nil {
+			if err := crossResult.Sandbox.ApplyToView(sb); err != nil {
+				return tx.TefINTERNAL, false
+			}
+		}
+
+		// Update ctx.Account.Balance to reflect XRP changes during crossing
+		// The engine writes ctx.Account after Apply(), so we must update it here
+		// Reference: The taker may pay or receive XRP for the crossing
+		if placeOffer.in.IsNative() {
+			// Taker paid XRP
+			paidDrops := uint64(placeOffer.in.Drops())
+			if ctx.Account.Balance >= paidDrops {
+				ctx.Account.Balance -= paidDrops
+			}
+		}
+		if placeOffer.out.IsNative() {
+			// Taker received XRP
+			receivedDrops := uint64(placeOffer.out.Drops())
+			ctx.Account.Balance += receivedDrops
+		}
+
+		// Remove unfunded/bad offers that were marked during crossing
+		for offerKey := range crossResult.RemovableOffers {
+			offerKeylet := keylet.Keylet{Key: offerKey}
+			if err := sb.Erase(offerKeylet); err != nil {
+				_ = err // Log but don't fail - cleanup operation
+			}
+		}
+
+		// Check if account's funds were exhausted during crossing
+		// Reference: rippled CreateOffer.cpp lines 432-441
+		// If the balance for what we're selling is now zero, don't create the offer
+		takerInBalance := tx.AccountFunds(sb, ctx.AccountID, saTakerGets, true)
+		if isAmountZeroOrNegative(takerInBalance) {
+			// Account funds exhausted - offer fully consumed, no remaining offer to place
+			return tx.TesSUCCESS, true // Apply main sandbox with crossing results
+		}
+
+		// Check if any crossing happened
+		// Reference: line 744-745
+		// Use isAmountZeroOrNegative because FromEitherAmount returns "0" for zero amounts,
+		// not empty string ""
+		if !isAmountZeroOrNegative(placeOffer.in) || !isAmountZeroOrNegative(placeOffer.out) {
+			crossed = true
+		}
+
+		// Calculate remaining amounts for the new offer
+		// Reference: rippled CreateOffer.cpp lines 491-504 (flowCross)
+		// Rippled preserves the offer quality when calculating remaining amounts.
+		//
+		// IMPORTANT: When the offer is fully consumed (GROSS >= originalTakerGets),
+		// the taker has paid everything (or more with transfer fees), so NO remaining
+		// offer should be created. We use subtraction which will give zero/negative.
+		//
+		// When no crossing happened at all (placeOffer is zero), return original amounts
+		// directly to avoid float64 precision errors in ratio calculation.
+		//
+		// Only when partial crossing happened do we use quality preservation.
+		//
+		// For non-sell offers (Flags=0) with remaining:
+		//   1. remainingPays = originalTakerPays - actualAmountOut (XRP received)
+		//   2. remainingGets = remainingPays * (originalTakerGets / originalTakerPays) (quality preserved)
+		//
+		// For sell offers (tfSell):
+		//   1. remainingGets = originalTakerGets - (actualAmountIn / transferRate) (non-gateway amount)
+		//   2. remainingPays = remainingGets * (originalTakerPays / originalTakerGets) (quality preserved)
+		var remainingGets, remainingPays tx.Amount
+
+		noCrossingHappened := isAmountZeroOrNegative(placeOffer.in) && isAmountZeroOrNegative(placeOffer.out)
+
+		if isAmountZeroOrNegative(remainingWithGross) {
+			// Offer fully consumed - taker paid everything (GROSS >= original)
+			// Use subtraction which will give zero/negative, triggering "fully crossed" below
+			remainingGets = subtractAmounts(saTakerGets, placeOffer.in)
+			remainingPays = subtractAmounts(saTakerPays, placeOffer.out)
+		} else if noCrossingHappened {
+			// No crossing happened - return original amounts directly
+			// This avoids float64 precision errors in ratio calculation
+			remainingGets = saTakerGets
+			remainingPays = saTakerPays
+		} else if bSell {
+			// Sell offer with remaining: subtract from TakerGets, calculate TakerPays by ratio
+			// Reference: rippled CreateOffer.cpp lines 474-489
+			// The fixReducedOffersV1 amendment changes the rounding direction:
+			// - Before: round UP (divRound with roundUp=true)
+			// - After: round DOWN (divRoundStrict with roundUp=false)
+			remainingGets = subtractAmounts(saTakerGets, placeOffer.in) // placeOffer.in is NET
+			roundUp := !rules.Enabled(amendment.FeatureFixReducedOffersV1)
+			remainingPays = multiplyByRatio(remainingGets, o.TakerPays, o.TakerGets, roundUp)
+		} else {
+			// Non-sell offer with remaining: subtract from TakerPays, calculate TakerGets by ratio
+			// For non-sell offers, always round up
+			remainingPays = subtractAmounts(saTakerPays, placeOffer.out)
+			remainingGets = multiplyByRatio(remainingPays, o.TakerGets, o.TakerPays, true)
+		}
+
+		// Check if offer is fully filled
+		// Reference: lines 757-761
+		if isAmountZeroOrNegative(remainingGets) || isAmountZeroOrNegative(remainingPays) {
+			// Offer fully crossed - FoK is satisfied
+			return tx.TesSUCCESS, true
+		}
+
+		// Adjust amounts for remaining offer
+		// Reference: lines 766-767
+		saTakerPays = remainingPays
+		saTakerGets = remainingGets
 	}
 
 	// Sanity check: amounts should be positive
 	if isAmountZeroOrNegative(saTakerPays) || isAmountZeroOrNegative(saTakerGets) {
-		return tx.TefINTERNAL
+		return tx.TefINTERNAL, false
 	}
 
 	if result != tx.TesSUCCESS {
-		return result
+		return result, false
 	}
 
-	// Handle FillOrKill
+	// Handle FillOrKill - offer was NOT fully filled if we reach here
 	// Reference: lines 789-795
+	// CRITICAL: For FoK, apply sbCancel to discard crossing changes
 	if bFillOrKill {
 		if rules.Enabled(amendment.FeatureFix1578) {
-			return tx.TecKILLED
+			return tx.TecKILLED, false // Apply cancel sandbox
 		}
-		return tx.TesSUCCESS
+		return tx.TesSUCCESS, false // Pre-amendment: still apply cancel sandbox
 	}
 
 	// Handle ImmediateOrCancel
 	// Reference: lines 799-809
 	if bImmediateOrCancel {
 		if !crossed && rules.Enabled(amendment.FeatureImmediateOfferKilled) {
-			return tx.TecKILLED
+			return tx.TecKILLED, false // No crossing - apply cancel sandbox
 		}
-		return tx.TesSUCCESS
+		return tx.TesSUCCESS, true // Crossing happened - apply main sandbox
 	}
 
 	// Check reserve for new offer
@@ -508,31 +681,18 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 	priorBalance := ctx.Account.Balance + parseFee(ctx)
 	if priorBalance < reserve {
 		if !crossed {
-			return tx.TecINSUF_RESERVE_OFFER
+			return tx.TecINSUF_RESERVE_OFFER, true
 		}
-		return tx.TesSUCCESS
+		return tx.TesSUCCESS, true
 	}
 
-	// Create the offer in the ledger
+	// Create the offer in the ledger (in main sandbox)
 	// Reference: lines 837-925
-	offerSequence := getOfferSequence(ctx)
+	offerSequence := o.getOfferSequence()
 	offerKey := keylet.Offer(ctx.AccountID, offerSequence)
 
-	// Add to owner directory
-	// Reference: lines 839-848
-	ownerDirKey := keylet.OwnerDir(ctx.AccountID)
-	ownerDirResult, err := sle.DirInsert(ctx.View, ownerDirKey, offerKey.Key, func(dir *sle.DirectoryNode) {
-		dir.Owner = ctx.AccountID
-	})
-	if err != nil {
-		return tx.TefINTERNAL
-	}
-
-	// Increment owner count
-	// Reference: line 851
-	ctx.Account.OwnerCount++
-
-	// Calculate book directory key
+	// Calculate book directory fields first (needed for both owner and book directories
+	// when SortedDirectories is not enabled)
 	// Reference: lines 857-887
 	takerPaysCurrency := sle.GetCurrencyBytes(saTakerPays.Currency)
 	takerPaysIssuer := sle.GetIssuerBytes(saTakerPays.Issuer)
@@ -542,12 +702,26 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 	bookBase := keylet.BookDir(takerPaysCurrency, takerPaysIssuer, takerGetsCurrency, takerGetsIssuer)
 	bookDirKey := keylet.Quality(bookBase, uRate)
 
+	// Add to owner directory
+	// Reference: lines 839-848
+	ownerDirKey := keylet.OwnerDir(ctx.AccountID)
+	ownerDirResult, err := sle.DirInsert(sb, ownerDirKey, offerKey.Key, func(dir *sle.DirectoryNode) {
+		dir.Owner = ctx.AccountID
+	})
+	if err != nil {
+		return tx.TefINTERNAL, false
+	}
+
+	// Increment owner count
+	// Reference: line 851
+	ctx.Account.OwnerCount++
+
 	// Check if book exists (for OrderBookDB tracking)
-	bookExisted, _ := ctx.View.Exists(bookDirKey)
+	bookExisted, _ := sb.Exists(bookDirKey)
 
 	// Add to book directory
 	// Reference: lines 884-893
-	bookDirResult, err := sle.DirInsert(ctx.View, bookDirKey, offerKey.Key, func(dir *sle.DirectoryNode) {
+	bookDirResult, err := sle.DirInsert(sb, bookDirKey, offerKey.Key, func(dir *sle.DirectoryNode) {
 		dir.TakerPaysCurrency = takerPaysCurrency
 		dir.TakerPaysIssuer = takerPaysIssuer
 		dir.TakerGetsCurrency = takerGetsCurrency
@@ -556,7 +730,7 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 		// Note: DomainID is stored on the offer itself, not the directory
 	})
 	if err != nil {
-		return tx.TefINTERNAL
+		return tx.TefINTERNAL, false
 	}
 
 	// Create the offer SLE
@@ -597,26 +771,26 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 	// Handle hybrid offers
 	// Reference: lines 912-919
 	if bHybrid {
-		result = applyHybrid(ctx, ledgerOffer, offerKey, saTakerPays, saTakerGets, bookDirKey)
+		result = applyHybridInSandbox(sb, ctx, ledgerOffer, offerKey, saTakerPays, saTakerGets, bookDirKey)
 		if result != tx.TesSUCCESS {
-			return result
+			return result, false
 		}
 	}
 
 	// Serialize and store the offer
 	offerData, err := sle.SerializeLedgerOffer(ledgerOffer)
 	if err != nil {
-		return tx.TefINTERNAL
+		return tx.TefINTERNAL, false
 	}
 
-	if err := ctx.View.Insert(offerKey, offerData); err != nil {
-		return tx.TefINTERNAL
+	if err := sb.Insert(offerKey, offerData); err != nil {
+		return tx.TefINTERNAL, false
 	}
 
 	// Track new book in OrderBookDB (not implemented yet)
 	_ = bookExisted
 
-	return tx.TesSUCCESS
+	return tx.TesSUCCESS, true // Apply main sandbox
 }
 
 // ============================================================================
@@ -626,181 +800,216 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext) tx.Result {
 // isLegalNetAmount checks if an amount is a valid net amount.
 // Reference: rippled protocol/STAmount.h isLegalNet()
 func isLegalNetAmount(amt tx.Amount) bool {
-	if amt.Value == "" {
-		return false
-	}
-	// Check for obviously invalid values
-	if len(amt.Value) == 0 {
-		return false
-	}
-	// Additional validation could include:
-	// - Checking precision limits
-	// - Checking range limits
-	// For now, basic validation
-	return true
+	// A legal net amount is non-zero
+	return !amt.IsZero()
 }
 
 // isAmountZeroOrNegative checks if an amount is zero or negative.
 func isAmountZeroOrNegative(amt tx.Amount) bool {
-	if amt.Value == "" || amt.Value == "0" {
-		return true
-	}
-	if len(amt.Value) > 0 && amt.Value[0] == '-' {
-		return true
-	}
-	return false
+	return amt.IsZero() || amt.IsNegative()
 }
 
 // isAmountEmpty checks if an amount is empty/unset.
 func isAmountEmpty(amt tx.Amount) bool {
-	return amt.Value == ""
+	return amt.IsZero()
 }
 
 // subtractAmounts subtracts b from a.
 // a - b = result
 func subtractAmounts(a, b tx.Amount) tx.Amount {
-	if a.IsNative() {
-		// XRP subtraction
-		aVal, _ := sle.ParseDropsString(a.Value)
-		bVal, _ := sle.ParseDropsString(b.Value)
-		result := int64(aVal) - int64(bVal)
-		if result < 0 {
-			result = 0
+	result, err := a.Sub(b)
+	if err != nil {
+		// Type mismatch - return zero amount of a's type
+		if a.IsNative() {
+			return tx.NewXRPAmount(0)
 		}
-		return tx.Amount{Value: sle.FormatDrops(uint64(result))}
+		return tx.NewIssuedAmount(0, -100, a.Currency, a.Issuer)
 	}
 
-	// IOU subtraction
-	aIOU := a.ToIOU()
-	bIOU := b.ToIOU()
-	resultIOU := aIOU.Sub(bIOU)
-
-	return tx.Amount{
-		Value:    sle.FormatIOUValue(resultIOU.Value),
-		Currency: a.Currency,
-		Issuer:   a.Issuer,
+	// Clamp negative results to zero
+	if result.IsNegative() {
+		if result.IsNative() {
+			return tx.NewXRPAmount(0)
+		}
+		return tx.NewIssuedAmount(0, -100, a.Currency, a.Issuer)
 	}
+
+	return result
 }
 
-// isGlobalFrozen checks if an issuer has globally frozen assets.
-// Reference: rippled ledger/View.h isGlobalFrozen()
-func isGlobalFrozen(view tx.LedgerView, issuerAddress string) bool {
-	if issuerAddress == "" {
-		return false
-	}
-
-	issuerID, err := sle.DecodeAccountID(issuerAddress)
-	if err != nil {
-		return false
-	}
-
-	accountKey := keylet.Account(issuerID)
-	data, err := view.Read(accountKey)
-	if err != nil || data == nil {
-		return false
-	}
-
-	account, err := sle.ParseAccountRoot(data)
-	if err != nil {
-		return false
-	}
-
-	return (account.Flags & sle.LsfGlobalFreeze) != 0
+// multiplyByRatioRoundUp calculates a * (num / den) with rounding up.
+// Convenience wrapper for multiplyByRatio with roundUp=true.
+func multiplyByRatioRoundUp(a, num, den tx.Amount) tx.Amount {
+	return multiplyByRatio(a, num, den, true)
 }
 
-// accountFunds returns the amount of funds an account has available.
-// If fhZeroIfFrozen is true, returns zero if the asset is frozen.
-// Reference: rippled ledger/View.h accountFunds()
-func accountFunds(view tx.LedgerView, accountID [20]byte, amount tx.Amount, fhZeroIfFrozen bool) tx.Amount {
-	if amount.IsNative() {
-		// XRP balance
-		accountKey := keylet.Account(accountID)
-		data, err := view.Read(accountKey)
-		if err != nil || data == nil {
-			return tx.Amount{Value: "0"}
-		}
-
-		account, err := sle.ParseAccountRoot(data)
-		if err != nil {
-			return tx.Amount{Value: "0"}
-		}
-
-		// Return balance minus reserve
-		return tx.Amount{Value: sle.FormatDrops(account.Balance)}
-	}
-
-	// IOU balance
-	issuerID, err := sle.DecodeAccountID(amount.Issuer)
-	if err != nil {
-		return tx.Amount{Value: "0", Currency: amount.Currency, Issuer: amount.Issuer}
-	}
-
-	// If account is issuer, they have unlimited funds
-	if accountID == issuerID {
-		return tx.Amount{Value: "999999999999999", Currency: amount.Currency, Issuer: amount.Issuer}
-	}
-
-	// Check for frozen if requested
-	if fhZeroIfFrozen {
-		if isGlobalFrozen(view, amount.Issuer) {
-			return tx.Amount{Value: "0", Currency: amount.Currency, Issuer: amount.Issuer}
-		}
-		// Check individual trustline freeze
-		if isTrustlineFrozen(view, accountID, issuerID, amount.Currency) {
-			return tx.Amount{Value: "0", Currency: amount.Currency, Issuer: amount.Issuer}
-		}
-	}
-
-	// Read trustline balance
-	trustLineKey := keylet.Line(accountID, issuerID, amount.Currency)
-	trustLineData, err := view.Read(trustLineKey)
-	if err != nil || trustLineData == nil {
-		return tx.Amount{Value: "0", Currency: amount.Currency, Issuer: amount.Issuer}
-	}
-
-	rs, err := sle.ParseRippleState(trustLineData)
-	if err != nil {
-		return tx.Amount{Value: "0", Currency: amount.Currency, Issuer: amount.Issuer}
-	}
-
-	// Determine balance based on canonical ordering
-	accountIsLow := sle.CompareAccountIDsForLine(accountID, issuerID) < 0
-	balance := rs.Balance
-	if !accountIsLow {
-		balance = balance.Negate()
-	}
-
-	// Only return positive balance as available funds
-	if balance.Value == nil || balance.Value.Sign() <= 0 {
-		return tx.Amount{Value: "0", Currency: amount.Currency, Issuer: amount.Issuer}
-	}
-
-	return tx.Amount{
-		Value:    sle.FormatIOUValue(balance.Value),
-		Currency: amount.Currency,
-		Issuer:   amount.Issuer,
-	}
+// multiplyByRatioRoundDown calculates a * (num / den) with rounding down.
+// Convenience wrapper for multiplyByRatio with roundUp=false.
+func multiplyByRatioRoundDown(a, num, den tx.Amount) tx.Amount {
+	return multiplyByRatio(a, num, den, false)
 }
 
-// isTrustlineFrozen checks if a specific trustline is frozen.
-func isTrustlineFrozen(view tx.LedgerView, accountID, issuerID [20]byte, currency string) bool {
-	trustLineKey := keylet.Line(accountID, issuerID, currency)
-	trustLineData, err := view.Read(trustLineKey)
-	if err != nil || trustLineData == nil {
-		return false
+// multiplyByRatio calculates a * (num / den), preserving quality.
+// This is used to calculate remaining offer amounts while preserving the offer quality.
+// Reference: rippled CreateOffer.cpp lines 502-503: afterCross.in = mulRound(afterCross.out, rate, ...)
+// where rate = takerAmount.in / takerAmount.out (TakerGets / TakerPays)
+//
+// The result type is determined by `num` (the numerator), which represents the original amount
+// we're trying to calculate the remaining for.
+//
+// For non-sell offers: remainingGets = remainingPays * (originalGets / originalPays)
+//   - a = remainingPays (XRP), num = originalGets (IOU), den = originalPays (XRP)
+//   - result = IOU (same type as num)
+//
+// For sell offers: remainingPays = remainingGets * (originalPays / originalGets)
+//   - a = remainingGets (IOU), num = originalPays (XRP), den = originalGets (IOU)
+//   - result = XRP (same type as num)
+//
+// The roundUp parameter controls rounding direction:
+//   - true: round up (used before fixReducedOffersV1 for sell offers, and for non-sell offers)
+//   - false: round down (used after fixReducedOffersV1 for sell offers)
+//
+// Reference: rippled CreateOffer.cpp lines 474-489 - fixReducedOffersV1 changes rounding direction
+//
+// Uses big.Rat for precise rational arithmetic to avoid floating-point precision issues.
+func multiplyByRatio(a, num, den tx.Amount, roundUp bool) tx.Amount {
+	// Handle zero denominator
+	if den.IsZero() {
+		if num.IsNative() {
+			return tx.NewXRPAmount(0)
+		}
+		return tx.NewIssuedAmount(0, -100, num.Currency, num.Issuer)
 	}
 
-	rs, err := sle.ParseRippleState(trustLineData)
-	if err != nil {
-		return false
+	// Handle zero inputs
+	if a.IsZero() || num.IsZero() {
+		if num.IsNative() {
+			return tx.NewXRPAmount(0)
+		}
+		return tx.NewIssuedAmount(0, -100, num.Currency, num.Issuer)
 	}
 
-	// Check freeze flags
-	accountIsLow := sle.CompareAccountIDsForLine(accountID, issuerID) < 0
-	if accountIsLow {
-		return (rs.Flags & sle.LsfLowFreeze) != 0
+	// Use big.Rat for precise rational arithmetic: result = a * num / den
+	// Convert each amount to a rational number
+
+	// Helper to convert Amount to big.Rat
+	toRat := func(amt tx.Amount) *big.Rat {
+		if amt.IsNative() {
+			// XRP: value in drops
+			return new(big.Rat).SetInt64(amt.Drops())
+		}
+		// IOU: value = mantissa * 10^exponent
+		mantissa := amt.Mantissa()
+		exponent := amt.Exponent()
+
+		// Create rational = mantissa / (10^-exponent) or mantissa * (10^exponent)
+		rat := new(big.Rat).SetInt64(mantissa)
+		if exponent > 0 {
+			// Multiply by 10^exponent
+			scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exponent)), nil)
+			rat.Mul(rat, new(big.Rat).SetInt(scale))
+		} else if exponent < 0 {
+			// Divide by 10^(-exponent)
+			scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-exponent)), nil)
+			rat.Quo(rat, new(big.Rat).SetInt(scale))
+		}
+		return rat
 	}
-	return (rs.Flags & sle.LsfHighFreeze) != 0
+
+	aRat := toRat(a)
+	numRat := toRat(num)
+	denRat := toRat(den)
+
+	// Compute result = a * num / den
+	result := new(big.Rat).Mul(aRat, numRat)
+	result.Quo(result, denRat)
+
+	// Convert result back to appropriate Amount type
+	if num.IsNative() {
+		// Result should be XRP (drops)
+		// Get the float value and convert to drops
+		f, _ := result.Float64()
+		drops := int64(f)
+		if roundUp && f > float64(drops) {
+			drops++
+		}
+		return tx.NewXRPAmount(drops)
+	}
+
+	// Result should be IOU with num's currency and issuer
+	// Convert big.Rat to mantissa/exponent form
+	// Target: mantissa in range [10^15, 10^16) with appropriate exponent
+
+	// Get the result as a decimal string with high precision
+	f, _ := result.Float64()
+
+	// For better precision, use the rational representation
+	// Calculate mantissa and exponent
+	if f == 0 {
+		return tx.NewIssuedAmount(0, -100, num.Currency, num.Issuer)
+	}
+
+	// Determine sign
+	negative := f < 0
+	if negative {
+		f = -f
+		result.Neg(result)
+	}
+
+	// Scale to get mantissa in [10^15, 10^16)
+	exponent := 0
+	// Work with high precision by scaling the rational
+	minMant := big.NewInt(1000000000000000)  // 10^15
+	maxMant := big.NewInt(10000000000000000) // 10^16
+
+	// Scale result to integer range
+	scaled := new(big.Rat).Set(result)
+	for {
+		intPart := new(big.Int)
+		intPart.Quo(scaled.Num(), scaled.Denom())
+		if intPart.Cmp(maxMant) >= 0 {
+			// Too large, divide by 10
+			scaled.Quo(scaled, big.NewRat(10, 1))
+			exponent++
+		} else if intPart.Cmp(minMant) < 0 {
+			// Too small (including zero), multiply by 10
+			// But only if the scaled value itself is non-zero
+			if scaled.Sign() == 0 {
+				break
+			}
+			scaled.Mul(scaled, big.NewRat(10, 1))
+			exponent--
+		} else {
+			// intPart is in range [minMant, maxMant)
+			break
+		}
+		// Safety limit
+		if exponent > 80 || exponent < -96 {
+			break
+		}
+	}
+
+	// Get final mantissa with rounding
+	intPart := new(big.Int).Quo(scaled.Num(), scaled.Denom())
+	remainder := new(big.Int).Mod(scaled.Num(), scaled.Denom())
+
+	// Round if needed
+	if roundUp && remainder.Sign() != 0 {
+		intPart.Add(intPart, big.NewInt(1))
+	} else if !roundUp && remainder.Sign() != 0 {
+		// Check if we should round (banker's rounding for >= 0.5)
+		doubled := new(big.Int).Mul(remainder, big.NewInt(2))
+		if doubled.Cmp(scaled.Denom()) >= 0 {
+			// Don't round up for roundUp=false
+		}
+	}
+
+	mantissa := intPart.Int64()
+	if negative {
+		mantissa = -mantissa
+	}
+
+	return tx.NewIssuedAmount(mantissa, exponent, num.Currency, num.Issuer)
 }
 
 // hasExpired checks if an offer has expired.
@@ -965,30 +1174,234 @@ func getTickSize(view tx.LedgerView, issuerAddress string) uint8 {
 }
 
 // roundToTickSize rounds a quality value to the specified tick size.
+// Reference: rippled Quality.cpp round() function lines 182-212
+// The tick size determines how many significant digits are kept in the mantissa.
+// Quality is encoded as: (exponent << 56) | mantissa where mantissa is in [10^15, 10^16)
 func roundToTickSize(quality uint64, tickSize uint8) uint64 {
-	// TODO: Implement proper tick size rounding
-	// This is a simplified version
-	return quality
+	// If tick size is max or zero, no rounding needed
+	if tickSize >= maxTickSize || tickSize == 0 {
+		return quality
+	}
+
+	// Modulus for mantissa - determines rounding granularity
+	// These are powers of 10 that determine rounding precision
+	mod := []uint64{
+		10000000000000000, // 0: 10^16 (no rounding)
+		1000000000000000,  // 1: 10^15
+		100000000000000,   // 2: 10^14
+		10000000000000,    // 3: 10^13
+		1000000000000,     // 4: 10^12
+		100000000000,      // 5: 10^11
+		10000000000,       // 6: 10^10
+		1000000000,        // 7: 10^9
+		100000000,         // 8: 10^8
+		10000000,          // 9: 10^7
+		1000000,           // 10: 10^6
+		100000,            // 11: 10^5
+		10000,             // 12: 10^4
+		1000,              // 13: 10^3
+		100,               // 14: 10^2
+		10,                // 15: 10^1
+		1,                 // 16: 10^0
+	}
+
+	// Extract exponent (top 8 bits) and mantissa (lower 56 bits)
+	exponent := quality >> 56
+	mantissa := quality & 0x00ffffffffffffff
+
+	// Round up: add (mod-1) then truncate
+	mantissa += mod[tickSize] - 1
+	mantissa -= mantissa % mod[tickSize]
+
+	// Reconstruct quality
+	return (exponent << 56) | mantissa
+}
+
+// qualityToRate converts a quality value (encoded as (exponent << 56) | mantissa) to a big.Rat.
+// Quality encoding: exponent is stored as (actual_exponent + 100) in the top 8 bits,
+// mantissa is in the lower 56 bits and is in range [10^15, 10^16).
+func qualityToRate(quality uint64) *big.Rat {
+	if quality == 0 {
+		return new(big.Rat).SetInt64(0)
+	}
+
+	// Extract exponent (top 8 bits) and mantissa (lower 56 bits)
+	storedExponent := quality >> 56
+	mantissa := quality & 0x00ffffffffffffff
+
+	// Actual exponent = storedExponent - 100
+	actualExponent := int(storedExponent) - 100
+
+	// Rate = mantissa * 10^actualExponent
+	rat := new(big.Rat).SetInt64(int64(mantissa))
+
+	if actualExponent > 0 {
+		// Multiply by 10^actualExponent
+		scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(actualExponent)), nil)
+		rat.Mul(rat, new(big.Rat).SetInt(scale))
+	} else if actualExponent < 0 {
+		// Divide by 10^(-actualExponent)
+		scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-actualExponent)), nil)
+		rat.Quo(rat, new(big.Rat).SetInt(scale))
+	}
+
+	return rat
 }
 
 // multiplyByQuality multiplies an amount by a quality rate.
+// Reference: rippled uses mulRound to multiply amount by quality rate.
+// The result type is determined by currency/issuer parameters.
 func multiplyByQuality(amount tx.Amount, quality uint64, currency, issuer string) tx.Amount {
-	// TODO: Implement proper multiplication
-	return tx.Amount{
-		Value:    amount.Value,
-		Currency: currency,
-		Issuer:   issuer,
+	if quality == 0 || amount.IsZero() {
+		if currency == "" || currency == "XRP" {
+			return tx.NewXRPAmount(0)
+		}
+		return tx.NewIssuedAmount(0, -100, currency, issuer)
 	}
+
+	// Convert amount to big.Rat
+	var amtRat *big.Rat
+	if amount.IsNative() {
+		amtRat = new(big.Rat).SetInt64(amount.Drops())
+	} else {
+		mantissa := amount.Mantissa()
+		exponent := amount.Exponent()
+		amtRat = new(big.Rat).SetInt64(mantissa)
+		if exponent > 0 {
+			scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exponent)), nil)
+			amtRat.Mul(amtRat, new(big.Rat).SetInt(scale))
+		} else if exponent < 0 {
+			scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-exponent)), nil)
+			amtRat.Quo(amtRat, new(big.Rat).SetInt(scale))
+		}
+	}
+
+	// Get quality as rate
+	rateRat := qualityToRate(quality)
+
+	// Result = amount * rate
+	result := new(big.Rat).Mul(amtRat, rateRat)
+
+	// Convert result to the target type
+	if currency == "" || currency == "XRP" {
+		// Return XRP amount
+		f, _ := result.Float64()
+		return tx.NewXRPAmount(int64(f + 0.5)) // Round
+	}
+
+	// Return IOU amount - normalize to mantissa/exponent form
+	return ratToIssuedAmount(result, currency, issuer, true)
 }
 
 // divideByQuality divides an amount by a quality rate.
+// Reference: rippled uses divRound to divide amount by quality rate.
+// The result type is determined by currency/issuer parameters.
 func divideByQuality(amount tx.Amount, quality uint64, currency, issuer string) tx.Amount {
-	// TODO: Implement proper division
-	return tx.Amount{
-		Value:    amount.Value,
-		Currency: currency,
-		Issuer:   issuer,
+	if quality == 0 {
+		// Division by zero - return zero
+		if currency == "" || currency == "XRP" {
+			return tx.NewXRPAmount(0)
+		}
+		return tx.NewIssuedAmount(0, -100, currency, issuer)
 	}
+
+	if amount.IsZero() {
+		if currency == "" || currency == "XRP" {
+			return tx.NewXRPAmount(0)
+		}
+		return tx.NewIssuedAmount(0, -100, currency, issuer)
+	}
+
+	// Convert amount to big.Rat
+	var amtRat *big.Rat
+	if amount.IsNative() {
+		amtRat = new(big.Rat).SetInt64(amount.Drops())
+	} else {
+		mantissa := amount.Mantissa()
+		exponent := amount.Exponent()
+		amtRat = new(big.Rat).SetInt64(mantissa)
+		if exponent > 0 {
+			scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exponent)), nil)
+			amtRat.Mul(amtRat, new(big.Rat).SetInt(scale))
+		} else if exponent < 0 {
+			scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-exponent)), nil)
+			amtRat.Quo(amtRat, new(big.Rat).SetInt(scale))
+		}
+	}
+
+	// Get quality as rate
+	rateRat := qualityToRate(quality)
+
+	// Result = amount / rate
+	result := new(big.Rat).Quo(amtRat, rateRat)
+
+	// Convert result to the target type
+	if currency == "" || currency == "XRP" {
+		// Return XRP amount
+		f, _ := result.Float64()
+		return tx.NewXRPAmount(int64(f + 0.5)) // Round
+	}
+
+	// Return IOU amount - normalize to mantissa/exponent form
+	return ratToIssuedAmount(result, currency, issuer, true)
+}
+
+// ratToIssuedAmount converts a big.Rat to an IOU Amount with the given currency and issuer.
+// The roundUp parameter controls rounding direction.
+func ratToIssuedAmount(rat *big.Rat, currency, issuer string, roundUp bool) tx.Amount {
+	if rat.Sign() == 0 {
+		return tx.NewIssuedAmount(0, -100, currency, issuer)
+	}
+
+	// Handle sign
+	negative := rat.Sign() < 0
+	if negative {
+		rat = new(big.Rat).Neg(rat)
+	}
+
+	// Normalize to mantissa in [10^15, 10^16)
+	minMant := big.NewInt(1000000000000000)  // 10^15
+	maxMant := big.NewInt(10000000000000000) // 10^16
+
+	exponent := 0
+	scaled := new(big.Rat).Set(rat)
+
+	for {
+		intPart := new(big.Int).Quo(scaled.Num(), scaled.Denom())
+		if intPart.Cmp(maxMant) >= 0 {
+			// Too large, divide by 10
+			scaled.Quo(scaled, big.NewRat(10, 1))
+			exponent++
+		} else if intPart.Cmp(minMant) < 0 {
+			// Too small, multiply by 10
+			if scaled.Sign() == 0 {
+				break
+			}
+			scaled.Mul(scaled, big.NewRat(10, 1))
+			exponent--
+		} else {
+			break
+		}
+		// Safety limit
+		if exponent > 80 || exponent < -96 {
+			break
+		}
+	}
+
+	// Get final mantissa with rounding
+	intPart := new(big.Int).Quo(scaled.Num(), scaled.Denom())
+	remainder := new(big.Int).Mod(scaled.Num(), scaled.Denom())
+
+	if roundUp && remainder.Sign() != 0 {
+		intPart.Add(intPart, big.NewInt(1))
+	}
+
+	mantissa := intPart.Int64()
+	if negative {
+		mantissa = -mantissa
+	}
+
+	return tx.NewIssuedAmount(mantissa, exponent, currency, issuer)
 }
 
 // peekOffer reads an offer from the ledger without modifying it.
@@ -1010,6 +1423,19 @@ func peekOffer(view tx.LedgerView, accountID [20]byte, sequence uint32) *sle.Led
 // offerDelete removes an offer from the ledger.
 // Reference: rippled ledger/View.h offerDelete()
 func offerDelete(ctx *tx.ApplyContext, offer *sle.LedgerOffer) tx.Result {
+	result := offerDeleteInView(ctx.View, offer)
+	if result == tx.TesSUCCESS {
+		// Decrement owner count only on success
+		if ctx.Account.OwnerCount > 0 {
+			ctx.Account.OwnerCount--
+		}
+	}
+	return result
+}
+
+// offerDeleteInView removes an offer from the given view without modifying account state.
+// This is used by the two-sandbox pattern to delete offers in both sandboxes.
+func offerDeleteInView(view tx.LedgerView, offer *sle.LedgerOffer) tx.Result {
 	// Get offer key
 	accountID, err := sle.DecodeAccountID(offer.Account)
 	if err != nil {
@@ -1019,36 +1445,38 @@ func offerDelete(ctx *tx.ApplyContext, offer *sle.LedgerOffer) tx.Result {
 
 	// Remove from owner directory
 	ownerDirKey := keylet.OwnerDir(accountID)
-	_, err = sle.DirRemove(ctx.View, ownerDirKey, offer.OwnerNode, offerKey.Key, false)
+	_, err = sle.DirRemove(view, ownerDirKey, offer.OwnerNode, offerKey.Key, false)
 	if err != nil {
 		return tx.TefINTERNAL
 	}
 
 	// Remove from book directory
 	bookDirKey := keylet.Keylet{Type: 100, Key: offer.BookDirectory}
-	_, err = sle.DirRemove(ctx.View, bookDirKey, offer.BookNode, offerKey.Key, false)
+	_, err = sle.DirRemove(view, bookDirKey, offer.BookNode, offerKey.Key, false)
 	if err != nil {
 		return tx.TefINTERNAL
 	}
 
 	// Delete the offer
-	if err := ctx.View.Erase(offerKey); err != nil {
+	if err := view.Erase(offerKey); err != nil {
 		return tx.TefINTERNAL
-	}
-
-	// Decrement owner count
-	if ctx.Account.OwnerCount > 0 {
-		ctx.Account.OwnerCount--
 	}
 
 	return tx.TesSUCCESS
 }
 
 // getOfferSequence returns the sequence number to use for a new offer.
-func getOfferSequence(ctx *tx.ApplyContext) uint32 {
-	// Use the transaction sequence (or ticket sequence) minus 1
-	// because the engine increments sequence before Apply
-	return ctx.Account.Sequence - 1
+// Reference: rippled CreateOffer.cpp - uses transaction's Sequence or TicketSequence
+func (o *OfferCreate) getOfferSequence() uint32 {
+	// Use the transaction's Sequence field directly
+	// If TicketSequence is used, that becomes the offer's sequence
+	if o.TicketSequence != nil {
+		return *o.TicketSequence
+	}
+	if o.Sequence != nil {
+		return *o.Sequence
+	}
+	return 0
 }
 
 // parseFee extracts the fee from the transaction context.
@@ -1061,6 +1489,12 @@ func parseFee(ctx *tx.ApplyContext) uint64 {
 // applyHybrid handles hybrid offer placement for permissioned DEX.
 // Reference: rippled CreateOffer.cpp applyHybrid() lines 528-573
 func applyHybrid(ctx *tx.ApplyContext, offer *sle.LedgerOffer, offerKey keylet.Keylet, takerPays, takerGets tx.Amount, domainBookDir keylet.Keylet) tx.Result {
+	return applyHybridInSandbox(ctx.View, ctx, offer, offerKey, takerPays, takerGets, domainBookDir)
+}
+
+// applyHybridInSandbox handles hybrid offer placement in a specific view/sandbox.
+// Reference: rippled CreateOffer.cpp applyHybrid() lines 528-573
+func applyHybridInSandbox(view tx.LedgerView, ctx *tx.ApplyContext, offer *sle.LedgerOffer, offerKey keylet.Keylet, takerPays, takerGets tx.Amount, domainBookDir keylet.Keylet) tx.Result {
 	// Set hybrid flag
 	offer.Flags |= lsfHybrid
 
@@ -1076,7 +1510,7 @@ func applyHybrid(ctx *tx.ApplyContext, offer *sle.LedgerOffer, offerKey keylet.K
 	openBookDirKey := keylet.Quality(bookBase, uRate)
 
 	// Add to open book directory
-	bookDirResult, err := sle.DirInsert(ctx.View, openBookDirKey, offerKey.Key, func(dir *sle.DirectoryNode) {
+	bookDirResult, err := sle.DirInsert(view, openBookDirKey, offerKey.Key, func(dir *sle.DirectoryNode) {
 		dir.TakerPaysCurrency = takerPaysCurrency
 		dir.TakerPaysIssuer = takerPaysIssuer
 		dir.TakerGetsCurrency = takerGetsCurrency

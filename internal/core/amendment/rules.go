@@ -276,3 +276,11 @@ func (r *Rules) PermissionedDEXEnabled() bool {
 func (r *Rules) TokenEscrowEnabled() bool {
 	return r.Enabled(FeatureTokenEscrow)
 }
+
+// SortedDirectoriesEnabled returns true if the SortedDirectories amendment is enabled.
+// This is a retired amendment that changed owner directory creation to use sfOwner
+// instead of book fields (TakerPaysCurrency, TakerPaysIssuer, etc.).
+// Before this amendment, both owner and book directories used book fields.
+func (r *Rules) SortedDirectoriesEnabled() bool {
+	return r.Enabled(FeatureSortedDirectories)
+}

@@ -1,13 +1,26 @@
 package payment
 
 import (
+	"strconv"
 	"testing"
 
 	tx "github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
 func ptrUint32(v uint32) *uint32 { return &v }
 func ptrAmount(a tx.Amount) *tx.Amount { return &a }
+
+// Helper to create XRP amount from string drops
+func xrpAmount(drops string) tx.Amount {
+	d, _ := strconv.ParseInt(drops, 10, 64)
+	return tx.NewXRPAmount(d)
+}
+
+// Helper to create IOU amount from string value
+func iouAmount(value, currency, issuer string) tx.Amount {
+	return sle.NewIssuedAmountFromDecimalString(value, currency, issuer)
+}
 
 // TestPaymentValidation tests Payment transaction validation.
 // These tests are translated from rippled's Pay_test.cpp and PayStrand_test.cpp
@@ -24,7 +37,7 @@ func TestPaymentValidation(t *testing.T) {
 			name: "valid XRP payment",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewXRPAmount("1000000"), // 1 XRP in drops
+				Amount:      xrpAmount("1000000"), // 1 XRP in drops
 				Destination: "rBob",
 			},
 			expectError: false,
@@ -33,7 +46,7 @@ func TestPaymentValidation(t *testing.T) {
 			name: "valid IOU payment",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewIssuedAmount("100", "USD", "rGateway"),
+				Amount:      iouAmount("100", "USD", "rGateway"),
 				Destination: "rBob",
 			},
 			expectError: false,
@@ -42,7 +55,7 @@ func TestPaymentValidation(t *testing.T) {
 			name: "valid payment with destination tag",
 			payment: &Payment{
 				BaseTx:         *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:         tx.NewXRPAmount("1000000"),
+				Amount:         xrpAmount("1000000"),
 				Destination:    "rBob",
 				DestinationTag: ptrUint32(12345),
 			},
@@ -52,7 +65,7 @@ func TestPaymentValidation(t *testing.T) {
 			name: "valid payment with invoice ID",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewXRPAmount("1000000"),
+				Amount:      xrpAmount("1000000"),
 				Destination: "rBob",
 				InvoiceID:   "0000000000000000000000000000000000000000000000000000000000000001",
 			},
@@ -64,7 +77,7 @@ func TestPaymentValidation(t *testing.T) {
 			name: "missing destination - temDST_NEEDED equivalent",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewXRPAmount("1000000"),
+				Amount:      xrpAmount("1000000"),
 				Destination: "",
 			},
 			expectError: true,
@@ -84,7 +97,7 @@ func TestPaymentValidation(t *testing.T) {
 			name: "missing account - temBAD_SRC_ACCOUNT equivalent",
 			payment: &Payment{
 				BaseTx:      tx.BaseTx{Common: tx.Common{TransactionType: "Payment"}},
-				Amount:      tx.NewXRPAmount("1000000"),
+				Amount:      xrpAmount("1000000"),
 				Destination: "rBob",
 			},
 			expectError: true,
@@ -96,7 +109,7 @@ func TestPaymentValidation(t *testing.T) {
 			name: "XRP payment to self - temREDUNDANT equivalent",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewXRPAmount("1000000"),
+				Amount:      xrpAmount("1000000"),
 				Destination: "rAlice",
 			},
 			expectError: true,
@@ -106,7 +119,7 @@ func TestPaymentValidation(t *testing.T) {
 			name: "IOU payment to self is allowed (for cross-currency)",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewIssuedAmount("100", "USD", "rGateway"),
+				Amount:      iouAmount("100", "USD", "rGateway"),
 				Destination: "rAlice",
 			},
 			expectError: false, // IOU payments to self are allowed for cross-currency
@@ -145,7 +158,7 @@ func TestPaymentAmounts(t *testing.T) {
 			name: "XRP to XRP transfer - basic drops amount",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewXRPAmount("1000000"), // 1 XRP
+				Amount:      xrpAmount("1000000"), // 1 XRP
 				Destination: "rBob",
 			},
 			expectError: false,
@@ -154,7 +167,7 @@ func TestPaymentAmounts(t *testing.T) {
 			name: "XRP payment - large amount",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewXRPAmount("100000000000000"), // 100M XRP
+				Amount:      xrpAmount("100000000000000"), // 100M XRP
 				Destination: "rBob",
 			},
 			expectError: false,
@@ -163,7 +176,7 @@ func TestPaymentAmounts(t *testing.T) {
 			name: "XRP payment - minimum amount (1 drop)",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewXRPAmount("1"),
+				Amount:      xrpAmount("1"),
 				Destination: "rBob",
 			},
 			expectError: false,
@@ -174,7 +187,7 @@ func TestPaymentAmounts(t *testing.T) {
 			name: "IOU to IOU transfer - same currency",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewIssuedAmount("100", "USD", "rGateway"),
+				Amount:      iouAmount("100", "USD", "rGateway"),
 				Destination: "rBob",
 			},
 			expectError: false,
@@ -183,7 +196,7 @@ func TestPaymentAmounts(t *testing.T) {
 			name: "IOU payment - decimal value",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewIssuedAmount("100.50", "USD", "rGateway"),
+				Amount:      iouAmount("100.50", "USD", "rGateway"),
 				Destination: "rBob",
 			},
 			expectError: false,
@@ -192,7 +205,7 @@ func TestPaymentAmounts(t *testing.T) {
 			name: "IOU payment - scientific notation",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewIssuedAmount("1e10", "USD", "rGateway"),
+				Amount:      iouAmount("1e10", "USD", "rGateway"),
 				Destination: "rBob",
 			},
 			expectError: false,
@@ -203,9 +216,9 @@ func TestPaymentAmounts(t *testing.T) {
 			name: "cross-currency payment with paths",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewIssuedAmount("100", "EUR", "rGatewayEUR"),
+				Amount:      iouAmount("100", "EUR", "rGatewayEUR"),
 				Destination: "rBob",
-				SendMax:     ptrAmount(tx.NewIssuedAmount("110", "USD", "rGatewayUSD")),
+				SendMax:     ptrAmount(iouAmount("110", "USD", "rGatewayUSD")),
 				Paths: [][]PathStep{
 					{
 						{Currency: "XRP"},
@@ -239,7 +252,7 @@ func TestPaymentAmounts(t *testing.T) {
 // Inspired by rippled's flag tests in Pay_test.cpp.
 func TestPaymentFlags(t *testing.T) {
 	t.Run("tfPartialPayment flag", func(t *testing.T) {
-		payment := NewPayment("rAlice", "rBob", tx.NewXRPAmount("1000000"))
+		payment := NewPayment("rAlice", "rBob", xrpAmount("1000000"))
 		payment.SetPartialPayment()
 
 		flags := payment.GetFlags()
@@ -249,7 +262,7 @@ func TestPaymentFlags(t *testing.T) {
 	})
 
 	t.Run("tfNoDirectRipple flag", func(t *testing.T) {
-		payment := NewPayment("rAlice", "rBob", tx.NewIssuedAmount("100", "USD", "rGateway"))
+		payment := NewPayment("rAlice", "rBob", iouAmount("100", "USD", "rGateway"))
 		payment.SetNoDirectRipple()
 
 		flags := payment.GetFlags()
@@ -259,7 +272,7 @@ func TestPaymentFlags(t *testing.T) {
 	})
 
 	t.Run("tfLimitQuality flag", func(t *testing.T) {
-		payment := NewPayment("rAlice", "rBob", tx.NewIssuedAmount("100", "USD", "rGateway"))
+		payment := NewPayment("rAlice", "rBob", iouAmount("100", "USD", "rGateway"))
 		flags := payment.GetFlags() | PaymentFlagLimitQuality
 		payment.SetFlags(flags)
 
@@ -269,7 +282,7 @@ func TestPaymentFlags(t *testing.T) {
 	})
 
 	t.Run("multiple flags combined", func(t *testing.T) {
-		payment := NewPayment("rAlice", "rBob", tx.NewIssuedAmount("100", "USD", "rGateway"))
+		payment := NewPayment("rAlice", "rBob", iouAmount("100", "USD", "rGateway"))
 		payment.SetPartialPayment()
 		payment.SetNoDirectRipple()
 		flags := payment.GetFlags() | PaymentFlagLimitQuality
@@ -282,9 +295,9 @@ func TestPaymentFlags(t *testing.T) {
 	})
 
 	t.Run("partial payment with DeliverMin", func(t *testing.T) {
-		payment := NewPayment("rAlice", "rBob", tx.NewXRPAmount("1000000"))
+		payment := NewPayment("rAlice", "rBob", xrpAmount("1000000"))
 		payment.SetPartialPayment()
-		deliverMin := tx.NewXRPAmount("500000")
+		deliverMin := xrpAmount("500000")
 		payment.DeliverMin = &deliverMin
 
 		if payment.DeliverMin == nil {
@@ -308,9 +321,9 @@ func TestPaymentSendMax(t *testing.T) {
 			name: "XRP SendMax for cross-currency",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewIssuedAmount("100", "USD", "rGateway"),
+				Amount:      iouAmount("100", "USD", "rGateway"),
 				Destination: "rBob",
-				SendMax:     ptrAmount(tx.NewXRPAmount("1100000")),
+				SendMax:     ptrAmount(xrpAmount("1100000")),
 			},
 			checkMap: func(t *testing.T, m map[string]any) {
 				sendMax, ok := m["SendMax"]
@@ -327,9 +340,9 @@ func TestPaymentSendMax(t *testing.T) {
 			name: "IOU SendMax for cross-currency",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewIssuedAmount("100", "EUR", "rGatewayEUR"),
+				Amount:      iouAmount("100", "EUR", "rGatewayEUR"),
 				Destination: "rBob",
-				SendMax:     ptrAmount(tx.NewIssuedAmount("120", "USD", "rGatewayUSD")),
+				SendMax:     ptrAmount(iouAmount("120", "USD", "rGatewayUSD")),
 			},
 			checkMap: func(t *testing.T, m map[string]any) {
 				sendMax, ok := m["SendMax"].(map[string]any)
@@ -351,7 +364,7 @@ func TestPaymentSendMax(t *testing.T) {
 			name: "no SendMax for direct XRP payment",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewXRPAmount("1000000"),
+				Amount:      xrpAmount("1000000"),
 				Destination: "rBob",
 			},
 			checkMap: func(t *testing.T, m map[string]any) {
@@ -386,9 +399,9 @@ func TestPaymentDeliverMin(t *testing.T) {
 			payment: func() *Payment {
 				p := &Payment{
 					BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-					Amount:      tx.NewXRPAmount("1000000"),
+					Amount:      xrpAmount("1000000"),
 					Destination: "rBob",
-					DeliverMin:  ptrAmount(tx.NewXRPAmount("500000")),
+					DeliverMin:  ptrAmount(xrpAmount("500000")),
 				}
 				p.SetPartialPayment()
 				return p
@@ -409,9 +422,9 @@ func TestPaymentDeliverMin(t *testing.T) {
 			payment: func() *Payment {
 				p := &Payment{
 					BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-					Amount:      tx.NewIssuedAmount("100", "USD", "rGateway"),
+					Amount:      iouAmount("100", "USD", "rGateway"),
 					Destination: "rBob",
-					DeliverMin:  ptrAmount(tx.NewIssuedAmount("50", "USD", "rGateway")),
+					DeliverMin:  ptrAmount(iouAmount("50", "USD", "rGateway")),
 				}
 				p.SetPartialPayment()
 				return p
@@ -430,7 +443,7 @@ func TestPaymentDeliverMin(t *testing.T) {
 			name: "no DeliverMin without partial payment flag",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewXRPAmount("1000000"),
+				Amount:      xrpAmount("1000000"),
 				Destination: "rBob",
 			},
 			checkMap: func(t *testing.T, m map[string]any) {
@@ -464,9 +477,9 @@ func TestPaymentPaths(t *testing.T) {
 			name: "simple path with currency hop",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewIssuedAmount("100", "EUR", "rGatewayEUR"),
+				Amount:      iouAmount("100", "EUR", "rGatewayEUR"),
 				Destination: "rBob",
-				SendMax:     ptrAmount(tx.NewIssuedAmount("110", "USD", "rGatewayUSD")),
+				SendMax:     ptrAmount(iouAmount("110", "USD", "rGatewayUSD")),
 				Paths: [][]PathStep{
 					{
 						{Currency: "XRP"},
@@ -493,9 +506,9 @@ func TestPaymentPaths(t *testing.T) {
 			name: "complex path with multiple steps",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewIssuedAmount("100", "JPY", "rGatewayJPY"),
+				Amount:      iouAmount("100", "JPY", "rGatewayJPY"),
 				Destination: "rBob",
-				SendMax:     ptrAmount(tx.NewIssuedAmount("150", "USD", "rGatewayUSD")),
+				SendMax:     ptrAmount(iouAmount("150", "USD", "rGatewayUSD")),
 				Paths: [][]PathStep{
 					{
 						{Currency: "EUR", Issuer: "rGatewayEUR"},
@@ -521,9 +534,9 @@ func TestPaymentPaths(t *testing.T) {
 			name: "multiple alternative paths",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewIssuedAmount("100", "EUR", "rGatewayEUR"),
+				Amount:      iouAmount("100", "EUR", "rGatewayEUR"),
 				Destination: "rBob",
-				SendMax:     ptrAmount(tx.NewIssuedAmount("110", "USD", "rGatewayUSD")),
+				SendMax:     ptrAmount(iouAmount("110", "USD", "rGatewayUSD")),
 				Paths: [][]PathStep{
 					{
 						{Currency: "XRP"},
@@ -547,7 +560,7 @@ func TestPaymentPaths(t *testing.T) {
 			name: "no paths for direct XRP payment",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewXRPAmount("1000000"),
+				Amount:      xrpAmount("1000000"),
 				Destination: "rBob",
 			},
 			checkMap: func(t *testing.T, m map[string]any) {
@@ -560,7 +573,7 @@ func TestPaymentPaths(t *testing.T) {
 			name: "path with account hop",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewIssuedAmount("100", "USD", "rGateway"),
+				Amount:      iouAmount("100", "USD", "rGateway"),
 				Destination: "rBob",
 				Paths: [][]PathStep{
 					{
@@ -602,7 +615,7 @@ func TestPaymentFlatten(t *testing.T) {
 			name: "basic XRP payment",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewXRPAmount("1000000"),
+				Amount:      xrpAmount("1000000"),
 				Destination: "rBob",
 			},
 			checkMap: func(t *testing.T, m map[string]any) {
@@ -624,7 +637,7 @@ func TestPaymentFlatten(t *testing.T) {
 			name: "IOU payment",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewIssuedAmount("100", "USD", "rGateway"),
+				Amount:      iouAmount("100", "USD", "rGateway"),
 				Destination: "rBob",
 			},
 			checkMap: func(t *testing.T, m map[string]any) {
@@ -647,12 +660,12 @@ func TestPaymentFlatten(t *testing.T) {
 			name: "payment with all optional fields",
 			payment: &Payment{
 				BaseTx:         *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:         tx.NewIssuedAmount("100", "USD", "rGateway"),
+				Amount:         iouAmount("100", "USD", "rGateway"),
 				Destination:    "rBob",
 				DestinationTag: ptrUint32(42),
 				InvoiceID:      "DEADBEEF",
-				SendMax:        ptrAmount(tx.NewXRPAmount("1100000")),
-				DeliverMin:     ptrAmount(tx.NewXRPAmount("900000")),
+				SendMax:        ptrAmount(xrpAmount("1100000")),
+				DeliverMin:     ptrAmount(xrpAmount("900000")),
 				Paths: [][]PathStep{
 					{
 						{Currency: "XRP"},
@@ -692,7 +705,7 @@ func TestPaymentFlatten(t *testing.T) {
 
 // TestPaymentTransactionType tests that transaction type is correctly returned.
 func TestPaymentTransactionType(t *testing.T) {
-	payment := NewPayment("rAlice", "rBob", tx.NewXRPAmount("1000000"))
+	payment := NewPayment("rAlice", "rBob", xrpAmount("1000000"))
 	if payment.TxType() != tx.TypePayment {
 		t.Errorf("expected tx.TypePayment, got %v", payment.TxType())
 	}
@@ -701,15 +714,15 @@ func TestPaymentTransactionType(t *testing.T) {
 // TestNewPaymentConstructor tests the constructor function.
 func TestNewPaymentConstructor(t *testing.T) {
 	t.Run("XRP payment", func(t *testing.T) {
-		payment := NewPayment("rAlice", "rBob", tx.NewXRPAmount("1000000"))
+		payment := NewPayment("rAlice", "rBob", xrpAmount("1000000"))
 		if payment.Account != "rAlice" {
 			t.Errorf("expected Account=rAlice, got %v", payment.Account)
 		}
 		if payment.Destination != "rBob" {
 			t.Errorf("expected Destination=rBob, got %v", payment.Destination)
 		}
-		if payment.Amount.Value != "1000000" {
-			t.Errorf("expected Amount=1000000, got %v", payment.Amount.Value)
+		if payment.Amount.Value() != "1000000" {
+			t.Errorf("expected Amount=1000000, got %v", payment.Amount.Value())
 		}
 		if !payment.Amount.IsNative() {
 			t.Error("expected XRP amount to be native")
@@ -717,7 +730,7 @@ func TestNewPaymentConstructor(t *testing.T) {
 	})
 
 	t.Run("IOU payment", func(t *testing.T) {
-		payment := NewPayment("rAlice", "rBob", tx.NewIssuedAmount("100", "USD", "rGateway"))
+		payment := NewPayment("rAlice", "rBob", iouAmount("100", "USD", "rGateway"))
 		if payment.Amount.Currency != "USD" {
 			t.Errorf("expected currency=USD, got %v", payment.Amount.Currency)
 		}
@@ -776,7 +789,7 @@ func TestPaymentZeroAmount(t *testing.T) {
 			name: "zero XRP amount string",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewXRPAmount("0"),
+				Amount:      xrpAmount("0"),
 				Destination: "rBob",
 			},
 			// Zero amount validation is typically done at a higher level
@@ -787,7 +800,7 @@ func TestPaymentZeroAmount(t *testing.T) {
 			name: "zero IOU amount string",
 			payment: &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewIssuedAmount("0", "USD", "rGateway"),
+				Amount:      iouAmount("0", "USD", "rGateway"),
 				Destination: "rBob",
 			},
 			expectError: false,
@@ -816,22 +829,22 @@ func TestAmountIsNative(t *testing.T) {
 	}{
 		{
 			name:     "XRP amount via constructor",
-			amount:   tx.NewXRPAmount("1000000"),
+			amount:   xrpAmount("1000000"),
 			expected: true,
 		},
 		{
 			name:     "IOU amount via constructor",
-			amount:   tx.NewIssuedAmount("100", "USD", "rGateway"),
+			amount:   iouAmount("100", "USD", "rGateway"),
 			expected: false,
 		},
 		{
-			name:     "empty amount (defaults to native)",
-			amount:   tx.Amount{Value: "1000000"},
-			expected: true, // No currency or issuer means it's XRP
+			name:     "XRP amount (native)",
+			amount:   xrpAmount("1000000"),
+			expected: true, // XRP is native
 		},
 		{
-			name:     "amount with only value (native)",
-			amount:   tx.Amount{Value: "1000000", Currency: "", Issuer: ""},
+			name:     "zero XRP amount (native)",
+			amount:   tx.NewXRPAmount(0),
 			expected: true,
 		},
 	}
@@ -848,7 +861,7 @@ func TestAmountIsNative(t *testing.T) {
 // TestPaymentSetterMethods tests the helper methods for setting payment properties.
 func TestPaymentSetterMethods(t *testing.T) {
 	t.Run("SetPartialPayment sets correct flag", func(t *testing.T) {
-		payment := NewPayment("rAlice", "rBob", tx.NewXRPAmount("1000000"))
+		payment := NewPayment("rAlice", "rBob", xrpAmount("1000000"))
 		payment.SetPartialPayment()
 
 		if payment.GetFlags()&PaymentFlagPartialPayment == 0 {
@@ -857,7 +870,7 @@ func TestPaymentSetterMethods(t *testing.T) {
 	})
 
 	t.Run("SetNoDirectRipple sets correct flag", func(t *testing.T) {
-		payment := NewPayment("rAlice", "rBob", tx.NewIssuedAmount("100", "USD", "rGateway"))
+		payment := NewPayment("rAlice", "rBob", iouAmount("100", "USD", "rGateway"))
 		payment.SetNoDirectRipple()
 
 		if payment.GetFlags()&PaymentFlagNoDirectRipple == 0 {
@@ -866,7 +879,7 @@ func TestPaymentSetterMethods(t *testing.T) {
 	})
 
 	t.Run("flags are cumulative", func(t *testing.T) {
-		payment := NewPayment("rAlice", "rBob", tx.NewIssuedAmount("100", "USD", "rGateway"))
+		payment := NewPayment("rAlice", "rBob", iouAmount("100", "USD", "rGateway"))
 		payment.SetPartialPayment()
 		payment.SetNoDirectRipple()
 
@@ -921,9 +934,9 @@ func TestPaymentCrossCurrency(t *testing.T) {
 	t.Run("USD to EUR with XRP bridge", func(t *testing.T) {
 		payment := &Payment{
 			BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-			Amount:      tx.NewIssuedAmount("100", "EUR", "rGatewayEUR"),
+			Amount:      iouAmount("100", "EUR", "rGatewayEUR"),
 			Destination: "rBob",
-			SendMax:     ptrAmount(tx.NewIssuedAmount("120", "USD", "rGatewayUSD")),
+			SendMax:     ptrAmount(iouAmount("120", "USD", "rGatewayUSD")),
 			Paths: [][]PathStep{
 				{
 					{Currency: "XRP"},
@@ -973,9 +986,9 @@ func TestPaymentCrossCurrency(t *testing.T) {
 	t.Run("XRP to IOU cross-currency", func(t *testing.T) {
 		payment := &Payment{
 			BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-			Amount:      tx.NewIssuedAmount("100", "USD", "rGateway"),
+			Amount:      iouAmount("100", "USD", "rGateway"),
 			Destination: "rBob",
-			SendMax:     ptrAmount(tx.NewXRPAmount("110000000")), // 110 XRP in drops
+			SendMax:     ptrAmount(xrpAmount("110000000")), // 110 XRP in drops
 			Paths: [][]PathStep{
 				{
 					{Currency: "USD", Issuer: "rGateway"},
@@ -1006,10 +1019,10 @@ func TestDeliverMinValidation(t *testing.T) {
 			payment: func() *Payment {
 				p := &Payment{
 					BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-					Amount:      tx.NewIssuedAmount("10", "USD", "rGateway"),
+					Amount:      iouAmount("10", "USD", "rGateway"),
 					Destination: "rBob",
 				}
-				deliverMin := tx.NewIssuedAmount("10", "USD", "rGateway")
+				deliverMin := iouAmount("10", "USD", "rGateway")
 				p.DeliverMin = &deliverMin
 				// No tfPartialPayment flag set
 				return p
@@ -1025,11 +1038,11 @@ func TestDeliverMinValidation(t *testing.T) {
 			payment: func() *Payment {
 				p := &Payment{
 					BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-					Amount:      tx.NewIssuedAmount("10", "USD", "rGateway"),
+					Amount:      iouAmount("10", "USD", "rGateway"),
 					Destination: "rBob",
 				}
 				p.SetPartialPayment()
-				deliverMin := tx.NewIssuedAmount("-5", "USD", "rGateway")
+				deliverMin := iouAmount("-5", "USD", "rGateway")
 				p.DeliverMin = &deliverMin
 				return p
 			}(),
@@ -1044,11 +1057,11 @@ func TestDeliverMinValidation(t *testing.T) {
 			payment: func() *Payment {
 				p := &Payment{
 					BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-					Amount:      tx.NewIssuedAmount("10", "USD", "rGateway"),
+					Amount:      iouAmount("10", "USD", "rGateway"),
 					Destination: "rBob",
 				}
 				p.SetPartialPayment()
-				deliverMin := tx.NewXRPAmount("5000000") // XRP instead of USD
+				deliverMin := xrpAmount("5000000") // XRP instead of USD
 				p.DeliverMin = &deliverMin
 				return p
 			}(),
@@ -1063,11 +1076,11 @@ func TestDeliverMinValidation(t *testing.T) {
 			payment: func() *Payment {
 				p := &Payment{
 					BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-					Amount:      tx.NewIssuedAmount("10", "USD", "rGateway"),
+					Amount:      iouAmount("10", "USD", "rGateway"),
 					Destination: "rBob",
 				}
 				p.SetPartialPayment()
-				deliverMin := tx.NewIssuedAmount("5", "USD", "rOtherGateway") // Different issuer
+				deliverMin := iouAmount("5", "USD", "rOtherGateway") // Different issuer
 				p.DeliverMin = &deliverMin
 				return p
 			}(),
@@ -1082,11 +1095,11 @@ func TestDeliverMinValidation(t *testing.T) {
 			payment: func() *Payment {
 				p := &Payment{
 					BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-					Amount:      tx.NewIssuedAmount("10", "USD", "rGateway"),
+					Amount:      iouAmount("10", "USD", "rGateway"),
 					Destination: "rBob",
 				}
 				p.SetPartialPayment()
-				deliverMin := tx.NewIssuedAmount("15", "USD", "rGateway") // Exceeds Amount
+				deliverMin := iouAmount("15", "USD", "rGateway") // Exceeds Amount
 				p.DeliverMin = &deliverMin
 				return p
 			}(),
@@ -1099,11 +1112,11 @@ func TestDeliverMinValidation(t *testing.T) {
 			payment: func() *Payment {
 				p := &Payment{
 					BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-					Amount:      tx.NewIssuedAmount("10", "USD", "rGateway"),
+					Amount:      iouAmount("10", "USD", "rGateway"),
 					Destination: "rBob",
 				}
 				p.SetPartialPayment()
-				deliverMin := tx.NewIssuedAmount("7", "USD", "rGateway")
+				deliverMin := iouAmount("7", "USD", "rGateway")
 				p.DeliverMin = &deliverMin
 				return p
 			}(),
@@ -1116,11 +1129,11 @@ func TestDeliverMinValidation(t *testing.T) {
 			payment: func() *Payment {
 				p := &Payment{
 					BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-					Amount:      tx.NewIssuedAmount("10", "USD", "rGateway"),
+					Amount:      iouAmount("10", "USD", "rGateway"),
 					Destination: "rBob",
 				}
 				p.SetPartialPayment()
-				deliverMin := tx.NewIssuedAmount("10", "USD", "rGateway")
+				deliverMin := iouAmount("10", "USD", "rGateway")
 				p.DeliverMin = &deliverMin
 				return p
 			}(),
@@ -1133,11 +1146,11 @@ func TestDeliverMinValidation(t *testing.T) {
 			payment: func() *Payment {
 				p := &Payment{
 					BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-					Amount:      tx.NewIssuedAmount("10", "USD", "rGateway"),
+					Amount:      iouAmount("10", "USD", "rGateway"),
 					Destination: "rBob",
 				}
 				p.SetPartialPayment()
-				deliverMin := tx.NewIssuedAmount("0", "USD", "rGateway")
+				deliverMin := iouAmount("0", "USD", "rGateway")
 				p.DeliverMin = &deliverMin
 				return p
 			}(),
@@ -1178,7 +1191,7 @@ func TestPartialPaymentXRPRestriction(t *testing.T) {
 			payment: func() *Payment {
 				p := &Payment{
 					BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-					Amount:      tx.NewXRPAmount("1000000"),
+					Amount:      xrpAmount("1000000"),
 					Destination: "rBob",
 				}
 				p.SetPartialPayment()
@@ -1192,9 +1205,9 @@ func TestPartialPaymentXRPRestriction(t *testing.T) {
 			payment: func() *Payment {
 				p := &Payment{
 					BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-					Amount:      tx.NewXRPAmount("1000000"),
+					Amount:      xrpAmount("1000000"),
 					Destination: "rBob",
-					SendMax:     ptrAmount(tx.NewXRPAmount("1100000")),
+					SendMax:     ptrAmount(xrpAmount("1100000")),
 				}
 				p.SetPartialPayment()
 				return p
@@ -1207,7 +1220,7 @@ func TestPartialPaymentXRPRestriction(t *testing.T) {
 			payment: func() *Payment {
 				p := &Payment{
 					BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-					Amount:      tx.NewIssuedAmount("100", "USD", "rGateway"),
+					Amount:      iouAmount("100", "USD", "rGateway"),
 					Destination: "rBob",
 				}
 				p.SetPartialPayment()
@@ -1220,9 +1233,9 @@ func TestPartialPaymentXRPRestriction(t *testing.T) {
 			payment: func() *Payment {
 				p := &Payment{
 					BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-					Amount:      tx.NewIssuedAmount("100", "USD", "rGateway"),
+					Amount:      iouAmount("100", "USD", "rGateway"),
 					Destination: "rBob",
-					SendMax:     ptrAmount(tx.NewXRPAmount("1100000")), // XRP SendMax with IOU Amount
+					SendMax:     ptrAmount(xrpAmount("1100000")), // XRP SendMax with IOU Amount
 				}
 				p.SetPartialPayment()
 				return p
@@ -1291,9 +1304,9 @@ func TestPaymentPathLimits(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			payment := &Payment{
 				BaseTx:      *tx.NewBaseTx(tx.TypePayment, "rAlice"),
-				Amount:      tx.NewIssuedAmount("100", "EUR", "rGatewayEUR"),
+				Amount:      iouAmount("100", "EUR", "rGatewayEUR"),
 				Destination: "rBob",
-				SendMax:     ptrAmount(tx.NewIssuedAmount("110", "USD", "rGatewayUSD")),
+				SendMax:     ptrAmount(iouAmount("110", "USD", "rGatewayUSD")),
 			}
 
 			// Create paths array

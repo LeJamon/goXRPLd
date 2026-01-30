@@ -2,11 +2,10 @@ package xchain
 
 import (
 	"errors"
-	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
-	"strconv"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
+	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
@@ -79,7 +78,7 @@ func (x *XChainCreateBridge) Validate() error {
 		return err
 	}
 
-	if x.SignatureReward.Value == "" {
+	if x.SignatureReward.IsZero() {
 		return errors.New("SignatureReward is required")
 	}
 
@@ -234,7 +233,7 @@ func (x *XChainCommit) Validate() error {
 		return err
 	}
 
-	if x.Amount.Value == "" {
+	if x.Amount.IsZero() {
 		return errors.New("Amount is required")
 	}
 
@@ -297,7 +296,7 @@ func (x *XChainClaim) Validate() error {
 		return errors.New("Destination is required")
 	}
 
-	if x.Amount.Value == "" {
+	if x.Amount.IsZero() {
 		return errors.New("Amount is required")
 	}
 
@@ -357,7 +356,7 @@ func (x *XChainAccountCreateCommit) Validate() error {
 		return errors.New("Destination is required")
 	}
 
-	if x.Amount.Value == "" {
+	if x.Amount.IsZero() {
 		return errors.New("Amount is required")
 	}
 
@@ -559,8 +558,8 @@ func (x *XChainCreateClaimID) Apply(ctx *tx.ApplyContext) tx.Result {
 
 // Apply applies the XChainCommit transaction to the ledger.
 func (x *XChainCommit) Apply(ctx *tx.ApplyContext) tx.Result {
-	amount, err := strconv.ParseUint(x.Amount.Value, 10, 64)
-	if err == nil && x.Amount.Currency == "" {
+	if x.Amount.IsNative() {
+		amount := uint64(x.Amount.Drops())
 		if ctx.Account.Balance < amount {
 			return tx.TecUNFUNDED
 		}
@@ -571,8 +570,8 @@ func (x *XChainCommit) Apply(ctx *tx.ApplyContext) tx.Result {
 
 // Apply applies the XChainClaim transaction to the ledger.
 func (x *XChainClaim) Apply(ctx *tx.ApplyContext) tx.Result {
-	amount, err := strconv.ParseUint(x.Amount.Value, 10, 64)
-	if err == nil && x.Amount.Currency == "" {
+	if x.Amount.IsNative() {
+		amount := uint64(x.Amount.Drops())
 		destID, err := sle.DecodeAccountID(x.Destination)
 		if err != nil {
 			return tx.TemINVALID
@@ -593,8 +592,8 @@ func (x *XChainClaim) Apply(ctx *tx.ApplyContext) tx.Result {
 
 // Apply applies the XChainAccountCreateCommit transaction to the ledger.
 func (x *XChainAccountCreateCommit) Apply(ctx *tx.ApplyContext) tx.Result {
-	amount, err := strconv.ParseUint(x.Amount.Value, 10, 64)
-	if err == nil && x.Amount.Currency == "" {
+	if x.Amount.IsNative() {
+		amount := uint64(x.Amount.Drops())
 		if ctx.Account.Balance < amount {
 			return tx.TecUNFUNDED
 		}

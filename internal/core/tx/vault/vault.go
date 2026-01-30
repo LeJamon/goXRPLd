@@ -4,11 +4,10 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
-	"strconv"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
@@ -424,11 +423,11 @@ func (v *VaultDeposit) Validate() error {
 
 	// Amount is required and must be positive
 	// Reference: rippled VaultDeposit.cpp:53-54
-	if v.Amount.Value == "" {
+	if v.Amount.IsZero() {
 		return ErrVaultAmountRequired
 	}
-	amountVal, err := strconv.ParseFloat(v.Amount.Value, 64)
-	if err != nil || amountVal <= 0 {
+	amountVal := v.Amount.Float64()
+	if amountVal <= 0 {
 		return ErrVaultAmountNotPos
 	}
 
@@ -511,11 +510,11 @@ func (v *VaultWithdraw) Validate() error {
 
 	// Amount is required and must be positive
 	// Reference: rippled VaultWithdraw.cpp:51-52
-	if v.Amount.Value == "" {
+	if v.Amount.IsZero() {
 		return ErrVaultAmountRequired
 	}
-	amountVal, err := strconv.ParseFloat(v.Amount.Value, 64)
-	if err != nil || amountVal <= 0 {
+	amountVal := v.Amount.Float64()
+	if amountVal <= 0 {
 		return ErrVaultAmountNotPos
 	}
 
@@ -623,9 +622,9 @@ func (v *VaultClawback) Validate() error {
 	// Reference: rippled VaultClawback.cpp:60-77
 	if v.Amount != nil {
 		// Zero amount is valid (means "all"), negative is not
-		if v.Amount.Value != "" && v.Amount.Value != "0" {
-			amountVal, err := strconv.ParseFloat(v.Amount.Value, 64)
-			if err == nil && amountVal < 0 {
+		if !v.Amount.IsZero() {
+			amountVal := v.Amount.Float64()
+			if amountVal < 0 {
 				return ErrVaultAmountNotPos
 			}
 		}
@@ -712,7 +711,7 @@ func (v *VaultDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 
 // Apply applies the VaultDeposit transaction to the ledger.
 func (v *VaultDeposit) Apply(ctx *tx.ApplyContext) tx.Result {
-	if v.VaultID == "" || v.Amount.Value == "" {
+	if v.VaultID == "" || v.Amount.IsZero() {
 		return tx.TemINVALID
 	}
 	vaultBytes, err := hex.DecodeString(v.VaultID)
@@ -727,10 +726,7 @@ func (v *VaultDeposit) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TecNO_ENTRY
 	}
 	if v.Amount.Currency == "" || v.Amount.Currency == "XRP" {
-		amount, err := strconv.ParseUint(v.Amount.Value, 10, 64)
-		if err != nil {
-			return tx.TemINVALID
-		}
+		amount := uint64(v.Amount.Drops())
 		if ctx.Account.Balance < amount {
 			return tx.TecINSUFFICIENT_FUNDS
 		}
@@ -741,7 +737,7 @@ func (v *VaultDeposit) Apply(ctx *tx.ApplyContext) tx.Result {
 
 // Apply applies the VaultWithdraw transaction to the ledger.
 func (v *VaultWithdraw) Apply(ctx *tx.ApplyContext) tx.Result {
-	if v.VaultID == "" || v.Amount.Value == "" {
+	if v.VaultID == "" || v.Amount.IsZero() {
 		return tx.TemINVALID
 	}
 	vaultBytes, err := hex.DecodeString(v.VaultID)
@@ -756,10 +752,7 @@ func (v *VaultWithdraw) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TecNO_ENTRY
 	}
 	if v.Amount.Currency == "" || v.Amount.Currency == "XRP" {
-		amount, err := strconv.ParseUint(v.Amount.Value, 10, 64)
-		if err != nil {
-			return tx.TemINVALID
-		}
+		amount := uint64(v.Amount.Drops())
 		ctx.Account.Balance += amount
 	}
 	return tx.TesSUCCESS

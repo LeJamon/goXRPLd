@@ -2,8 +2,6 @@ package payment
 
 import (
 	"bytes"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
-	"math/big"
 
 	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
@@ -72,16 +70,16 @@ type deferredKey struct {
 
 // deferredValue holds the accumulated credits and original balance
 type deferredValue struct {
-	lowAcctCredits     sle.IOUAmount
-	highAcctCredits    sle.IOUAmount
-	lowAcctOrigBalance sle.IOUAmount
+	lowAcctCredits     tx.Amount
+	highAcctCredits    tx.Amount
+	lowAcctOrigBalance tx.Amount
 }
 
 // Adjustment represents the deferred credit adjustments for a balance lookup
 type Adjustment struct {
-	Debits      sle.IOUAmount
-	Credits     sle.IOUAmount
-	OrigBalance sle.IOUAmount
+	Debits      tx.Amount
+	Credits     tx.Amount
+	OrigBalance tx.Amount
 }
 
 // NewPaymentSandbox creates a new root PaymentSandbox wrapping the given LedgerView
@@ -352,12 +350,19 @@ func (s *PaymentSandbox) ForEach(fn func(key [32]byte, data []byte) bool) error 
 
 // Credit records a credit from sender to receiver.
 // This is called when currency moves between accounts during payment execution.
-func (s *PaymentSandbox) Credit(sender, receiver [20]byte, amount sle.IOUAmount, preCreditSenderBalance sle.IOUAmount) {
+func (s *PaymentSandbox) Credit(sender, receiver [20]byte, amount tx.Amount, preCreditSenderBalance tx.Amount) {
+	s.tab.credit(sender, receiver, amount, preCreditSenderBalance)
+}
+
+// CreditHook records a credit from sender to receiver.
+// This is the hook interface used by View implementations to track credits.
+// Reference: rippled PaymentSandbox::creditHook in PaymentSandbox.cpp
+func (s *PaymentSandbox) CreditHook(sender, receiver [20]byte, amount tx.Amount, preCreditSenderBalance tx.Amount) {
 	s.tab.credit(sender, receiver, amount, preCreditSenderBalance)
 }
 
 // credit records a credit in the deferred credits table
-func (dc *DeferredCredits) credit(sender, receiver [20]byte, amount sle.IOUAmount, preCreditSenderBalance sle.IOUAmount) {
+func (dc *DeferredCredits) credit(sender, receiver [20]byte, amount tx.Amount, preCreditSenderBalance tx.Amount) {
 	if sender == receiver {
 		return // No self-credits
 	}
@@ -371,10 +376,11 @@ func (dc *DeferredCredits) credit(sender, receiver [20]byte, amount sle.IOUAmoun
 	v, exists := dc.credits[key]
 
 	if !exists {
+		zeroAmt := tx.NewIssuedAmount(0, -100, amount.Currency, amount.Issuer)
 		v = &deferredValue{
-			lowAcctCredits:     sle.NewIOUAmount("0", amount.Currency, amount.Issuer),
-			highAcctCredits:    sle.NewIOUAmount("0", amount.Currency, amount.Issuer),
-			lowAcctOrigBalance: sle.NewIOUAmount("0", amount.Currency, amount.Issuer),
+			lowAcctCredits:     zeroAmt,
+			highAcctCredits:    zeroAmt,
+			lowAcctOrigBalance: zeroAmt,
 		}
 
 		if bytes.Compare(sender[:], receiver[:]) < 0 {
@@ -391,9 +397,9 @@ func (dc *DeferredCredits) credit(sender, receiver [20]byte, amount sle.IOUAmoun
 	} else {
 		// Only record the balance the first time
 		if bytes.Compare(sender[:], receiver[:]) < 0 {
-			v.highAcctCredits = v.highAcctCredits.Add(amount)
+			v.highAcctCredits, _ = v.highAcctCredits.Add(amount)
 		} else {
-			v.lowAcctCredits = v.lowAcctCredits.Add(amount)
+			v.lowAcctCredits, _ = v.lowAcctCredits.Add(amount)
 		}
 	}
 }
@@ -457,8 +463,8 @@ func (dc *DeferredCredits) apply(to *DeferredCredits) {
 			}
 		} else {
 			// Accumulate credits, don't update origBalance
-			toVal.lowAcctCredits = toVal.lowAcctCredits.Add(fromVal.lowAcctCredits)
-			toVal.highAcctCredits = toVal.highAcctCredits.Add(fromVal.highAcctCredits)
+			toVal.lowAcctCredits, _ = toVal.lowAcctCredits.Add(fromVal.lowAcctCredits)
+			toVal.highAcctCredits, _ = toVal.highAcctCredits.Add(fromVal.highAcctCredits)
 		}
 	}
 
@@ -474,24 +480,18 @@ func (dc *DeferredCredits) apply(to *DeferredCredits) {
 
 // BalanceHook adjusts a reported balance by subtracting deferred credits.
 // This prevents liquidity double-counting across payment paths.
-//
-// The algorithm walks the sandbox chain, accumulating debits and tracking
-// the minimum balance seen. The returned balance is the minimum of:
-// - The current amount
-// - The last recorded original balance minus accumulated debits
-// - The minimum balance seen in the chain
-func (s *PaymentSandbox) BalanceHook(account, issuer [20]byte, amount sle.IOUAmount) sle.IOUAmount {
+func (s *PaymentSandbox) BalanceHook(account, issuer [20]byte, amount tx.Amount) tx.Amount {
 	currency := amount.Currency
 
 	// Initialize with zeroed amount for delta tracking
-	delta := sle.NewIOUAmount("0", currency, amount.Issuer)
+	delta := tx.NewIssuedAmount(0, -100, currency, amount.Issuer)
 	lastBal := amount
 	minBal := amount
 
 	// Walk up the sandbox chain
 	for curSB := s; curSB != nil; curSB = curSB.parent {
 		if adj := curSB.tab.adjustments(account, issuer, currency); adj != nil {
-			delta = delta.Add(adj.Debits)
+			delta, _ = delta.Add(adj.Debits)
 			lastBal = adj.OrigBalance
 			if lastBal.Compare(minBal) < 0 {
 				minBal = lastBal
@@ -500,7 +500,7 @@ func (s *PaymentSandbox) BalanceHook(account, issuer [20]byte, amount sle.IOUAmo
 	}
 
 	// Compute adjusted amount: min(amount, lastBal - delta, minBal)
-	adjustedFromOrig := lastBal.Sub(delta)
+	adjustedFromOrig, _ := lastBal.Sub(delta)
 
 	result := amount
 	if adjustedFromOrig.Compare(result) < 0 {
@@ -510,12 +510,9 @@ func (s *PaymentSandbox) BalanceHook(account, issuer [20]byte, amount sle.IOUAmo
 		result = minBal
 	}
 
-	// Preserve the issuer
-	result.Issuer = amount.Issuer
-
 	// A negative XRP balance is not an error - just return zero
 	if issuer == [20]byte{} && result.IsNegative() {
-		return sle.NewIOUAmount("0", currency, amount.Issuer)
+		return tx.NewIssuedAmount(0, -100, currency, amount.Issuer)
 	}
 
 	return result
@@ -627,15 +624,9 @@ func (s *PaymentSandbox) ApplyToView(view tx.LedgerView) error {
 	}
 
 	// Apply deletions - but first apply any final state modifications
-	// This ensures the ApplyStateTable sees the modified state before deletion
-	// which is necessary for correct metadata generation (PreviousFields/FinalFields)
 	for key := range s.deletions {
-		// Check if there's a final state that was saved before deletion
 		if finalState := s.getDeletedFinalState(key); finalState != nil {
-			// First update with the final state, then erase
-			// This lets ApplyStateTable track the modification before deletion
 			if err := view.Update(keylet.Keylet{Key: key}, finalState); err != nil {
-				// If update fails (e.g., entry doesn't exist), just continue to erase
 				_ = err
 			}
 		}
@@ -703,16 +694,7 @@ func (s *PaymentSandbox) GetDeletions() map[[32]byte]bool {
 	return s.deletions
 }
 
-// IOUAmountFromBigFloat creates an IOUAmount from a big.Float value
-func IOUAmountFromBigFloat(value *big.Float, currency, issuer string) sle.IOUAmount {
-	return sle.IOUAmount{
-		Value:    value,
-		Currency: currency,
-		Issuer:   issuer,
-	}
-}
-
-// ZeroIOUAmount creates a zero IOUAmount with the given currency and issuer
-func ZeroIOUAmount(currency, issuer string) sle.IOUAmount {
-	return sle.NewIOUAmount("0", currency, issuer)
+// ZeroIOUAmount creates a zero IOU Amount with the given currency and issuer
+func ZeroIOUAmount(currency, issuer string) tx.Amount {
+	return tx.NewIssuedAmount(0, -100, currency, issuer)
 }

@@ -2,11 +2,11 @@ package clawback
 
 import (
 	"errors"
+
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
-	"strconv"
 )
 
 func init() {
@@ -20,10 +20,6 @@ const (
 	tfClawbackMask uint32 = 0xFFFFFFFF // All flags are invalid for Clawback
 )
 
-// parseAmountValue parses amount value string (handles both integer and decimal)
-func parseAmountValue(value string) (float64, error) {
-	return strconv.ParseFloat(value, 64)
-}
 
 // Clawback errors
 var (
@@ -83,14 +79,13 @@ func (c *Clawback) Validate() error {
 		return tx.ErrInvalidFlags
 	}
 
-	// Amount is required
-	if c.Amount.Value == "" {
+	// Amount is required and must be positive
+	if c.Amount.IsZero() {
 		return ErrClawbackAmountRequired
 	}
 
-	// Amount must be positive
-	amountVal, err := parseAmountValue(c.Amount.Value)
-	if err != nil || amountVal <= 0 {
+	// Amount must be positive (not negative or zero)
+	if c.Amount.Signum() <= 0 {
 		return ErrClawbackAmountNotPos
 	}
 
@@ -127,7 +122,7 @@ func (c *Clawback) Validate() error {
 
 // Apply applies the Clawback transaction to ledger state.
 func (c *Clawback) Apply(ctx *tx.ApplyContext) tx.Result {
-	if c.Amount.Value == "" {
+	if c.Amount.IsZero() {
 		return tx.TemINVALID
 	}
 

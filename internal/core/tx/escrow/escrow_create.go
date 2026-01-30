@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"strconv"
 
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
@@ -68,16 +67,9 @@ func (e *EscrowCreate) Validate() error {
 		return errors.New("temDST_NEEDED: Destination is required")
 	}
 
-	if e.Amount.Value == "" {
-		return errors.New("temBAD_AMOUNT: Amount is required")
-	}
-
 	// Amount must be positive
 	// Reference: rippled Escrow.cpp:146-147
-	if len(e.Amount.Value) > 0 && e.Amount.Value[0] == '-' {
-		return errors.New("temBAD_AMOUNT: Amount must be positive")
-	}
-	if e.Amount.Value == "0" {
+	if e.Amount.IsZero() || e.Amount.IsNegative() {
 		return errors.New("temBAD_AMOUNT: Amount must be positive")
 	}
 
@@ -117,14 +109,14 @@ func (e *EscrowCreate) Flatten() (map[string]any, error) {
 
 // Apply applies an EscrowCreate transaction
 func (ec *EscrowCreate) Apply(ctx *tx.ApplyContext) tx.Result {
-	// Parse the amount to escrow
-	amount, err := strconv.ParseUint(ec.Amount.Value, 10, 64)
-	if err != nil {
+	// Get the amount to escrow
+	amount := ec.Amount.Drops()
+	if amount <= 0 {
 		return tx.TemINVALID
 	}
 
 	// Check that account has sufficient balance (after fee)
-	if ctx.Account.Balance < amount {
+	if ctx.Account.Balance < uint64(amount) {
 		return tx.TecUNFUNDED
 	}
 
@@ -141,7 +133,7 @@ func (ec *EscrowCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	// Deduct the escrow amount from the account
-	ctx.Account.Balance -= amount
+	ctx.Account.Balance -= uint64(amount)
 
 	// Create the escrow entry
 	accountID, _ := sle.DecodeAccountID(ec.Account)
@@ -150,7 +142,7 @@ func (ec *EscrowCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	escrowKey := keylet.Escrow(accountID, sequence)
 
 	// Serialize escrow
-	escrowData, err := serializeEscrow(ec, accountID, destID, sequence, amount)
+	escrowData, err := serializeEscrow(ec, accountID, destID, sequence, uint64(amount))
 	if err != nil {
 		return tx.TefINTERNAL
 	}

@@ -347,7 +347,9 @@ func executeReplayVerbose(state *StateFixture, env *EnvFixture, txs *TxsFixture,
 		Drops:               totalCoins,
 	}
 
-	fees := XRPAmount.Fees{}
+	// Extract fees from state (use defaults if not found)
+	fees := extractFeesFromState(state.Entries)
+	
 	// Use NewOpenWithHeader to create open ledger directly with the exact header values
 	// This avoids the sequence increment that NewOpen would do
 	openLedger := ledger.NewOpenWithHeader(ledgerHeader, stateMap, txMap, fees)
@@ -362,9 +364,9 @@ func executeReplayVerbose(state *StateFixture, env *EnvFixture, txs *TxsFixture,
 	rules := buildRulesFromAmendments(env.Amendments)
 
 	engineConfig := tx.EngineConfig{
-		BaseFee:                   env.Fees.BaseFee,
-		ReserveBase:               env.Fees.ReserveBase,
-		ReserveIncrement:          env.Fees.ReserveIncrement,
+		BaseFee:                   uint64(fees.Base),
+		ReserveBase:               uint64(fees.Reserve),
+		ReserveIncrement:          uint64(fees.Increment),
 		LedgerSequence:            env.LedgerIndex,
 		SkipSignatureVerification: true,
 		Standalone:                true,
@@ -986,4 +988,97 @@ func createSkipListEntry(l *ledger.Ledger, k keylet.Keylet, parentHash [32]byte,
 
 	// Insert the new entry
 	return l.Insert(k, data)
+}
+
+// extractFeesFromState extracts fee settings from state entries.
+// Returns default fees if FeeSettings not found.
+func extractFeesFromState(entries []StateEntry) XRPAmount.Fees {
+	// FeeSettings keylet index (keylet::fees())
+	feeSettingsIndex := [32]byte{}
+	feeSettingsIndexBytes, _ := hex.DecodeString("4BC50C9B0D8515D3EAAE1E74B29A95804346C491EE1A95BF25E4AAB854A6A651")
+	copy(feeSettingsIndex[:], feeSettingsIndexBytes)
+
+	for _, entry := range entries {
+		// Convert hex string index to [32]byte
+		var entryIndex [32]byte
+		indexBytes, err := hex.DecodeString(entry.Index)
+		if err != nil || len(indexBytes) != 32 {
+			continue
+		}
+		copy(entryIndex[:], indexBytes)
+
+		if entryIndex == feeSettingsIndex {
+			// Decode the entry
+			decoded, err := binarycodec.Decode(entry.Data)
+			if err != nil {
+				break
+			}
+
+			fees := XRPAmount.Fees{}
+
+			// Modern format (XRPFees amendment)
+			if baseFeeDrops, ok := decoded["BaseFeeDrops"].(string); ok {
+				if val, err := parseHexOrDecimal(baseFeeDrops); err == nil {
+					fees.Base = XRPAmount.XRPAmount(val)
+				}
+			}
+			if reserveBaseDrops, ok := decoded["ReserveBaseDrops"].(string); ok {
+				if val, err := parseHexOrDecimal(reserveBaseDrops); err == nil {
+					fees.Reserve = XRPAmount.XRPAmount(val)
+				}
+			}
+			if reserveIncrementDrops, ok := decoded["ReserveIncrementDrops"].(string); ok {
+				if val, err := parseHexOrDecimal(reserveIncrementDrops); err == nil {
+					fees.Increment = XRPAmount.XRPAmount(val)
+				}
+			}
+
+			// Legacy format (pre-XRPFees)
+			if baseFee, ok := decoded["BaseFee"].(string); ok && fees.Base == 0 {
+				if val, err := parseHexOrDecimal(baseFee); err == nil {
+					fees.Base = XRPAmount.XRPAmount(val)
+				}
+			}
+			if reserveBase, ok := decoded["ReserveBase"].(uint32); ok && fees.Reserve == 0 {
+				fees.Reserve = XRPAmount.XRPAmount(reserveBase)
+			}
+			if reserveInc, ok := decoded["ReserveIncrement"].(uint32); ok && fees.Increment == 0 {
+				fees.Increment = XRPAmount.XRPAmount(reserveInc)
+			}
+
+			// Use defaults for any unset values
+			if fees.Base == 0 {
+				fees.Base = 10
+			}
+			if fees.Reserve == 0 {
+				fees.Reserve = 10_000_000
+			}
+			if fees.Increment == 0 {
+				fees.Increment = 2_000_000
+			}
+
+			return fees
+		}
+	}
+
+	// Return defaults
+	return XRPAmount.Fees{
+		Base:      10,
+		Reserve:   10_000_000,
+		Increment: 2_000_000,
+	}
+}
+
+// parseHexOrDecimal parses a string that could be hex or decimal.
+func parseHexOrDecimal(s string) (uint64, error) {
+	// Try hex first (starts with 0x or is all hex chars)
+	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+		var val uint64
+		_, err := fmt.Sscanf(s, "0x%x", &val)
+		return val, err
+	}
+	// Try decimal
+	var val uint64
+	_, err := fmt.Sscanf(s, "%d", &val)
+	return val, err
 }

@@ -242,14 +242,11 @@ func (s *XRPEndpointStep) xrpLiquid(sb *PaymentSandbox) int64 {
 	// Use ownerCountHook to get adjusted owner count
 	ownerCount := sb.OwnerCountHook(s.account, accountRoot.OwnerCount)
 
-	// Calculate reserve (base reserve + owner count * increment)
-	// These values should come from fee settings, but we'll use defaults
-	// BaseReserve = 10 XRP = 10,000,000 drops
-	// OwnerReserve = 2 XRP = 2,000,000 drops per owned object
-	const baseReserve uint64 = 10_000_000
-	const ownerReserve uint64 = 2_000_000
+	// Read reserve values from ledger's FeeSettings
+	// Reference: rippled View.cpp xrpLiquid() reads reserves from fees keylet
+	baseReserve, ownerReserve := GetLedgerReserves(sb)
 
-	reserve := baseReserve + uint64(ownerCount)*ownerReserve
+	reserve := uint64(baseReserve) + uint64(ownerCount)*uint64(ownerReserve)
 
 	// Available = balance - reserve
 	if accountRoot.Balance < reserve {

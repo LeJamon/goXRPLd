@@ -3,28 +3,7 @@ package sle
 import (
 	"bytes"
 	"fmt"
-	"math/big"
 )
-
-// ToIOU converts an Amount to an IOUAmount.
-// For native XRP amounts, this is not meaningful but returns a zero IOUAmount.
-func (a Amount) ToIOU() IOUAmount {
-	if a.IsNative() {
-		drops, _ := ParseDropsString(a.Value)
-		return IOUAmount{
-			Value: new(big.Float).SetUint64(drops),
-		}
-	}
-	v, _, _ := big.ParseFloat(a.Value, 10, 128, big.ToNearestEven)
-	if v == nil {
-		v = new(big.Float)
-	}
-	return IOUAmount{
-		Value:    v,
-		Currency: a.Currency,
-		Issuer:   a.Issuer,
-	}
-}
 
 // CompareAccountIDs compares two 20-byte account IDs lexicographically.
 // Returns -1, 0, or 1.
@@ -47,23 +26,15 @@ func FormatDrops(drops uint64) string {
 // Both amounts must be the same type (both XRP or same IOU currency).
 func SubtractAmount(a, b Amount) Amount {
 	if a.IsNative() {
-		aDrops, _ := ParseDropsString(a.Value)
-		bDrops, _ := ParseDropsString(b.Value)
+		aDrops := a.Drops()
+		bDrops := b.Drops()
 		if aDrops >= bDrops {
-			return NewXRPAmount(FormatDrops(aDrops - bDrops))
+			return NewXRPAmountFromInt(aDrops - bDrops)
 		}
-		return NewXRPAmount("0")
+		return NewXRPAmountFromInt(0)
 	}
-	aVal, _, _ := big.ParseFloat(a.Value, 10, 128, big.ToNearestEven)
-	bVal, _, _ := big.ParseFloat(b.Value, 10, 128, big.ToNearestEven)
-	if aVal == nil {
-		aVal = new(big.Float)
-	}
-	if bVal == nil {
-		bVal = new(big.Float)
-	}
-	result := new(big.Float).Sub(aVal, bVal)
-	return NewIssuedAmount(FormatIOUValue(result), a.Currency, a.Issuer)
+	result, _ := a.Sub(b)
+	return result
 }
 
 // ApplyTransferFee applies a transfer rate to an amount.
@@ -75,15 +46,7 @@ func ApplyTransferFee(amount Amount, transferRate uint32) Amount {
 	if amount.IsNative() {
 		return amount // No transfer fee on XRP
 	}
-	aVal, _, _ := big.ParseFloat(amount.Value, 10, 128, big.ToNearestEven)
-	if aVal == nil {
-		return amount
-	}
-	rate := new(big.Float).SetUint64(uint64(transferRate))
-	billion := new(big.Float).SetUint64(1000000000)
-	multiplier := new(big.Float).Quo(rate, billion)
-	result := new(big.Float).Mul(aVal, multiplier)
-	return NewIssuedAmount(FormatIOUValue(result), amount.Currency, amount.Issuer)
+	return amount.MulRatio(transferRate, 1000000000, true)
 }
 
 // EncodeAccountIDSafe encodes a 20-byte account ID, returning empty string on error

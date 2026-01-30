@@ -49,17 +49,23 @@ type Appliable interface {
 	Apply(ctx *ApplyContext) Result
 }
 
-// Amount is an alias for sle.Amount — represents either XRP (as drops string) or an issued currency amount
+// Amount is an alias for sle.Amount — represents either XRP (as drops int64) or an issued currency amount
 type Amount = sle.Amount
 
 // NewXRPAmount creates an XRP amount in drops
-func NewXRPAmount(drops string) Amount {
-	return sle.NewXRPAmount(drops)
+func NewXRPAmount(drops int64) Amount {
+	return sle.NewXRPAmountFromInt(drops)
 }
 
-// NewIssuedAmount creates an issued currency amount
-func NewIssuedAmount(value, currency, issuer string) Amount {
-	return sle.NewIssuedAmount(value, currency, issuer)
+// NewIssuedAmount creates an issued currency amount from mantissa and exponent
+func NewIssuedAmount(mantissa int64, exponent int, currency, issuer string) Amount {
+	return sle.NewIssuedAmountFromValue(mantissa, exponent, currency, issuer)
+}
+
+// NewIssuedAmountFromFloat64 creates an issued currency amount from a float64 value.
+// This is a convenience function for tests and simple use cases.
+func NewIssuedAmountFromFloat64(value float64, currency, issuer string) Amount {
+	return sle.NewIssuedAmountFromFloat64(value, currency, issuer)
 }
 
 // Memo represents a memo attached to a transaction

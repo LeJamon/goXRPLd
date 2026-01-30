@@ -85,11 +85,9 @@ func calculateOfferQuality(pays, gets tx.Amount) string {
 // parseAmountValue parses an amount value as float
 func parseAmountValue(amt tx.Amount) float64 {
 	if amt.IsNative() {
-		drops, _ := strconv.ParseUint(amt.Value, 10, 64)
-		return float64(drops)
+		return float64(amt.Drops())
 	}
-	val, _ := strconv.ParseFloat(amt.Value, 64)
-	return val
+	return amt.Float64()
 }
 
 // formatHash formats a hash as a string

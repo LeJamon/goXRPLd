@@ -1,16 +1,10 @@
 package payment
 
 import (
-	"fmt"
-	"math/big"
-
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	tx "github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
-
-// DebugDirectStep enables debug output for DirectStepI
-var DebugDirectStep = false
 
 // DirectStepI handles IOU transfers between two accounts via trust lines.
 // This step does not use the order book - it directly transfers IOUs along
@@ -44,9 +38,9 @@ type DirectStepI struct {
 
 // directCache holds cached values from the reverse pass
 type directCache struct {
-	in         sle.IOUAmount
-	srcToDst   sle.IOUAmount // Amount transferred from src to dst
-	out        sle.IOUAmount
+	in         tx.Amount
+	srcToDst   tx.Amount // Amount transferred from src to dst
+	out        tx.Amount
 	srcDebtDir DebtDirection
 }
 
@@ -71,25 +65,13 @@ func (s *DirectStepI) Rev(
 ) (EitherAmount, EitherAmount) {
 	s.cache = nil
 
-	if DebugDirectStep {
-		srcStr, _ := sle.EncodeAccountID(s.src)
-		dstStr, _ := sle.EncodeAccountID(s.dst)
-		fmt.Printf("DEBUG DirectStepI.Rev: %s -> %s currency=%s out=%+v\n", srcStr, dstStr, s.currency, out)
-	}
-
 	if out.IsNative {
 		// Should never happen - DirectStepI only handles IOU
-		if DebugDirectStep {
-			fmt.Printf("DEBUG DirectStepI.Rev: out is native (unexpected)\n")
-		}
 		return ZeroIOUEitherAmount(s.currency, ""), ZeroIOUEitherAmount(s.currency, "")
 	}
 
 	// Get maximum flow and debt direction
 	maxSrcToDst, srcDebtDir := s.maxPaymentFlow(sb)
-	if DebugDirectStep {
-		fmt.Printf("DEBUG DirectStepI.Rev: maxSrcToDst=%+v srcDebtDir=%d\n", maxSrcToDst, srcDebtDir)
-	}
 
 	// Get qualities
 	srcQOut, dstQIn := s.qualities(sb, srcDebtDir, StrandDirectionReverse)
@@ -102,23 +84,24 @@ func (s *DirectStepI) Rev(
 		issuer = sle.EncodeAccountIDSafe(s.src)
 	}
 
-	if maxSrcToDst.Compare(sle.NewIOUAmount("0", s.currency, issuer)) <= 0 {
+	zeroAmt := tx.NewIssuedAmount(0, -100, s.currency, issuer)
+	if maxSrcToDst.Compare(zeroAmt) <= 0 {
 		// Dry - no liquidity
 		s.cache = &directCache{
-			in:         sle.NewIOUAmount("0", s.currency, issuer),
-			srcToDst:   sle.NewIOUAmount("0", s.currency, issuer),
-			out:        sle.NewIOUAmount("0", s.currency, issuer),
+			in:         zeroAmt,
+			srcToDst:   zeroAmt,
+			out:        zeroAmt,
 			srcDebtDir: srcDebtDir,
 		}
 		return ZeroIOUEitherAmount(s.currency, issuer), ZeroIOUEitherAmount(s.currency, issuer)
 	}
 
 	// Calculate srcToDst = out / dstQIn (round up)
-	srcToDst := mulRatioIOU(out.IOU, QualityOne, dstQIn, true)
+	srcToDst := mulRatioAmount(out.IOU, QualityOne, dstQIn, true)
 
 	if srcToDst.Compare(maxSrcToDst) <= 0 {
 		// Non-limiting case
-		in := mulRatioIOU(srcToDst, srcQOut, QualityOne, true)
+		in := mulRatioAmount(srcToDst, srcQOut, QualityOne, true)
 		s.cache = &directCache{
 			in:         in,
 			srcToDst:   srcToDst,
@@ -133,8 +116,8 @@ func (s *DirectStepI) Rev(
 	}
 
 	// Limiting case
-	in := mulRatioIOU(maxSrcToDst, srcQOut, QualityOne, true)
-	actualOut := mulRatioIOU(maxSrcToDst, dstQIn, QualityOne, false)
+	in := mulRatioAmount(maxSrcToDst, srcQOut, QualityOne, true)
+	actualOut := mulRatioAmount(maxSrcToDst, dstQIn, QualityOne, false)
 
 	s.cache = &directCache{
 		in:         in,
@@ -178,23 +161,24 @@ func (s *DirectStepI) Fwd(
 		issuer = sle.EncodeAccountIDSafe(s.src)
 	}
 
-	if maxSrcToDst.Compare(sle.NewIOUAmount("0", s.currency, issuer)) <= 0 {
+	zeroAmt := tx.NewIssuedAmount(0, -100, s.currency, issuer)
+	if maxSrcToDst.Compare(zeroAmt) <= 0 {
 		// Dry
 		s.cache = &directCache{
-			in:         sle.NewIOUAmount("0", s.currency, issuer),
-			srcToDst:   sle.NewIOUAmount("0", s.currency, issuer),
-			out:        sle.NewIOUAmount("0", s.currency, issuer),
+			in:         zeroAmt,
+			srcToDst:   zeroAmt,
+			out:        zeroAmt,
 			srcDebtDir: srcDebtDir,
 		}
 		return ZeroIOUEitherAmount(s.currency, issuer), ZeroIOUEitherAmount(s.currency, issuer)
 	}
 
 	// Calculate srcToDst = in / srcQOut (round down)
-	srcToDst := mulRatioIOU(in.IOU, QualityOne, srcQOut, false)
+	srcToDst := mulRatioAmount(in.IOU, QualityOne, srcQOut, false)
 
 	if srcToDst.Compare(maxSrcToDst) <= 0 {
 		// Non-limiting case
-		out := mulRatioIOU(srcToDst, dstQIn, QualityOne, false)
+		out := mulRatioAmount(srcToDst, dstQIn, QualityOne, false)
 		s.setCacheLimiting(in.IOU, srcToDst, out, srcDebtDir)
 
 		// Execute the credit
@@ -204,8 +188,8 @@ func (s *DirectStepI) Fwd(
 	}
 
 	// Limiting case
-	actualIn := mulRatioIOU(maxSrcToDst, srcQOut, QualityOne, true)
-	out := mulRatioIOU(maxSrcToDst, dstQIn, QualityOne, false)
+	actualIn := mulRatioAmount(maxSrcToDst, srcQOut, QualityOne, true)
+	out := mulRatioAmount(maxSrcToDst, dstQIn, QualityOne, false)
 	s.setCacheLimiting(actualIn, maxSrcToDst, out, srcDebtDir)
 
 	// Execute the credit
@@ -216,7 +200,7 @@ func (s *DirectStepI) Fwd(
 
 // setCacheLimiting updates the cache, keeping minimum values to prevent
 // the forward pass from delivering more than the reverse pass
-func (s *DirectStepI) setCacheLimiting(fwdIn, fwdSrcToDst, fwdOut sle.IOUAmount, srcDebtDir DebtDirection) {
+func (s *DirectStepI) setCacheLimiting(fwdIn, fwdSrcToDst, fwdOut tx.Amount, srcDebtDir DebtDirection) {
 	if s.cache == nil {
 		s.cache = &directCache{
 			in:         fwdIn,
@@ -263,7 +247,8 @@ func (s *DirectStepI) DebtDirection(sb *PaymentSandbox, dir StrandDirection) Deb
 
 	// Check src's balance toward dst
 	srcOwed := s.accountHolds(sb)
-	if srcOwed.Compare(sle.NewIOUAmount("0", s.currency, "")) > 0 {
+	zeroAmt := tx.NewIssuedAmount(0, -100, s.currency, "")
+	if srcOwed.Compare(zeroAmt) > 0 {
 		return DebtDirectionRedeems
 	}
 	return DebtDirectionIssues
@@ -276,8 +261,8 @@ func (s *DirectStepI) QualityUpperBound(v *PaymentSandbox, prevStepDir DebtDirec
 
 	// Quality = srcQOut / dstQIn
 	q := QualityFromAmounts(
-		NewIOUEitherAmount(sle.NewIOUAmount("1", "", "")),
-		NewIOUEitherAmount(sle.NewIOUAmount("1", "", "")),
+		NewIOUEitherAmount(tx.NewIssuedAmount(1000000000000000, 0, "", "")),
+		NewIOUEitherAmount(tx.NewIssuedAmount(1000000000000000, 0, "", "")),
 	)
 	q.Value = uint64((float64(srcQOut) / float64(dstQIn)) * float64(QualityOne))
 
@@ -354,10 +339,11 @@ func (s *DirectStepI) ValidFwd(sb *PaymentSandbox, afView *PaymentSandbox, in Ei
 }
 
 // maxPaymentFlow returns the maximum amount that can flow and the debt direction
-func (s *DirectStepI) maxPaymentFlow(sb *PaymentSandbox) (sle.IOUAmount, DebtDirection) {
+func (s *DirectStepI) maxPaymentFlow(sb *PaymentSandbox) (tx.Amount, DebtDirection) {
 	srcOwed := s.accountHolds(sb)
+	zeroAmt := tx.NewIssuedAmount(0, -100, s.currency, "")
 
-	if srcOwed.Compare(sle.NewIOUAmount("0", s.currency, "")) > 0 {
+	if srcOwed.Compare(zeroAmt) > 0 {
 		// Source holds IOUs from dst - they can redeem up to their balance
 		return srcOwed, DebtDirectionRedeems
 	}
@@ -366,7 +352,7 @@ func (s *DirectStepI) maxPaymentFlow(sb *PaymentSandbox) (sle.IOUAmount, DebtDir
 	// They can issue up to (credit limit - what they've already issued)
 	creditLimit := s.creditLimit(sb)
 	// srcOwed is negative, so creditLimit + srcOwed = creditLimit - |srcOwed|
-	maxIssue := creditLimit.Add(srcOwed)
+	maxIssue, _ := creditLimit.Add(srcOwed)
 	return maxIssue, DebtDirectionIssues
 }
 
@@ -463,24 +449,16 @@ func (s *DirectStepI) quality(sb *PaymentSandbox, isIn bool) uint32 {
 }
 
 // accountHolds returns the balance src holds of dst's IOUs
-func (s *DirectStepI) accountHolds(sb *PaymentSandbox) sle.IOUAmount {
+func (s *DirectStepI) accountHolds(sb *PaymentSandbox) tx.Amount {
 	trustLineKey := keylet.Line(s.src, s.dst, s.currency)
-	if DebugDirectStep {
-		srcStr, _ := sle.EncodeAccountID(s.src)
-		dstStr, _ := sle.EncodeAccountID(s.dst)
-		fmt.Printf("DEBUG DirectStepI.accountHolds: looking up trust line %s <-> %s currency=%s key=%x\n", srcStr, dstStr, s.currency, trustLineKey.Key)
-	}
 	data, err := sb.Read(trustLineKey)
 	if err != nil || data == nil {
-		if DebugDirectStep {
-			fmt.Printf("DEBUG DirectStepI.accountHolds: trust line not found, err=%v\n", err)
-		}
-		return sle.NewIOUAmount("0", s.currency, "")
+		return tx.NewIssuedAmount(0, -100, s.currency, "")
 	}
 
 	rs, err := sle.ParseRippleState(data)
 	if err != nil {
-		return sle.NewIOUAmount("0", s.currency, "")
+		return tx.NewIssuedAmount(0, -100, s.currency, "")
 	}
 
 	// Balance is from low account's perspective (rippled convention):
@@ -488,40 +466,25 @@ func (s *DirectStepI) accountHolds(sb *PaymentSandbox) sle.IOUAmount {
 	// Negative balance = LOW OWES HIGH (LOW has debt to HIGH)
 	balance := rs.Balance
 
-	if DebugDirectStep {
-		fmt.Printf("DEBUG DirectStepI.accountHolds: raw balance=%+v\n", balance)
-	}
-
 	if sle.CompareAccountIDs(s.src, s.dst) < 0 {
 		// src is low account
-		// If balance > 0, LOW is owed by HIGH -> src holds +balance
-		// If balance < 0, LOW owes HIGH -> src holds balance (negative, they owe)
-		if DebugDirectStep {
-			fmt.Printf("DEBUG DirectStepI.accountHolds: src is LOW, returning balance=%+v\n", balance)
-		}
 		return balance
 	}
 	// src is high account
-	// If balance > 0, LOW is owed by HIGH -> HIGH owes, so src holds -balance
-	// If balance < 0, LOW owes HIGH -> HIGH is owed, so src holds -balance (positive result)
-	result := balance.Negate()
-	if DebugDirectStep {
-		fmt.Printf("DEBUG DirectStepI.accountHolds: src is HIGH, returning negated balance=%+v\n", result)
-	}
-	return result
+	return balance.Negate()
 }
 
 // creditLimit returns the credit limit dst has extended to src
-func (s *DirectStepI) creditLimit(sb *PaymentSandbox) sle.IOUAmount {
+func (s *DirectStepI) creditLimit(sb *PaymentSandbox) tx.Amount {
 	trustLineKey := keylet.Line(s.src, s.dst, s.currency)
 	data, err := sb.Read(trustLineKey)
 	if err != nil || data == nil {
-		return sle.NewIOUAmount("0", s.currency, "")
+		return tx.NewIssuedAmount(0, -100, s.currency, "")
 	}
 
 	rs, err := sle.ParseRippleState(data)
 	if err != nil {
-		return sle.NewIOUAmount("0", s.currency, "")
+		return tx.NewIssuedAmount(0, -100, s.currency, "")
 	}
 
 	// Return dst's limit (what dst allows src to owe)
@@ -553,7 +516,7 @@ func (s *DirectStepI) transferRate(sb *PaymentSandbox) uint32 {
 }
 
 // rippleCredit transfers IOUs from src to dst in the sandbox
-func (s *DirectStepI) rippleCredit(sb *PaymentSandbox, amount sle.IOUAmount, issuer string) error {
+func (s *DirectStepI) rippleCredit(sb *PaymentSandbox, amount tx.Amount, issuer string) error {
 	if amount.IsZero() {
 		return nil
 	}
@@ -583,11 +546,11 @@ func (s *DirectStepI) rippleCredit(sb *PaymentSandbox, amount sle.IOUAmount, iss
 	if sle.CompareAccountIDs(s.src, s.dst) < 0 {
 		// src is low, dst is high
 		// LOW pays HIGH -> reduces what HIGH owes LOW -> balance decreases
-		rs.Balance = rs.Balance.Sub(amount)
+		rs.Balance, _ = rs.Balance.Sub(amount)
 	} else {
 		// src is high, dst is low
 		// HIGH pays LOW -> increases what HIGH owes LOW -> balance increases
-		rs.Balance = rs.Balance.Add(amount)
+		rs.Balance, _ = rs.Balance.Add(amount)
 	}
 
 	// Update PreviousTxnID and PreviousTxnLgrSeq
@@ -625,25 +588,7 @@ func (s *DirectStepI) Check(sb *PaymentSandbox) tx.Result {
 	return tx.TesSUCCESS
 }
 
-// mulRatioIOU multiplies an IOU amount by num/den
-func mulRatioIOU(amt sle.IOUAmount, num, den uint32, roundUp bool) sle.IOUAmount {
-	if den == 0 || amt.Value == nil {
-		return amt
-	}
-
-	numF := new(big.Float).SetUint64(uint64(num))
-	denF := new(big.Float).SetUint64(uint64(den))
-	ratio := new(big.Float).Quo(numF, denF)
-	result := new(big.Float).Mul(amt.Value, ratio)
-
-	// Note: For proper rounding, more complex logic would be needed
-	// This is a simplified implementation
-
-	return sle.IOUAmount{
-		Value:    result,
-		Currency: amt.Currency,
-		Issuer:   amt.Issuer,
-	}
+// mulRatioAmount multiplies an Amount by num/den
+func mulRatioAmount(amt tx.Amount, num, den uint32, roundUp bool) tx.Amount {
+	return amt.MulRatio(num, den, roundUp)
 }
-
-// Note: CompareAccountIDs and EncodeAccountID are now accessed via the sle package
