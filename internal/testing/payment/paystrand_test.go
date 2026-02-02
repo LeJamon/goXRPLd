@@ -253,10 +253,7 @@ func TestToStrand_NoTrustLine(t *testing.T) {
 
 // TestToStrand_GlobalFreeze tests global freeze behavior.
 // Reference: rippled PayStrand_test.cpp testToStrand() - "check global freeze"
-// TODO: IOU payments need Amount serialization fixes in the testing framework
 func TestToStrand_GlobalFreeze(t *testing.T) {
-	t.Skip("TODO: IOU payment testing requires Amount serialization fixes")
-
 	env := xrplgoTesting.NewTestEnv(t)
 
 	alice := xrplgoTesting.NewAccount("alice")
@@ -277,15 +274,41 @@ func TestToStrand_GlobalFreeze(t *testing.T) {
 	env.Submit(PayIssued(gw, alice, tx.NewIssuedAmountFromFloat64(100, "USD", gw.Address)).Build())
 	env.Close()
 
-	// Payment should work normally
-	payment := PayIssued(alice, bob, tx.NewIssuedAmountFromFloat64(50, "USD", gw.Address)).Build()
-	result := env.Submit(payment)
+	// Payment should work normally before global freeze
+	usd50 := tx.NewIssuedAmountFromFloat64(50, "USD", gw.Address)
+	result := env.Submit(PayIssued(alice, bob, usd50).Build())
 	xrplgoTesting.RequireTxSuccess(t, result)
 	env.Close()
 
-	// TODO: Set global freeze on gateway and verify payments fail
-	// env.Submit(AccountSet(gw).SetFlag(asfGlobalFreeze))
-	t.Log("Global freeze test: normal payment tested, freeze flag test TBD")
+	// Gateway enables global freeze
+	env.EnableGlobalFreeze(gw)
+	env.Close()
+
+	// Transfer between alice and bob should fail with global freeze
+	usd10 := tx.NewIssuedAmountFromFloat64(10, "USD", gw.Address)
+	result = env.Submit(PayIssued(alice, bob, usd10).Build())
+	if result.Code == "tesSUCCESS" {
+		t.Error("Transfer should fail when issuer has GlobalFreeze enabled")
+	}
+
+	// Gateway can still issue directly to alice (issue is allowed with GlobalFreeze)
+	result = env.Submit(PayIssued(gw, alice, usd10).Build())
+	xrplgoTesting.RequireTxSuccess(t, result)
+
+	// Alice can still redeem directly to gateway (redeem is allowed with GlobalFreeze)
+	result = env.Submit(PayIssued(alice, gw, usd10).Build())
+	xrplgoTesting.RequireTxSuccess(t, result)
+	env.Close()
+
+	// Gateway disables global freeze
+	env.DisableGlobalFreeze(gw)
+	env.Close()
+
+	// Transfer should work again
+	result = env.Submit(PayIssued(alice, bob, usd10).Build())
+	xrplgoTesting.RequireTxSuccess(t, result)
+
+	t.Log("Global freeze test: verified")
 }
 
 // TestToStrand_RequireAuth tests authorization required behavior.
@@ -352,27 +375,47 @@ func TestToStrand_XRPBridge(t *testing.T) {
 
 	alice := xrplgoTesting.NewAccount("alice")
 	bob := xrplgoTesting.NewAccount("bob")
+	carol := xrplgoTesting.NewAccount("carol")
 	gw := xrplgoTesting.NewAccount("gw")
 
 	env.FundAmount(alice, uint64(xrplgoTesting.XRP(10000)))
 	env.FundAmount(bob, uint64(xrplgoTesting.XRP(10000)))
+	env.FundAmount(carol, uint64(xrplgoTesting.XRP(10000)))
 	env.FundAmount(gw, uint64(xrplgoTesting.XRP(10000)))
 	env.Close()
 
-	// Set up trust lines for both USD and EUR
+	// Set up trust lines
 	env.Submit(trust(alice, gw, "USD", 10000))
-	env.Submit(trust(alice, gw, "EUR", 10000))
-	env.Submit(trust(bob, gw, "EUR", 10000))
+	env.Submit(trust(bob, gw, "USD", 10000))
+	env.Submit(trust(carol, gw, "EUR", 10000))
 	env.Close()
 
-	// Issue USD to Alice
-	env.Submit(PayIssued(gw, alice, tx.NewIssuedAmountFromFloat64(100, "USD", gw.Address)).Build())
+	// Issue USD to alice and bob
+	usd100 := tx.NewIssuedAmountFromFloat64(100, "USD", gw.Address)
+	env.Submit(PayIssued(gw, alice, usd100).Build())
+	env.Submit(PayIssued(gw, bob, usd100).Build())
 	env.Close()
 
-	// Cross-currency payment: USD -> XRP -> EUR
-	// This would use the XRP as a bridge currency
-	// TODO: Create offers for USD/XRP and XRP/EUR, then test payment with path
-	t.Log("XRP bridge test: accounts and trust lines set up, offer creation TBD")
+	// Issue EUR to carol
+	eur100 := tx.NewIssuedAmountFromFloat64(100, "EUR", gw.Address)
+	env.Submit(PayIssued(gw, carol, eur100).Build())
+	env.Close()
+
+	// Bob creates offer: sell 50 USD for 500 XRP (0.1 USD per XRP)
+	usd50 := tx.NewIssuedAmountFromFloat64(50, "USD", gw.Address)
+	xrp500 := tx.NewXRPAmount(500_000000) // 500 XRP in drops
+	result := env.CreatePassiveOffer(bob, usd50, xrp500)
+	xrplgoTesting.RequireTxSuccess(t, result)
+	env.Close()
+
+	// Carol creates offer: sell 50 EUR for 500 XRP (0.1 EUR per XRP)
+	eur50 := tx.NewIssuedAmountFromFloat64(50, "EUR", gw.Address)
+	result = env.CreatePassiveOffer(carol, eur50, xrp500)
+	xrplgoTesting.RequireTxSuccess(t, result)
+	env.Close()
+
+	t.Log("XRP bridge test: offers created, cross-currency payment via XRP bridge ready for testing")
+	// Note: Full cross-currency payment test would require SendMax with paths
 }
 
 // ============================================================================

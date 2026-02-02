@@ -262,6 +262,8 @@ func (r Result) String() string {
 		return "tecARRAY_EMPTY"
 	case TecARRAY_TOO_LARGE:
 		return "tecARRAY_TOO_LARGE"
+	case TecDUPLICATE:
+		return "tecDUPLICATE"
 	case TemEMPTY_DID:
 		return "temEMPTY_DID"
 	case TefFAILURE:
@@ -304,6 +306,8 @@ func (r Result) String() string {
 		return "temBAD_FEE"
 	case TemBAD_ISSUER:
 		return "temBAD_ISSUER"
+	case TemBAD_LIMIT:
+		return "temBAD_LIMIT"
 	case TemBAD_SEQUENCE:
 		return "temBAD_SEQUENCE"
 	case TemBAD_SIGNATURE:

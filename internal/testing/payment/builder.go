@@ -23,6 +23,7 @@ type PaymentBuilder struct {
 	invoiceID  string
 	sendMax    *tx.Amount
 	deliverMin *tx.Amount
+	paths      [][]payment.PathStep
 	sequence   *uint32
 	flags      uint32
 	memos      []tx.MemoWrapper
@@ -82,6 +83,23 @@ func (b *PaymentBuilder) SendMax(amount tx.Amount) *PaymentBuilder {
 // DeliverMin sets the minimum amount to deliver (for partial payments).
 func (b *PaymentBuilder) DeliverMin(amount tx.Amount) *PaymentBuilder {
 	b.deliverMin = &amount
+	return b
+}
+
+// Paths sets the payment paths for cross-currency payments.
+// Each path is a slice of PathStep.
+func (b *PaymentBuilder) Paths(paths [][]payment.PathStep) *PaymentBuilder {
+	b.paths = paths
+	return b
+}
+
+// PathsXRP adds a single path through XRP for cross-currency payments.
+// This is a convenience method for the common case of using XRP as a bridge.
+func (b *PaymentBuilder) PathsXRP() *PaymentBuilder {
+	// An empty path step with no account/currency/issuer indicates XRP
+	b.paths = [][]payment.PathStep{{
+		{Currency: "XRP"},
+	}}
 	return b
 }
 
@@ -147,6 +165,9 @@ func (b *PaymentBuilder) Build() tx.Transaction {
 	}
 	if b.deliverMin != nil {
 		payment.DeliverMin = b.deliverMin
+	}
+	if b.paths != nil {
+		payment.Paths = b.paths
 	}
 	if b.sequence != nil {
 		payment.SetSequence(*b.sequence)

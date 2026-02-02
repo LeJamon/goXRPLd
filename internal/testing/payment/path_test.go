@@ -507,3 +507,310 @@ func TestPath_XRPBridge(t *testing.T) {
 	// alice (gw1/HKD holder) pays bob (gw2/HKD holder) via XRP bridge
 	t.Log("XRP bridge test: requires offer creation support")
 }
+
+// =============================================================================
+// RPC Path Finding Tests (require ripple_path_find RPC implementation)
+// =============================================================================
+
+// TestPath_SourceCurrenciesLimit tests RPC path finding with source currency limits.
+// From rippled: Path_test::source_currencies_limit
+func TestPath_SourceCurrenciesLimit(t *testing.T) {
+	t.Skip("TODO: Requires ripple_path_find RPC implementation")
+
+	// Test RPC::Tuning::max_src_cur source currencies
+	// Test more than RPC::Tuning::max_src_cur source currencies (should error)
+	// Test RPC::Tuning::max_auto_src_cur source currencies
+	// Test more than RPC::Tuning::max_auto_src_cur source currencies (should error)
+	t.Log("Source currencies limit test: requires RPC path finding")
+}
+
+// TestPath_PathFindConsumeAll tests path consumption with alternatives.
+// From rippled: Path_test::path_find_consume_all
+func TestPath_PathFindConsumeAll(t *testing.T) {
+	t.Skip("TODO: Requires ripple_path_find RPC implementation")
+
+	// Test finding paths that consume all available liquidity
+	// alice -> bob -> carol -> edward (10 limit)
+	// alice -> dan -> edward (100 limit)
+	// Total should be 110 USD (10 via bob/carol + 100 via dan)
+	t.Log("Path find consume all test: requires RPC path finding")
+}
+
+// TestPath_AlternativePathConsumeBoth tests consuming both alternative paths.
+// From rippled: Path_test::alternative_path_consume_both
+func TestPath_AlternativePathConsumeBoth(t *testing.T) {
+	t.Skip("TODO: Requires ripple_path_find RPC and IOU payment support")
+
+	// alice has trust lines to both gateways (gw, gw2)
+	// Fund alice from both gateways with 70 USD each
+	// alice pays bob 140 USD - should consume both paths
+	// Result: alice has 0 USD from both, bob has 70 from each gateway
+	t.Log("Alternative path consume both test: requires RPC path finding")
+}
+
+// TestPath_AlternativePathsConsumeBestTransfer tests consuming best transfer rate.
+// From rippled: Path_test::alternative_paths_consume_best_transfer
+func TestPath_AlternativePathsConsumeBestTransfer(t *testing.T) {
+	t.Skip("TODO: Requires ripple_path_find RPC and transfer rate support")
+
+	// gw2 has 1.1x transfer rate (10% fee)
+	// alice pays bob 70 USD - should use gw (no transfer fee) first
+	// Result: alice has 0 gw/USD, 70 gw2/USD; bob has 70 gw/USD, 0 gw2/USD
+	t.Log("Alternative paths consume best transfer test: requires RPC path finding")
+}
+
+// TestPath_AlternativePathsConsumeBestTransferFirst tests best transfer consumed first.
+// From rippled: Path_test::alternative_paths_consume_best_transfer_first
+func TestPath_AlternativePathsConsumeBestTransferFirst(t *testing.T) {
+	t.Skip("TODO: Requires ripple_path_find RPC and transfer rate support")
+
+	// Similar to above but tests that best quality is consumed first
+	// when paying more than one path can provide
+	t.Log("Alternative paths consume best transfer first test: requires RPC path finding")
+}
+
+// TestPath_AlternativePathsLimitReturnedPaths tests limiting returned paths to best quality.
+// From rippled: Path_test::alternative_paths_limit_returned_paths_to_best_quality
+func TestPath_AlternativePathsLimitReturnedPaths(t *testing.T) {
+	t.Skip("TODO: Requires ripple_path_find RPC implementation")
+
+	// carol has 1.1x transfer rate
+	// Set up trust lines for multiple paths (carol, dan, gw, gw2)
+	// Find paths - should return paths ordered by quality (best first)
+	t.Log("Alternative paths limit test: requires RPC path finding")
+}
+
+// TestPath_IssuesPathNegativeIssue5 tests Issue #5 regression.
+// From rippled: Path_test::issues_path_negative_issue
+func TestPath_IssuesPathNegativeIssue5(t *testing.T) {
+	t.Skip("TODO: Requires ripple_path_find RPC implementation")
+
+	// alice tries to pay bob - should fail (no path)
+	// bob pays carol 75 USD
+	// alice tries to pay bob 25 USD - path finding should return empty
+	// Payment should fail with tecPATH_DRY
+	t.Log("Issues path negative issue 5 test: requires RPC path finding")
+}
+
+// TestPath_IssuesRippleClientIssue23Smaller tests ripple-client issue #23 smaller case.
+// From rippled: Path_test::issues_path_negative_ripple_client_issue_23_smaller
+func TestPath_IssuesRippleClientIssue23Smaller(t *testing.T) {
+	t.Skip("TODO: Requires IOU payment with explicit paths")
+
+	// alice -- limit 40 --> bob
+	// alice --> carol --> dan --> bob (limit 20)
+	// alice pays bob 55 USD via paths
+	// Result: bob has 40 alice/USD + 15 dan/USD
+	t.Log("Ripple client issue 23 smaller test: requires path payment")
+}
+
+// TestPath_IssuesRippleClientIssue23Larger tests ripple-client issue #23 larger case.
+// From rippled: Path_test::issues_path_negative_ripple_client_issue_23_larger
+func TestPath_IssuesRippleClientIssue23Larger(t *testing.T) {
+	t.Skip("TODO: Requires IOU payment with explicit paths")
+
+	// alice -120 USD-> edward -25 USD-> bob
+	// alice -25 USD-> carol -75 USD -> dan -100 USD-> bob
+	// alice pays bob 50 USD via paths
+	// Result: alice has -25 edward/USD, -25 carol/USD
+	//         bob has 25 edward/USD, 25 dan/USD
+	t.Log("Ripple client issue 23 larger test: requires path payment")
+}
+
+// TestPath_PathFind01 tests Path Find: XRP -> XRP and XRP -> IOU.
+// From rippled: Path_test::path_find_01
+func TestPath_PathFind01(t *testing.T) {
+	t.Skip("TODO: Requires ripple_path_find RPC and offers")
+
+	// Test various path finding scenarios:
+	// - XRP -> XRP direct (no path needed)
+	// - XRP -> non-existent account (empty path)
+	// - XRP -> IOU via offers
+	// - XRP -> IOU via multiple hops
+	t.Log("Path find 01 test: requires RPC path finding and offers")
+}
+
+// TestPath_PathFind02 tests Path Find: non-XRP -> XRP.
+// From rippled: Path_test::path_find_02
+func TestPath_PathFind02(t *testing.T) {
+	t.Skip("TODO: Requires ripple_path_find RPC and offers")
+
+	// Test path finding from IOU to XRP via offer
+	// A1 sends ABC -> A2 receives XRP
+	// Path goes through offer: ABC -> XRP
+	t.Log("Path find 02 test: requires RPC path finding and offers")
+}
+
+// TestPath_PathFind04 tests Bitstamp and SnapSwap liquidity with no offers.
+// From rippled: Path_test::path_find_04
+func TestPath_PathFind04(t *testing.T) {
+	t.Skip("TODO: Requires ripple_path_find RPC implementation")
+
+	// A1 trusts Bitstamp (G1BS), A2 trusts SnapSwap (G2SW)
+	// M1 trusts both (acts as liquidity provider)
+	// Test path finding through liquidity provider without offers
+	// Path: A1 -> G1BS -> M1 -> G2SW -> A2
+	t.Log("Path find 04 test: requires RPC path finding")
+}
+
+// TestPath_PathFind05 tests non-XRP -> non-XRP, same currency.
+// From rippled: Path_test::path_find_05
+func TestPath_PathFind05(t *testing.T) {
+	t.Skip("TODO: Requires ripple_path_find RPC and offers")
+
+	// Complex trust line setup for various path scenarios:
+	// A) Borrow or repay - Source -> Destination (direct to issuer)
+	// B) Common gateway - Source -> AC -> Destination
+	// C) Gateway to gateway - Source -> OB -> Destination
+	// D) User to unlinked gateway - Source -> AC -> OB -> Destination
+	// I4) XRP bridge - Source -> AC -> OB to XRP -> OB from XRP -> AC -> Destination
+	t.Log("Path find 05 test: requires RPC path finding and offers")
+}
+
+// TestPath_PathFind06 tests gateway to user path.
+// From rippled: Path_test::path_find_06
+func TestPath_PathFind06(t *testing.T) {
+	t.Skip("TODO: Requires ripple_path_find RPC and offers")
+
+	// E) Gateway to user - Source -> OB -> AC -> Destination
+	// G1 pays A2 (who trusts G2) via market maker M1
+	t.Log("Path find 06 test: requires RPC path finding and offers")
+}
+
+// TestPath_ReceiveMax tests receive max in path finding.
+// From rippled: Path_test::receive_max
+func TestPath_ReceiveMax(t *testing.T) {
+	t.Skip("TODO: Requires ripple_path_find RPC and offers")
+
+	// Test XRP -> IOU receive max (find max receivable given send limit)
+	// Test IOU -> XRP receive max
+	t.Log("Receive max test: requires RPC path finding and offers")
+}
+
+// TestPath_HybridOfferPath tests hybrid domain/open offers.
+// From rippled: Path_test::hybrid_offer_path
+func TestPath_HybridOfferPath(t *testing.T) {
+	t.Skip("TODO: Requires domain and hybrid offer support")
+
+	// Test path finding with different combinations of:
+	// - Open offers
+	// - Domain offers
+	// - Hybrid offers (visible in both)
+	t.Log("Hybrid offer path test: requires domain support")
+}
+
+// TestPath_AMMDomainPath tests AMM path finding with domain.
+// From rippled: Path_test::amm_domain_path
+func TestPath_AMMDomainPath(t *testing.T) {
+	t.Skip("TODO: Requires AMM support")
+
+	// AMM should NOT be included in domain path finding
+	// AMM should be included in non-domain path finding
+	t.Log("AMM domain path test: requires AMM support")
+}
+
+// =============================================================================
+// Path Execution Tests (test payment with explicit paths)
+// =============================================================================
+
+// TestPath_PathFind tests basic path finding via gateway.
+// From rippled: Path_test::path_find
+func TestPath_PathFind(t *testing.T) {
+	t.Skip("TODO: Requires IOU payment through gateway")
+
+	env := xrplgoTesting.NewTestEnv(t)
+
+	gw := xrplgoTesting.NewAccount("gateway")
+	alice := xrplgoTesting.NewAccount("alice")
+	bob := xrplgoTesting.NewAccount("bob")
+
+	env.FundAmount(gw, uint64(xrplgoTesting.XRP(10000)))
+	env.FundAmount(alice, uint64(xrplgoTesting.XRP(10000)))
+	env.FundAmount(bob, uint64(xrplgoTesting.XRP(10000)))
+	env.Close()
+
+	// Set up trust lines
+	result := env.Submit(trustset.TrustLine(alice, "USD", gw, "600").Build())
+	xrplgoTesting.RequireTxSuccess(t, result)
+	result = env.Submit(trustset.TrustLine(bob, "USD", gw, "700").Build())
+	xrplgoTesting.RequireTxSuccess(t, result)
+	env.Close()
+
+	// Fund alice and bob
+	usd70 := tx.NewIssuedAmountFromFloat64(70, "USD", gw.Address)
+	result = env.Submit(PayIssued(gw, alice, usd70).Build())
+	xrplgoTesting.RequireTxSuccess(t, result)
+	usd50 := tx.NewIssuedAmountFromFloat64(50, "USD", gw.Address)
+	result = env.Submit(PayIssued(gw, bob, usd50).Build())
+	xrplgoTesting.RequireTxSuccess(t, result)
+	env.Close()
+
+	// alice pays bob 5 USD - path should go through gateway
+	// Path: alice -> gw -> bob
+	t.Log("Path find test: requires IOU payment through gateway")
+}
+
+// TestPath_ViaOffersViaGateway tests payment via gateway with offers.
+// From rippled: Path_test::via_offers_via_gateway
+func TestPath_ViaOffersViaGateway(t *testing.T) {
+	t.Skip("TODO: Requires offer creation and cross-currency payment")
+
+	env := xrplgoTesting.NewTestEnv(t)
+
+	gw := xrplgoTesting.NewAccount("gateway")
+	alice := xrplgoTesting.NewAccount("alice")
+	bob := xrplgoTesting.NewAccount("bob")
+	carol := xrplgoTesting.NewAccount("carol")
+
+	env.FundAmount(gw, uint64(xrplgoTesting.XRP(10000)))
+	env.FundAmount(alice, uint64(xrplgoTesting.XRP(10000)))
+	env.FundAmount(bob, uint64(xrplgoTesting.XRP(10000)))
+	env.FundAmount(carol, uint64(xrplgoTesting.XRP(10000)))
+	env.Close()
+
+	// gw has 1.1x transfer rate
+	// bob and carol trust gw for AUD
+	result := env.Submit(trustset.TrustLine(bob, "AUD", gw, "100").Build())
+	xrplgoTesting.RequireTxSuccess(t, result)
+	result = env.Submit(trustset.TrustLine(carol, "AUD", gw, "100").Build())
+	xrplgoTesting.RequireTxSuccess(t, result)
+	env.Close()
+
+	// Fund carol with AUD
+	aud50 := tx.NewIssuedAmountFromFloat64(50, "AUD", gw.Address)
+	result = env.Submit(PayIssued(gw, carol, aud50).Build())
+	xrplgoTesting.RequireTxSuccess(t, result)
+	env.Close()
+
+	// Carol creates offer: XRP(50) for AUD(50)
+	// alice pays bob 10 AUD using XRP via carol's offer
+	t.Log("Via offers via gateway test: requires offer creation")
+}
+
+// TestPath_IndirectPathsPathFind tests indirect path finding.
+// From rippled: Path_test::indirect_paths_path_find
+func TestPath_IndirectPathsPathFind(t *testing.T) {
+	t.Skip("TODO: Requires IOU payment with rippling")
+
+	env := xrplgoTesting.NewTestEnv(t)
+
+	alice := xrplgoTesting.NewAccount("alice")
+	bob := xrplgoTesting.NewAccount("bob")
+	carol := xrplgoTesting.NewAccount("carol")
+
+	env.FundAmount(alice, uint64(xrplgoTesting.XRP(10000)))
+	env.FundAmount(bob, uint64(xrplgoTesting.XRP(10000)))
+	env.FundAmount(carol, uint64(xrplgoTesting.XRP(10000)))
+	env.Close()
+
+	// alice -> bob -> carol trust chain
+	result := env.Submit(trustset.TrustLine(bob, "USD", alice, "1000").Build())
+	xrplgoTesting.RequireTxSuccess(t, result)
+	result = env.Submit(trustset.TrustLine(carol, "USD", bob, "1000").Build())
+	xrplgoTesting.RequireTxSuccess(t, result)
+	env.Close()
+
+	// alice pays carol 5 USD through bob (rippling)
+	// Path: alice -> bob -> carol
+	t.Log("Indirect paths path find test: requires rippling")
+}

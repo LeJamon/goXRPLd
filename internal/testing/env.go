@@ -2,6 +2,8 @@ package testing
 
 import (
 	"github.com/LeJamon/goXRPLd/internal/core/tx/account"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/depositpreauth"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/offer"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 	"testing"
 	"time"
@@ -232,6 +234,156 @@ func (e *TestEnv) DisableDepositAuth(acc *Account) {
 	}
 }
 
+// EnableGlobalFreeze enables the GlobalFreeze flag on an account.
+// When enabled, all trust lines for this account's issued currencies are frozen.
+func (e *TestEnv) EnableGlobalFreeze(acc *Account) {
+	e.t.Helper()
+
+	accountSet := account.NewAccountSet(acc.Address)
+	flag := account.AccountSetFlagGlobalFreeze
+	accountSet.SetFlag = &flag
+	accountSet.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	accountSet.Sequence = &seq
+
+	result := e.Submit(accountSet)
+	if !result.Success {
+		e.t.Fatalf("Failed to enable GlobalFreeze for account %s: %s", acc.Name, result.Code)
+	}
+}
+
+// DisableGlobalFreeze disables the GlobalFreeze flag on an account.
+// Note: Cannot be cleared if NoFreeze is set.
+func (e *TestEnv) DisableGlobalFreeze(acc *Account) {
+	e.t.Helper()
+
+	accountSet := account.NewAccountSet(acc.Address)
+	flag := account.AccountSetFlagGlobalFreeze
+	accountSet.ClearFlag = &flag
+	accountSet.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	accountSet.Sequence = &seq
+
+	result := e.Submit(accountSet)
+	if !result.Success {
+		e.t.Fatalf("Failed to disable GlobalFreeze for account %s: %s", acc.Name, result.Code)
+	}
+}
+
+// EnableNoFreeze enables the NoFreeze flag on an account.
+// Once set, this flag cannot be cleared. It prevents the account from freezing trust lines.
+func (e *TestEnv) EnableNoFreeze(acc *Account) {
+	e.t.Helper()
+
+	accountSet := account.NewAccountSet(acc.Address)
+	flag := account.AccountSetFlagNoFreeze
+	accountSet.SetFlag = &flag
+	accountSet.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	accountSet.Sequence = &seq
+
+	result := e.Submit(accountSet)
+	if !result.Success {
+		e.t.Fatalf("Failed to enable NoFreeze for account %s: %s", acc.Name, result.Code)
+	}
+}
+
+// EnableRequireAuth enables the RequireAuth flag on an account.
+// When enabled, trust lines to this account require authorization.
+func (e *TestEnv) EnableRequireAuth(acc *Account) {
+	e.t.Helper()
+
+	accountSet := account.NewAccountSet(acc.Address)
+	flag := account.AccountSetFlagRequireAuth
+	accountSet.SetFlag = &flag
+	accountSet.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	accountSet.Sequence = &seq
+
+	result := e.Submit(accountSet)
+	if !result.Success {
+		e.t.Fatalf("Failed to enable RequireAuth for account %s: %s", acc.Name, result.Code)
+	}
+}
+
+// DisableRequireAuth disables the RequireAuth flag on an account.
+func (e *TestEnv) DisableRequireAuth(acc *Account) {
+	e.t.Helper()
+
+	accountSet := account.NewAccountSet(acc.Address)
+	flag := account.AccountSetFlagRequireAuth
+	accountSet.ClearFlag = &flag
+	accountSet.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	accountSet.Sequence = &seq
+
+	result := e.Submit(accountSet)
+	if !result.Success {
+		e.t.Fatalf("Failed to disable RequireAuth for account %s: %s", acc.Name, result.Code)
+	}
+}
+
+// Preauthorize allows owner to preauthorize authorized for deposits.
+// This creates a DepositPreauth ledger entry.
+func (e *TestEnv) Preauthorize(owner, authorized *Account) {
+	e.t.Helper()
+
+	preauth := depositpreauth.NewDepositPreauth(owner.Address)
+	preauth.SetAuthorize(authorized.Address)
+	preauth.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(owner)
+	preauth.Sequence = &seq
+
+	result := e.Submit(preauth)
+	if !result.Success {
+		e.t.Fatalf("Failed to preauthorize %s for %s: %s", authorized.Name, owner.Name, result.Code)
+	}
+}
+
+// Unauthorize removes preauthorization for authorized from owner.
+func (e *TestEnv) Unauthorize(owner, authorized *Account) {
+	e.t.Helper()
+
+	preauth := depositpreauth.NewDepositPreauth(owner.Address)
+	preauth.SetUnauthorize(authorized.Address)
+	preauth.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(owner)
+	preauth.Sequence = &seq
+
+	result := e.Submit(preauth)
+	if !result.Success {
+		e.t.Fatalf("Failed to unauthorize %s for %s: %s", authorized.Name, owner.Name, result.Code)
+	}
+}
+
+// CreateOffer creates an offer on the DEX.
+// takerGets is what the offer creator will receive (what the taker pays).
+// takerPays is what the offer creator will pay (what the taker gets).
+func (e *TestEnv) CreateOffer(acc *Account, takerGets, takerPays tx.Amount) TxResult {
+	e.t.Helper()
+
+	offerTx := offer.NewOfferCreate(acc.Address, takerGets, takerPays)
+	offerTx.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	offerTx.Sequence = &seq
+
+	return e.Submit(offerTx)
+}
+
+// CreatePassiveOffer creates a passive offer on the DEX.
+// Passive offers don't immediately consume offers at an equal or better rate.
+func (e *TestEnv) CreatePassiveOffer(acc *Account, takerGets, takerPays tx.Amount) TxResult {
+	e.t.Helper()
+
+	offerTx := offer.NewOfferCreate(acc.Address, takerGets, takerPays)
+	offerTx.SetPassive()
+	offerTx.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	offerTx.Sequence = &seq
+
+	return e.Submit(offerTx)
+}
+
 // Close closes the current ledger and advances to a new one.
 // This is equivalent to "ledger_accept" in rippled.
 func (e *TestEnv) Close() {
@@ -412,6 +564,19 @@ func (e *TestEnv) IOUBalance(holder, issuer *Account, currency string) *sle.Amou
 	}
 
 	return &balance
+}
+
+// BalanceIOU returns the IOU balance of an account for a specific currency and issuer as float64.
+// This is a convenience method for tests that need simple numeric comparisons.
+func (e *TestEnv) BalanceIOU(holder *Account, currency string, issuer *Account) float64 {
+	e.t.Helper()
+
+	balance := e.IOUBalance(holder, issuer, currency)
+	if balance == nil {
+		return 0.0
+	}
+
+	return balance.Float64()
 }
 
 // TrustLineExists checks if a trust line exists between two accounts for a currency.
