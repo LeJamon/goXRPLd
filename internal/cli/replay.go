@@ -18,6 +18,8 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/shamap"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	_ "github.com/LeJamon/goXRPLd/internal/core/tx/all"
+
 	"github.com/spf13/cobra"
 )
 
@@ -349,7 +351,7 @@ func executeReplayVerbose(state *StateFixture, env *EnvFixture, txs *TxsFixture,
 
 	// Extract fees from state (use defaults if not found)
 	fees := extractFeesFromState(state.Entries)
-	
+
 	// Use NewOpenWithHeader to create open ledger directly with the exact header values
 	// This avoids the sequence increment that NewOpen would do
 	openLedger := ledger.NewOpenWithHeader(ledgerHeader, stateMap, txMap, fees)
@@ -871,10 +873,10 @@ func writeResultJSON(path string, result *ReplayResult) error {
 // updateSkipList updates the LedgerHashes entries (skip lists) with the parent hash.
 // This mirrors rippled's Ledger::updateSkipList() function.
 // There are TWO skip lists:
-// 1. "Every 256th ledger" skip list: Updated only when (prevIndex & 0xff) == 0,
-//    using keylet::skip(prevIndex). Records a hash of every 256th ledger.
-// 2. "Rolling 256" skip list: Always updated, using keylet::skip().
-//    Maintains a rolling window of the most recent 256 ledger hashes.
+//  1. "Every 256th ledger" skip list: Updated only when (prevIndex & 0xff) == 0,
+//     using keylet::skip(prevIndex). Records a hash of every 256th ledger.
+//  2. "Rolling 256" skip list: Always updated, using keylet::skip().
+//     Maintains a rolling window of the most recent 256 ledger hashes.
 func updateSkipList(l *ledger.Ledger, parentHash [32]byte, currentSeq uint32) error {
 	if currentSeq == 0 {
 		// Genesis ledger has no parent
