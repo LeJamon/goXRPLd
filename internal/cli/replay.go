@@ -18,6 +18,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/shamap"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	_ "github.com/LeJamon/goXRPLd/internal/core/tx/all" // Register all transaction types
 	"github.com/spf13/cobra"
 )
 
