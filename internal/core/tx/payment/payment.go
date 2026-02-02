@@ -478,6 +478,29 @@ func (p *Payment) applyIOUPayment(ctx *tx.ApplyContext) tx.Result {
 		return tx.TecDST_TAG_NEEDED
 	}
 
+	// Check deposit authorization for IOU payments
+	// Reference: rippled Payment.cpp:429-464
+	// IOU payments (ripple=true) require either:
+	// 1. Destination does not have lsfDepositAuth set, OR
+	// 2. Sender is destination (self-payment), OR
+	// 3. Sender is preauthorized via DepositPreauth
+	if (destAccount.Flags & sle.LsfDepositAuth) != 0 {
+		// Check if this is a self-payment (always allowed)
+		if senderAccountID != destAccountID {
+			// Look up the DepositPreauth ledger entry
+			depositPreauthKey := keylet.DepositPreauth(destAccountID, senderAccountID)
+			preauthExists, err := ctx.View.Exists(depositPreauthKey)
+			if err != nil {
+				return tx.TefINTERNAL
+			}
+
+			if !preauthExists {
+				// Sender is not preauthorized to deposit to this account
+				return tx.TecNO_PERMISSION
+			}
+		}
+	}
+
 	// Handle three cases:
 	// 1. Sender is issuer - creating new tokens
 	// 2. Destination is issuer - redeeming tokens
@@ -794,6 +817,24 @@ func (p *Payment) applyIOUTransfer(ctx *tx.ApplyContext, dest *sle.AccountRoot, 
 		return tx.TefINTERNAL
 	}
 
+	// Check if sender's trust line is frozen by the issuer
+	// Reference: rippled checkFreeze in StepChecks.h
+	// The freeze flag depends on which side is higher/lower
+	senderIsLowInTrustLine := sle.CompareAccountIDsForLine(senderID, issuerID) < 0
+	if senderIsLowInTrustLine {
+		// Sender is LOW, issuer is HIGH
+		// Check if issuer (HIGH) has frozen sender's trust line
+		if (senderRippleState.Flags & sle.LsfHighFreeze) != 0 {
+			return tx.TerNO_LINE
+		}
+	} else {
+		// Sender is HIGH, issuer is LOW
+		// Check if issuer (LOW) has frozen sender's trust line
+		if (senderRippleState.Flags & sle.LsfLowFreeze) != 0 {
+			return tx.TerNO_LINE
+		}
+	}
+
 	// Read destination's trust line
 	destTrustData, err := ctx.View.Read(destTrustLineKey)
 	if err != nil {
@@ -802,6 +843,24 @@ func (p *Payment) applyIOUTransfer(ctx *tx.ApplyContext, dest *sle.AccountRoot, 
 	destRippleState, err := sle.ParseRippleState(destTrustData)
 	if err != nil {
 		return tx.TefINTERNAL
+	}
+
+	// Check if destination's trust line is frozen (holder freeze)
+	// Reference: rippled checkFreeze in StepChecks.h
+	// Holder freeze blocks incoming transfers from third parties
+	destIsLowInTrustLine := sle.CompareAccountIDsForLine(destID, issuerID) < 0
+	if destIsLowInTrustLine {
+		// Dest is LOW, issuer is HIGH
+		// Check if dest (LOW) has frozen their own trust line (holder freeze)
+		if (destRippleState.Flags & sle.LsfLowFreeze) != 0 {
+			return tx.TerNO_LINE
+		}
+	} else {
+		// Dest is HIGH, issuer is LOW
+		// Check if dest (HIGH) has frozen their own trust line (holder freeze)
+		if (destRippleState.Flags & sle.LsfHighFreeze) != 0 {
+			return tx.TerNO_LINE
+		}
 	}
 
 	// Calculate sender's balance with issuer

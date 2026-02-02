@@ -1,6 +1,7 @@
 package testing
 
 import (
+	"github.com/LeJamon/goXRPLd/internal/core/tx/account"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 	"testing"
 	"time"
@@ -144,6 +145,9 @@ func (e *TestEnv) Fund(accounts ...*Account) {
 }
 
 // FundAmount funds an account with a specific amount.
+// Like rippled's test environment, this also enables DefaultRipple on the account.
+// This is important for trust line behavior - without DefaultRipple, trust lines
+// cannot be deleted when limit is set to 0 (the NoRipple state would be "non-default").
 func (e *TestEnv) FundAmount(acc *Account, amount uint64) {
 	e.t.Helper()
 
@@ -156,9 +160,13 @@ func (e *TestEnv) FundAmount(acc *Account, amount uint64) {
 		e.t.Fatal("Master account not found")
 	}
 
+	// Fund with extra to cover the AccountSet fee (for enabling DefaultRipple)
+	// This ensures the account ends up with the requested amount.
+	totalFunding := amount + e.baseFee
+
 	// Create payment transaction
 	seq := e.Seq(master)
-	payment := payment.NewPayment(master.Address, acc.Address, tx.NewXRPAmount(int64(amount)))
+	payment := payment.NewPayment(master.Address, acc.Address, tx.NewXRPAmount(int64(totalFunding)))
 	payment.Fee = formatUint64(e.baseFee)
 	payment.Sequence = &seq
 
@@ -166,6 +174,61 @@ func (e *TestEnv) FundAmount(acc *Account, amount uint64) {
 	result := e.Submit(payment)
 	if !result.Success {
 		e.t.Fatalf("Failed to fund account %s: %s", acc.Name, result.Code)
+	}
+
+	// Enable DefaultRipple on the account (matching rippled's test environment)
+	// This allows trust lines to be properly deleted when limits are set to 0.
+	e.enableDefaultRipple(acc)
+}
+
+// enableDefaultRipple enables the DefaultRipple flag on an account.
+// This matches rippled's test environment behavior.
+func (e *TestEnv) enableDefaultRipple(acc *Account) {
+	e.t.Helper()
+
+	accountSet := account.NewAccountSet(acc.Address)
+	accountSet.EnableDefaultRipple()
+	accountSet.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	accountSet.Sequence = &seq
+
+	result := e.Submit(accountSet)
+	if !result.Success {
+		e.t.Fatalf("Failed to enable DefaultRipple for account %s: %s", acc.Name, result.Code)
+	}
+}
+
+// EnableDepositAuth enables the DepositAuth flag on an account.
+// When enabled, the account can only receive payments from preauthorized accounts.
+func (e *TestEnv) EnableDepositAuth(acc *Account) {
+	e.t.Helper()
+
+	accountSet := account.NewAccountSet(acc.Address)
+	accountSet.EnableDepositAuth()
+	accountSet.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	accountSet.Sequence = &seq
+
+	result := e.Submit(accountSet)
+	if !result.Success {
+		e.t.Fatalf("Failed to enable DepositAuth for account %s: %s", acc.Name, result.Code)
+	}
+}
+
+// DisableDepositAuth disables the DepositAuth flag on an account.
+func (e *TestEnv) DisableDepositAuth(acc *Account) {
+	e.t.Helper()
+
+	accountSet := account.NewAccountSet(acc.Address)
+	flag := account.AccountSetFlagDepositAuth
+	accountSet.ClearFlag = &flag
+	accountSet.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	accountSet.Sequence = &seq
+
+	result := e.Submit(accountSet)
+	if !result.Success {
+		e.t.Fatalf("Failed to disable DepositAuth for account %s: %s", acc.Name, result.Code)
 	}
 }
 
@@ -300,6 +363,68 @@ func (e *TestEnv) Balance(acc *Account) uint64 {
 	}
 
 	return accountRoot.Balance
+}
+
+// IOUBalance returns the IOU balance of an account for a specific currency and issuer.
+// The balance is returned from the perspective of the holder (not the issuer).
+// Positive means the holder has tokens, negative means they owe tokens.
+func (e *TestEnv) IOUBalance(holder, issuer *Account, currency string) *sle.Amount {
+	e.t.Helper()
+
+	// Get trust line keylet
+	lineKey := keylet.Line(holder.ID, issuer.ID, currency)
+
+	// Check if trust line exists
+	exists, err := e.ledger.Exists(lineKey)
+	if err != nil {
+		e.t.Fatalf("Failed to check trust line existence: %v", err)
+		return nil
+	}
+	if !exists {
+		// No trust line = zero balance
+		zero := sle.NewIssuedAmountFromFloat64(0, currency, issuer.Address)
+		return &zero
+	}
+
+	// Read trust line data
+	data, err := e.ledger.Read(lineKey)
+	if err != nil {
+		e.t.Fatalf("Failed to read trust line: %v", err)
+		return nil
+	}
+
+	// Parse RippleState
+	rs, err := sle.ParseRippleState(data)
+	if err != nil {
+		e.t.Fatalf("Failed to parse trust line: %v", err)
+		return nil
+	}
+
+	// Determine if holder is low or high account
+	// Balance sign convention: positive means low owes high
+	isLow := keylet.IsLowAccount(holder.ID, issuer.ID)
+
+	balance := rs.Balance
+	if !isLow {
+		// If holder is high account, negate the balance
+		// (positive balance means low owes high, so high has positive tokens)
+		balance = balance.Negate()
+	}
+
+	return &balance
+}
+
+// TrustLineExists checks if a trust line exists between two accounts for a currency.
+func (e *TestEnv) TrustLineExists(acc1, acc2 *Account, currency string) bool {
+	e.t.Helper()
+
+	lineKey := keylet.Line(acc1.ID, acc2.ID, currency)
+	exists, err := e.ledger.Exists(lineKey)
+	if err != nil {
+		e.t.Fatalf("Failed to check trust line existence: %v", err)
+		return false
+	}
+	return exists
 }
 
 // Now returns the current time on the test clock.
