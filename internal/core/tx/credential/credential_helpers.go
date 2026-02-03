@@ -4,9 +4,9 @@ import (
 	"encoding/hex"
 
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
-	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
+	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
 )
 
 // Credential ledger entry flags
