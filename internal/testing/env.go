@@ -592,6 +592,59 @@ func (e *TestEnv) TrustLineExists(acc1, acc2 *Account, currency string) bool {
 	return exists
 }
 
+// TrustLineFlags returns the flags on a trust line between two accounts.
+// Returns the flags from the perspective of 'account' (which side's flags).
+func (e *TestEnv) TrustLineFlags(account, counterparty *Account, currency string) uint32 {
+	e.t.Helper()
+
+	lineKey := keylet.Line(account.ID, counterparty.ID, currency)
+	exists, err := e.ledger.Exists(lineKey)
+	if err != nil || !exists {
+		return 0
+	}
+
+	data, err := e.ledger.Read(lineKey)
+	if err != nil {
+		return 0
+	}
+
+	rs, err := sle.ParseRippleState(data)
+	if err != nil {
+		return 0
+	}
+
+	return rs.Flags
+}
+
+// HasNoRipple checks if the account's side of the trust line has NoRipple set.
+func (e *TestEnv) HasNoRipple(account, counterparty *Account, currency string) bool {
+	e.t.Helper()
+
+	lineKey := keylet.Line(account.ID, counterparty.ID, currency)
+	exists, err := e.ledger.Exists(lineKey)
+	if err != nil || !exists {
+		return false
+	}
+
+	data, err := e.ledger.Read(lineKey)
+	if err != nil {
+		return false
+	}
+
+	rs, err := sle.ParseRippleState(data)
+	if err != nil {
+		return false
+	}
+
+	// Determine if account is low or high
+	isLow := keylet.IsLowAccount(account.ID, counterparty.ID)
+
+	if isLow {
+		return (rs.Flags & sle.LsfLowNoRipple) != 0
+	}
+	return (rs.Flags & sle.LsfHighNoRipple) != 0
+}
+
 // Now returns the current time on the test clock.
 func (e *TestEnv) Now() time.Time {
 	return e.clock.Now()
