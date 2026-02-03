@@ -1,10 +1,11 @@
 package oracle
 
 import (
-	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"strings"
 	"testing"
 
+	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -94,9 +95,9 @@ func TestOracleSetValidation(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "valid - maximum scale (20)",
+			name: "valid - maximum scale (8)",
 			tx: func() *OracleSet {
-				scale := uint8(20)
+				scale := uint8(8) // MaxPriceScale per rippled
 				price := uint64(740)
 				return &OracleSet{
 					BaseTx:           *tx.NewBaseTx(tx.TypeOracleSet, "rTestAccount"),
@@ -242,9 +243,9 @@ func TestOracleSetValidation(t *testing.T) {
 
 		// Invalid cases - Scale validation
 		{
-			name: "invalid - Scale too large >20 (temMALFORMED)",
+			name: "invalid - Scale too large >8 (temMALFORMED)",
 			tx: func() *OracleSet {
-				scale := uint8(21)
+				scale := uint8(9) // MaxPriceScale is 8 per rippled
 				price := uint64(740)
 				return &OracleSet{
 					BaseTx:           *tx.NewBaseTx(tx.TypeOracleSet, "rTestAccount"),
@@ -444,20 +445,20 @@ func TestOracleTransactionTypes(t *testing.T) {
 
 func TestOracleConstructors(t *testing.T) {
 	t.Run("NewOracleSet", func(t *testing.T) {
-		tx := NewOracleSet("rAccount123", 42, 750000000)
-		require.NotNil(t, tx)
-		assert.Equal(t, "rAccount123", tx.Account)
-		assert.Equal(t, uint32(42), tx.OracleDocumentID)
-		assert.Equal(t, uint32(750000000), tx.LastUpdateTime)
-		assert.Equal(t, tx.TypeOracleSet, tx.TxType())
+		oset := NewOracleSet("rAccount123", 42, 750000000)
+		require.NotNil(t, oset)
+		assert.Equal(t, "rAccount123", oset.Account)
+		assert.Equal(t, uint32(42), oset.OracleDocumentID)
+		assert.Equal(t, uint32(750000000), oset.LastUpdateTime)
+		assert.Equal(t, tx.TypeOracleSet, oset.TxType())
 	})
 
 	t.Run("NewOracleDelete", func(t *testing.T) {
-		tx := NewOracleDelete("rAccount456", 99)
-		require.NotNil(t, tx)
-		assert.Equal(t, "rAccount456", tx.Account)
-		assert.Equal(t, uint32(99), tx.OracleDocumentID)
-		assert.Equal(t, tx.TypeOracleDelete, tx.TxType())
+		odel := NewOracleDelete("rAccount456", 99)
+		require.NotNil(t, odel)
+		assert.Equal(t, "rAccount456", odel.Account)
+		assert.Equal(t, uint32(99), odel.OracleDocumentID)
+		assert.Equal(t, tx.TypeOracleDelete, odel.TxType())
 	})
 }
 
@@ -468,24 +469,24 @@ func TestOracleConstructors(t *testing.T) {
 func TestOracleRequiredAmendments(t *testing.T) {
 	tests := []struct {
 		name     string
-		tx       tx.Transaction
+		txn      tx.Transaction
 		expected []string
 	}{
 		{
 			name:     "OracleSet requires PriceOracle amendment",
-			tx:       &OracleSet{BaseTx: *tx.NewBaseTx(tx.TypeOracleSet, "rTest")},
-			expected: []string{AmendmentPriceOracle},
+			txn:      &OracleSet{BaseTx: *tx.NewBaseTx(tx.TypeOracleSet, "rTest")},
+			expected: []string{amendment.AmendmentPriceOracle},
 		},
 		{
 			name:     "OracleDelete requires PriceOracle amendment",
-			tx:       &OracleDelete{BaseTx: *tx.NewBaseTx(tx.TypeOracleDelete, "rTest")},
-			expected: []string{AmendmentPriceOracle},
+			txn:      &OracleDelete{BaseTx: *tx.NewBaseTx(tx.TypeOracleDelete, "rTest")},
+			expected: []string{amendment.AmendmentPriceOracle},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tt.tx.RequiredAmendments()
+			got := tt.txn.RequiredAmendments()
 			assert.Equal(t, tt.expected, got)
 		})
 	}
@@ -525,7 +526,8 @@ func TestOracleConstants(t *testing.T) {
 	assert.Equal(t, 10, MaxOracleDataSeries)
 	assert.Equal(t, 16, MaxOracleSymbolClass)
 	assert.Equal(t, 300, MaxLastUpdateTimeDelta)
-	assert.Equal(t, 20, MaxPriceScale)
+	// MaxPriceScale is 8 per rippled Oracle_test.cpp line 354
+	assert.Equal(t, 8, MaxPriceScale)
 }
 
 // =============================================================================
