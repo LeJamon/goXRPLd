@@ -2,11 +2,9 @@ package did
 
 import (
 	"encoding/hex"
-	"errors"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
-
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
@@ -14,32 +12,7 @@ func init() {
 	tx.Register(tx.TypeDIDSet, func() tx.Transaction {
 		return &DIDSet{BaseTx: *tx.NewBaseTx(tx.TypeDIDSet, "")}
 	})
-	tx.Register(tx.TypeDIDDelete, func() tx.Transaction {
-		return &DIDDelete{BaseTx: *tx.NewBaseTx(tx.TypeDIDDelete, "")}
-	})
 }
-
-// DID field length constants
-// Reference: rippled Protocol.h
-const (
-	// MaxDIDURILength is the maximum length of the URI field (in bytes after hex decode)
-	MaxDIDURILength = 256
-
-	// MaxDIDDocumentLength is the maximum length of the DIDDocument field (in bytes after hex decode)
-	MaxDIDDocumentLength = 256
-
-	// MaxDIDAttestationLength is the maximum length of the Data field (in bytes after hex decode)
-	MaxDIDAttestationLength = 256
-)
-
-// DID validation errors
-var (
-	ErrDIDEmpty       = errors.New("temEMPTY_DID: DID transaction must have at least one non-empty field")
-	ErrDIDURITooLong  = errors.New("temMALFORMED: URI exceeds maximum length of 256 bytes")
-	ErrDIDDocTooLong  = errors.New("temMALFORMED: DIDDocument exceeds maximum length of 256 bytes")
-	ErrDIDDataTooLong = errors.New("temMALFORMED: Data exceeds maximum length of 256 bytes")
-	ErrDIDInvalidHex  = errors.New("temMALFORMED: field must be valid hex string")
-)
 
 // DIDSet creates or updates a DID document.
 type DIDSet struct {
@@ -145,49 +118,6 @@ func (d *DIDSet) RequiredAmendments() []string {
 	return []string{amendment.AmendmentDID}
 }
 
-// DIDDelete deletes a DID document.
-type DIDDelete struct {
-	tx.BaseTx
-}
-
-// NewDIDDelete creates a new DIDDelete transaction
-func NewDIDDelete(account string) *DIDDelete {
-	return &DIDDelete{
-		BaseTx: *tx.NewBaseTx(tx.TypeDIDDelete, account),
-	}
-}
-
-// TxType returns the transaction type
-func (d *DIDDelete) TxType() tx.Type {
-	return tx.TypeDIDDelete
-}
-
-// Validate validates the DIDDelete transaction
-// Reference: rippled DID.cpp DIDDelete::preflight
-func (d *DIDDelete) Validate() error {
-	if err := d.BaseTx.Validate(); err != nil {
-		return err
-	}
-
-	// Check for invalid flags (tfUniversalMask)
-	flags := d.GetFlags()
-	if flags&tx.TfUniversalMask != 0 {
-		return tx.ErrInvalidFlags
-	}
-
-	return nil
-}
-
-// Flatten returns a flat map of all transaction fields
-func (d *DIDDelete) Flatten() (map[string]any, error) {
-	return tx.ReflectFlatten(d)
-}
-
-// RequiredAmendments returns the amendments required for this transaction type
-func (d *DIDDelete) RequiredAmendments() []string {
-	return []string{amendment.AmendmentDID}
-}
-
 // Apply applies a DIDSet transaction to the ledger state.
 // Reference: rippled DID.cpp DIDSet::doApply
 func (d *DIDSet) Apply(ctx *tx.ApplyContext) tx.Result {
@@ -276,28 +206,6 @@ func (d *DIDSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	ctx.Account.OwnerCount++
-
-	return tx.TesSUCCESS
-}
-
-// Apply applies a DIDDelete transaction to the ledger state.
-// Reference: rippled DID.cpp DIDDelete::doApply
-func (d *DIDDelete) Apply(ctx *tx.ApplyContext) tx.Result {
-	didKey := keylet.DID(ctx.AccountID)
-
-	existingData, err := ctx.View.Read(didKey)
-	if err != nil || existingData == nil {
-		return tx.TecNO_ENTRY
-	}
-
-	// Delete the DID entry - deletion tracked automatically by ApplyStateTable
-	if err := ctx.View.Erase(didKey); err != nil {
-		return tx.TefINTERNAL
-	}
-
-	if ctx.Account.OwnerCount > 0 {
-		ctx.Account.OwnerCount--
-	}
 
 	return tx.TesSUCCESS
 }
