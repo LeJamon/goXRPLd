@@ -199,6 +199,7 @@ func executeWithLimitingStep(
 	// So we start the forward pass AFTER the limiting step
 
 	// For the limiting step, get its output to use as input for subsequent steps
+	// Reference: rippled StrandFlow.h line 225: EitherAmount stepIn(limitStepOut)
 	limitStepCachedOutAfterRev := strand[limitingStep].CachedOut()
 	if limitStepCachedOutAfterRev != nil {
 		in = *limitStepCachedOutAfterRev
@@ -206,23 +207,11 @@ func executeWithLimitingStep(
 
 	// Forward pass continues AFTER the limiting step (limitingStep + 1)
 	// Reference: rippled StrandFlow.h line 226: for (auto i = limitingStep + 1; i < s; ++i)
+	// The Fwd() pass applies changes for steps after the limiting step.
 	for i := limitingStep + 1; i < len(strand); i++ {
 		step := strand[i]
 
-		// Validate forward direction
-		valid, expectedOut := step.ValidFwd(sb, afView, in)
-		if !valid {
-			return StrandResult{
-				Success:  false,
-				In:       ZeroXRPEitherAmount(),
-				Out:      ZeroXRPEitherAmount(),
-				Sandbox:  nil,
-				OffsToRm: ofrsToRm,
-				Inactive: true,
-			}
-		}
-
-		// Execute forward
+		// Execute forward - skip ValidFwd since we just ran Rev() with correct amounts
 		actualIn, actualOut := step.Fwd(sb, afView, ofrsToRm, in)
 
 		// Check consistency
@@ -238,7 +227,6 @@ func executeWithLimitingStep(
 		}
 
 		_ = actualIn
-		_ = expectedOut
 
 		// The output becomes the input for the next step
 		in = actualOut

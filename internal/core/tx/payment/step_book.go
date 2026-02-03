@@ -132,7 +132,6 @@ func (s *BookStep) Rev(
 	visited := make(map[[32]byte]bool)
 
 	// Iterate through offers
-
 	for s.offersUsed_ < s.maxOffersToConsume && !remainingOut.IsZero() {
 		// Get next offer at best quality
 		offer, offerKey, err := s.getNextOfferSkipVisited(sb, afView, ofrsToRm, visited)
@@ -143,12 +142,12 @@ func (s *BookStep) Rev(
 			break // No more offers
 		}
 
-
 		// Mark as visited so we don't process it again in this execution
 		visited[offerKey] = true
 
 		// Check if offer is funded
-		if !s.isOfferFunded(sb, offer) {
+		funded := s.isOfferFunded(sb, offer)
+		if !funded {
 			ofrsToRm[offerKey] = true
 			s.offersUsed_++
 			continue
@@ -611,8 +610,6 @@ func (s *BookStep) getNextOffer(sb *PaymentSandbox, afView *PaymentSandbox, ofrs
 	takerGetsIssuer := s.book.Out.Issuer
 	bookBase := keylet.BookDir(takerPaysCurrency, takerPaysIssuer, takerGetsCurrency, takerGetsIssuer)
 
-	// 	s.book.In.Currency, s.book.In.Issuer[:8], s.book.Out.Currency, s.book.Out.Issuer[:8])
-
 	bookPrefix := bookBase.Key[:24]
 
 	type dirEntry struct {
@@ -620,10 +617,8 @@ func (s *BookStep) getNextOffer(sb *PaymentSandbox, afView *PaymentSandbox, ofrs
 		data []byte
 	}
 	var dirs []dirEntry
-	entryCount := 0
 
 	err := sb.ForEach(func(key [32]byte, data []byte) bool {
-		entryCount++
 		if bytes.Equal(key[:24], bookPrefix) {
 			dirs = append(dirs, dirEntry{key: key, data: data})
 		}
@@ -1276,14 +1271,27 @@ func (s *BookStep) consumeOffer(sb *PaymentSandbox, offer *sle.LedgerOffer, cons
 	netIn := consumedInNet
 
 	// 1. Transfer input currency with transfer fee:
-	//    - Taker (strandSrc) is debited GROSS amount (grossIn)
-	//    - Offer owner is credited NET amount (netIn)
-	if err := s.transferFundsWithFee(sb, s.strandSrc, offerOwner, grossIn, netIn, s.book.In); err != nil {
+	//    - For IOU: Transfer from input issuer (book.In.Issuer) to offer owner
+	//    - For XRP: Transfer from strandSrc to offer owner
+	//    Reference: rippled BookStep.cpp line 898-906 - sends from book_.in.account (the issuer)
+	//    The DirectStepI before BookStep handles moving IOU from source to the issuer.
+	inSource := s.book.In.Issuer
+	if s.book.In.IsXRP() {
+		inSource = s.strandSrc
+	}
+	if err := s.transferFundsWithFee(sb, inSource, offerOwner, grossIn, netIn, s.book.In); err != nil {
 		return err
 	}
 
-	// 2. Transfer output currency: offer owner -> taker (strandDst)
-	if err := s.transferFunds(sb, offerOwner, s.strandDst, consumedOut, s.book.Out); err != nil {
+	// 2. Transfer output currency: offer owner -> book.out issuer (for IOU) or strandDst (for XRP)
+	// Reference: rippled BookStep.cpp line 912-918 - sends to book_.out.account (the issuer)
+	// For IOU: The DirectStepI after BookStep handles the transfer from issuer to the actual destination
+	// For XRP: Transfer directly to the strand destination (XRP doesn't have issuer in same sense)
+	outRecipient := s.book.Out.Issuer
+	if s.book.Out.IsXRP() {
+		outRecipient = s.strandDst
+	}
+	if err := s.transferFunds(sb, offerOwner, outRecipient, consumedOut, s.book.Out); err != nil {
 		return err
 	}
 
@@ -1669,7 +1677,14 @@ func (s *BookStep) getTipQuality(sb *PaymentSandbox) *Quality {
 }
 
 // Check validates the BookStep before use
+// Reference: rippled BookStep.cpp check() lines 1343-1380
 func (s *BookStep) Check(sb *PaymentSandbox) tx.Result {
+	// Check for same in/out issue - this is invalid
+	// Reference: rippled BookStep.cpp lines 1346-1351
+	if s.book.In.Currency == s.book.Out.Currency && s.book.In.Issuer == s.book.Out.Issuer {
+		return tx.TemBAD_PATH
+	}
+
 	offer, _, err := s.getNextOffer(sb, sb, nil)
 	if err != nil {
 		return tx.TefINTERNAL

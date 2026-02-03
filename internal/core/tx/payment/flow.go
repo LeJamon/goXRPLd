@@ -266,9 +266,12 @@ func RippleCalculate(
 	sandbox.SetTransactionContext(txHash, ledgerSeq)
 
 	// Convert paths to strands
-	strands, err := ToStrands(sandbox, srcAccount, dstAccount, dstAmount, srcAmount, paths, addDefaultPath)
-	if err != nil || len(strands) == 0 {
-		return ZeroXRPEitherAmount(), ZeroXRPEitherAmount(), nil, nil, tx.TecPATH_DRY
+	strands, strandResult := ToStrands(sandbox, srcAccount, dstAccount, dstAmount, srcAmount, paths, addDefaultPath)
+	if strandResult != tx.TesSUCCESS || len(strands) == 0 {
+		if strandResult == tx.TesSUCCESS {
+			strandResult = tx.TecPATH_DRY
+		}
+		return ZeroXRPEitherAmount(), ZeroXRPEitherAmount(), nil, nil, strandResult
 	}
 
 	// Convert amounts to EitherAmount

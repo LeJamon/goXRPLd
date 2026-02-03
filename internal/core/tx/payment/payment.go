@@ -148,30 +148,65 @@ func (p *Payment) TxType() tx.Type {
 }
 
 // Validate validates the payment transaction
+// Reference: rippled Payment.cpp preflight() function
 func (p *Payment) Validate() error {
 	if err := p.BaseTx.Validate(); err != nil {
 		return err
 	}
 
 	if p.Destination == "" {
-		return errors.New("Destination is required")
+		return errors.New("temDST_NEEDED: Destination is required")
 	}
 
 	if p.Amount.IsZero() {
-		return errors.New("Amount is required")
+		return errors.New("temBAD_AMOUNT: Amount is required")
 	}
 
 	// Determine if this is an XRP-to-XRP (direct) payment
+	// Reference: rippled Payment.cpp:129
 	xrpDirect := p.Amount.IsNative() && (p.SendMax == nil || p.SendMax.IsNative())
 
 	// Check flags based on payment type
 	flags := p.GetFlags()
 	partialPaymentAllowed := (flags & PaymentFlagPartialPayment) != 0
+	limitQuality := (flags & PaymentFlagLimitQuality) != 0
+	noRippleDirect := (flags & PaymentFlagNoDirectRipple) != 0
+	hasPaths := len(p.Paths) > 0
+
+	// Cannot send XRP to self without paths (temREDUNDANT)
+	// Reference: rippled Payment.cpp:159-167
+	if p.Account == p.Destination && p.Amount.IsNative() && !hasPaths {
+		return errors.New("temREDUNDANT: cannot send XRP to self without path")
+	}
+
+	// XRP to XRP with SendMax is invalid (temBAD_SEND_XRP_MAX)
+	// Reference: rippled Payment.cpp:168-174
+	if xrpDirect && p.SendMax != nil {
+		return errors.New("temBAD_SEND_XRP_MAX: SendMax specified for XRP to XRP")
+	}
+
+	// XRP to XRP with paths is invalid (temBAD_SEND_XRP_PATHS)
+	// Reference: rippled Payment.cpp:175-181
+	if xrpDirect && hasPaths {
+		return errors.New("temBAD_SEND_XRP_PATHS: Paths specified for XRP to XRP")
+	}
 
 	// tfPartialPayment flag is invalid for XRP-to-XRP payments (temBAD_SEND_XRP_PARTIAL)
 	// Reference: rippled Payment.cpp:182-188
 	if xrpDirect && partialPaymentAllowed {
 		return errors.New("temBAD_SEND_XRP_PARTIAL: Partial payment specified for XRP to XRP")
+	}
+
+	// tfLimitQuality flag is invalid for XRP-to-XRP payments (temBAD_SEND_XRP_LIMIT)
+	// Reference: rippled Payment.cpp:189-196
+	if xrpDirect && limitQuality {
+		return errors.New("temBAD_SEND_XRP_LIMIT: Limit quality specified for XRP to XRP")
+	}
+
+	// tfNoRippleDirect flag is invalid for XRP-to-XRP payments (temBAD_SEND_XRP_NO_DIRECT)
+	// Reference: rippled Payment.cpp:197-204
+	if xrpDirect && noRippleDirect {
+		return errors.New("temBAD_SEND_XRP_NO_DIRECT: No ripple direct specified for XRP to XRP")
 	}
 
 	// DeliverMin can only be used with tfPartialPayment flag (temBAD_AMOUNT)
@@ -214,12 +249,72 @@ func (p *Payment) Validate() error {
 		}
 	}
 
-	// Cannot send XRP to self without paths (temREDUNDANT)
-	// Reference: rippled Payment.cpp:159-167
-	if p.Account == p.Destination && p.Amount.IsNative() && len(p.Paths) == 0 {
-		return errors.New("temREDUNDANT: cannot send XRP to self without path")
+	// Validate path elements
+	// Reference: rippled PaySteps.cpp:157-186
+	if err := p.validatePathElements(); err != nil {
+		return err
 	}
 
+	return nil
+}
+
+// validatePathElements validates individual path elements
+// Reference: rippled PaySteps.cpp toStrand() lines 157-186
+func (p *Payment) validatePathElements() error {
+	for _, path := range p.Paths {
+		for _, elem := range path {
+			// Determine what the element has
+			hasAccount := elem.Account != ""
+			hasCurrency := elem.Currency != ""
+			hasIssuer := elem.Issuer != ""
+
+			// Calculate element type
+			elemType := 0
+			if hasAccount {
+				elemType |= int(PathTypeAccount)
+			}
+			if hasCurrency {
+				elemType |= int(PathTypeCurrency)
+			}
+			if hasIssuer {
+				elemType |= int(PathTypeIssuer)
+			}
+
+			// Path element with type zero is invalid
+			// Reference: rippled PaySteps.cpp:161 - if ((t & ~STPathElement::typeAll) || !t)
+			if elemType == 0 {
+				return errors.New("temBAD_PATH: Path element has no account, currency, or issuer")
+			}
+
+			// Account element cannot also have currency or issuer
+			// Reference: rippled PaySteps.cpp:168-169
+			if hasAccount && (hasCurrency || hasIssuer) {
+				return errors.New("temBAD_PATH: Path element has account with currency or issuer")
+			}
+
+			// XRP issuer is invalid (issuer must not be XRP pseudo-account)
+			// Reference: rippled PaySteps.cpp:171-172
+			if hasIssuer && (elem.Issuer == "rrrrrrrrrrrrrrrrrrrrrhoLvTp" || elem.Issuer == "" && hasCurrency && elem.Currency == "XRP") {
+				return errors.New("temBAD_PATH: Path element has XRP issuer")
+			}
+
+			// XRP account in path is invalid (account must not be XRP pseudo-account)
+			// Reference: rippled PaySteps.cpp:174-175
+			if hasAccount && elem.Account == "rrrrrrrrrrrrrrrrrrrrrhoLvTp" {
+				return errors.New("temBAD_PATH: Path element has XRP account")
+			}
+
+			// XRP currency with non-XRP issuer or vice versa is invalid
+			// Reference: rippled PaySteps.cpp:177-179
+			if hasCurrency && hasIssuer {
+				isXRPCurrency := elem.Currency == "XRP" || elem.Currency == ""
+				isXRPIssuer := elem.Issuer == "rrrrrrrrrrrrrrrrrrrrrhoLvTp" || elem.Issuer == ""
+				if isXRPCurrency != isXRPIssuer {
+					return errors.New("temBAD_PATH: XRP currency mismatch with issuer")
+				}
+			}
+		}
+	}
 	return nil
 }
 
@@ -546,12 +641,14 @@ func (p *Payment) applyIOUPayment(ctx *tx.ApplyContext) tx.Result {
 		}
 	}
 
-	// For path-finding payments, use the Flow Engine (RippleCalculate)
-	if requiresPathFinding {
-		return p.applyIOUPaymentWithPaths(ctx, senderAccountID, destAccountID, issuerAccountID)
+	// Third-party transfers (sender is not issuer AND dest is not issuer) require path finding
+	// because the payment must "ripple" through the issuer (e.g., alice -> gw -> bob)
+	// Reference: rippled Payment.cpp - when ripple=true, uses RippleCalc
+	if !senderIsIssuer && !destIsIssuer {
+		requiresPathFinding = true
 	}
 
-	// Check destination exists
+	// Check destination exists (needed for DepositAuth check and destination flags)
 	destKey := keylet.Account(destAccountID)
 	destExists, err := ctx.View.Exists(destKey)
 	if err != nil {
@@ -576,12 +673,13 @@ func (p *Payment) applyIOUPayment(ctx *tx.ApplyContext) tx.Result {
 		return tx.TecDST_TAG_NEEDED
 	}
 
-	// Check deposit authorization for IOU payments
+	// Check deposit authorization for IOU payments (including path-finding payments)
 	// Reference: rippled Payment.cpp:429-464
 	// IOU payments (ripple=true) require either:
 	// 1. Destination does not have lsfDepositAuth set, OR
 	// 2. Sender is destination (self-payment), OR
 	// 3. Sender is preauthorized via DepositPreauth
+	// This check MUST happen before path finding because path payments also need this check.
 	if (destAccount.Flags & sle.LsfDepositAuth) != 0 {
 		// Check if this is a self-payment (always allowed)
 		if senderAccountID != destAccountID {
@@ -599,6 +697,15 @@ func (p *Payment) applyIOUPayment(ctx *tx.ApplyContext) tx.Result {
 		}
 	}
 
+	// For path-finding payments, use the Flow Engine (RippleCalculate)
+	if requiresPathFinding {
+		return p.applyIOUPaymentWithPaths(ctx, senderAccountID, destAccountID, issuerAccountID)
+	}
+
+	// Determine if partial payment is allowed
+	flags := p.GetFlags()
+	partialPayment := (flags & PaymentFlagPartialPayment) != 0
+
 	// Handle three cases:
 	// 1. Sender is issuer - creating new tokens
 	// 2. Destination is issuer - redeeming tokens
@@ -610,15 +717,15 @@ func (p *Payment) applyIOUPayment(ctx *tx.ApplyContext) tx.Result {
 	if senderIsIssuer {
 		// Sender is issuing their own currency to destination
 		// Need trust line from destination to sender (issuer)
-		result, deliveredAmount = p.applyIOUIssueWithDelivered(ctx, destAccount, senderAccountID, destAccountID, amount)
+		result, deliveredAmount = p.applyIOUIssueWithDelivered(ctx, destAccount, senderAccountID, destAccountID, amount, partialPayment)
 	} else if destIsIssuer {
 		// Destination is the issuer - sender is redeeming tokens
 		// Need trust line from sender to destination (issuer)
-		result, deliveredAmount = p.applyIOURedeemWithDelivered(ctx, destAccount, senderAccountID, destAccountID, amount)
+		result, deliveredAmount = p.applyIOURedeemWithDelivered(ctx, destAccount, senderAccountID, destAccountID, amount, partialPayment)
 	} else {
 		// Neither is issuer - transfer between two non-issuer accounts
 		// This requires trust lines from both parties to the issuer
-		result, deliveredAmount = p.applyIOUTransferWithDelivered(ctx, destAccount, senderAccountID, destAccountID, issuerAccountID, amount)
+		result, deliveredAmount = p.applyIOUTransferWithDelivered(ctx, destAccount, senderAccountID, destAccountID, issuerAccountID, amount, partialPayment)
 	}
 
 	// DeliverMin enforcement for partial payments
@@ -705,7 +812,7 @@ func (p *Payment) applyIOUIssue(ctx *tx.ApplyContext, dest *sle.AccountRoot, sen
 
 	if !trustLineExists {
 		// No trust line exists - destination has not authorized holding this currency
-		return tx.TecPATH_DRY
+		return tx.TerNO_LINE
 	}
 
 	// Read and parse the trust line
@@ -808,7 +915,7 @@ func (p *Payment) applyIOURedeem(ctx *tx.ApplyContext, dest *sle.AccountRoot, se
 
 	if !trustLineExists {
 		// No trust line exists - sender doesn't hold this currency
-		return tx.TecPATH_DRY
+		return tx.TerNO_LINE
 	}
 
 	// Read and parse the trust line
@@ -1113,31 +1220,440 @@ func (p *Payment) applyIOUTransfer(ctx *tx.ApplyContext, dest *sle.AccountRoot, 
 }
 
 // applyIOUIssueWithDelivered wraps applyIOUIssue to return the delivered amount
-func (p *Payment) applyIOUIssueWithDelivered(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID [20]byte, amount tx.Amount) (tx.Result, tx.Amount) {
-	result := p.applyIOUIssue(ctx, dest, senderID, destID, amount)
-	if result == tx.TesSUCCESS {
-		// For successful issue, the full amount is delivered
-		return result, amount
-	}
-	return result, tx.Amount{}
+// If partialPayment is true and the full amount cannot be issued, it will issue
+// as much as possible up to the destination's trust limit.
+func (p *Payment) applyIOUIssueWithDelivered(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID [20]byte, amount tx.Amount, partialPayment bool) (tx.Result, tx.Amount) {
+	return p.applyIOUIssuePartial(ctx, dest, senderID, destID, amount, partialPayment)
 }
 
 // applyIOURedeemWithDelivered wraps applyIOURedeem to return the delivered amount
-func (p *Payment) applyIOURedeemWithDelivered(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID [20]byte, amount tx.Amount) (tx.Result, tx.Amount) {
-	result := p.applyIOURedeem(ctx, dest, senderID, destID, amount)
-	if result == tx.TesSUCCESS {
-		// For successful redeem, the full amount is delivered
-		return result, amount
-	}
-	return result, tx.Amount{}
+// If partialPayment is true and the full amount cannot be redeemed, it will redeem
+// as much as possible based on sender's balance.
+func (p *Payment) applyIOURedeemWithDelivered(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID [20]byte, amount tx.Amount, partialPayment bool) (tx.Result, tx.Amount) {
+	return p.applyIOURedeemPartial(ctx, dest, senderID, destID, amount, partialPayment)
 }
 
 // applyIOUTransferWithDelivered wraps applyIOUTransfer to return the delivered amount
-func (p *Payment) applyIOUTransferWithDelivered(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID, issuerID [20]byte, amount tx.Amount) (tx.Result, tx.Amount) {
-	result := p.applyIOUTransfer(ctx, dest, senderID, destID, issuerID, amount)
-	if result == tx.TesSUCCESS {
-		// For successful transfer, the full amount is delivered
-		return result, amount
+// If partialPayment is true and the full amount cannot be transferred, it will transfer
+// as much as possible based on sender's balance and destination's trust limit.
+func (p *Payment) applyIOUTransferWithDelivered(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID, issuerID [20]byte, amount tx.Amount, partialPayment bool) (tx.Result, tx.Amount) {
+	return p.applyIOUTransferPartial(ctx, dest, senderID, destID, issuerID, amount, partialPayment)
+}
+
+// ============================================================================
+// Partial Payment Implementations
+// Reference: rippled Flow.cpp, RippleCalc.cpp
+// ============================================================================
+
+// applyIOUIssuePartial handles issuing currency with partial payment support
+func (p *Payment) applyIOUIssuePartial(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID [20]byte, amount tx.Amount, partialPayment bool) (tx.Result, tx.Amount) {
+	// Look up the trust line between destination and issuer (sender)
+	trustLineKey := keylet.Line(destID, senderID, amount.Currency)
+
+	trustLineExists, err := ctx.View.Exists(trustLineKey)
+	if err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
 	}
-	return result, tx.Amount{}
+
+	if !trustLineExists {
+		return tx.TerNO_LINE, tx.Amount{}
+	}
+
+	// Read and parse the trust line
+	trustLineData, err := ctx.View.Read(trustLineKey)
+	if err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+
+	rippleState, err := sle.ParseRippleState(trustLineData)
+	if err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+
+	// Check trust line authorization
+	if result := checkTrustLineAuthorization(ctx.View, senderID, destID, rippleState); result != tx.TesSUCCESS {
+		return result, tx.Amount{}
+	}
+
+	// Determine which side is low/high account
+	destIsLow := sle.CompareAccountIDsForLine(destID, senderID) < 0
+
+	// Get the current balance and trust limit
+	var currentBalance, trustLimit tx.Amount
+	if destIsLow {
+		currentBalance = rippleState.Balance
+		trustLimit = rippleState.LowLimit
+	} else {
+		currentBalance = rippleState.Balance.Negate()
+		trustLimit = rippleState.HighLimit
+	}
+
+	// Calculate maximum we can issue based on trust limit
+	var maxDeliverable tx.Amount
+	if trustLimit.IsZero() {
+		// No limit set, can issue any amount
+		maxDeliverable = amount
+	} else {
+		// Calculate room available: limit - current balance
+		room, _ := trustLimit.Sub(currentBalance)
+		if room.IsNegative() || room.IsZero() {
+			if partialPayment {
+				return tx.TesSUCCESS, tx.Amount{} // Nothing to deliver, but partial is OK
+			}
+			return tx.TecPATH_PARTIAL, tx.Amount{}
+		}
+		if room.Compare(amount) < 0 {
+			maxDeliverable = room
+		} else {
+			maxDeliverable = amount
+		}
+	}
+
+	// If we can't deliver the full amount and partial payment is not allowed, fail
+	if maxDeliverable.Compare(amount) < 0 && !partialPayment {
+		return tx.TecPATH_PARTIAL, tx.Amount{}
+	}
+
+	// If nothing to deliver
+	if maxDeliverable.IsZero() {
+		if partialPayment {
+			return tx.TesSUCCESS, tx.Amount{}
+		}
+		return tx.TecPATH_PARTIAL, tx.Amount{}
+	}
+
+	// Calculate new balance
+	var newBalance tx.Amount
+	if destIsLow {
+		newBalance, _ = rippleState.Balance.Add(maxDeliverable)
+	} else {
+		newBalance, _ = rippleState.Balance.Sub(maxDeliverable)
+	}
+
+	// Ensure the new balance has the correct currency and issuer
+	newBalance.Currency = amount.Currency
+	newBalance.Issuer = amount.Issuer
+
+	// Update the trust line
+	rippleState.Balance = newBalance
+	rippleState.PreviousTxnID = ctx.TxHash
+	rippleState.PreviousTxnLgrSeq = ctx.Config.LedgerSequence
+
+	// Serialize and update
+	updatedTrustLine, err := sle.SerializeRippleState(rippleState)
+	if err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+
+	if err := ctx.View.Update(trustLineKey, updatedTrustLine); err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+
+	ctx.Metadata.DeliveredAmount = &maxDeliverable
+
+	return tx.TesSUCCESS, maxDeliverable
+}
+
+// applyIOURedeemPartial handles redeeming currency with partial payment support
+func (p *Payment) applyIOURedeemPartial(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID [20]byte, amount tx.Amount, partialPayment bool) (tx.Result, tx.Amount) {
+	// Look up the trust line between sender and issuer (destination)
+	trustLineKey := keylet.Line(senderID, destID, amount.Currency)
+
+	trustLineExists, err := ctx.View.Exists(trustLineKey)
+	if err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+
+	if !trustLineExists {
+		return tx.TerNO_LINE, tx.Amount{}
+	}
+
+	// Read and parse the trust line
+	trustLineData, err := ctx.View.Read(trustLineKey)
+	if err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+
+	rippleState, err := sle.ParseRippleState(trustLineData)
+	if err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+
+	// Determine which side is low/high account
+	senderIsLow := sle.CompareAccountIDsForLine(senderID, destID) < 0
+
+	// Get sender's current balance
+	var senderBalance tx.Amount
+	if senderIsLow {
+		senderBalance = rippleState.Balance
+	} else {
+		senderBalance = rippleState.Balance.Negate()
+	}
+
+	// Calculate maximum we can redeem based on sender's balance
+	var maxDeliverable tx.Amount
+	if senderBalance.Compare(amount) < 0 {
+		if senderBalance.IsNegative() || senderBalance.IsZero() {
+			if partialPayment {
+				return tx.TesSUCCESS, tx.Amount{}
+			}
+			return tx.TecPATH_PARTIAL, tx.Amount{}
+		}
+		maxDeliverable = senderBalance
+	} else {
+		maxDeliverable = amount
+	}
+
+	// If we can't deliver the full amount and partial payment is not allowed, fail
+	if maxDeliverable.Compare(amount) < 0 && !partialPayment {
+		return tx.TecPATH_PARTIAL, tx.Amount{}
+	}
+
+	// If nothing to deliver
+	if maxDeliverable.IsZero() {
+		if partialPayment {
+			return tx.TesSUCCESS, tx.Amount{}
+		}
+		return tx.TecPATH_PARTIAL, tx.Amount{}
+	}
+
+	// Update balance
+	var newBalance tx.Amount
+	if senderIsLow {
+		newBalance, _ = rippleState.Balance.Sub(maxDeliverable)
+	} else {
+		newBalance, _ = rippleState.Balance.Add(maxDeliverable)
+	}
+
+	newBalance.Currency = amount.Currency
+	newBalance.Issuer = amount.Issuer
+	rippleState.Balance = newBalance
+	rippleState.PreviousTxnID = ctx.TxHash
+	rippleState.PreviousTxnLgrSeq = ctx.Config.LedgerSequence
+
+	// Serialize and update
+	updatedTrustLine, err := sle.SerializeRippleState(rippleState)
+	if err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+
+	if err := ctx.View.Update(trustLineKey, updatedTrustLine); err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+
+	ctx.Metadata.DeliveredAmount = &maxDeliverable
+
+	return tx.TesSUCCESS, maxDeliverable
+}
+
+// applyIOUTransferPartial handles transfers between non-issuer accounts with partial payment support
+func (p *Payment) applyIOUTransferPartial(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID, issuerID [20]byte, amount tx.Amount, partialPayment bool) (tx.Result, tx.Amount) {
+	// Check if issuer has GlobalFreeze enabled
+	issuerKey := keylet.Account(issuerID)
+	issuerData, err := ctx.View.Read(issuerKey)
+	if err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+	issuerAccount, err := sle.ParseAccountRoot(issuerData)
+	if err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+	if (issuerAccount.Flags & sle.LsfGlobalFreeze) != 0 {
+		return tx.TerNO_LINE, tx.Amount{}
+	}
+
+	// Get transfer rate from issuer
+	transferRate := GetTransferRate(ctx.View, issuerID)
+
+	// Get sender's trust line to issuer
+	senderTrustLineKey := keylet.Line(senderID, issuerID, amount.Currency)
+	senderTrustExists, err := ctx.View.Exists(senderTrustLineKey)
+	if err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+	if !senderTrustExists {
+		return tx.TerNO_LINE, tx.Amount{}
+	}
+
+	// Get destination's trust line to issuer
+	destTrustLineKey := keylet.Line(destID, issuerID, amount.Currency)
+	destTrustExists, err := ctx.View.Exists(destTrustLineKey)
+	if err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+	if !destTrustExists {
+		return tx.TerNO_LINE, tx.Amount{}
+	}
+
+	// Read sender's trust line
+	senderTrustData, err := ctx.View.Read(senderTrustLineKey)
+	if err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+	senderRippleState, err := sle.ParseRippleState(senderTrustData)
+	if err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+
+	// Check trust line authorization for sender
+	if result := checkTrustLineAuthorization(ctx.View, issuerID, senderID, senderRippleState); result != tx.TesSUCCESS {
+		return result, tx.Amount{}
+	}
+
+	// Check if sender's trust line is frozen
+	senderIsLowInTrustLine := sle.CompareAccountIDsForLine(senderID, issuerID) < 0
+	if senderIsLowInTrustLine {
+		if (senderRippleState.Flags & sle.LsfHighFreeze) != 0 {
+			return tx.TerNO_LINE, tx.Amount{}
+		}
+	} else {
+		if (senderRippleState.Flags & sle.LsfLowFreeze) != 0 {
+			return tx.TerNO_LINE, tx.Amount{}
+		}
+	}
+
+	// Read destination's trust line
+	destTrustData, err := ctx.View.Read(destTrustLineKey)
+	if err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+	destRippleState, err := sle.ParseRippleState(destTrustData)
+	if err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+
+	// Check trust line authorization for destination
+	if result := checkTrustLineAuthorization(ctx.View, issuerID, destID, destRippleState); result != tx.TesSUCCESS {
+		return result, tx.Amount{}
+	}
+
+	// Check if destination's trust line is frozen
+	destIsLowInTrustLine := sle.CompareAccountIDsForLine(destID, issuerID) < 0
+	if destIsLowInTrustLine {
+		if (destRippleState.Flags & sle.LsfLowFreeze) != 0 {
+			return tx.TerNO_LINE, tx.Amount{}
+		}
+	} else {
+		if (destRippleState.Flags & sle.LsfHighFreeze) != 0 {
+			return tx.TerNO_LINE, tx.Amount{}
+		}
+	}
+
+	// Calculate sender's balance with issuer
+	senderIsLowWithIssuer := sle.CompareAccountIDsForLine(senderID, issuerID) < 0
+	var senderBalance tx.Amount
+	if senderIsLowWithIssuer {
+		senderBalance = senderRippleState.Balance
+	} else {
+		senderBalance = senderRippleState.Balance.Negate()
+	}
+
+	// Calculate destination's balance and trust limit
+	destIsLowWithIssuer := sle.CompareAccountIDsForLine(destID, issuerID) < 0
+	var destBalance, destLimit tx.Amount
+	if destIsLowWithIssuer {
+		destBalance = destRippleState.Balance
+		destLimit = destRippleState.LowLimit
+	} else {
+		destBalance = destRippleState.Balance.Negate()
+		destLimit = destRippleState.HighLimit
+	}
+
+	// Calculate maximum deliverable based on:
+	// 1. Sender's available balance (accounting for transfer fee)
+	// 2. Destination's trust limit room
+
+	// Max based on sender's balance: senderBalance * (QualityOne / transferRate)
+	// This accounts for the transfer fee in reverse
+	maxFromSender := senderBalance.MulRatio(QualityOne, transferRate, false)
+
+	// Max based on destination's trust limit
+	var maxFromDestLimit tx.Amount
+	if destLimit.IsZero() {
+		// No limit - use a very large value (effectively unlimited)
+		maxFromDestLimit = amount
+	} else {
+		room, _ := destLimit.Sub(destBalance)
+		if room.IsNegative() {
+			room = tx.NewIssuedAmountFromFloat64(0, amount.Currency, amount.Issuer)
+		}
+		maxFromDestLimit = room
+	}
+
+	// Actual max is minimum of the two constraints
+	var maxDeliverable tx.Amount
+	if maxFromSender.Compare(maxFromDestLimit) < 0 {
+		maxDeliverable = maxFromSender
+	} else {
+		maxDeliverable = maxFromDestLimit
+	}
+
+	// Cap at requested amount
+	if maxDeliverable.Compare(amount) > 0 {
+		maxDeliverable = amount
+	}
+
+	// If we can't deliver anything
+	if maxDeliverable.IsZero() || maxDeliverable.IsNegative() {
+		if partialPayment {
+			return tx.TesSUCCESS, tx.Amount{}
+		}
+		return tx.TecPATH_PARTIAL, tx.Amount{}
+	}
+
+	// If we can't deliver the full amount and partial payment is not allowed, fail
+	if maxDeliverable.Compare(amount) < 0 && !partialPayment {
+		return tx.TecPATH_PARTIAL, tx.Amount{}
+	}
+
+	// Calculate gross amount sender needs to spend (includes transfer fee)
+	grossAmount := maxDeliverable.MulRatio(transferRate, QualityOne, true)
+
+	// Update sender's trust line
+	var newSenderRippleBalance tx.Amount
+	if senderIsLowWithIssuer {
+		newSenderRippleBalance, _ = senderRippleState.Balance.Sub(grossAmount)
+	} else {
+		newSenderRippleBalance, _ = senderRippleState.Balance.Add(grossAmount)
+	}
+	newSenderRippleBalance.Currency = amount.Currency
+	newSenderRippleBalance.Issuer = amount.Issuer
+	senderRippleState.Balance = newSenderRippleBalance
+	senderRippleState.PreviousTxnID = ctx.TxHash
+	senderRippleState.PreviousTxnLgrSeq = ctx.Config.LedgerSequence
+
+	// Update destination's trust line
+	var newDestRippleBalance tx.Amount
+	if destIsLowWithIssuer {
+		newDestRippleBalance, _ = destRippleState.Balance.Add(maxDeliverable)
+	} else {
+		newDestRippleBalance, _ = destRippleState.Balance.Sub(maxDeliverable)
+	}
+	newDestRippleBalance.Currency = amount.Currency
+	newDestRippleBalance.Issuer = amount.Issuer
+	destRippleState.Balance = newDestRippleBalance
+	destRippleState.PreviousTxnID = ctx.TxHash
+	destRippleState.PreviousTxnLgrSeq = ctx.Config.LedgerSequence
+
+	// Serialize and update sender's trust line
+	updatedSenderTrust, err := sle.SerializeRippleState(senderRippleState)
+	if err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+	if err := ctx.View.Update(senderTrustLineKey, updatedSenderTrust); err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+
+	// Serialize and update destination's trust line
+	updatedDestTrust, err := sle.SerializeRippleState(destRippleState)
+	if err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+	if err := ctx.View.Update(destTrustLineKey, updatedDestTrust); err != nil {
+		return tx.TefINTERNAL, tx.Amount{}
+	}
+
+	ctx.Metadata.DeliveredAmount = &maxDeliverable
+
+	return tx.TesSUCCESS, maxDeliverable
 }
