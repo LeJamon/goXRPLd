@@ -75,14 +75,28 @@ func (d *DIDSet) Validate() error {
 	}
 
 	// Check for invalid flags (tfUniversalMask)
+	// Reference: DID.cpp line 51-52
 	flags := d.GetFlags()
 	if flags&tx.TfUniversalMask != 0 {
 		return tx.ErrInvalidFlags
 	}
 
-	// At least one field must be present
+	// Check if any field is present (even if empty)
 	// Reference: DID.cpp line 57-59
-	if d.URI == "" && d.DIDDocument == "" && d.Data == "" {
+	uriPresent := d.URI != "" || d.Common.HasField("URI")
+	docPresent := d.DIDDocument != "" || d.Common.HasField("DIDDocument")
+	dataPresent := d.Data != "" || d.Common.HasField("Data")
+
+	// At least one field must be present
+	if !uriPresent && !docPresent && !dataPresent {
+		return ErrDIDEmpty
+	}
+
+	// If all present fields are empty, that's also an error
+	// Reference: DID.cpp line 61-64
+	if uriPresent && d.URI == "" &&
+		docPresent && d.DIDDocument == "" &&
+		dataPresent && d.Data == "" {
 		return ErrDIDEmpty
 	}
 

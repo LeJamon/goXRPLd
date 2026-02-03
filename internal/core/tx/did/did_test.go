@@ -4,7 +4,10 @@ import (
 	"encoding/hex"
 	"strings"
 	"testing"
+
+	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	tx "github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
 )
 
 // TestDIDSetValidation tests DIDSet transaction validation.
@@ -315,16 +318,16 @@ func TestDIDRequiredAmendments(t *testing.T) {
 	t.Run("DIDSet requires DID amendment", func(t *testing.T) {
 		d := NewDIDSet("rTest")
 		amendments := d.RequiredAmendments()
-		if len(amendments) != 1 || amendments[0] != tx.AmendmentDID {
-			t.Errorf("expected [%s], got %v", tx.AmendmentDID, amendments)
+		if len(amendments) != 1 || amendments[0] != amendment.AmendmentDID {
+			t.Errorf("expected [%s], got %v", amendment.AmendmentDID, amendments)
 		}
 	})
 
 	t.Run("DIDDelete requires DID amendment", func(t *testing.T) {
 		d := NewDIDDelete("rTest")
 		amendments := d.RequiredAmendments()
-		if len(amendments) != 1 || amendments[0] != tx.AmendmentDID {
-			t.Errorf("expected [%s], got %v", tx.AmendmentDID, amendments)
+		if len(amendments) != 1 || amendments[0] != amendment.AmendmentDID {
+			t.Errorf("expected [%s], got %v", amendment.AmendmentDID, amendments)
 		}
 	})
 }
@@ -383,7 +386,9 @@ func TestDIDEntryHelpers(t *testing.T) {
 	})
 
 	t.Run("DIDEntry round-trip serialization", func(t *testing.T) {
-		accountID, _ := tx.DecodeAccountID("rN7n3473SaZBCG4dFL83w7a1RXtXtbM2shY")
+		_, accountIDBytes, _ := addresscodec.DecodeClassicAddressToAccountID("rN7n3473SaZBCG4dFL83w7a1RXtXtbM2shY")
+		var accountID [20]byte
+		copy(accountID[:], accountIDBytes)
 		uri := strings.ToUpper(hex.EncodeToString([]byte("https://example.com")))
 		doc := strings.ToUpper(hex.EncodeToString([]byte("document")))
 		data := strings.ToUpper(hex.EncodeToString([]byte("attestation")))
