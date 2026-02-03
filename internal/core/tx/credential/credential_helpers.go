@@ -2,11 +2,11 @@ package credential
 
 import (
 	"encoding/hex"
-	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
+	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
 // Credential ledger entry flags
@@ -109,9 +109,18 @@ func parseCredentialEntry(data []byte) (*CredentialEntry, error) {
 		}
 	}
 
-	// Parse Flags
-	if flags, ok := jsonObj["Flags"].(float64); ok {
-		cred.Flags = uint32(flags)
+	// Parse Flags - handle multiple possible types from JSON decoder
+	if flags := jsonObj["Flags"]; flags != nil {
+		switch v := flags.(type) {
+		case float64:
+			cred.Flags = uint32(v)
+		case uint32:
+			cred.Flags = v
+		case int:
+			cred.Flags = uint32(v)
+		case int64:
+			cred.Flags = uint32(v)
+		}
 	}
 
 	// Parse IssuerNode

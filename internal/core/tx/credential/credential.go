@@ -3,11 +3,11 @@ package credential
 import (
 	"encoding/hex"
 	"errors"
+
+	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
-
-	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 )
 
 func init() {
@@ -290,68 +290,338 @@ func (c *CredentialDelete) RequiredAmendments() []string {
 }
 
 // Apply applies the CredentialCreate transaction to ledger state.
+// Reference: rippled Credentials.cpp CredentialCreate::doApply()
 func (c *CredentialCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	if c.Subject == "" || c.CredentialType == "" {
 		return tx.TemINVALID
 	}
+
 	subjectID, err := sle.DecodeAccountID(c.Subject)
 	if err != nil {
 		return tx.TecNO_TARGET
 	}
-	var credKey [32]byte
-	copy(credKey[:20], ctx.AccountID[:])
-	copy(credKey[20:], subjectID[:12])
-	credKeylet := keylet.Keylet{Key: credKey, Type: 0x0081}
-	credData := make([]byte, 64)
-	copy(credData[:20], ctx.AccountID[:])
-	copy(credData[20:40], subjectID[:])
+
+	// Decode credential type from hex to bytes
+	credTypeBytes, err := hex.DecodeString(c.CredentialType)
+	if err != nil {
+		return tx.TemINVALID
+	}
+
+	// Compute correct keylet: credential(subject, issuer, credType)
+	// where issuer = ctx.AccountID (the transaction sender)
+	credKeylet := keylet.Credential(subjectID, ctx.AccountID, credTypeBytes)
+
+	// Preclaim check: verify subject account exists
+	subjectAccountKeylet := keylet.Account(subjectID)
+	subjectExists, err := ctx.View.Exists(subjectAccountKeylet)
+	if err != nil || !subjectExists {
+		return tx.TecNO_TARGET
+	}
+
+	// Preclaim check: verify credential doesn't already exist
+	exists, err := ctx.View.Exists(credKeylet)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+	if exists {
+		return tx.TecDUPLICATE
+	}
+
+	// Check expiration (if set, must be in the future)
+	if c.Expiration != nil {
+		closeTime := ctx.Config.ParentCloseTime
+		if closeTime > *c.Expiration {
+			return tx.TecEXPIRED
+		}
+	}
+
+	// Check reserve for issuer (ctx.Account)
+	// Use prior balance (before fee deduction) to match rippled's behavior
+	// Reference: rippled Credentials.cpp line 154: if (mPriorBalance < reserve)
+	priorBalance := ctx.Account.Balance + ctx.Config.BaseFee
+	reserve := ctx.AccountReserve(ctx.Account.OwnerCount + 1)
+	if priorBalance < reserve {
+		return tx.TecINSUFFICIENT_RESERVE
+	}
+
+	// Create the credential entry
+	cred := &CredentialEntry{
+		Subject:        subjectID,
+		Issuer:         ctx.AccountID,
+		CredentialType: credTypeBytes,
+		IssuerNode:     0, // Would be set by dirInsert
+	}
+
+	// Set expiration if provided
+	if c.Expiration != nil {
+		cred.Expiration = c.Expiration
+	}
+
+	// Set URI if provided
+	if c.URI != "" {
+		uriBytes, err := hex.DecodeString(c.URI)
+		if err == nil {
+			cred.URI = uriBytes
+		}
+	}
+
+	// Self-issue: if subject == issuer, auto-accept
+	if subjectID == ctx.AccountID {
+		cred.SetAccepted()
+	}
+
+	// Serialize the credential entry
+	credData, err := serializeCredentialEntry(cred)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	// Insert the credential
 	if err := ctx.View.Insert(credKeylet, credData); err != nil {
 		return tx.TefINTERNAL
 	}
+
+	// Increase issuer's owner count
 	ctx.Account.OwnerCount++
+
 	return tx.TesSUCCESS
 }
 
 // Apply applies the CredentialAccept transaction to ledger state.
+// Reference: rippled Credentials.cpp CredentialAccept::doApply()
 func (c *CredentialAccept) Apply(ctx *tx.ApplyContext) tx.Result {
 	if c.Issuer == "" || c.CredentialType == "" {
 		return tx.TemINVALID
 	}
+
 	issuerID, err := sle.DecodeAccountID(c.Issuer)
 	if err != nil {
 		return tx.TecNO_TARGET
 	}
-	var credKey [32]byte
-	copy(credKey[:20], issuerID[:])
-	copy(credKey[20:], ctx.AccountID[:12])
-	credKeylet := keylet.Keylet{Key: credKey, Type: 0x0081}
-	_, err = ctx.View.Read(credKeylet)
+
+	// Decode credential type from hex to bytes
+	credTypeBytes, err := hex.DecodeString(c.CredentialType)
 	if err != nil {
+		return tx.TemINVALID
+	}
+
+	// Preclaim check: verify issuer account exists
+	issuerAccountKeylet := keylet.Account(issuerID)
+	issuerExists, err := ctx.View.Exists(issuerAccountKeylet)
+	if err != nil || !issuerExists {
+		return tx.TecNO_ISSUER
+	}
+
+	// Compute correct keylet: credential(subject, issuer, credType)
+	// where subject = ctx.AccountID (the transaction sender)
+	credKeylet := keylet.Credential(ctx.AccountID, issuerID, credTypeBytes)
+
+	// Read the credential
+	credData, err := ctx.View.Read(credKeylet)
+	if err != nil || credData == nil {
 		return tx.TecNO_ENTRY
 	}
+
+	// Parse the credential entry
+	cred, err := parseCredentialEntry(credData)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	// Check if already accepted
+	if cred.IsAccepted() {
+		return tx.TecDUPLICATE
+	}
+
+	// Check if credential is expired
+	closeTime := ctx.Config.ParentCloseTime
+	if checkCredentialExpired(cred, closeTime) {
+		// Delete expired credentials even if the transaction failed
+		if err := ctx.View.Erase(credKeylet); err != nil {
+			return tx.TefINTERNAL
+		}
+		// Decrease issuer's owner count
+		issuerData, err := ctx.View.Read(issuerAccountKeylet)
+		if err == nil && issuerData != nil {
+			issuerAccount, err := sle.ParseAccountRoot(issuerData)
+			if err == nil && issuerAccount.OwnerCount > 0 {
+				issuerAccount.OwnerCount--
+				updatedIssuerData, err := sle.SerializeAccountRoot(issuerAccount)
+				if err == nil {
+					ctx.View.Update(issuerAccountKeylet, updatedIssuerData)
+				}
+			}
+		}
+		return tx.TecEXPIRED
+	}
+
+	// Check reserve for subject (ctx.Account)
+	// Use prior balance (before fee deduction) to match rippled's behavior
+	// Reference: rippled Credentials.cpp line 376: if (mPriorBalance < reserve)
+	priorBalance := ctx.Account.Balance + ctx.Config.BaseFee
+	reserve := ctx.AccountReserve(ctx.Account.OwnerCount + 1)
+	if priorBalance < reserve {
+		return tx.TecINSUFFICIENT_RESERVE
+	}
+
+	// Set accepted flag
+	cred.SetAccepted()
+
+	// Serialize and update the credential
+	updatedCredData, err := serializeCredentialEntry(cred)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	if err := ctx.View.Update(credKeylet, updatedCredData); err != nil {
+		return tx.TefINTERNAL
+	}
+
+	// Transfer ownership: decrease issuer's owner count, increase subject's owner count
+	// Read issuer account
+	issuerData, err := ctx.View.Read(issuerAccountKeylet)
+	if err != nil || issuerData == nil {
+		return tx.TefINTERNAL
+	}
+
+	issuerAccount, err := sle.ParseAccountRoot(issuerData)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	// Decrease issuer's owner count
+	if issuerAccount.OwnerCount > 0 {
+		issuerAccount.OwnerCount--
+	}
+
+	// Serialize and update issuer account
+	updatedIssuerData, err := sle.SerializeAccountRoot(issuerAccount)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	if err := ctx.View.Update(issuerAccountKeylet, updatedIssuerData); err != nil {
+		return tx.TefINTERNAL
+	}
+
+	// Increase subject's owner count
+	ctx.Account.OwnerCount++
+
 	return tx.TesSUCCESS
 }
 
 // Apply applies the CredentialDelete transaction to ledger state.
+// Reference: rippled Credentials.cpp CredentialDelete::doApply()
 func (c *CredentialDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 	if c.CredentialType == "" {
 		return tx.TemINVALID
 	}
-	var subjectID [20]byte
+
+	// Decode credential type from hex to bytes
+	credTypeBytes, err := hex.DecodeString(c.CredentialType)
+	if err != nil {
+		return tx.TemINVALID
+	}
+
+	// Default subject/issuer to Account if not specified
+	var subjectID, issuerID [20]byte
+
 	if c.Subject != "" {
-		subjectID, _ = sle.DecodeAccountID(c.Subject)
+		subjectID, err = sle.DecodeAccountID(c.Subject)
+		if err != nil {
+			return tx.TecNO_TARGET
+		}
 	} else {
 		subjectID = ctx.AccountID
 	}
-	var credKey [32]byte
-	copy(credKey[:20], ctx.AccountID[:])
-	copy(credKey[20:], subjectID[:12])
-	credKeylet := keylet.Keylet{Key: credKey, Type: 0x0081}
-	if err := ctx.View.Erase(credKeylet); err != nil {
+
+	if c.Issuer != "" {
+		issuerID, err = sle.DecodeAccountID(c.Issuer)
+		if err != nil {
+			return tx.TecNO_TARGET
+		}
+	} else {
+		issuerID = ctx.AccountID
+	}
+
+	// Compute correct keylet: credential(subject, issuer, credType)
+	credKeylet := keylet.Credential(subjectID, issuerID, credTypeBytes)
+
+	// Preclaim check: verify credential exists
+	credData, err := ctx.View.Read(credKeylet)
+	if err != nil || credData == nil {
 		return tx.TecNO_ENTRY
 	}
-	if ctx.Account.OwnerCount > 0 {
-		ctx.Account.OwnerCount--
+
+	// Parse the credential entry
+	cred, err := parseCredentialEntry(credData)
+	if err != nil {
+		return tx.TefINTERNAL
 	}
+
+	// Permission check: only subject or issuer can delete non-expired credentials
+	// Anyone can delete expired credentials
+	closeTime := ctx.Config.ParentCloseTime
+	isExpired := checkCredentialExpired(cred, closeTime)
+	isSubject := subjectID == ctx.AccountID
+	isIssuer := issuerID == ctx.AccountID
+
+	if !isSubject && !isIssuer && !isExpired {
+		return tx.TecNO_PERMISSION
+	}
+
+	// Delete the credential
+	if err := ctx.View.Erase(credKeylet); err != nil {
+		return tx.TefINTERNAL
+	}
+
+	// Adjust owner count based on who owns the credential
+	// If accepted, subject owns it. If not accepted, issuer owns it.
+	if cred.IsAccepted() {
+		// Credential was accepted, subject owns it
+		if isSubject {
+			// Transaction sender is the subject (owner)
+			if ctx.Account.OwnerCount > 0 {
+				ctx.Account.OwnerCount--
+			}
+		} else {
+			// Need to decrease subject's owner count
+			subjectAccountKeylet := keylet.Account(subjectID)
+			subjectData, err := ctx.View.Read(subjectAccountKeylet)
+			if err == nil && subjectData != nil {
+				subjectAccount, err := sle.ParseAccountRoot(subjectData)
+				if err == nil && subjectAccount.OwnerCount > 0 {
+					subjectAccount.OwnerCount--
+					updatedData, err := sle.SerializeAccountRoot(subjectAccount)
+					if err == nil {
+						ctx.View.Update(subjectAccountKeylet, updatedData)
+					}
+				}
+			}
+		}
+	} else {
+		// Credential was not accepted, issuer owns it
+		if isIssuer {
+			// Transaction sender is the issuer (owner)
+			if ctx.Account.OwnerCount > 0 {
+				ctx.Account.OwnerCount--
+			}
+		} else {
+			// Need to decrease issuer's owner count
+			issuerAccountKeylet := keylet.Account(issuerID)
+			issuerData, err := ctx.View.Read(issuerAccountKeylet)
+			if err == nil && issuerData != nil {
+				issuerAccount, err := sle.ParseAccountRoot(issuerData)
+				if err == nil && issuerAccount.OwnerCount > 0 {
+					issuerAccount.OwnerCount--
+					updatedData, err := sle.SerializeAccountRoot(issuerAccount)
+					if err == nil {
+						ctx.View.Update(issuerAccountKeylet, updatedData)
+					}
+				}
+			}
+		}
+	}
+
 	return tx.TesSUCCESS
 }
