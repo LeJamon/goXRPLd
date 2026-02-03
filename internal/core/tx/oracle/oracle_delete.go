@@ -1,4 +1,3 @@
-// TODO split between the two tx in respective files
 package oracle
 
 import (
