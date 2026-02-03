@@ -2,86 +2,73 @@ package amm
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
-	"math"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
-// Internal constants (lowercase aliases of exported AMM constants)
-const (
-	voteMaxSlots          = VOTE_MAX_SLOTS
-	voteWeightScaleFactor = VOTE_WEIGHT_SCALE_FACTOR
-
-	auctionSlotDiscountedFee    = AUCTION_SLOT_DISCOUNTED_FEE_FRACTION
-	auctionSlotMinFeeFraction   = AUCTION_SLOT_MIN_FEE_FRACTION
-	auctionSlotTimeIntervals    = AUCTION_SLOT_TIME_INTERVALS
-	auctionSlotTotalTimeSecs    = uint32(TOTAL_TIME_SLOT_SECS)
-	auctionSlotIntervalDuration = auctionSlotTotalTimeSecs / auctionSlotTimeIntervals
-)
-
-// AccountRoot flags needed by AMMClawback
-const (
-	lsfAllowTrustLineClawback = sle.LsfAllowTrustLineClawback
-	lsfNoFreeze               = sle.LsfNoFreeze
-	lsfAMM                    = sle.LsfAMM
-)
-
-// Result code aliases for AMM-specific codes
-var (
-	TecUNFUNDED_AMM       = tx.TecUNFUNDED_AMM
-	TecNO_LINE            = tx.TecNO_LINE
-	TecINSUF_RESERVE_LINE = tx.TecINSUF_RESERVE_LINE
-	TerNO_AMM             = tx.TerNO_AMM
-	TerNO_ACCOUNT         = tx.TerNO_ACCOUNT
-)
-
-// AMMData holds the internal AMM ledger entry data.
-type AMMData struct {
-	Account        [20]byte
-	Asset          [20]byte
-	Asset2         [20]byte
-	TradingFee     uint16
-	LPTokenBalance uint64
-	VoteSlots      []VoteSlotData
-	AuctionSlot    *AuctionSlotData
-}
-
-// VoteSlotData holds a single vote slot entry.
-type VoteSlotData struct {
-	Account    [20]byte
-	TradingFee uint16
-	VoteWeight uint32
-}
-
-// AuctionSlotData holds the auction slot state.
-type AuctionSlotData struct {
-	Account      [20]byte
-	Expiration   uint32
-	Price        uint64
-	AuthAccounts [][20]byte
-}
-
-// parseAmountFromTx parses a tx.Amount to uint64 (drops for XRP, scaled for IOU).
-func parseAmountFromTx(amt *tx.Amount) uint64 {
-	if amt == nil {
-		return 0
+// validateAMMAmount validates an AMM amount
+func validateAMMAmount(amt tx.Amount) error {
+	if amt.IsZero() {
+		return errors.New("amount must be positive")
 	}
-	if amt.IsNative() {
-		drops := amt.Drops()
-		if drops < 0 {
-			return 0
+	if amt.IsNegative() {
+		return errors.New("amount must be positive")
+	}
+	return nil
+}
+
+// validateAMMAmountWithPair validates an AMM amount including optional asset pair matching.
+// If pair is provided, the amount's issue must match either asset.
+// If validZero is true, zero amounts are allowed.
+// Returns:
+// - "temBAD_AMM_TOKENS" if amount's issue doesn't match the asset pair
+// - "temBAD_AMOUNT" if amount is negative or zero (when validZero is false)
+// - "" on success
+func validateAMMAmountWithPair(amt tx.Amount, asset1, asset2 *tx.Asset, validZero bool) string {
+	// Check if amount's issue matches either asset in the pair
+	if asset1 != nil && asset2 != nil {
+		if !matchesAsset(&amt, *asset1) && !matchesAsset(&amt, *asset2) {
+			return "temBAD_AMM_TOKENS"
 		}
-		return uint64(drops)
 	}
-	// For IOU, use float value and scale to drops-equivalent
-	f := amt.Float64()
-	if f < 0 {
-		return 0
+
+	// Check amount value
+	if amt.IsNegative() {
+		return "temBAD_AMOUNT"
 	}
-	return uint64(f * 1000000)
+	if !validZero && amt.IsZero() {
+		return "temBAD_AMOUNT"
+	}
+
+	return ""
+}
+
+// matchesAsset checks if an Amount matches an Asset
+// Handles XRP being represented as either "" or "XRP" for currency
+func matchesAsset(amt *tx.Amount, asset tx.Asset) bool {
+	if amt == nil {
+		return false
+	}
+	// Check if both are XRP (currency empty or "XRP", no issuer)
+	amtIsXRP := amt.IsNative() || amt.Currency == "" || amt.Currency == "XRP"
+	assetIsXRP := asset.Currency == "" || asset.Currency == "XRP"
+	if amtIsXRP && assetIsXRP {
+		return true
+	}
+	// For IOUs, compare currency and issuer
+	return amt.Currency == asset.Currency && amt.Issuer == asset.Issuer
+}
+
+// zeroAmount returns a zero amount for the given asset
+func zeroAmount(asset tx.Asset) tx.Amount {
+	if asset.Currency == "" || asset.Currency == "XRP" {
+		return sle.NewXRPAmountFromInt(0)
+	}
+	return sle.NewIssuedAmountFromValue(0, -100, asset.Currency, asset.Issuer)
 }
 
 // computeAMMKeylet computes the AMM keylet from the asset pair.
@@ -112,13 +99,15 @@ func computeAMMAccountID(ammKey [32]byte) [20]byte {
 }
 
 // calculateLPTokens calculates initial LP token balance as sqrt(amount1 * amount2).
-func calculateLPTokens(amount1, amount2 uint64) uint64 {
-	// Use float64 for the multiplication to avoid overflow
-	product := float64(amount1) * float64(amount2)
-	if product <= 0 {
-		return 0
+// Uses tx.Amount arithmetic for precision with IOU values.
+func calculateLPTokens(amount1, amount2 tx.Amount) tx.Amount {
+	if amount1.IsZero() || amount2.IsZero() {
+		return sle.NewIssuedAmountFromValue(0, -100, "", "")
 	}
-	return uint64(math.Sqrt(product))
+	// product = amount1 * amount2
+	product := amount1.Mul(amount2, false)
+	// result = sqrt(product)
+	return product.Sqrt()
 }
 
 // generateAMMLPTCurrency generates the LP token currency code from two asset currencies.
@@ -149,61 +138,183 @@ func encodeAccountID(accountID [20]byte) (string, error) {
 	return sle.EncodeAccountID(accountID)
 }
 
-// getFee converts a trading fee in basis points (0-1000) to a fractional value.
+// getFee converts a trading fee in basis points (0-1000) to a fractional Amount.
 // 1000 basis points = 1% = 0.01
-func getFee(fee uint16) float64 {
-	return float64(fee) / 100000.0
+// Returns fee as an IOU Amount for precise arithmetic.
+func getFee(fee uint16) tx.Amount {
+	// fee is in range 0-1000, representing 0-1% (0.00 to 0.01)
+	// Convert to Amount: fee/100000
+	if fee == 0 {
+		return sle.NewIssuedAmountFromValue(0, -100, "", "")
+	}
+	// fee / 100000 = fee * 10^-5
+	// For normalized form: mantissa in [10^15, 10^16), so fee * 10^10 with exp -15
+	mantissa := int64(fee) * 1e10
+	return sle.NewIssuedAmountFromValue(mantissa, -15, "", "")
+}
+
+// oneAmount returns the Amount value 1.0 as an IOU for arithmetic.
+func oneAmount() tx.Amount {
+	return sle.NewIssuedAmountFromValue(1e15, -15, "", "")
+}
+
+// subFromOne calculates (1 - x) where x is a fractional Amount
+func subFromOne(x tx.Amount) tx.Amount {
+	one := oneAmount()
+	result, _ := one.Sub(x)
+	return result
+}
+
+// addToOne calculates (1 + x) where x is a fractional Amount
+func addToOne(x tx.Amount) tx.Amount {
+	one := oneAmount()
+	result, _ := one.Add(x)
+	return result
 }
 
 // lpTokensOut calculates LP tokens issued for a single-asset deposit.
 // Equation 4: t = T * ((1 + a/(A*(1-tfee)))^0.5 - 1)
-func lpTokensOut(assetBalance, amountIn, lptBalance uint64, tfee uint16) uint64 {
-	if assetBalance == 0 || lptBalance == 0 {
-		return 0
+func lpTokensOut(assetBalance, amountIn, lptBalance tx.Amount, tfee uint16) tx.Amount {
+	if assetBalance.IsZero() || lptBalance.IsZero() {
+		return sle.NewIssuedAmountFromValue(0, -100, "", "")
 	}
+	// fee = tfee / 100000
 	fee := getFee(tfee)
-	effectiveAmount := float64(amountIn) / (float64(assetBalance) * (1.0 - fee))
-	factor := math.Sqrt(1.0+effectiveAmount) - 1.0
-	return uint64(float64(lptBalance) * factor)
+	// oneMinusFee = 1 - fee
+	oneMinusFee := subFromOne(fee)
+	// effectiveDenom = A * (1 - fee)
+	effectiveDenom := assetBalance.Mul(oneMinusFee, false)
+	// effectiveAmount = a / effectiveDenom = a / (A * (1 - fee))
+	effectiveAmount := amountIn.Div(effectiveDenom, false)
+	// onePlusEff = 1 + effectiveAmount
+	onePlusEff := addToOne(effectiveAmount)
+	// sqrtVal = sqrt(1 + effectiveAmount)
+	sqrtVal := onePlusEff.Sqrt()
+	// factor = sqrtVal - 1
+	factor, _ := sqrtVal.Sub(oneAmount())
+	// result = T * factor
+	return lptBalance.Mul(factor, false)
 }
 
 // ammAssetIn calculates the asset amount needed for a specified LP token output (single-asset deposit).
-// Equation 3 inverse: a = A * (1-tfee) * ((T+t)/T)^2 - 1)
-func ammAssetIn(assetBalance, lptBalance, lpTokensOut uint64, tfee uint16) uint64 {
-	if lptBalance == 0 {
-		return 0
+// Equation 3 inverse: a = A * (1-tfee) * (((T+t)/T)^2 - 1)
+func ammAssetIn(assetBalance, lptBalance, lpTokensOutAmt tx.Amount, tfee uint16) tx.Amount {
+	if lptBalance.IsZero() {
+		return sle.NewIssuedAmountFromValue(0, -100, "", "")
 	}
+	// fee = tfee / 100000
 	fee := getFee(tfee)
-	ratio := float64(lptBalance+lpTokensOut) / float64(lptBalance)
-	factor := ratio*ratio - 1.0
-	return uint64(float64(assetBalance) * (1.0 - fee) * factor)
+	// oneMinusFee = 1 - fee
+	oneMinusFee := subFromOne(fee)
+	// tPlusT = T + t (lptBalance + lpTokensOutAmt)
+	tPlusT, _ := lptBalance.Add(lpTokensOutAmt)
+	// ratio = (T + t) / T
+	ratio := tPlusT.Div(lptBalance, false)
+	// ratioSquared = ratio^2
+	ratioSquared := ratio.Mul(ratio, false)
+	// factor = ratioSquared - 1
+	factor, _ := ratioSquared.Sub(oneAmount())
+	// result = A * (1 - fee) * factor
+	aTimesFee := assetBalance.Mul(oneMinusFee, false)
+	return aTimesFee.Mul(factor, false)
 }
 
 // ammAssetOut calculates the asset amount received for burning LP tokens (single-asset withdrawal).
 // Equation 8: a = A * (1 - (1 - t/T)^2) * (1 - tfee)
-func ammAssetOut(assetBalance, lptBalance, lpTokensIn uint64, tfee uint16) uint64 {
-	if lptBalance == 0 || lpTokensIn > lptBalance {
-		return 0
+func ammAssetOut(assetBalance, lptBalance, lpTokensIn tx.Amount, tfee uint16) tx.Amount {
+	if lptBalance.IsZero() {
+		return sle.NewIssuedAmountFromValue(0, -100, "", "")
 	}
+	// Check if lpTokensIn > lptBalance
+	if lpTokensIn.Compare(lptBalance) > 0 {
+		return sle.NewIssuedAmountFromValue(0, -100, "", "")
+	}
+	// fee = tfee / 100000
 	fee := getFee(tfee)
-	ratio := 1.0 - float64(lpTokensIn)/float64(lptBalance)
-	factor := (1.0 - ratio*ratio) * (1.0 - fee)
-	return uint64(float64(assetBalance) * factor)
+	// oneMinusFee = 1 - fee
+	oneMinusFee := subFromOne(fee)
+	// tDivT = t / T (lpTokensIn / lptBalance)
+	tDivT := lpTokensIn.Div(lptBalance, false)
+	// ratio = 1 - t/T
+	ratio := subFromOne(tDivT)
+	// ratioSquared = ratio^2
+	ratioSquared := ratio.Mul(ratio, false)
+	// factor = 1 - ratioSquared
+	factor := subFromOne(ratioSquared)
+	// factorWithFee = factor * (1 - fee)
+	factorWithFee := factor.Mul(oneMinusFee, false)
+	// result = A * factorWithFee
+	return assetBalance.Mul(factorWithFee, false)
 }
 
 // calcLPTokensIn calculates LP tokens needed for a single-asset withdrawal amount.
 // Equation 7: t = T * (1 - (1 - a/(A*(1-tfee)))^0.5)
-func calcLPTokensIn(assetBalance, amountOut, lptBalance uint64, tfee uint16) uint64 {
-	if assetBalance == 0 || lptBalance == 0 {
-		return 0
+func calcLPTokensIn(assetBalance, amountOut, lptBalance tx.Amount, tfee uint16) tx.Amount {
+	if assetBalance.IsZero() || lptBalance.IsZero() {
+		return sle.NewIssuedAmountFromValue(0, -100, "", "")
 	}
+	// fee = tfee / 100000
 	fee := getFee(tfee)
-	effectiveAmount := float64(amountOut) / (float64(assetBalance) * (1.0 - fee))
-	if effectiveAmount >= 1.0 {
+	// oneMinusFee = 1 - fee
+	oneMinusFee := subFromOne(fee)
+	// effectiveDenom = A * (1 - fee)
+	effectiveDenom := assetBalance.Mul(oneMinusFee, false)
+	// effectiveAmount = amountOut / effectiveDenom
+	effectiveAmount := amountOut.Div(effectiveDenom, false)
+	// Check if effectiveAmount >= 1 (would drain the pool)
+	if effectiveAmount.Compare(oneAmount()) >= 0 {
 		return lptBalance // Would drain the pool
 	}
-	factor := 1.0 - math.Sqrt(1.0-effectiveAmount)
-	return uint64(float64(lptBalance) * factor)
+	// oneMinusEff = 1 - effectiveAmount
+	oneMinusEff := subFromOne(effectiveAmount)
+	// sqrtVal = sqrt(1 - effectiveAmount)
+	sqrtVal := oneMinusEff.Sqrt()
+	// factor = 1 - sqrtVal
+	factor := subFromOne(sqrtVal)
+	// result = T * factor
+	return lptBalance.Mul(factor, false)
+}
+
+// serializeAmount serializes a tx.Amount to binary.
+// Format: 1 byte type (0=XRP, 1=IOU), then:
+//   - XRP: 8 bytes int64 drops
+//   - IOU: 8 bytes int64 mantissa + 4 bytes int32 exponent
+func serializeAmount(amt tx.Amount) []byte {
+	if amt.IsNative() {
+		buf := make([]byte, 9) // 1 type + 8 drops
+		buf[0] = 0             // XRP type
+		binary.BigEndian.PutUint64(buf[1:9], uint64(amt.Drops()))
+		return buf
+	}
+	buf := make([]byte, 13) // 1 type + 8 mantissa + 4 exponent
+	buf[0] = 1              // IOU type
+	binary.BigEndian.PutUint64(buf[1:9], uint64(amt.Mantissa()))
+	binary.BigEndian.PutUint32(buf[9:13], uint32(amt.Exponent()+128)) // offset exponent to avoid negative
+	return buf
+}
+
+// deserializeAmount deserializes a tx.Amount from binary.
+// Returns the Amount and bytes consumed.
+func deserializeAmount(data []byte) (tx.Amount, int) {
+	if len(data) < 1 {
+		return sle.NewXRPAmountFromInt(0), 0
+	}
+	amtType := data[0]
+	if amtType == 0 {
+		// XRP
+		if len(data) < 9 {
+			return sle.NewXRPAmountFromInt(0), 0
+		}
+		drops := int64(binary.BigEndian.Uint64(data[1:9]))
+		return sle.NewXRPAmountFromInt(drops), 9
+	}
+	// IOU
+	if len(data) < 13 {
+		return sle.NewIssuedAmountFromValue(0, -100, "", ""), 0
+	}
+	mantissa := int64(binary.BigEndian.Uint64(data[1:9]))
+	exponent := int(binary.BigEndian.Uint32(data[9:13])) - 128 // reverse offset
+	return sle.NewIssuedAmountFromValue(mantissa, exponent, "", ""), 13
 }
 
 // parseAMMData deserializes an AMM ledger entry from binary data.
@@ -235,12 +346,29 @@ func parseAMMData(data []byte) (*AMMData, error) {
 	amm.TradingFee = binary.BigEndian.Uint16(data[offset : offset+2])
 	offset += 2
 
-	// LPTokenBalance (8 bytes)
-	if offset+8 > len(data) {
+	// LPTokenBalance (variable: 9 or 13 bytes)
+	if offset >= len(data) {
 		return amm, nil
 	}
-	amm.LPTokenBalance = binary.BigEndian.Uint64(data[offset : offset+8])
-	offset += 8
+	amt, consumed := deserializeAmount(data[offset:])
+	amm.LPTokenBalance = amt
+	offset += consumed
+
+	// AssetBalance (variable: 9 or 13 bytes)
+	if offset >= len(data) {
+		return amm, nil
+	}
+	amt, consumed = deserializeAmount(data[offset:])
+	amm.AssetBalance = amt
+	offset += consumed
+
+	// Asset2Balance (variable: 9 or 13 bytes)
+	if offset >= len(data) {
+		return amm, nil
+	}
+	amt, consumed = deserializeAmount(data[offset:])
+	amm.Asset2Balance = amt
+	offset += consumed
 
 	// VoteSlots count (1 byte)
 	if offset+1 > len(data) {
@@ -269,7 +397,7 @@ func parseAMMData(data []byte) (*AMMData, error) {
 	hasAuctionSlot := data[offset]
 	offset++
 
-	if hasAuctionSlot != 0 && offset+32 <= len(data) {
+	if hasAuctionSlot != 0 && offset+24 <= len(data) {
 		slot := &AuctionSlotData{
 			AuthAccounts: make([][20]byte, 0),
 		}
@@ -277,8 +405,13 @@ func parseAMMData(data []byte) (*AMMData, error) {
 		offset += 20
 		slot.Expiration = binary.BigEndian.Uint32(data[offset : offset+4])
 		offset += 4
-		slot.Price = binary.BigEndian.Uint64(data[offset : offset+8])
-		offset += 8
+
+		// Price (variable: 9 or 13 bytes)
+		if offset < len(data) {
+			price, consumed := deserializeAmount(data[offset:])
+			slot.Price = price
+			offset += consumed
+		}
 
 		// Auth accounts count
 		if offset+1 <= len(data) {
@@ -307,9 +440,9 @@ func serializeAMM(amm *AMMData, ownerID [20]byte) ([]byte, error) {
 // serializeAMMData serializes an AMMData entry to binary.
 func serializeAMMData(amm *AMMData) ([]byte, error) {
 	// Calculate size
-	size := 20 + 20 + 20 + 2 + 8 + 1 // Account + Asset + Asset2 + TradingFee + LPTokenBalance + voteCount
-	size += len(amm.VoteSlots) * 26  // Each vote slot: 20 + 2 + 4
-	size += 1                        // hasAuctionSlot flag
+	size := 20 + 20 + 20 + 2 + 8 + 8 + 8 + 1 // Account + Asset + Asset2 + TradingFee + LPTokenBalance + AssetBalance + Asset2Balance + voteCount
+	size += len(amm.VoteSlots) * 26          // Each vote slot: 20 + 2 + 4
+	size += 1                                // hasAuctionSlot flag
 	if amm.AuctionSlot != nil {
 		size += 20 + 4 + 8 + 1 // Account + Expiration + Price + authCount
 		size += len(amm.AuctionSlot.AuthAccounts) * 20
@@ -336,6 +469,14 @@ func serializeAMMData(amm *AMMData) ([]byte, error) {
 
 	// LPTokenBalance
 	binary.BigEndian.PutUint64(data[offset:offset+8], amm.LPTokenBalance)
+	offset += 8
+
+	// AssetBalance
+	binary.BigEndian.PutUint64(data[offset:offset+8], amm.AssetBalance)
+	offset += 8
+
+	// Asset2Balance
+	binary.BigEndian.PutUint64(data[offset:offset+8], amm.Asset2Balance)
 	offset += 8
 
 	// VoteSlots
@@ -389,15 +530,62 @@ func createOrUpdateAMMTrustline(ammAccountID [20]byte, asset tx.Asset, amount ui
 	return nil
 }
 
-// updateTrustlineBalance updates the balance of a trust line.
-// This is a simplified implementation for the AMM sub-package.
-func updateTrustlineBalance(accountID [20]byte, asset tx.Asset, delta int64) error {
-	// In a full implementation, this would read the trust line,
-	// update the balance, and write it back.
-	_ = accountID
-	_ = asset
-	_ = delta
-	return nil
+// updateTrustlineBalanceInView updates the balance of a trust line for IOU transfers.
+// This reads the trust line, modifies the balance, and writes it back.
+// delta is positive when transferring TO the account, negative when transferring FROM.
+func updateTrustlineBalanceInView(accountID [20]byte, issuerID [20]byte, currency string, delta int64, view tx.LedgerView) error {
+	// Get trust line keylet
+	lineKey := keylet.Line(accountID, issuerID, currency)
+
+	// Check if trust line exists
+	exists, err := view.Exists(lineKey)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return errors.New("trust line does not exist")
+	}
+
+	// Read trust line data
+	data, err := view.Read(lineKey)
+	if err != nil {
+		return err
+	}
+
+	// Parse trust line
+	rs, err := sle.ParseRippleState(data)
+	if err != nil {
+		return err
+	}
+
+	// Determine if account is low or high in the trust line
+	// Balance convention: positive means low owes high
+	isLow := keylet.IsLowAccount(accountID, issuerID)
+
+	// Get current balance from holder's perspective
+	currentBalance := rs.Balance.Float64()
+	if !isLow {
+		currentBalance = -currentBalance
+	}
+
+	// Apply delta (positive = receiving, negative = sending)
+	newBalance := currentBalance + float64(delta)
+
+	// Convert back to RippleState balance convention
+	if !isLow {
+		newBalance = -newBalance
+	}
+
+	// Update the balance
+	rs.Balance = sle.NewIssuedAmountFromFloat64(newBalance, currency, sle.AccountOneAddress)
+
+	// Serialize and write back
+	serialized, err := sle.SerializeRippleState(rs)
+	if err != nil {
+		return err
+	}
+
+	return view.Update(lineKey, serialized)
 }
 
 // createLPTokenTrustline creates a trust line for LP tokens.
