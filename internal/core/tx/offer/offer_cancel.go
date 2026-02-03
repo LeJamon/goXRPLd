@@ -1,4 +1,3 @@
-// Package offer implements the OfferCreate and OfferCancel transactions.
 // Reference: rippled CreateOffer.cpp, CancelOffer.cpp
 package offer
 
@@ -9,28 +8,6 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
-
-// OfferCreate flags (exported for use by other packages)
-const (
-	// OfferCreateFlagPassive won't consume offers that match this one
-	OfferCreateFlagPassive uint32 = 0x00010000
-	// OfferCreateFlagImmediateOrCancel treats offer as immediate-or-cancel
-	OfferCreateFlagImmediateOrCancel uint32 = 0x00020000
-	// OfferCreateFlagFillOrKill treats offer as fill-or-kill
-	OfferCreateFlagFillOrKill uint32 = 0x00040000
-	// OfferCreateFlagSell makes the offer a sell offer
-	OfferCreateFlagSell uint32 = 0x00080000
-)
-
-// Ledger offer flags
-const (
-	lsfOfferPassive uint32 = 0x00010000
-	lsfOfferSell    uint32 = 0x00020000
-)
-
-// ============================================================================
-// OfferCancel Transaction
-// ============================================================================
 
 // OfferCancel cancels an existing offer on the decentralized exchange.
 type OfferCancel struct {
