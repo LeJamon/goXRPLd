@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 
@@ -624,6 +625,10 @@ func parseValidationError(err error) Result {
 		"temBAD_SEND_XRP_LIMIT":     TemBAD_SEND_XRP_LIMIT,
 		"temBAD_SEND_XRP_NO_DIRECT": TemBAD_SEND_XRP_NO_DIRECT,
 		"temCAN_NOT_PREAUTH_SELF":   TemCAN_NOT_PREAUTH_SELF,
+		"temEMPTY_DID":              TemEMPTY_DID,
+		"temARRAY_EMPTY":            TemARRAY_EMPTY,
+		"temARRAY_TOO_LARGE":        TemARRAY_TOO_LARGE,
+		"temBAD_AMM_TOKENS":         TemBAD_AMM_TOKENS,
 	}
 
 	// Check if the message starts with any known TER code
@@ -854,20 +859,19 @@ func (e *Engine) preclaim(tx Transaction) Result {
 }
 
 // doApply applies the transaction to the ledger
+// For tec results, only fee/sequence changes are applied; transaction effects are discarded.
+// Reference: rippled Transactor.cpp - tec results claim fee but don't apply effects
 func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Result {
 	// Store txHash for use by apply functions
 	e.currentTxHash = txHash
 
-	// Create ApplyStateTable to track all changes and auto-generate metadata
-	table := NewApplyStateTable(e.view, txHash, e.config.LedgerSequence)
-
-	// Deduct fee from sender
+	// Deduct fee from sender first (this always happens for applied transactions)
 	common := tx.GetCommon()
 	accountID, _ := sle.DecodeAccountID(common.Account)
 	accountKey := keylet.Account(accountID)
 
-	// Read sender account through the table (tracks it for metadata)
-	accountData, err := table.Read(accountKey)
+	// Read sender account directly from view
+	accountData, err := e.view.Read(accountKey)
 	if err != nil {
 		return TefINTERNAL
 	}
@@ -879,6 +883,10 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 
 	fee := e.calculateFee(tx)
 
+	// Store original account state for fee-only application
+	originalBalance := account.Balance
+	originalSequence := account.Sequence
+
 	// Deduct fee and increment sequence
 	account.Balance -= fee
 	if common.Sequence != nil {
@@ -888,6 +896,9 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 	// Update PreviousTxnID and PreviousTxnLgrSeq (thread the account)
 	account.PreviousTxnID = txHash
 	account.PreviousTxnLgrSeq = e.config.LedgerSequence
+
+	// Create ApplyStateTable for transaction-specific changes
+	table := NewApplyStateTable(e.view, txHash, e.config.LedgerSequence)
 
 	// Type-specific application - all operations go through the table
 	var result Result
@@ -908,6 +919,38 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 		result = TesSUCCESS
 	}
 
+	// For tec results, only apply fee/sequence changes, not transaction effects
+	// Reference: rippled - tec codes claim the fee but don't apply transaction effects
+	if result.IsTec() {
+		// Apply only fee and sequence changes to the source account
+		account.Balance = originalBalance - fee
+		account.Sequence = originalSequence
+		if common.Sequence != nil {
+			account.Sequence = *common.Sequence + 1
+		}
+
+		updatedData, err := sle.SerializeAccountRoot(account)
+		if err != nil {
+			return TefINTERNAL
+		}
+
+		if err := e.view.Update(accountKey, updatedData); err != nil {
+			return TefINTERNAL
+		}
+
+		// Generate minimal metadata for fee-only application
+		metadata.AffectedNodes = []AffectedNode{
+			{
+				NodeType:        "ModifiedNode",
+				LedgerEntryType: "AccountRoot",
+				LedgerIndex:     fmt.Sprintf("%X", accountKey.Key),
+			},
+		}
+
+		return result
+	}
+
+	// For success, apply all changes through the table
 	// Update the source account through the table
 	updatedData, err := sle.SerializeAccountRoot(account)
 	if err != nil {

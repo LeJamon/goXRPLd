@@ -12,6 +12,7 @@ type flattenField struct {
 	name      string
 	omitempty bool
 	isAmount  bool // use flattenAmount converter
+	isAsset   bool // use flattenAsset converter for Asset/Issue fields
 	boolint   bool // convert bool to int (0 or 1)
 }
 
@@ -24,11 +25,11 @@ type flattenInfo struct {
 var flattenCache sync.Map // map[reflect.Type]*flattenInfo
 
 // parseXRPLTag parses an xrpl struct tag.
-// Format: "FieldName,opt1,opt2" where options are: omitempty, amount
+// Format: "FieldName,opt1,opt2" where options are: omitempty, amount, asset, boolint
 // Returns ("", false) for tags that should be skipped ("-").
-func parseXRPLTag(tag string) (name string, omitempty bool, isAmount bool, boolint bool, skip bool) {
+func parseXRPLTag(tag string) (name string, omitempty bool, isAmount bool, isAsset bool, boolint bool, skip bool) {
 	if tag == "" || tag == "-" {
-		return "", false, false, false, true
+		return "", false, false, false, false, true
 	}
 	parts := strings.Split(tag, ",")
 	name = parts[0]
@@ -38,11 +39,13 @@ func parseXRPLTag(tag string) (name string, omitempty bool, isAmount bool, booli
 			omitempty = true
 		case "amount":
 			isAmount = true
+		case "asset":
+			isAsset = true
 		case "boolint":
 			boolint = true
 		}
 	}
-	return name, omitempty, isAmount, boolint, false
+	return name, omitempty, isAmount, isAsset, boolint, false
 }
 
 // getFlattenInfo returns the cached flattenInfo for a struct type.
@@ -67,7 +70,7 @@ func getFlattenInfo(t reflect.Type) *flattenInfo {
 		}
 
 		tag := field.Tag.Get("xrpl")
-		name, omitempty, isAmount, boolint, skip := parseXRPLTag(tag)
+		name, omitempty, isAmount, isAsset, boolint, skip := parseXRPLTag(tag)
 		if skip {
 			continue
 		}
@@ -77,6 +80,7 @@ func getFlattenInfo(t reflect.Type) *flattenInfo {
 			name:      name,
 			omitempty: omitempty,
 			isAmount:  isAmount,
+			isAsset:   isAsset,
 			boolint:   boolint,
 		})
 	}
@@ -147,6 +151,18 @@ func ReflectFlatten(tx Transaction) (map[string]any, error) {
 				amt = val.Interface().(Amount)
 			}
 			m[f.name] = flattenAmount(amt)
+		} else if f.isAsset {
+			// Handle Asset and *Asset (Issue objects for AMM)
+			var asset Asset
+			if val.Kind() == reflect.Ptr {
+				if val.IsNil() {
+					continue
+				}
+				asset = val.Elem().Interface().(Asset)
+			} else {
+				asset = val.Interface().(Asset)
+			}
+			m[f.name] = flattenAsset(asset)
 		} else if f.boolint {
 			// Convert bool to int (0 or 1) for XRPL protocol
 			if val.Bool() {
@@ -180,6 +196,25 @@ func flattenAmount(a Amount) any {
 	}
 	return map[string]any{
 		"value":    a.Value(),
+		"currency": a.Currency,
+		"issuer":   a.Issuer,
+	}
+}
+
+// flattenAsset converts an Asset to its serializable Issue form.
+// The binary codec expects map[string]any with "currency" and optionally "issuer" keys.
+// XRP assets have only "currency": "XRP" (no issuer).
+// IOU assets have "currency" and "issuer" keys.
+// Reference: rippled Issue type serialization
+func flattenAsset(a Asset) map[string]any {
+	// XRP is represented by currency "XRP" with no issuer
+	if a.Currency == "" || a.Currency == "XRP" {
+		return map[string]any{
+			"currency": "XRP",
+		}
+	}
+	// IOU assets have both currency and issuer
+	return map[string]any{
 		"currency": a.Currency,
 		"issuer":   a.Issuer,
 	}
