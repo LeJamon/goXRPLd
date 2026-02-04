@@ -128,7 +128,7 @@ func TestInvalidDeposit(t *testing.T) {
 			Amount(amm.XRPAmount(100)).
 			SingleAsset().
 			Build()
-		result := env.Submit(depositTx)
+		result := env.Submit(jtx.WithSeq(depositTx, 1))
 
 		if result.Success {
 			t.Fatal("Should not allow deposit from non-existent account")
