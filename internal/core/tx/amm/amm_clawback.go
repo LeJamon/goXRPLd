@@ -125,7 +125,7 @@ func (a *AMMClawback) RequiredAmendments() []string {
 func (a *AMMClawback) Apply(ctx *tx.ApplyContext) tx.Result {
 	issuerID := ctx.AccountID
 
-	// Find the holder - per rippled AMMClawback.cpp preclaim line 103-104
+	// Find the holder
 	holderID, err := sle.DecodeAccountID(a.Holder)
 	if err != nil {
 		return tx.TemINVALID
@@ -141,8 +141,7 @@ func (a *AMMClawback) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TefINTERNAL
 	}
 
-	// Find the AMM - per rippled AMMClawback.cpp preclaim lines 106-111
-	// This check must come BEFORE permission check
+	// Find the AMM
 	ammKey := computeAMMKeylet(a.Asset, a.Asset2)
 	ammRawData, err := ctx.View.Read(ammKey)
 	if err != nil {
@@ -150,7 +149,6 @@ func (a *AMMClawback) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	// Verify issuer has lsfAllowTrustLineClawback and NOT lsfNoFreeze
-	// Reference: rippled AMMClawback.cpp preclaim lines 113-119
 	if (ctx.Account.Flags & sle.LsfAllowTrustLineClawback) == 0 {
 		return tx.TecNO_PERMISSION
 	}
@@ -176,28 +174,28 @@ func (a *AMMClawback) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TefINTERNAL
 	}
 
-	// Get current AMM balances
-	assetBalance1 := ammAccount.Balance // For XRP in asset1
-	assetBalance2 := uint64(0)          // Would come from trustline for IOU
-	lptAMMBalance := amm.LPTokenBalance
+	// Get current AMM balances from actual state (not stored in AMM entry)
+	// Reference: rippled ammHolds - reads from AccountRoot (XRP) and trustlines (IOU)
+	assetBalance1, assetBalance2, lptAMMBalance := AMMHolds(ctx.View, amm, false)
 
-	if lptAMMBalance == 0 {
+	if lptAMMBalance.IsZero() {
 		return tx.TecAMM_BALANCE // AMM is empty
 	}
 
 	// Get holder's LP token balance
 	// In full implementation, would read from LP token trustline
-	// For now, use a portion of the AMM LP token balance as holder's balance
-	holdLPTokens := lptAMMBalance / 2 // Simplified - would read from trustline
+	// For now, use half of the AMM LP token balance as holder's balance (simplified)
+	two := sle.NewIssuedAmountFromValue(2e15, -15, "", "")
+	holdLPTokens := lptAMMBalance.Div(two, false)
 
-	if holdLPTokens == 0 {
+	if holdLPTokens.IsZero() {
 		return tx.TecAMM_BALANCE // Holder has no LP tokens
 	}
 
 	flags := a.GetFlags()
 
-	var lpTokensToWithdraw uint64
-	var withdrawAmount1, withdrawAmount2 uint64
+	var lpTokensToWithdraw tx.Amount
+	var withdrawAmount1, withdrawAmount2 tx.Amount
 
 	if a.Amount == nil {
 		// No amount specified - withdraw all LP tokens the holder has
@@ -205,40 +203,38 @@ func (a *AMMClawback) Apply(ctx *tx.ApplyContext) tx.Result {
 		lpTokensToWithdraw = holdLPTokens
 
 		// Calculate proportional withdrawal amounts
-		frac := float64(holdLPTokens) / float64(lptAMMBalance)
-		withdrawAmount1 = uint64(float64(assetBalance1) * frac)
-		withdrawAmount2 = uint64(float64(assetBalance2) * frac)
+		withdrawAmount1 = proportionalAmount(assetBalance1, holdLPTokens, lptAMMBalance)
+		withdrawAmount2 = proportionalAmount(assetBalance2, holdLPTokens, lptAMMBalance)
 	} else {
 		// Amount specified - calculate proportional withdrawal based on specified amount
-		clawAmount := parseAmountFromTx(a.Amount)
+		clawAmount := *a.Amount
 
 		// Calculate fraction based on the clawback amount relative to asset1 balance
-		if assetBalance1 == 0 {
+		if assetBalance1.IsZero() {
 			return tx.TecAMM_BALANCE
 		}
-		frac := float64(clawAmount) / float64(assetBalance1)
+		frac := clawAmount.Div(assetBalance1, false)
 
 		// Calculate LP tokens needed for this withdrawal
-		lpTokensNeeded := uint64(float64(lptAMMBalance) * frac)
+		lpTokensNeeded := lptAMMBalance.Mul(frac, false)
 
 		// If holder doesn't have enough LP tokens, clawback all they have
-		if lpTokensNeeded > holdLPTokens {
+		if isGreater(lpTokensNeeded, holdLPTokens) {
 			lpTokensToWithdraw = holdLPTokens
-			frac = float64(holdLPTokens) / float64(lptAMMBalance)
-			withdrawAmount1 = uint64(float64(assetBalance1) * frac)
-			withdrawAmount2 = uint64(float64(assetBalance2) * frac)
+			withdrawAmount1 = proportionalAmount(assetBalance1, holdLPTokens, lptAMMBalance)
+			withdrawAmount2 = proportionalAmount(assetBalance2, holdLPTokens, lptAMMBalance)
 		} else {
 			lpTokensToWithdraw = lpTokensNeeded
 			withdrawAmount1 = clawAmount
-			withdrawAmount2 = uint64(float64(assetBalance2) * frac)
+			withdrawAmount2 = assetBalance2.Mul(frac, false)
 		}
 	}
 
 	// Verify withdrawal amounts don't exceed balances
-	if withdrawAmount1 > assetBalance1 {
+	if isGreater(withdrawAmount1, assetBalance1) {
 		withdrawAmount1 = assetBalance1
 	}
-	if withdrawAmount2 > assetBalance2 {
+	if isGreater(withdrawAmount2, assetBalance2) {
 		withdrawAmount2 = assetBalance2
 	}
 
@@ -247,42 +243,48 @@ func (a *AMMClawback) Apply(ctx *tx.ApplyContext) tx.Result {
 	isXRP2 := a.Asset2.Currency == "" || a.Asset2.Currency == "XRP"
 
 	// Transfer asset1 from AMM to holder (intermediate step)
-	if isXRP1 && withdrawAmount1 > 0 {
-		ammAccount.Balance -= withdrawAmount1
+	if isXRP1 && !withdrawAmount1.IsZero() {
+		drops := uint64(withdrawAmount1.Drops())
+		ammAccount.Balance -= drops
 	}
 	// Transfer asset2 from AMM to holder (intermediate step)
-	if isXRP2 && withdrawAmount2 > 0 {
-		ammAccount.Balance -= withdrawAmount2
+	if isXRP2 && !withdrawAmount2.IsZero() {
+		drops := uint64(withdrawAmount2.Drops())
+		ammAccount.Balance -= drops
 	}
 
 	// Now claw back: transfer asset1 from holder to issuer
-	// For XRP, this is a balance transfer (though clawback is typically for IOUs)
-	// In rippled, this uses rippleCredit to transfer the IOU balance
-	if isXRP1 && withdrawAmount1 > 0 {
-		// XRP clawback to issuer - add to issuer balance
-		ctx.Account.Balance += withdrawAmount1
+	if isXRP1 && !withdrawAmount1.IsZero() {
+		drops := uint64(withdrawAmount1.Drops())
+		ctx.Account.Balance += drops
 	}
 
 	// If tfClawTwoAssets is set, also claw back asset2
 	if flags&tfClawTwoAssets != 0 {
-		if isXRP2 && withdrawAmount2 > 0 {
-			ctx.Account.Balance += withdrawAmount2
+		if isXRP2 && !withdrawAmount2.IsZero() {
+			drops := uint64(withdrawAmount2.Drops())
+			ctx.Account.Balance += drops
 		}
 	} else {
 		// Asset2 goes to holder (not clawed back)
-		if isXRP2 && withdrawAmount2 > 0 {
-			holderAccount.Balance += withdrawAmount2
+		if isXRP2 && !withdrawAmount2.IsZero() {
+			drops := uint64(withdrawAmount2.Drops())
+			holderAccount.Balance += drops
 		}
 	}
 
-	// Reduce LP token balance
-	newLPBalance := lptAMMBalance - lpTokensToWithdraw
+	// Reduce LP token balance (this is stored in the AMM entry)
+	newLPBalance, _ := lptAMMBalance.Sub(lpTokensToWithdraw)
 	amm.LPTokenBalance = newLPBalance
+
+	// NOTE: Asset balances are NOT stored in AMM entry
+	// They are updated by the balance transfers above:
+	// - XRP: via ammAccount.Balance -= drops
+	// - IOU: via trustline updates (already done above)
 
 	// Check if AMM should be deleted (empty)
 	ammDeleted := false
-	if newLPBalance == 0 {
-		// Delete AMM and AMM account
+	if newLPBalance.IsZero() {
 		if err := ctx.View.Erase(ammKey); err != nil {
 			return tx.TefINTERNAL
 		}
@@ -293,7 +295,6 @@ func (a *AMMClawback) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	if !ammDeleted {
-		// Persist updated AMM
 		ammBytes, err := serializeAMMData(amm)
 		if err != nil {
 			return tx.TefINTERNAL
@@ -302,7 +303,6 @@ func (a *AMMClawback) Apply(ctx *tx.ApplyContext) tx.Result {
 			return tx.TefINTERNAL
 		}
 
-		// Persist updated AMM account
 		ammAccountBytes, err := sle.SerializeAccountRoot(ammAccount)
 		if err != nil {
 			return tx.TefINTERNAL

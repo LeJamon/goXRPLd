@@ -47,15 +47,16 @@ type RippleState struct {
 
 // RippleState flags
 const (
-	LsfLowReserve    uint32 = 0x00010000
-	LsfHighReserve   uint32 = 0x00020000
-	LsfLowAuth       uint32 = 0x00040000
-	LsfHighAuth      uint32 = 0x00080000
-	LsfLowNoRipple   uint32 = 0x00100000
-	LsfHighNoRipple  uint32 = 0x00200000
-	LsfLowFreeze     uint32 = 0x00400000
-	LsfHighFreeze    uint32 = 0x00800000
-	LsfLowDeepFreeze uint32 = 0x02000000
+	LsfLowReserve     uint32 = 0x00010000
+	LsfHighReserve    uint32 = 0x00020000
+	LsfLowAuth        uint32 = 0x00040000
+	LsfHighAuth       uint32 = 0x00080000
+	LsfLowNoRipple    uint32 = 0x00100000
+	LsfHighNoRipple   uint32 = 0x00200000
+	LsfLowFreeze      uint32 = 0x00400000
+	LsfHighFreeze     uint32 = 0x00800000
+	LsfAMMNode        uint32 = 0x01000000 // Trustline is owned by an AMM
+	LsfLowDeepFreeze  uint32 = 0x02000000
 	LsfHighDeepFreeze uint32 = 0x04000000
 )
 

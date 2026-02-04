@@ -171,15 +171,24 @@ func ReflectFlatten(tx Transaction) (map[string]any, error) {
 				m[f.name] = 0
 			}
 		} else {
-			// Default: dereference pointers
+			// Default: dereference pointers and convert struct slices
 			if val.Kind() == reflect.Ptr {
 				if val.IsNil() {
 					continue
 				}
-				m[f.name] = val.Elem().Interface()
-			} else {
-				m[f.name] = val.Interface()
+				val = val.Elem()
 			}
+
+			// Handle struct slices (like AuthAccounts) - convert to []map[string]any for STArray
+			if val.Kind() == reflect.Slice && val.Len() > 0 {
+				elemKind := val.Type().Elem().Kind()
+				if elemKind == reflect.Struct || (elemKind == reflect.Ptr && val.Type().Elem().Elem().Kind() == reflect.Struct) {
+					m[f.name] = flattenStructSlice(val)
+					continue
+				}
+			}
+
+			m[f.name] = val.Interface()
 		}
 	}
 
@@ -218,4 +227,61 @@ func flattenAsset(a Asset) map[string]any {
 		"currency": a.Currency,
 		"issuer":   a.Issuer,
 	}
+}
+
+// flattenStructSlice converts a slice of structs to []map[string]any for STArray serialization.
+// This is needed because the binary codec expects arrays to contain maps, not Go structs.
+// It uses JSON tags to determine field names in the map.
+func flattenStructSlice(v reflect.Value) []map[string]any {
+	if v.Kind() != reflect.Slice {
+		return nil
+	}
+	result := make([]map[string]any, v.Len())
+	for i := 0; i < v.Len(); i++ {
+		elem := v.Index(i)
+		result[i] = structToMap(elem)
+	}
+	return result
+}
+
+// structToMap converts a struct to map[string]any using JSON tags for field names.
+func structToMap(v reflect.Value) map[string]any {
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return nil
+	}
+
+	result := make(map[string]any)
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+
+		// Get field name from JSON tag, fallback to struct field name
+		jsonTag := field.Tag.Get("json")
+		name := field.Name
+		if jsonTag != "" && jsonTag != "-" {
+			parts := strings.Split(jsonTag, ",")
+			if parts[0] != "" {
+				name = parts[0]
+			}
+		}
+
+		fv := v.Field(i)
+		// Recursively convert nested structs
+		if fv.Kind() == reflect.Struct {
+			result[name] = structToMap(fv)
+		} else if fv.Kind() == reflect.Ptr && !fv.IsNil() && fv.Elem().Kind() == reflect.Struct {
+			result[name] = structToMap(fv.Elem())
+		} else if fv.Kind() == reflect.Slice && fv.Len() > 0 && fv.Index(0).Kind() == reflect.Struct {
+			result[name] = flattenStructSlice(fv)
+		} else {
+			result[name] = fv.Interface()
+		}
+	}
+	return result
 }

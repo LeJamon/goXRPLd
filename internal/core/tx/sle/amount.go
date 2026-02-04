@@ -1096,16 +1096,22 @@ func divIOUValuesByInt(a IOUAmountValue, d int64) IOUAmountValue {
 		d = -d
 	}
 
-	// Simple division, may lose precision for non-exact divisions
-	// Scale up first for better precision
-	bigMant := new(big.Int).SetInt64(mantissa)
-	scale := new(big.Int).SetInt64(1e15)
-	bigMant.Mul(bigMant, scale)
-	bigD := new(big.Int).SetInt64(d)
-	bigResult := new(big.Int).Div(bigMant, bigD)
+	// Simple integer division for small divisors
+	// For divisors like 2, we can just divide directly
+	resultMant := mantissa / d
+	remainder := mantissa % d
+	resultExp := a.exponent
 
-	resultMant := bigResult.Int64()
-	resultExp := a.exponent - 15
+	// Handle case where result is too small (below normalized range)
+	// by scaling up and adjusting exponent
+	if resultMant < MinMantissa && resultMant > 0 {
+		// Multiply mantissa by 10 and check remainder contribution
+		for resultMant < MinMantissa && resultExp > MinExponent {
+			resultMant = resultMant*10 + (remainder*10)/d
+			remainder = (remainder * 10) % d
+			resultExp--
+		}
+	}
 
 	if negative {
 		resultMant = -resultMant

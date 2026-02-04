@@ -37,6 +37,47 @@ func IsTrustlineFrozen(view LedgerView, accountID, issuerID [20]byte, currency s
 	return (rs.Flags & sle.LsfHighFreeze) != 0
 }
 
+// IsIndividualFrozen checks if a specific account is individually frozen for an asset.
+// This checks if the issuer has frozen the account's side of the trustline.
+// Reference: rippled ledger/View.cpp isIndividualFrozen
+func IsIndividualFrozen(view LedgerView, accountID [20]byte, asset Asset) bool {
+	// XRP cannot be frozen
+	if asset.Currency == "" || asset.Currency == "XRP" {
+		return false
+	}
+
+	issuerID, err := sle.DecodeAccountID(asset.Issuer)
+	if err != nil {
+		return false
+	}
+
+	// If account is issuer, not frozen
+	if accountID == issuerID {
+		return false
+	}
+
+	trustLineKey := keylet.Line(accountID, issuerID, asset.Currency)
+	trustLineData, err := view.Read(trustLineKey)
+	if err != nil || trustLineData == nil {
+		return false
+	}
+
+	rs, err := sle.ParseRippleState(trustLineData)
+	if err != nil {
+		return false
+	}
+
+	// Check if the issuer has frozen the account's side
+	// The issuer is on the opposite side of the account in the trustline
+	accountIsLow := sle.CompareAccountIDsForLine(accountID, issuerID) < 0
+	if accountIsLow {
+		// Account is low, issuer is high - check if high side froze low side
+		return (rs.Flags & sle.LsfLowFreeze) != 0
+	}
+	// Account is high, issuer is low - check if low side froze high side
+	return (rs.Flags & sle.LsfHighFreeze) != 0
+}
+
 // IsGlobalFrozen checks if an issuer has globally frozen assets.
 // Reference: rippled ledger/View.h isGlobalFrozen()
 func IsGlobalFrozen(view LedgerView, issuerAddress string) bool {

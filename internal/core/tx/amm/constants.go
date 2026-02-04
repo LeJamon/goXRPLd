@@ -35,7 +35,9 @@ const (
 	tfOneAssetLPToken uint32 = 0x00200000
 	tfLimitLPToken    uint32 = 0x00400000
 	tfTwoAssetIfEmpty uint32 = 0x00800000
-	tfAMMDepositMask  uint32 = ^(tfLPToken | tfSingleAsset | tfTwoAsset | tfOneAssetLPToken | tfLimitLPToken | tfTwoAssetIfEmpty)
+	// tfDepositSubTx is the combination of all deposit mode flags (used for popcount check)
+	tfDepositSubTx   uint32 = tfLPToken | tfSingleAsset | tfTwoAsset | tfOneAssetLPToken | tfLimitLPToken | tfTwoAssetIfEmpty
+	tfAMMDepositMask uint32 = ^tfDepositSubTx
 
 	// AMMWithdraw flags
 	tfWithdrawAll         uint32 = 0x00020000

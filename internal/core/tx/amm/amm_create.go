@@ -56,32 +56,25 @@ func (a *AMMCreate) Validate() error {
 		return errors.New("temINVALID_FLAG: invalid flags for AMMCreate")
 	}
 
-	// Amount is required and must be positive
-	if a.Amount.IsZero() {
-		return errors.New("temMALFORMED: Amount is required")
-	}
-
-	// Amount2 is required and must be positive
-	if a.Amount2.IsZero() {
-		return errors.New("temMALFORMED: Amount2 is required")
-	}
-
 	// Assets cannot be the same (same currency and issuer)
+	// Reference: rippled AMMCreate.cpp line 52-57
 	if a.Amount.Currency == a.Amount2.Currency && a.Amount.Issuer == a.Amount2.Issuer {
-		return errors.New("temBAD_AMM_TOKENS: tokens cannot have the same currency/issuer")
+		return errors.New("temBAD_AMM_TOKENS: tokens can not have the same currency/issuer")
+	}
+
+	// Validate amounts using invalidAMMAmount logic
+	// Reference: rippled AMMCreate.cpp line 59-68
+	if err := validateAMMAmount(a.Amount); err != nil {
+		return errors.New("temBAD_AMOUNT: invalid asset1 amount")
+	}
+	if err := validateAMMAmount(a.Amount2); err != nil {
+		return errors.New("temBAD_AMOUNT: invalid asset2 amount")
 	}
 
 	// TradingFee must be 0-1000 (0-1%)
+	// Reference: rippled AMMCreate.cpp line 71-75
 	if a.TradingFee > TRADING_FEE_THRESHOLD {
 		return errors.New("temBAD_FEE: TradingFee must be 0-1000")
-	}
-
-	// Validate amounts are positive (not zero or negative)
-	if err := validateAMMAmount(a.Amount); err != nil {
-		return errors.New("temBAD_AMOUNT: invalid Amount - " + err.Error())
-	}
-	if err := validateAMMAmount(a.Amount2); err != nil {
-		return errors.New("temBAD_AMOUNT: invalid Amount2 - " + err.Error())
 	}
 
 	return nil
@@ -98,7 +91,7 @@ func (a *AMMCreate) RequiredAmendments() []string {
 }
 
 // Apply applies the AMMCreate transaction to ledger state.
-// Reference: rippled AMMCreate.cpp doApply / applyCreate
+// Reference: rippled AMMCreate.cpp preclaim + doApply/applyCreate
 func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	accountID := ctx.AccountID
 
@@ -106,59 +99,108 @@ func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	asset1 := tx.Asset{Currency: a.Amount.Currency, Issuer: a.Amount.Issuer}
 	asset2 := tx.Asset{Currency: a.Amount2.Currency, Issuer: a.Amount2.Issuer}
 
-	// Compute the AMM keylet from the asset pair
-	ammKey := computeAMMKeylet(asset1, asset2)
+	// =========================================================================
+	// PRECLAIM CHECKS - Reference: rippled AMMCreate.cpp preclaim lines 88-215
+	// =========================================================================
 
-	// Check if AMM already exists
+	// Check if AMM already exists for the token pair
+	// Reference: rippled AMMCreate.cpp line 95-100
+	ammKey := computeAMMKeylet(asset1, asset2)
 	exists, _ := ctx.View.Exists(ammKey)
 	if exists {
 		return tx.TecDUPLICATE
 	}
+
+	// Check authorization for both assets
+	// Reference: rippled AMMCreate.cpp line 102-116
+	if result := requireAuth(ctx.View, asset1, accountID); result != tx.TesSUCCESS {
+		return result
+	}
+	if result := requireAuth(ctx.View, asset2, accountID); result != tx.TesSUCCESS {
+		return result
+	}
+
+	// Check if either asset is frozen (globally or individually)
+	// Reference: rippled AMMCreate.cpp line 119-124
+	if isFrozen(ctx.View, accountID, asset1) || isFrozen(ctx.View, accountID, asset2) {
+		return tx.TecFROZEN
+	}
+
+	// Check DefaultRipple is set on issuers
+	// Reference: rippled AMMCreate.cpp line 126-142
+	if noDefaultRipple(ctx.View, asset1) || noDefaultRipple(ctx.View, asset2) {
+		return tx.TerNO_RIPPLE
+	}
+
+	// Check reserve for LP token trustline
+	// Reference: rippled AMMCreate.cpp line 145-151
+	// The account needs enough XRP for the reserve after creating the LP trustline
+	xrpLiquid := xrpLiquidBalance(ctx.View, accountID, 1)
+	if xrpLiquid <= 0 {
+		return TecINSUF_RESERVE_LINE
+	}
+
+	// Check sufficient balance for both assets
+	// Reference: rippled AMMCreate.cpp line 153-170
+	if insufficientBalance(ctx.View, accountID, a.Amount, xrpLiquid) ||
+		insufficientBalance(ctx.View, accountID, a.Amount2, xrpLiquid) {
+		return TecUNFUNDED_AMM
+	}
+
+	// Check that neither amount is an LP token (can't create AMM with LP tokens)
+	// Reference: rippled AMMCreate.cpp line 172-184
+	if isLPToken(ctx.View, a.Amount) || isLPToken(ctx.View, a.Amount2) {
+		return tx.TecAMM_INVALID_TOKENS
+	}
+
+	// Check clawback - if featureAMMClawback is not enabled, reject clawback-enabled issuers
+	// Reference: rippled AMMCreate.cpp line 194-214
+	// Note: We assume AMMClawback amendment is enabled in this implementation
+	// If not enabled, we would need to check:
+	// if result := clawbackDisabled(ctx.View, asset1); result != tx.TesSUCCESS { return result }
+	// if result := clawbackDisabled(ctx.View, asset2); result != tx.TesSUCCESS { return result }
+
+	// =========================================================================
+	// APPLY - Reference: rippled AMMCreate.cpp applyCreate lines 217-356
+	// =========================================================================
 
 	// Compute the AMM account ID from keylet
 	ammAccountID := computeAMMAccountID(ammKey.Key)
 	ammAccountAddr, _ := encodeAccountID(ammAccountID)
 
 	// Check if AMM account already exists (should not happen)
+	// Reference: rippled AMMCreate.cpp line 230-236
 	ammAccountKey := keylet.Account(ammAccountID)
 	acctExists, _ := ctx.View.Exists(ammAccountKey)
 	if acctExists {
 		return tx.TecDUPLICATE
 	}
 
-	// Parse amounts
-	amount1 := parseAmountFromTx(&a.Amount)
-	amount2 := parseAmountFromTx(&a.Amount2)
+	// Sort assets by canonical ordering (minmax)
+	// Reference: rippled AMMCreate.cpp line 262-264
+	sortedAsset1, sortedAsset2, sortedAmount1, sortedAmount2 := sortAssets(asset1, asset2, a.Amount, a.Amount2)
 
-	// Check creator has sufficient balance
-	isXRP1 := a.Amount.Currency == "" || a.Amount.Currency == "XRP"
-	isXRP2 := a.Amount2.Currency == "" || a.Amount2.Currency == "XRP"
+	// Generate LP token currency code using sorted assets
+	lptCurrency := generateAMMLPTCurrency(sortedAsset1.Currency, sortedAsset2.Currency)
 
-	// For XRP amounts, verify balance
-	totalXRPNeeded := uint64(0)
-	if isXRP1 {
-		totalXRPNeeded += amount1
-	}
-	if isXRP2 {
-		totalXRPNeeded += amount2
-	}
-	if totalXRPNeeded > 0 && ctx.Account.Balance < totalXRPNeeded {
-		return TecUNFUNDED_AMM
+	// Check LP token trustline doesn't already exist
+	// Reference: rippled AMMCreate.cpp line 241-247
+	lptIssuerID := ammAccountID
+	lptKey := keylet.Line(accountID, lptIssuerID, lptCurrency)
+	lptExists, _ := ctx.View.Exists(lptKey)
+	if lptExists {
+		return tx.TecDUPLICATE
 	}
 
 	// Calculate initial LP token balance: sqrt(amount1 * amount2)
-	var lpTokenBalance uint64
-	if amount1 > 0 && amount2 > 0 {
-		lpTokenBalance = calculateLPTokens(amount1, amount2)
+	// Reference: rippled AMMCreate.cpp line 256
+	lpTokenBalance := calculateLPTokens(sortedAmount1, sortedAmount2)
+	if lpTokenBalance.IsZero() {
+		return tx.TecAMM_BALANCE
 	}
-	if lpTokenBalance == 0 {
-		return tx.TecAMM_BALANCE // AMM empty or invalid LP token calculation
-	}
-
-	// Generate LP token currency code
-	lptCurrency := generateAMMLPTCurrency(a.Amount.Currency, a.Amount2.Currency)
 
 	// Create the AMM pseudo-account with lsfAMM flag
+	// Reference: rippled AMMCreate.cpp line 230 (createPseudoAccount)
 	ammAccount := &sle.AccountRoot{
 		Account:    ammAccountAddr,
 		Balance:    0,
@@ -167,34 +209,46 @@ func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		Flags:      sle.LsfAMM,
 	}
 
-	// Create the AMM entry
+	// Create the AMM entry with sorted assets
+	// Reference: rippled AMMCreate.cpp line 259-267
+	// IMPORTANT: Asset balances are NOT stored in the AMM entry.
+	// They are stored in:
+	// - XRP: AMM account's AccountRoot.Balance
+	// - IOU: Trustlines between AMM account and asset issuers
 	ammData := &AMMData{
 		Account:        ammAccountID,
 		TradingFee:     a.TradingFee,
 		LPTokenBalance: lpTokenBalance,
-		AssetBalance:   amount1,
-		Asset2Balance:  amount2,
+		Asset:          sortedAsset1,
+		Asset2:         sortedAsset2,
+		OwnerNode:      0, // Will be set when inserting into owner directory
 		VoteSlots:      make([]VoteSlotData, 0),
 	}
 
-	// Set asset currency bytes
-	ammData.Asset = sle.GetCurrencyBytes(a.Amount.Currency)
-	ammData.Asset2 = sle.GetCurrencyBytes(a.Amount2.Currency)
-
-	// Initialize creator's vote slot with their LP token weight
+	// Initialize creator's vote slot
+	// Reference: rippled AMMUtils.cpp initializeFeeAuctionVote line 349-356
+	// Creator gets VOTE_WEIGHT_SCALE_FACTOR (100000) as their vote weight
 	creatorVote := VoteSlotData{
 		Account:    accountID,
 		TradingFee: a.TradingFee,
-		VoteWeight: uint32(lpTokenBalance), // Truncate for vote weight
+		VoteWeight: uint32(VOTE_WEIGHT_SCALE_FACTOR),
 	}
 	ammData.VoteSlots = append(ammData.VoteSlots, creatorVote)
 
-	// Initialize auction slot (creator gets initial slot)
+	// Initialize auction slot (creator gets initial slot for free)
+	// Reference: rippled AMMUtils.cpp initializeFeeAuctionVote line 357-381
+	// Expiration = current time + TOTAL_TIME_SLOT_SECS (24 hours)
+	expiration := ctx.Config.ParentCloseTime + uint32(TOTAL_TIME_SLOT_SECS)
+	discountedFee := uint16(0)
+	if a.TradingFee > 0 {
+		discountedFee = a.TradingFee / uint16(AUCTION_SLOT_DISCOUNTED_FEE_FRACTION)
+	}
 	ammData.AuctionSlot = &AuctionSlotData{
-		Account:      accountID,
-		Expiration:   0, // No expiration initially
-		Price:        0,
-		AuthAccounts: make([][20]byte, 0),
+		Account:       accountID,
+		Expiration:    expiration,
+		Price:         zeroAmount(tx.Asset{Currency: lptCurrency, Issuer: ammAccountAddr}),
+		DiscountedFee: discountedFee,
+		AuthAccounts:  make([][20]byte, 0),
 	}
 
 	// Store the AMM pseudo-account
@@ -207,7 +261,8 @@ func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	// Store the AMM entry
-	ammBytes, err := serializeAMM(ammData, accountID)
+	// Note: ammData.Account should be the AMM pseudo-account ID (already set above)
+	ammBytes, err := serializeAMMData(ammData)
 	if err != nil {
 		return tx.TefINTERNAL
 	}
@@ -215,44 +270,58 @@ func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TefINTERNAL
 	}
 
-	// Transfer XRP from creator to AMM account
-	if isXRP1 {
-		ctx.Account.Balance -= amount1
-		ammAccount.Balance += amount1
-	}
-	if isXRP2 {
-		ctx.Account.Balance -= amount2
-		ammAccount.Balance += amount2
-	}
-
-	// For IOU transfers, update trustlines
-	if !isXRP1 {
-		if err := createOrUpdateAMMTrustline(ammAccountID, asset1, amount1, ctx.View); err != nil {
-			return TecNO_LINE
-		}
-		// Debit from creator's trustline
-		issuerID1, _ := sle.DecodeAccountID(asset1.Issuer)
-		if err := updateTrustlineBalanceInView(accountID, issuerID1, asset1.Currency, -int64(amount1), ctx.View); err != nil {
-			return TecUNFUNDED_AMM
-		}
-	}
-	if !isXRP2 {
-		if err := createOrUpdateAMMTrustline(ammAccountID, asset2, amount2, ctx.View); err != nil {
-			return TecNO_LINE
-		}
-		issuerID2, _ := sle.DecodeAccountID(asset2.Issuer)
-		if err := updateTrustlineBalanceInView(accountID, issuerID2, asset2.Currency, -int64(amount2), ctx.View); err != nil {
-			return TecUNFUNDED_AMM
-		}
-	}
-
-	// Create LP token trustline for creator
+	// Send LP tokens to creator
+	// Reference: rippled AMMCreate.cpp line 278-283
 	lptAsset := tx.Asset{
 		Currency: lptCurrency,
 		Issuer:   ammAccountAddr,
 	}
 	if err := createLPTokenTrustline(accountID, lptAsset, lpTokenBalance, ctx.View); err != nil {
 		return TecINSUF_RESERVE_LINE
+	}
+
+	// Transfer assets from creator to AMM and set lsfAMMNode on trustlines
+	// Reference: rippled AMMCreate.cpp sendAndTrustSet lines 285-309
+	isXRP1 := sortedAsset1.Currency == "" || sortedAsset1.Currency == "XRP"
+	isXRP2 := sortedAsset2.Currency == "" || sortedAsset2.Currency == "XRP"
+
+	// Transfer first asset
+	if isXRP1 {
+		drops := uint64(sortedAmount1.Drops())
+		ctx.Account.Balance -= drops
+		ammAccount.Balance += drops
+	} else {
+		if err := createOrUpdateAMMTrustline(ammAccountID, sortedAsset1, sortedAmount1, ctx.View); err != nil {
+			return TecNO_LINE
+		}
+		// Set lsfAMMNode flag on the AMM's trustline
+		if err := setAMMNodeFlag(ammAccountID, sortedAsset1, ctx.View); err != nil {
+			return tx.TefINTERNAL
+		}
+		// Debit from creator's trustline
+		issuerID1, _ := sle.DecodeAccountID(sortedAsset1.Issuer)
+		if err := updateTrustlineBalanceInView(accountID, issuerID1, sortedAsset1.Currency, sortedAmount1.Negate(), ctx.View); err != nil {
+			return TecUNFUNDED_AMM
+		}
+	}
+
+	// Transfer second asset
+	if isXRP2 {
+		drops := uint64(sortedAmount2.Drops())
+		ctx.Account.Balance -= drops
+		ammAccount.Balance += drops
+	} else {
+		if err := createOrUpdateAMMTrustline(ammAccountID, sortedAsset2, sortedAmount2, ctx.View); err != nil {
+			return TecNO_LINE
+		}
+		// Set lsfAMMNode flag on the AMM's trustline
+		if err := setAMMNodeFlag(ammAccountID, sortedAsset2, ctx.View); err != nil {
+			return tx.TefINTERNAL
+		}
+		issuerID2, _ := sle.DecodeAccountID(sortedAsset2.Issuer)
+		if err := updateTrustlineBalanceInView(accountID, issuerID2, sortedAsset2.Currency, sortedAmount2.Negate(), ctx.View); err != nil {
+			return TecUNFUNDED_AMM
+		}
 	}
 
 	// Update creator account (owner count increases for LP token trustline)
@@ -277,7 +346,287 @@ func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TefINTERNAL
 	}
 
-	// Metadata for created AMM and AMM account tracked automatically by ApplyStateTable
+	return tx.TesSUCCESS
+}
+
+// requireAuth checks if the account is authorized for the asset.
+// Reference: rippled View.cpp requireAuth() lines 2404-2433
+func requireAuth(view tx.LedgerView, asset tx.Asset, accountID [20]byte) tx.Result {
+	// XRP doesn't require authorization
+	if asset.Currency == "" || asset.Currency == "XRP" {
+		return tx.TesSUCCESS
+	}
+
+	issuerID, err := sle.DecodeAccountID(asset.Issuer)
+	if err != nil {
+		return tx.TesSUCCESS // Invalid issuer - pass (will fail elsewhere)
+	}
+
+	// If account is issuer, OK
+	if accountID == issuerID {
+		return tx.TesSUCCESS
+	}
+
+	// Read trustline first
+	trustLineKey := keylet.Line(accountID, issuerID, asset.Currency)
+	trustLineData, err := view.Read(trustLineKey)
+
+	// Read issuer account
+	issuerKey := keylet.Account(issuerID)
+	issuerData, err := view.Read(issuerKey)
+	if err != nil || issuerData == nil {
+		// If issuer account doesn't exist, check passes
+		// Reference: rippled line 2421-2422 - only checks if issuerAccount exists
+		return tx.TesSUCCESS
+	}
+
+	issuerAccount, err := sle.ParseAccountRoot(issuerData)
+	if err != nil {
+		// Can't parse issuer account - pass (defensive)
+		return tx.TesSUCCESS
+	}
+
+	// If issuer doesn't require auth, OK
+	if (issuerAccount.Flags & sle.LsfRequireAuth) == 0 {
+		return tx.TesSUCCESS
+	}
+
+	// Issuer requires auth - check trustline
+	if trustLineData == nil {
+		return tx.TecNO_LINE
+	}
+
+	rs, err := sle.ParseRippleState(trustLineData)
+	if err != nil {
+		return tx.TecNO_AUTH
+	}
+
+	// Check authorization flags based on canonical ordering
+	// Reference: rippled line 2425-2428: (account > issue.account) ? lsfLowAuth : lsfHighAuth
+	// Note: In rippled, "account > issue.account" means account is HIGH side
+	accountIsHigh := sle.CompareAccountIDsForLine(accountID, issuerID) > 0
+	if accountIsHigh {
+		if (rs.Flags & sle.LsfLowAuth) == 0 {
+			return tx.TecNO_AUTH
+		}
+	} else {
+		if (rs.Flags & sle.LsfHighAuth) == 0 {
+			return tx.TecNO_AUTH
+		}
+	}
 
 	return tx.TesSUCCESS
+}
+
+// isFrozen checks if the asset is frozen for the account.
+// Reference: rippled AMMCreate.cpp line 119-124
+func isFrozen(view tx.LedgerView, accountID [20]byte, asset tx.Asset) bool {
+	// XRP cannot be frozen
+	if asset.Currency == "" || asset.Currency == "XRP" {
+		return false
+	}
+
+	// Check global freeze
+	if tx.IsGlobalFrozen(view, asset.Issuer) {
+		return true
+	}
+
+	// Check individual trustline freeze
+	issuerID, err := sle.DecodeAccountID(asset.Issuer)
+	if err != nil {
+		return false
+	}
+
+	return tx.IsTrustlineFrozen(view, accountID, issuerID, asset.Currency)
+}
+
+// noDefaultRipple checks if the issuer does not have DefaultRipple set.
+// Reference: rippled AMMCreate.cpp lines 126-135
+// Returns true if DefaultRipple is NOT set (which is a problem for AMM)
+// Returns false if:
+//   - Asset is XRP
+//   - Issuer account doesn't exist (check passes)
+//   - DefaultRipple IS set (OK)
+func noDefaultRipple(view tx.LedgerView, asset tx.Asset) bool {
+	// XRP doesn't need DefaultRipple
+	if asset.Currency == "" || asset.Currency == "XRP" {
+		return false
+	}
+
+	issuerID, err := sle.DecodeAccountID(asset.Issuer)
+	if err != nil {
+		// Invalid issuer - return false (not a DefaultRipple problem)
+		return false
+	}
+
+	issuerKey := keylet.Account(issuerID)
+	issuerData, err := view.Read(issuerKey)
+	if err != nil || issuerData == nil {
+		// If issuer account doesn't exist, return false
+		// Reference: rippled line 134 returns false if issuerAccount can't be read
+		return false
+	}
+
+	issuerAccount, err := sle.ParseAccountRoot(issuerData)
+	if err != nil {
+		// Can't parse issuer account - return false (defensive)
+		return false
+	}
+
+	// Return true if DefaultRipple is NOT set (problem)
+	return (issuerAccount.Flags & sle.LsfDefaultRipple) == 0
+}
+
+// xrpLiquidBalance returns the XRP available after reserving for ownerCount additional objects.
+// Reference: rippled AMMCreate.cpp line 145
+func xrpLiquidBalance(view tx.LedgerView, accountID [20]byte, additionalOwnerCount int) int64 {
+	accountKey := keylet.Account(accountID)
+	data, err := view.Read(accountKey)
+	if err != nil || data == nil {
+		return 0
+	}
+
+	account, err := sle.ParseAccountRoot(data)
+	if err != nil {
+		return 0
+	}
+
+	// Base reserve + owner reserve * (ownerCount + additional)
+	// Using standard XRPL reserves: 10 XRP base + 2 XRP per owner
+	baseReserve := int64(10_000_000)   // 10 XRP in drops
+	ownerReserve := int64(2_000_000)   // 2 XRP in drops
+	totalReserve := baseReserve + ownerReserve*int64(account.OwnerCount+uint32(additionalOwnerCount))
+
+	liquid := int64(account.Balance) - totalReserve
+	if liquid < 0 {
+		return 0
+	}
+	return liquid
+}
+
+// insufficientBalance checks if the account has insufficient balance for the amount.
+// Reference: rippled AMMCreate.cpp line 153-163
+func insufficientBalance(view tx.LedgerView, accountID [20]byte, amount tx.Amount, xrpLiquid int64) bool {
+	if amount.IsNative() {
+		return xrpLiquid < amount.Drops()
+	}
+
+	// For IOU, check if account is issuer (issuers have unlimited balance)
+	issuerID, err := sle.DecodeAccountID(amount.Issuer)
+	if err != nil {
+		return true
+	}
+	if accountID == issuerID {
+		return false
+	}
+
+	// Check account holds sufficient amount (zero if frozen)
+	held := tx.AccountFunds(view, accountID, amount, true)
+	return held.Compare(amount) < 0
+}
+
+// isLPToken checks if the amount is an LP token (issued by an AMM account).
+// Reference: rippled AMMCreate.cpp line 172-177
+func isLPToken(view tx.LedgerView, amount tx.Amount) bool {
+	// XRP is not an LP token
+	if amount.IsNative() {
+		return false
+	}
+
+	// Check if the issuer account has sfAMMID field (meaning it's an AMM pseudo-account)
+	issuerID, err := sle.DecodeAccountID(amount.Issuer)
+	if err != nil {
+		return false
+	}
+
+	issuerKey := keylet.Account(issuerID)
+	issuerData, err := view.Read(issuerKey)
+	if err != nil || issuerData == nil {
+		return false
+	}
+
+	issuerAccount, err := sle.ParseAccountRoot(issuerData)
+	if err != nil {
+		return false
+	}
+
+	// AMM accounts have the lsfAMM flag set
+	return (issuerAccount.Flags & sle.LsfAMM) != 0
+}
+
+// sortAssets returns assets and amounts in canonical order (minmax).
+// Reference: rippled AMMCreate.cpp line 262-264
+func sortAssets(asset1, asset2 tx.Asset, amount1, amount2 tx.Amount) (tx.Asset, tx.Asset, tx.Amount, tx.Amount) {
+	// Compare by currency first, then by issuer
+	if compareAssets(asset1, asset2) <= 0 {
+		return asset1, asset2, amount1, amount2
+	}
+	return asset2, asset1, amount2, amount1
+}
+
+// compareAssets compares two assets for canonical ordering.
+// XRP < IOU, then by currency, then by issuer.
+func compareAssets(a, b tx.Asset) int {
+	aIsXRP := a.Currency == "" || a.Currency == "XRP"
+	bIsXRP := b.Currency == "" || b.Currency == "XRP"
+
+	// XRP comes first
+	if aIsXRP && !bIsXRP {
+		return -1
+	}
+	if !aIsXRP && bIsXRP {
+		return 1
+	}
+	if aIsXRP && bIsXRP {
+		return 0
+	}
+
+	// Both are IOU - compare currency
+	if a.Currency < b.Currency {
+		return -1
+	}
+	if a.Currency > b.Currency {
+		return 1
+	}
+
+	// Same currency - compare issuer
+	if a.Issuer < b.Issuer {
+		return -1
+	}
+	if a.Issuer > b.Issuer {
+		return 1
+	}
+
+	return 0
+}
+
+// setAMMNodeFlag sets the lsfAMMNode flag on the AMM's trustline for an IOU asset.
+// Reference: rippled AMMCreate.cpp sendAndTrustSet line 297-306
+func setAMMNodeFlag(ammAccountID [20]byte, asset tx.Asset, view tx.LedgerView) error {
+	issuerID, err := sle.DecodeAccountID(asset.Issuer)
+	if err != nil {
+		return err
+	}
+
+	trustLineKey := keylet.Line(ammAccountID, issuerID, asset.Currency)
+	trustLineData, err := view.Read(trustLineKey)
+	if err != nil || trustLineData == nil {
+		return err
+	}
+
+	rs, err := sle.ParseRippleState(trustLineData)
+	if err != nil {
+		return err
+	}
+
+	// Set lsfAMMNode flag
+	rs.Flags |= sle.LsfAMMNode
+
+	// Serialize and update
+	rsBytes, err := sle.SerializeRippleState(rs)
+	if err != nil {
+		return err
+	}
+
+	return view.Update(trustLineKey, rsBytes)
 }

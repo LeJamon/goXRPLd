@@ -212,215 +212,214 @@ func (a *AMMWithdraw) Apply(ctx *tx.ApplyContext) tx.Result {
 	flags := a.GetFlags()
 	tfee := amm.TradingFee
 
-	// Parse amounts
-	var amount1, amount2, lpTokensRequested uint64
+	// Get amounts from transaction - use Amount type directly
+	amount1 := zeroAmount(a.Asset)
+	amount2 := zeroAmount(a.Asset2)
+	lpTokensRequested := zeroAmount(tx.Asset{}) // LP tokens
+
 	if a.Amount != nil {
-		amount1 = parseAmountFromTx(a.Amount)
+		amount1 = *a.Amount
 	}
 	if a.Amount2 != nil {
-		amount2 = parseAmountFromTx(a.Amount2)
+		amount2 = *a.Amount2
 	}
 	if a.LPTokenIn != nil {
-		lpTokensRequested = parseAmountFromTx(a.LPTokenIn)
+		lpTokensRequested = *a.LPTokenIn
 	}
 
-	// Get current AMM balances
-	assetBalance1 := ammAccount.Balance // For XRP
-	assetBalance2 := amm.Asset2Balance  // From AMM data for IOU
-	lptBalance := amm.LPTokenBalance
+	// Get current AMM balances from actual state (not stored in AMM entry)
+	// Reference: rippled ammHolds - reads from AccountRoot (XRP) and trustlines (IOU)
+	assetBalance1, assetBalance2, lptBalance := AMMHolds(ctx.View, amm, false)
 
-	if lptBalance == 0 {
+	if lptBalance.IsZero() {
 		return tx.TecAMM_BALANCE // AMM empty
 	}
 
-	// Get withdrawer's LP token balance
-	// In full implementation, this would read from the LP token trustline
-	// For now, we use a simplified approach based on the withdrawal mode:
-	// - If LPTokenIn is specified, use that as the request (caller knows what they have)
-	// - For WithdrawAll modes, assume account has all LP tokens (simplified)
-	// - For other modes (Single/Two asset), assume account has all LP tokens
-	//   since we don't have full trustline tracking yet
-	var lpTokensHeld uint64
-	if lpTokensRequested > 0 {
-		lpTokensHeld = lpTokensRequested
-	} else {
-		// Default: assume account has all LP tokens (for single-LP scenarios)
-		// In production, this would be read from the LP token trustline
-		lpTokensHeld = lptBalance
+	// Get withdrawer's LP token balance from trustline
+	// Reference: rippled AMMWithdraw.cpp preclaim line 251, 255-259
+	lpTokensHeld := ammLPHolds(ctx.View, amm, accountID)
+	if lpTokensHeld.IsZero() {
+		// Account is not a liquidity provider
+		// Note: Withdraw returns tecAMM_BALANCE (unlike Vote/Bid which return tecAMM_INVALID_TOKENS)
+		return tx.TecAMM_BALANCE
 	}
 
-	var lpTokensToRedeem uint64
-	var withdrawAmount1, withdrawAmount2 uint64
+	// Result amounts - use tx.Amount for precision
+	var lpTokensToRedeem tx.Amount
+	var withdrawAmount1, withdrawAmount2 tx.Amount
 
 	// Handle different withdrawal modes
-	// Reference: rippled AMMWithdraw.cpp applyGuts switch
 	switch {
 	case flags&tfLPToken != 0:
 		// Proportional withdrawal for specified LP tokens
 		// Equations 5 and 6: a = (t/T) * A, b = (t/T) * B
-		if lpTokensRequested == 0 || lptBalance == 0 {
+		if lpTokensRequested.IsZero() || lptBalance.IsZero() {
 			return tx.TecAMM_INVALID_TOKENS
 		}
-		if lpTokensRequested > lpTokensHeld || lpTokensRequested > lptBalance {
+		if isGreater(lpTokensRequested, lpTokensHeld) || isGreater(lpTokensRequested, lptBalance) {
 			return tx.TecAMM_INVALID_TOKENS
 		}
-		frac := float64(lpTokensRequested) / float64(lptBalance)
-		withdrawAmount1 = uint64(float64(assetBalance1) * frac)
-		withdrawAmount2 = uint64(float64(assetBalance2) * frac)
+		// Calculate proportional amounts using Amount arithmetic
+		withdrawAmount1 = proportionalAmount(assetBalance1, lpTokensRequested, lptBalance)
+		withdrawAmount2 = proportionalAmount(assetBalance2, lpTokensRequested, lptBalance)
 		lpTokensToRedeem = lpTokensRequested
 
 	case flags&tfWithdrawAll != 0:
 		// Withdraw all - proportional withdrawal of all LP tokens held
-		if lpTokensHeld == 0 {
+		if lpTokensHeld.IsZero() {
 			return tx.TecAMM_INVALID_TOKENS
 		}
-		if lpTokensHeld >= lptBalance {
+		if isLessOrEqual(lptBalance, lpTokensHeld) {
 			// Last LP withdrawing everything
 			withdrawAmount1 = assetBalance1
 			withdrawAmount2 = assetBalance2
 			lpTokensToRedeem = lptBalance
 		} else {
-			frac := float64(lpTokensHeld) / float64(lptBalance)
-			withdrawAmount1 = uint64(float64(assetBalance1) * frac)
-			withdrawAmount2 = uint64(float64(assetBalance2) * frac)
+			withdrawAmount1 = proportionalAmount(assetBalance1, lpTokensHeld, lptBalance)
+			withdrawAmount2 = proportionalAmount(assetBalance2, lpTokensHeld, lptBalance)
 			lpTokensToRedeem = lpTokensHeld
 		}
 
 	case flags&tfOneAssetWithdrawAll != 0:
 		// Withdraw all LP tokens as a single asset
-		// The Amount field identifies which asset to withdraw, its value can be zero
 		// Use equation 8: ammAssetOut
-		if lpTokensHeld == 0 {
+		if lpTokensHeld.IsZero() {
 			return tx.TecAMM_INVALID_TOKENS
 		}
-		// Determine which asset to withdraw based on Amount's currency/issuer
 		isWithdrawAsset1 := matchesAsset(a.Amount, a.Asset)
 		if isWithdrawAsset1 {
 			withdrawAmount1 = ammAssetOut(assetBalance1, lptBalance, lpTokensHeld, tfee)
-			if withdrawAmount1 > assetBalance1 {
+			// Compare using IOU for mixed-type consistency
+			if isGreater(toIOUForCalc(withdrawAmount1), toIOUForCalc(assetBalance1)) {
 				return tx.TecAMM_BALANCE
 			}
+			withdrawAmount2 = zeroAmount(a.Asset2)
 		} else {
 			withdrawAmount2 = ammAssetOut(assetBalance2, lptBalance, lpTokensHeld, tfee)
-			if withdrawAmount2 > assetBalance2 {
+			// Compare using IOU for mixed-type consistency
+			if isGreater(toIOUForCalc(withdrawAmount2), toIOUForCalc(assetBalance2)) {
 				return tx.TecAMM_BALANCE
 			}
+			withdrawAmount1 = zeroAmount(a.Asset)
 		}
 		lpTokensToRedeem = lpTokensHeld
 
 	case flags&tfSingleAsset != 0:
 		// Single asset withdrawal - compute LP tokens from amount
-		// The Amount specifies both which asset and how much to withdraw
 		// Equation 7: lpTokensIn function
-		if amount1 == 0 {
+		if amount1.IsZero() {
 			return tx.TemMALFORMED
 		}
-		// Determine which asset to withdraw based on Amount's currency/issuer
 		isWithdrawAsset1 := matchesAsset(a.Amount, a.Asset)
 		if isWithdrawAsset1 {
-			if amount1 > assetBalance1 {
+			// Compare using IOU for mixed-type consistency
+			if isGreater(toIOUForCalc(amount1), toIOUForCalc(assetBalance1)) {
 				return tx.TecAMM_BALANCE
 			}
 			lpTokensToRedeem = calcLPTokensIn(assetBalance1, amount1, lptBalance, tfee)
 			withdrawAmount1 = amount1
+			withdrawAmount2 = zeroAmount(a.Asset2)
 		} else {
-			if amount1 > assetBalance2 {
+			// Compare using IOU for mixed-type consistency
+			if isGreater(toIOUForCalc(amount1), toIOUForCalc(assetBalance2)) {
 				return tx.TecAMM_BALANCE
 			}
 			lpTokensToRedeem = calcLPTokensIn(assetBalance2, amount1, lptBalance, tfee)
+			withdrawAmount1 = zeroAmount(a.Asset)
 			withdrawAmount2 = amount1
 		}
-		if lpTokensToRedeem == 0 || lpTokensToRedeem > lpTokensHeld {
+		if lpTokensToRedeem.IsZero() || isGreater(lpTokensToRedeem, lpTokensHeld) {
 			return tx.TecAMM_INVALID_TOKENS
 		}
 
 	case flags&tfTwoAsset != 0:
 		// Two asset withdrawal with limits
-		// Equations 5 and 6 with limits
-		if amount1 == 0 || amount2 == 0 {
+		if amount1.IsZero() || amount2.IsZero() {
 			return tx.TemMALFORMED
 		}
-		// Calculate proportional withdrawal
-		frac1 := float64(amount1) / float64(assetBalance1)
-		frac2 := float64(amount2) / float64(assetBalance2)
+		// Calculate fractions using Amount arithmetic
+		// Convert to IOU for precise fractional calculations (XRP division is integer-only)
+		frac1 := toIOUForCalc(amount1).Div(toIOUForCalc(assetBalance1), false)
+		frac2 := toIOUForCalc(amount2).Div(toIOUForCalc(assetBalance2), false)
+
 		// Use the smaller fraction
-		frac := frac1
-		if assetBalance2 > 0 && frac2 < frac1 {
+		var frac tx.Amount
+		if !assetBalance2.IsZero() && frac2.Compare(frac1) < 0 {
 			frac = frac2
+		} else {
+			frac = frac1
 		}
-		lpTokensToRedeem = uint64(float64(lptBalance) * frac)
-		if lpTokensToRedeem == 0 || lpTokensToRedeem > lpTokensHeld {
+
+		lpTokensToRedeem = toIOUForCalc(lptBalance).Mul(frac, false)
+		if lpTokensToRedeem.IsZero() || isGreater(lpTokensToRedeem, lpTokensHeld) {
 			return tx.TecAMM_INVALID_TOKENS
 		}
-		// Recalculate amounts based on the fraction used
-		withdrawAmount1 = uint64(float64(assetBalance1) * frac)
-		withdrawAmount2 = uint64(float64(assetBalance2) * frac)
+		withdrawAmount1 = toIOUForCalc(assetBalance1).Mul(frac, false)
+		withdrawAmount2 = toIOUForCalc(assetBalance2).Mul(frac, false)
 
 	case flags&tfOneAssetLPToken != 0:
 		// Single asset withdrawal for specific LP tokens
-		// The Amount field identifies which asset to withdraw, its value is a minimum amount (or 0)
 		// Equation 8: ammAssetOut
-		if lpTokensRequested == 0 {
+		if lpTokensRequested.IsZero() {
 			return tx.TecAMM_INVALID_TOKENS
 		}
-		if lpTokensRequested > lpTokensHeld || lpTokensRequested > lptBalance {
+		if isGreater(lpTokensRequested, lpTokensHeld) || isGreater(lpTokensRequested, lptBalance) {
 			return tx.TecAMM_INVALID_TOKENS
 		}
-		// Determine which asset to withdraw based on Amount's currency/issuer
 		isWithdrawAsset1 := matchesAsset(a.Amount, a.Asset)
 		if isWithdrawAsset1 {
 			withdrawAmount1 = ammAssetOut(assetBalance1, lptBalance, lpTokensRequested, tfee)
-			if withdrawAmount1 > assetBalance1 {
+			// Compare using IOU for mixed-type consistency
+			if isGreater(toIOUForCalc(withdrawAmount1), toIOUForCalc(assetBalance1)) {
 				return tx.TecAMM_BALANCE
 			}
-			// Check minimum amount if specified (amount1 > 0)
-			if amount1 > 0 && withdrawAmount1 < amount1 {
+			if !amount1.IsZero() && isGreater(toIOUForCalc(amount1), toIOUForCalc(withdrawAmount1)) {
 				return tx.TecAMM_FAILED
 			}
+			withdrawAmount2 = zeroAmount(a.Asset2)
 		} else {
 			withdrawAmount2 = ammAssetOut(assetBalance2, lptBalance, lpTokensRequested, tfee)
-			if withdrawAmount2 > assetBalance2 {
+			// Compare using IOU for mixed-type consistency
+			if isGreater(toIOUForCalc(withdrawAmount2), toIOUForCalc(assetBalance2)) {
 				return tx.TecAMM_BALANCE
 			}
-			// Check minimum amount if specified (amount1 is from Amount field, which is for asset2)
-			if amount1 > 0 && withdrawAmount2 < amount1 {
+			if !amount1.IsZero() && isGreater(toIOUForCalc(amount1), toIOUForCalc(withdrawAmount2)) {
 				return tx.TecAMM_FAILED
 			}
+			withdrawAmount1 = zeroAmount(a.Asset)
 		}
 		lpTokensToRedeem = lpTokensRequested
 
 	case flags&tfLimitLPToken != 0:
 		// Single asset withdrawal with effective price limit
-		if amount1 == 0 || a.EPrice == nil {
+		if amount1.IsZero() || a.EPrice == nil || a.EPrice.IsZero() {
 			return tx.TemMALFORMED
 		}
-		ePrice := parseAmountFromTx(a.EPrice)
-		if ePrice == 0 {
-			return tx.TemMALFORMED
-		}
-		// Determine which asset to withdraw based on Amount's currency/issuer
+
 		isWithdrawAsset1 := matchesAsset(a.Amount, a.Asset)
-		var assetBalance uint64
+		var assetBalance tx.Amount
 		if isWithdrawAsset1 {
 			assetBalance = assetBalance1
 		} else {
 			assetBalance = assetBalance2
 		}
-		// Calculate LP tokens based on effective price
-		// EP = lpTokens / amount => lpTokens = EP * amount
-		// Use equation that solves for lpTokens given EP constraint
+
 		lpTokensToRedeem = calcLPTokensIn(assetBalance, amount1, lptBalance, tfee)
-		if lpTokensToRedeem == 0 || lpTokensToRedeem > lpTokensHeld {
+		if lpTokensToRedeem.IsZero() || isGreater(lpTokensToRedeem, lpTokensHeld) {
 			return tx.TecAMM_INVALID_TOKENS
 		}
+
 		// Check effective price: EP = lpTokens / amount
-		actualEP := lpTokensToRedeem / amount1
-		if actualEP > ePrice {
+		effectivePrice := lpTokensToRedeem.Div(amount1, false)
+		if isGreater(effectivePrice, *a.EPrice) {
 			return tx.TecAMM_FAILED
 		}
+
 		if isWithdrawAsset1 {
 			withdrawAmount1 = amount1
+			withdrawAmount2 = zeroAmount(a.Asset2)
 		} else {
+			withdrawAmount1 = zeroAmount(a.Asset)
 			withdrawAmount2 = amount1
 		}
 
@@ -428,26 +427,26 @@ func (a *AMMWithdraw) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TemMALFORMED
 	}
 
-	if lpTokensToRedeem == 0 {
+	if lpTokensToRedeem.IsZero() {
 		return tx.TecAMM_INVALID_TOKENS
 	}
 
 	// Verify withdrawal doesn't exceed balances
-	if withdrawAmount1 > assetBalance1 {
+	// Convert to IOU for comparison since withdrawAmount may be IOU from calculations
+	if isGreater(toIOUForCalc(withdrawAmount1), toIOUForCalc(assetBalance1)) {
 		return tx.TecAMM_BALANCE
 	}
-	if withdrawAmount2 > assetBalance2 {
+	if isGreater(toIOUForCalc(withdrawAmount2), toIOUForCalc(assetBalance2)) {
 		return tx.TecAMM_BALANCE
 	}
 
 	// Per rippled: Cannot withdraw one side of the pool while leaving the other
-	// (i.e., draining one asset but not the other)
-	// This check applies for tfSingleAsset and tfTwoAsset modes (amount-specified withdrawals)
-	// It does NOT apply for tfOneAssetWithdrawAll/tfOneAssetLPToken which are proportional to LP tokens held
 	isSingleOrTwoAsset := flags&(tfSingleAsset|tfTwoAsset|tfLimitLPToken) != 0
 	if isSingleOrTwoAsset {
-		if (withdrawAmount1 == assetBalance1 && withdrawAmount2 != assetBalance2) ||
-			(withdrawAmount2 == assetBalance2 && withdrawAmount1 != assetBalance1) {
+		// Convert to IOU for comparison since withdrawAmount may be IOU from calculations
+		w1EqualsB1 := toIOUForCalc(withdrawAmount1).Compare(toIOUForCalc(assetBalance1)) == 0
+		w2EqualsB2 := toIOUForCalc(withdrawAmount2).Compare(toIOUForCalc(assetBalance2)) == 0
+		if (w1EqualsB1 && !w2EqualsB2) || (w2EqualsB2 && !w1EqualsB1) {
 			return tx.TecAMM_BALANCE
 		}
 	}
@@ -456,23 +455,65 @@ func (a *AMMWithdraw) Apply(ctx *tx.ApplyContext) tx.Result {
 	isXRP1 := a.Asset.Currency == "" || a.Asset.Currency == "XRP"
 	isXRP2 := a.Asset2.Currency == "" || a.Asset2.Currency == "XRP"
 
-	if isXRP1 && withdrawAmount1 > 0 {
-		ammAccount.Balance -= withdrawAmount1
-		ctx.Account.Balance += withdrawAmount1
+	if isXRP1 && !withdrawAmount1.IsZero() {
+		// Convert to drops, handling IOU representation from calculations
+		drops := uint64(iouToDrops(withdrawAmount1))
+		ammAccount.Balance -= drops
+		ctx.Account.Balance += drops
 	}
-	if isXRP2 && withdrawAmount2 > 0 {
-		ammAccount.Balance -= withdrawAmount2
-		ctx.Account.Balance += withdrawAmount2
+	if isXRP2 && !withdrawAmount2.IsZero() {
+		// Convert to drops, handling IOU representation from calculations
+		drops := uint64(iouToDrops(withdrawAmount2))
+		ammAccount.Balance -= drops
+		ctx.Account.Balance += drops
 	}
 
-	// Redeem LP tokens
-	newLPBalance := lptBalance - lpTokensToRedeem
+	// For IOU transfers, update trust lines for BOTH withdrawer and AMM
+	// Reference: rippled AMMWithdraw.cpp - withdrawal handles token transfer via book::quality path
+	if !isXRP1 && !withdrawAmount1.IsZero() {
+		issuerID, err := sle.DecodeAccountID(a.Asset.Issuer)
+		if err != nil {
+			return tx.TefINTERNAL
+		}
+		// Credit withdrawer's trust line (positive delta)
+		if err := updateTrustlineBalanceInView(accountID, issuerID, a.Asset.Currency, withdrawAmount1, ctx.View); err != nil {
+			return tx.TefINTERNAL
+		}
+		// Debit AMM's trust line (negative delta)
+		if err := createOrUpdateAMMTrustline(ammAccountID, a.Asset, withdrawAmount1.Negate(), ctx.View); err != nil {
+			return tx.TefINTERNAL
+		}
+	}
+	if !isXRP2 && !withdrawAmount2.IsZero() {
+		issuerID, err := sle.DecodeAccountID(a.Asset2.Issuer)
+		if err != nil {
+			return tx.TefINTERNAL
+		}
+		// Credit withdrawer's trust line
+		if err := updateTrustlineBalanceInView(accountID, issuerID, a.Asset2.Currency, withdrawAmount2, ctx.View); err != nil {
+			return tx.TefINTERNAL
+		}
+		// Debit AMM's trust line
+		if err := createOrUpdateAMMTrustline(ammAccountID, a.Asset2, withdrawAmount2.Negate(), ctx.View); err != nil {
+			return tx.TefINTERNAL
+		}
+	}
+
+	// Redeem LP tokens - subtract from AMM LP balance
+	newLPBalance, err := amm.LPTokenBalance.Sub(lpTokensToRedeem)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
 	amm.LPTokenBalance = newLPBalance
+
+	// NOTE: Asset balances are NOT stored in AMM entry
+	// They are updated by the balance transfers above:
+	// - XRP: via ammAccount.Balance -= drops
+	// - IOU: via trustline updates (createOrUpdateAMMTrustline)
 
 	// Check if AMM should be deleted (empty)
 	ammDeleted := false
-	if newLPBalance == 0 {
-		// Delete AMM and AMM account
+	if newLPBalance.IsZero() {
 		if err := ctx.View.Erase(ammKey); err != nil {
 			return tx.TefINTERNAL
 		}
@@ -483,7 +524,6 @@ func (a *AMMWithdraw) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	if !ammDeleted {
-		// Persist updated AMM
 		ammBytes, err := serializeAMMData(amm)
 		if err != nil {
 			return tx.TefINTERNAL
@@ -492,7 +532,6 @@ func (a *AMMWithdraw) Apply(ctx *tx.ApplyContext) tx.Result {
 			return tx.TefINTERNAL
 		}
 
-		// Persist updated AMM account
 		ammAccountBytes, err := sle.SerializeAccountRoot(ammAccount)
 		if err != nil {
 			return tx.TefINTERNAL
@@ -502,7 +541,6 @@ func (a *AMMWithdraw) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 	}
 
-	// Persist updated withdrawer account
 	accountKey := keylet.Account(accountID)
 	accountBytes, err := sle.SerializeAccountRoot(ctx.Account)
 	if err != nil {
