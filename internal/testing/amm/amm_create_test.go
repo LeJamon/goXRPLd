@@ -274,7 +274,7 @@ func TestInvalidInstance(t *testing.T) {
 
 		bad := jtx.NewAccount("bad") // Not funded
 		createTx := amm.AMMCreate(bad, amm.XRPAmount(10000), amm.IOUAmount(env.GW, "USD", 10000)).Build()
-		result := env.Submit(createTx)
+		result := env.Submit(jtx.WithSeq(createTx, 1))
 
 		if result.Success {
 			t.Fatal("Should not allow creating AMM from non-existent account")
