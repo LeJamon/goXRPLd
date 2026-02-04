@@ -10,6 +10,7 @@ import (
 
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/genesis"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
@@ -39,6 +40,10 @@ type TestEnv struct {
 	baseFee          uint64
 	reserveBase      uint64
 	reserveIncrement uint64
+
+	// Amendment rules - controls which amendments are enabled.
+	// Reference: rippled's FeatureBitset in test/jtx/Env.h
+	rulesBuilder *amendment.RulesBuilder
 }
 
 // NewTestEnv creates a new test environment with a genesis ledger.
@@ -80,6 +85,8 @@ func NewTestEnv(t *testing.T) *TestEnv {
 		baseFee:          10,
 		reserveBase:      10_000_000, // 10 XRP
 		reserveIncrement: 2_000_000,  // 2 XRP
+		// Initialize with all supported amendments enabled (like rippled's testable_amendments())
+		rulesBuilder: amendment.NewRulesBuilder().FromPreset(amendment.PresetAllSupported),
 	}
 
 	// Store genesis in history
@@ -127,6 +134,8 @@ func NewTestEnvWithConfig(t *testing.T, cfg genesis.Config) *TestEnv {
 		baseFee:          uint64(cfg.Fees.BaseFee.Drops()),
 		reserveBase:      uint64(cfg.Fees.ReserveBase.Drops()),
 		reserveIncrement: uint64(cfg.Fees.ReserveIncrement.Drops()),
+		// Initialize with all supported amendments enabled (like rippled's testable_amendments())
+		rulesBuilder: amendment.NewRulesBuilder().FromPreset(amendment.PresetAllSupported),
 	}
 
 	env.ledgerHistory[1] = genesisLedger
@@ -483,6 +492,7 @@ func (e *TestEnv) Submit(transaction interface{}) TxResult {
 		ReserveIncrement:          e.reserveIncrement,
 		LedgerSequence:            e.ledger.Sequence(),
 		SkipSignatureVerification: true, // Skip signatures in test mode
+		Rules:                     e.rulesBuilder.Build(),
 	}
 
 	// Create engine with current ledger
@@ -799,6 +809,29 @@ func (e *TestEnv) ReserveIncrement() uint64 {
 	return e.reserveIncrement
 }
 
+// EnableFeature enables an amendment by name for subsequent transactions.
+// Reference: rippled's Env::enableFeature() in test/jtx/impl/Env.cpp
+func (e *TestEnv) EnableFeature(name string) {
+	e.rulesBuilder.EnableByName(name)
+}
+
+// DisableFeature disables an amendment by name for subsequent transactions.
+// Reference: rippled's Env::disableFeature() in test/jtx/impl/Env.cpp
+func (e *TestEnv) DisableFeature(name string) {
+	e.rulesBuilder.DisableByName(name)
+}
+
+// FeatureEnabled returns true if the named amendment is currently enabled.
+// Reference: rippled's Env::enabled() in test/jtx/Env.h
+func (e *TestEnv) FeatureEnabled(name string) bool {
+	f := amendment.GetFeatureByName(name)
+	if f == nil {
+		return false
+	}
+	rules := e.rulesBuilder.Build()
+	return rules.Enabled(f.ID)
+}
+
 // DecodeAddress decodes an XRPL address to a 20-byte account ID.
 func DecodeAddress(address string) ([20]byte, error) {
 	_, accountIDBytes, err := addresscodec.DecodeClassicAddressToAccountID(address)
@@ -809,6 +842,14 @@ func DecodeAddress(address string) ([20]byte, error) {
 	var accountID [20]byte
 	copy(accountID[:], accountIDBytes)
 	return accountID, nil
+}
+
+// WithSeq sets the sequence number on a transaction manually.
+// This bypasses autofill and allows testing transactions from non-existent accounts.
+// Reference: rippled's seq(1) funclet in test/jtx/seq.h
+func WithSeq(transaction tx.Transaction, seq uint32) tx.Transaction {
+	transaction.GetCommon().Sequence = &seq
+	return transaction
 }
 
 // formatUint64 formats a uint64 as a string (for XRP amounts).
