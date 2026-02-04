@@ -89,6 +89,11 @@ func (b *TrustSetBuilder) SetAuth() *TrustSetBuilder {
 	return b
 }
 
+// Auth is an alias for SetAuth for convenience.
+func (b *TrustSetBuilder) Auth() *TrustSetBuilder {
+	return b.SetAuth()
+}
+
 // NoRipple blocks rippling on this trust line.
 // Rippling allows balance to flow through the account for payments.
 func (b *TrustSetBuilder) NoRipple() *TrustSetBuilder {

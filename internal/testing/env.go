@@ -1,6 +1,9 @@
 package testing
 
 import (
+	"github.com/LeJamon/goXRPLd/internal/core/tx/account"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/depositpreauth"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/offer"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 	"testing"
 	"time"
@@ -144,6 +147,9 @@ func (e *TestEnv) Fund(accounts ...*Account) {
 }
 
 // FundAmount funds an account with a specific amount.
+// Like rippled's test environment, this also enables DefaultRipple on the account.
+// This is important for trust line behavior - without DefaultRipple, trust lines
+// cannot be deleted when limit is set to 0 (the NoRipple state would be "non-default").
 func (e *TestEnv) FundAmount(acc *Account, amount uint64) {
 	e.t.Helper()
 
@@ -156,9 +162,13 @@ func (e *TestEnv) FundAmount(acc *Account, amount uint64) {
 		e.t.Fatal("Master account not found")
 	}
 
+	// Fund with extra to cover the AccountSet fee (for enabling DefaultRipple)
+	// This ensures the account ends up with the requested amount.
+	totalFunding := amount + e.baseFee
+
 	// Create payment transaction
 	seq := e.Seq(master)
-	payment := payment.NewPayment(master.Address, acc.Address, tx.NewXRPAmount(int64(amount)))
+	payment := payment.NewPayment(master.Address, acc.Address, tx.NewXRPAmount(int64(totalFunding)))
 	payment.Fee = formatUint64(e.baseFee)
 	payment.Sequence = &seq
 
@@ -167,6 +177,229 @@ func (e *TestEnv) FundAmount(acc *Account, amount uint64) {
 	if !result.Success {
 		e.t.Fatalf("Failed to fund account %s: %s", acc.Name, result.Code)
 	}
+
+	// Enable DefaultRipple on the account (matching rippled's test environment)
+	// This allows trust lines to be properly deleted when limits are set to 0.
+	e.enableDefaultRipple(acc)
+}
+
+// enableDefaultRipple enables the DefaultRipple flag on an account.
+// This matches rippled's test environment behavior.
+func (e *TestEnv) enableDefaultRipple(acc *Account) {
+	e.t.Helper()
+
+	accountSet := account.NewAccountSet(acc.Address)
+	accountSet.EnableDefaultRipple()
+	accountSet.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	accountSet.Sequence = &seq
+
+	result := e.Submit(accountSet)
+	if !result.Success {
+		e.t.Fatalf("Failed to enable DefaultRipple for account %s: %s", acc.Name, result.Code)
+	}
+}
+
+// EnableDepositAuth enables the DepositAuth flag on an account.
+// When enabled, the account can only receive payments from preauthorized accounts.
+func (e *TestEnv) EnableDepositAuth(acc *Account) {
+	e.t.Helper()
+
+	accountSet := account.NewAccountSet(acc.Address)
+	accountSet.EnableDepositAuth()
+	accountSet.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	accountSet.Sequence = &seq
+
+	result := e.Submit(accountSet)
+	if !result.Success {
+		e.t.Fatalf("Failed to enable DepositAuth for account %s: %s", acc.Name, result.Code)
+	}
+}
+
+// DisableDepositAuth disables the DepositAuth flag on an account.
+func (e *TestEnv) DisableDepositAuth(acc *Account) {
+	e.t.Helper()
+
+	accountSet := account.NewAccountSet(acc.Address)
+	flag := account.AccountSetFlagDepositAuth
+	accountSet.ClearFlag = &flag
+	accountSet.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	accountSet.Sequence = &seq
+
+	result := e.Submit(accountSet)
+	if !result.Success {
+		e.t.Fatalf("Failed to disable DepositAuth for account %s: %s", acc.Name, result.Code)
+	}
+}
+
+// EnableGlobalFreeze enables the GlobalFreeze flag on an account.
+// When enabled, all trust lines for this account's issued currencies are frozen.
+func (e *TestEnv) EnableGlobalFreeze(acc *Account) {
+	e.t.Helper()
+
+	accountSet := account.NewAccountSet(acc.Address)
+	flag := account.AccountSetFlagGlobalFreeze
+	accountSet.SetFlag = &flag
+	accountSet.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	accountSet.Sequence = &seq
+
+	result := e.Submit(accountSet)
+	if !result.Success {
+		e.t.Fatalf("Failed to enable GlobalFreeze for account %s: %s", acc.Name, result.Code)
+	}
+}
+
+// DisableGlobalFreeze disables the GlobalFreeze flag on an account.
+// Note: Cannot be cleared if NoFreeze is set.
+func (e *TestEnv) DisableGlobalFreeze(acc *Account) {
+	e.t.Helper()
+
+	accountSet := account.NewAccountSet(acc.Address)
+	flag := account.AccountSetFlagGlobalFreeze
+	accountSet.ClearFlag = &flag
+	accountSet.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	accountSet.Sequence = &seq
+
+	result := e.Submit(accountSet)
+	if !result.Success {
+		e.t.Fatalf("Failed to disable GlobalFreeze for account %s: %s", acc.Name, result.Code)
+	}
+}
+
+// EnableNoFreeze enables the NoFreeze flag on an account.
+// Once set, this flag cannot be cleared. It prevents the account from freezing trust lines.
+func (e *TestEnv) EnableNoFreeze(acc *Account) {
+	e.t.Helper()
+
+	accountSet := account.NewAccountSet(acc.Address)
+	flag := account.AccountSetFlagNoFreeze
+	accountSet.SetFlag = &flag
+	accountSet.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	accountSet.Sequence = &seq
+
+	result := e.Submit(accountSet)
+	if !result.Success {
+		e.t.Fatalf("Failed to enable NoFreeze for account %s: %s", acc.Name, result.Code)
+	}
+}
+
+// SetTransferRate sets the transfer rate for an account.
+// Rate is specified as a multiplier * 1e9 (1e9 = 100%, 1.1e9 = 110% means 10% fee).
+// Use 0 to clear the transfer rate (sets it back to 1e9 / 100%).
+func (e *TestEnv) SetTransferRate(acc *Account, rate uint32) {
+	e.t.Helper()
+
+	accountSet := account.NewAccountSet(acc.Address)
+	accountSet.TransferRate = &rate
+	accountSet.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	accountSet.Sequence = &seq
+
+	result := e.Submit(accountSet)
+	if !result.Success {
+		e.t.Fatalf("Failed to set transfer rate for account %s: %s", acc.Name, result.Code)
+	}
+}
+
+// EnableRequireAuth enables the RequireAuth flag on an account.
+// When enabled, trust lines to this account require authorization.
+func (e *TestEnv) EnableRequireAuth(acc *Account) {
+	e.t.Helper()
+
+	accountSet := account.NewAccountSet(acc.Address)
+	flag := account.AccountSetFlagRequireAuth
+	accountSet.SetFlag = &flag
+	accountSet.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	accountSet.Sequence = &seq
+
+	result := e.Submit(accountSet)
+	if !result.Success {
+		e.t.Fatalf("Failed to enable RequireAuth for account %s: %s", acc.Name, result.Code)
+	}
+}
+
+// DisableRequireAuth disables the RequireAuth flag on an account.
+func (e *TestEnv) DisableRequireAuth(acc *Account) {
+	e.t.Helper()
+
+	accountSet := account.NewAccountSet(acc.Address)
+	flag := account.AccountSetFlagRequireAuth
+	accountSet.ClearFlag = &flag
+	accountSet.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	accountSet.Sequence = &seq
+
+	result := e.Submit(accountSet)
+	if !result.Success {
+		e.t.Fatalf("Failed to disable RequireAuth for account %s: %s", acc.Name, result.Code)
+	}
+}
+
+// Preauthorize allows owner to preauthorize authorized for deposits.
+// This creates a DepositPreauth ledger entry.
+func (e *TestEnv) Preauthorize(owner, authorized *Account) {
+	e.t.Helper()
+
+	preauth := depositpreauth.NewDepositPreauth(owner.Address)
+	preauth.SetAuthorize(authorized.Address)
+	preauth.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(owner)
+	preauth.Sequence = &seq
+
+	result := e.Submit(preauth)
+	if !result.Success {
+		e.t.Fatalf("Failed to preauthorize %s for %s: %s", authorized.Name, owner.Name, result.Code)
+	}
+}
+
+// Unauthorize removes preauthorization for authorized from owner.
+func (e *TestEnv) Unauthorize(owner, authorized *Account) {
+	e.t.Helper()
+
+	preauth := depositpreauth.NewDepositPreauth(owner.Address)
+	preauth.SetUnauthorize(authorized.Address)
+	preauth.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(owner)
+	preauth.Sequence = &seq
+
+	result := e.Submit(preauth)
+	if !result.Success {
+		e.t.Fatalf("Failed to unauthorize %s for %s: %s", authorized.Name, owner.Name, result.Code)
+	}
+}
+
+// CreateOffer creates an offer on the DEX.
+// takerGets is what the offer creator will receive (what the taker pays).
+// takerPays is what the offer creator will pay (what the taker gets).
+func (e *TestEnv) CreateOffer(acc *Account, takerGets, takerPays tx.Amount) TxResult {
+	e.t.Helper()
+
+	offerTx := offer.NewOfferCreate(acc.Address, takerGets, takerPays)
+	offerTx.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	offerTx.Sequence = &seq
+
+	return e.Submit(offerTx)
+}
+
+// CreatePassiveOffer creates a passive offer on the DEX.
+// Passive offers don't immediately consume offers at an equal or better rate.
+func (e *TestEnv) CreatePassiveOffer(acc *Account, takerGets, takerPays tx.Amount) TxResult {
+	e.t.Helper()
+
+	offerTx := offer.NewOfferCreate(acc.Address, takerGets, takerPays)
+	offerTx.SetPassive()
+	offerTx.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	offerTx.Sequence = &seq
+
+	return e.Submit(offerTx)
 }
 
 // Close closes the current ledger and advances to a new one.
@@ -300,6 +533,134 @@ func (e *TestEnv) Balance(acc *Account) uint64 {
 	}
 
 	return accountRoot.Balance
+}
+
+// IOUBalance returns the IOU balance of an account for a specific currency and issuer.
+// The balance is returned from the perspective of the holder (not the issuer).
+// Positive means the holder has tokens, negative means they owe tokens.
+func (e *TestEnv) IOUBalance(holder, issuer *Account, currency string) *sle.Amount {
+	e.t.Helper()
+
+	// Get trust line keylet
+	lineKey := keylet.Line(holder.ID, issuer.ID, currency)
+
+	// Check if trust line exists
+	exists, err := e.ledger.Exists(lineKey)
+	if err != nil {
+		e.t.Fatalf("Failed to check trust line existence: %v", err)
+		return nil
+	}
+	if !exists {
+		// No trust line = zero balance
+		zero := sle.NewIssuedAmountFromFloat64(0, currency, issuer.Address)
+		return &zero
+	}
+
+	// Read trust line data
+	data, err := e.ledger.Read(lineKey)
+	if err != nil {
+		e.t.Fatalf("Failed to read trust line: %v", err)
+		return nil
+	}
+
+	// Parse RippleState
+	rs, err := sle.ParseRippleState(data)
+	if err != nil {
+		e.t.Fatalf("Failed to parse trust line: %v", err)
+		return nil
+	}
+
+	// Determine if holder is low or high account
+	// Balance sign convention: positive means low owes high
+	isLow := keylet.IsLowAccount(holder.ID, issuer.ID)
+
+	balance := rs.Balance
+	if !isLow {
+		// If holder is high account, negate the balance
+		// (positive balance means low owes high, so high has positive tokens)
+		balance = balance.Negate()
+	}
+
+	return &balance
+}
+
+// BalanceIOU returns the IOU balance of an account for a specific currency and issuer as float64.
+// This is a convenience method for tests that need simple numeric comparisons.
+func (e *TestEnv) BalanceIOU(holder *Account, currency string, issuer *Account) float64 {
+	e.t.Helper()
+
+	balance := e.IOUBalance(holder, issuer, currency)
+	if balance == nil {
+		return 0.0
+	}
+
+	return balance.Float64()
+}
+
+// TrustLineExists checks if a trust line exists between two accounts for a currency.
+func (e *TestEnv) TrustLineExists(acc1, acc2 *Account, currency string) bool {
+	e.t.Helper()
+
+	lineKey := keylet.Line(acc1.ID, acc2.ID, currency)
+	exists, err := e.ledger.Exists(lineKey)
+	if err != nil {
+		e.t.Fatalf("Failed to check trust line existence: %v", err)
+		return false
+	}
+	return exists
+}
+
+// TrustLineFlags returns the flags on a trust line between two accounts.
+// Returns the flags from the perspective of 'account' (which side's flags).
+func (e *TestEnv) TrustLineFlags(account, counterparty *Account, currency string) uint32 {
+	e.t.Helper()
+
+	lineKey := keylet.Line(account.ID, counterparty.ID, currency)
+	exists, err := e.ledger.Exists(lineKey)
+	if err != nil || !exists {
+		return 0
+	}
+
+	data, err := e.ledger.Read(lineKey)
+	if err != nil {
+		return 0
+	}
+
+	rs, err := sle.ParseRippleState(data)
+	if err != nil {
+		return 0
+	}
+
+	return rs.Flags
+}
+
+// HasNoRipple checks if the account's side of the trust line has NoRipple set.
+func (e *TestEnv) HasNoRipple(account, counterparty *Account, currency string) bool {
+	e.t.Helper()
+
+	lineKey := keylet.Line(account.ID, counterparty.ID, currency)
+	exists, err := e.ledger.Exists(lineKey)
+	if err != nil || !exists {
+		return false
+	}
+
+	data, err := e.ledger.Read(lineKey)
+	if err != nil {
+		return false
+	}
+
+	rs, err := sle.ParseRippleState(data)
+	if err != nil {
+		return false
+	}
+
+	// Determine if account is low or high
+	isLow := keylet.IsLowAccount(account.ID, counterparty.ID)
+
+	if isLow {
+		return (rs.Flags & sle.LsfLowNoRipple) != 0
+	}
+	return (rs.Flags & sle.LsfHighNoRipple) != 0
 }
 
 // Now returns the current time on the test clock.

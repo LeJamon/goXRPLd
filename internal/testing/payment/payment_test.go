@@ -133,8 +133,9 @@ func TestPaymentZeroAmount(t *testing.T) {
 	// Try to send 0 XRP
 	payment := Pay(alice, bob, 0).Build()
 	result := env.Submit(payment)
-	// Zero amount should fail with temINVALID (ill-formed transaction)
-	xrplgoTesting.RequireTxFail(t, result, xrplgoTesting.TemINVALID)
+	// Zero amount should fail with temBAD_AMOUNT
+	// Reference: rippled Payment.cpp preflight() lines 148-152
+	xrplgoTesting.RequireTxFail(t, result, xrplgoTesting.TemBAD_AMOUNT)
 }
 
 // TestPaymentMultiplePayments tests multiple sequential payments.

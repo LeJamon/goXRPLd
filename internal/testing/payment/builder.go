@@ -23,6 +23,7 @@ type PaymentBuilder struct {
 	invoiceID  string
 	sendMax    *tx.Amount
 	deliverMin *tx.Amount
+	paths      [][]payment.PathStep
 	sequence   *uint32
 	flags      uint32
 	memos      []tx.MemoWrapper
@@ -82,6 +83,51 @@ func (b *PaymentBuilder) SendMax(amount tx.Amount) *PaymentBuilder {
 // DeliverMin sets the minimum amount to deliver (for partial payments).
 func (b *PaymentBuilder) DeliverMin(amount tx.Amount) *PaymentBuilder {
 	b.deliverMin = &amount
+	return b
+}
+
+// Paths sets the payment paths for cross-currency payments.
+// Each path is a slice of PathStep.
+func (b *PaymentBuilder) Paths(paths [][]payment.PathStep) *PaymentBuilder {
+	b.paths = paths
+	return b
+}
+
+// PathsXRP adds a single path through XRP for cross-currency payments.
+// This is a convenience method for the common case of using XRP as a bridge.
+// Note: For XRP bridging, we use an empty path - the strand builder will
+// automatically create the necessary book steps based on SendMax (XRP) and
+// Amount (destination currency) issues.
+// Reference: rippled paths(XRP) uses pathfinder which typically returns empty
+// paths when XRP is the source and destination is IOU via order book.
+func (b *PaymentBuilder) PathsXRP() *PaymentBuilder {
+	// Use an empty path - the strand builder adds the destination currency/issuer
+	// automatically when the source (SendMax) and destination currencies differ.
+	// An explicit {Currency: "XRP"} element would cause temBAD_PATH because
+	// it creates a redundant XRP→XRP book which is invalid.
+	b.paths = [][]payment.PathStep{{}}
+	return b
+}
+
+// PathsIOUToIOU adds a path for IOU to IOU payments through an offer book.
+// This creates a path that goes from srcCurrency to dstCurrency through the order book.
+// srcCurrency: The currency being sent (e.g., "BTC")
+// srcIssuer: The issuer of the source currency
+// dstCurrency: The currency being received (e.g., "USD")
+// dstIssuer: The issuer of the destination currency
+func (b *PaymentBuilder) PathsIOUToIOU(srcCurrency string, srcIssuer *testing.Account, dstCurrency string, dstIssuer *testing.Account) *PaymentBuilder {
+	// For IOU->IOU cross-currency payments, the path specifies the intermediate steps.
+	// ~USD in rippled means "through the order book for USD" - this is represented
+	// as a path step with just the currency (and optionally issuer) fields.
+	// Reference: rippled path(~USD) creates STPathElement with currency only.
+	b.paths = [][]payment.PathStep{
+		{
+			{
+				Currency: dstCurrency,
+				Issuer:   dstIssuer.Address,
+			},
+		},
+	}
 	return b
 }
 
@@ -147,6 +193,9 @@ func (b *PaymentBuilder) Build() tx.Transaction {
 	}
 	if b.deliverMin != nil {
 		payment.DeliverMin = b.deliverMin
+	}
+	if b.paths != nil {
+		payment.Paths = b.paths
 	}
 	if b.sequence != nil {
 		payment.SetSequence(*b.sequence)

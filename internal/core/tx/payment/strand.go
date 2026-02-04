@@ -6,6 +6,96 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
+// StrandContext tracks state during strand building for loop detection.
+// Reference: rippled Steps.h StrandContext
+type StrandContext struct {
+	View      *PaymentSandbox
+	StrandSrc [20]byte
+	StrandDst [20]byte
+	// seenDirectIssues[0] = source issues, seenDirectIssues[1] = destination issues
+	SeenDirectIssues [2]map[Issue]bool
+	SeenBookOuts     map[Issue]bool
+}
+
+// NewStrandContext creates a new context for strand building
+func NewStrandContext(view *PaymentSandbox, src, dst [20]byte) *StrandContext {
+	return &StrandContext{
+		View:             view,
+		StrandSrc:        src,
+		StrandDst:        dst,
+		SeenDirectIssues: [2]map[Issue]bool{{}, {}},
+		SeenBookOuts:     make(map[Issue]bool),
+	}
+}
+
+// CheckDirectStepLoop checks and records a DirectStep for loops.
+// Returns temBAD_PATH_LOOP if a loop is detected.
+// Reference: rippled DirectStep.cpp make_DirectStepI() lines 949-955
+func (ctx *StrandContext) CheckDirectStepLoop(srcAcct, dstAcct [20]byte, currency string) tx.Result {
+	srcIssue := Issue{Currency: currency, Issuer: srcAcct}
+	dstIssue := Issue{Currency: currency, Issuer: dstAcct}
+
+	// Check if source issue already seen as source (except for strand endpoints)
+	if srcAcct != ctx.StrandSrc && srcAcct != ctx.StrandDst {
+		if ctx.SeenDirectIssues[0][srcIssue] {
+			return tx.TemBAD_PATH_LOOP
+		}
+	}
+
+	// Check if dest issue already seen as dest (except for strand endpoints)
+	if dstAcct != ctx.StrandSrc && dstAcct != ctx.StrandDst {
+		if ctx.SeenDirectIssues[1][dstIssue] {
+			return tx.TemBAD_PATH_LOOP
+		}
+	}
+
+	// Insert into seen sets
+	ctx.SeenDirectIssues[0][srcIssue] = true
+	ctx.SeenDirectIssues[1][dstIssue] = true
+
+	return tx.TesSUCCESS
+}
+
+// CheckBookStepLoop checks and records a BookStep for loops.
+// Returns temBAD_PATH_LOOP if a loop is detected.
+// Reference: rippled BookStep.cpp make_BookStepI() lines 1357-1372
+func (ctx *StrandContext) CheckBookStepLoop(bookOut Issue) tx.Result {
+	// Cannot have multiple book steps with same output issue
+	if ctx.SeenBookOuts[bookOut] {
+		return tx.TemBAD_PATH_LOOP
+	}
+
+	// Book output cannot match a direct step source issue
+	if ctx.SeenDirectIssues[0][bookOut] {
+		return tx.TemBAD_PATH_LOOP
+	}
+
+	// Book output cannot match a direct step destination issue
+	if ctx.SeenDirectIssues[1][bookOut] {
+		return tx.TemBAD_PATH_LOOP
+	}
+
+	ctx.SeenBookOuts[bookOut] = true
+	return tx.TesSUCCESS
+}
+
+// CheckXRPEndpointLoop checks XRP endpoint step for loops.
+// Reference: rippled XRPEndpointStep.cpp lines 365-373
+func (ctx *StrandContext) CheckXRPEndpointLoop(isLast bool) tx.Result {
+	xrpIssue := Issue{Currency: "XRP", Issuer: [20]byte{}}
+	issuesIndex := 0
+	if !isLast {
+		issuesIndex = 1
+	}
+
+	if ctx.SeenDirectIssues[issuesIndex][xrpIssue] {
+		return tx.TemBAD_PATH_LOOP
+	}
+
+	ctx.SeenDirectIssues[issuesIndex][xrpIssue] = true
+	return tx.TesSUCCESS
+}
+
 // Path flags - indicate what type of element this path step contains
 // These match rippled's STPathElement types
 const (
@@ -28,6 +118,7 @@ const (
 //   - addDefaultPath: Whether to add the default path (direct)
 //
 // Returns: List of executable strands, error if any path is invalid
+// Reference: rippled PaySteps.cpp toStrands()
 func ToStrands(
 	view *PaymentSandbox,
 	src, dst [20]byte,
@@ -35,7 +126,14 @@ func ToStrands(
 	srcAmt *tx.Amount,
 	paths [][]PathStep,
 	addDefaultPath bool,
-) ([]Strand, error) {
+) ([]Strand, tx.Result) {
+	// Validate source and destination are not XRP pseudo-accounts
+	// Reference: rippled PaySteps.cpp:148-150
+	var xrpAccount [20]byte
+	if src == xrpAccount || dst == xrpAccount {
+		return nil, tx.TemBAD_PATH
+	}
+
 	dstIssue := GetIssue(dstAmt)
 
 	var srcIssue *Issue
@@ -45,19 +143,37 @@ func ToStrands(
 	}
 
 	var strands []Strand
+	var lastFailResult tx.Result = tx.TesSUCCESS
 
 	// Add default path if requested
 	if addDefaultPath {
-		strand, err := ToStrand(view, src, dst, dstIssue, srcIssue, nil, true)
-		if err == nil && len(strand) > 0 {
+		strand, result := ToStrandWithLoopCheck(view, src, dst, dstIssue, srcIssue, nil, true)
+		if result != tx.TesSUCCESS {
+			// For tem* errors, fail immediately
+			if isTemMalformed(result) || len(paths) == 0 {
+				return nil, result
+			}
+			lastFailResult = result
+		} else if len(strand) > 0 {
 			strands = append(strands, strand)
 		}
+	} else if len(paths) == 0 {
+		// Reference: rippled PaySteps.cpp:532-537
+		return nil, tx.TemRIPPLE_EMPTY
 	}
 
 	// Convert each explicit path to a strand
 	for _, path := range paths {
-		strand, err := ToStrand(view, src, dst, dstIssue, srcIssue, path, false)
-		if err == nil && len(strand) > 0 {
+		strand, result := ToStrandWithLoopCheck(view, src, dst, dstIssue, srcIssue, path, false)
+		if result != tx.TesSUCCESS {
+			lastFailResult = result
+			// For tem* errors, fail immediately
+			if isTemMalformed(result) {
+				return nil, result
+			}
+			continue
+		}
+		if len(strand) > 0 {
 			// Check for duplicate strands
 			isDuplicate := false
 			for _, existing := range strands {
@@ -72,12 +188,443 @@ func ToStrands(
 		}
 	}
 
-	return strands, nil
+	if len(strands) == 0 {
+		return nil, lastFailResult
+	}
+
+	return strands, tx.TesSUCCESS
+}
+
+// isTemMalformed returns true if the result is a tem* error code
+func isTemMalformed(result tx.Result) bool {
+	code := result.String()
+	return len(code) >= 3 && code[:3] == "tem"
+}
+
+// ToStrandWithLoopCheck converts a path to a strand with loop detection
+// Reference: rippled PaySteps.cpp toStrand() with seenDirectIssues and seenBookOuts
+func ToStrandWithLoopCheck(
+	view *PaymentSandbox,
+	src, dst [20]byte,
+	dstIssue Issue,
+	srcIssue *Issue,
+	path []PathStep,
+	isDefaultPath bool,
+) (Strand, tx.Result) {
+	// Create strand context for loop detection
+	ctx := NewStrandContext(view, src, dst)
+
+	// Use the context-aware strand builder
+	strand, result := ToStrandWithContext(ctx, src, dst, dstIssue, srcIssue, path, isDefaultPath)
+	if result != tx.TesSUCCESS {
+		return nil, result
+	}
+
+	return strand, tx.TesSUCCESS
+}
+
+// ToStrandWithContext converts a single path to an executable strand with context-aware loop detection.
+// Reference: rippled PaySteps.cpp toStrand()
+func ToStrandWithContext(
+	ctx *StrandContext,
+	src, dst [20]byte,
+	dstIssue Issue,
+	srcIssue *Issue,
+	path []PathStep,
+	isDefaultPath bool,
+) (Strand, tx.Result) {
+	view := ctx.View
+	// Build the normalized path following rippled's approach
+	// The normalized path includes implicit nodes for source, sendMax issuer, etc.
+
+	// Determine the starting currency issue
+	// Per rippled: Issue{currency, src} - source account is the initial "issuer" context
+	var curIssue Issue
+	if srcIssue != nil {
+		curIssue = Issue{Currency: srcIssue.Currency, Issuer: src}
+	} else {
+		curIssue = Issue{Currency: dstIssue.Currency, Issuer: src}
+	}
+
+	if curIssue.IsXRP() {
+		curIssue.Issuer = [20]byte{} // XRP pseudo-account
+	}
+
+	// Build normalized path as a list of PathElement-like nodes
+	type normNode struct {
+		account     [20]byte
+		currency    string
+		issuer      [20]byte
+		hasAccount  bool
+		hasCurrency bool
+		hasIssuer   bool
+	}
+
+	var normPath []normNode
+
+	// Add source node
+	normPath = append(normPath, normNode{
+		account:     src,
+		currency:    curIssue.Currency,
+		issuer:      curIssue.Issuer,
+		hasAccount:  true,
+		hasCurrency: true,
+		hasIssuer:   true,
+	})
+
+	// If sendMaxIssue has a different account (issuer) than src, insert it
+	// This is the key for cross-issuer ripple payments!
+	// Skip for XRP - the XRP pseudo-account (zero bytes) is not a real account
+	// and shouldn't be inserted as an intermediate node.
+	if srcIssue != nil && srcIssue.Issuer != src && !srcIssue.IsXRP() {
+		// Check if first path element isn't already this account
+		needsInsert := true
+		if len(path) > 0 && hasAccount(path[0]) {
+			firstAccount := accountFromPathElement(path[0], src)
+			if firstAccount == srcIssue.Issuer {
+				needsInsert = false
+			}
+		}
+		if needsInsert {
+			normPath = append(normPath, normNode{
+				account:    srcIssue.Issuer,
+				hasAccount: true,
+			})
+		}
+	}
+
+	// Add explicit path elements
+	for _, elem := range path {
+		var node normNode
+		if hasAccount(elem) {
+			node.account = accountFromPathElement(elem, src)
+			node.hasAccount = true
+		}
+		if hasCurrency(elem) {
+			node.currency = elem.Currency
+			node.hasCurrency = true
+		}
+		if hasIssuer(elem) {
+			issuerBytes, err := sle.DecodeAccountID(elem.Issuer)
+			if err == nil {
+				node.issuer = issuerBytes
+				node.hasIssuer = true
+			}
+		}
+		normPath = append(normPath, node)
+	}
+
+	// Find the last currency in the path to check if we need currency change
+	lastCurrency := curIssue.Currency
+	for i := len(normPath) - 1; i >= 0; i-- {
+		if normPath[i].hasCurrency {
+			lastCurrency = normPath[i].currency
+			break
+		}
+	}
+
+	// Add currency/issuer step if currency differs
+	// Note: For regular payments (not offer crossing), different issuers
+	// with same currency do NOT need a book step - they use rippling
+	if lastCurrency != dstIssue.Currency {
+		normPath = append(normPath, normNode{
+			currency:    dstIssue.Currency,
+			issuer:      dstIssue.Issuer,
+			hasCurrency: true,
+			hasIssuer:   true,
+		})
+	}
+
+	// Add destination issuer account if needed (for multi-hop through issuer)
+	// Only if the last element isn't already that account AND dst != dstIssue.Issuer
+	lastIsAccount := len(normPath) > 0 && normPath[len(normPath)-1].hasAccount
+	lastAccount := src
+	if lastIsAccount {
+		lastAccount = normPath[len(normPath)-1].account
+	}
+
+	if !((lastIsAccount && lastAccount == dstIssue.Issuer) || (dst == dstIssue.Issuer)) {
+		normPath = append(normPath, normNode{
+			account:    dstIssue.Issuer,
+			hasAccount: true,
+		})
+	}
+
+	// Add destination if not already the last account
+	if !lastIsAccount || normPath[len(normPath)-1].account != dst {
+		// Check the updated last element
+		if len(normPath) > 0 {
+			lastNode := normPath[len(normPath)-1]
+			if !lastNode.hasAccount || lastNode.account != dst {
+				normPath = append(normPath, normNode{
+					account:    dst,
+					hasAccount: true,
+				})
+			}
+		}
+	}
+
+	if len(normPath) < 2 {
+		return nil, tx.TemBAD_PATH
+	}
+
+	// Now convert normalized path to steps with loop detection
+	var strand Strand
+	var prevStep Step
+
+	// Reset curIssue for step creation
+	if srcIssue != nil {
+		curIssue = Issue{Currency: srcIssue.Currency, Issuer: src}
+	} else {
+		curIssue = Issue{Currency: dstIssue.Currency, Issuer: src}
+	}
+	if curIssue.IsXRP() {
+		curIssue.Issuer = [20]byte{}
+	}
+
+	for i := 0; i < len(normPath)-1; i++ {
+		cur := normPath[i]
+		next := normPath[i+1]
+		isLast := i == len(normPath)-2
+
+		// Update current issue based on current node
+		if cur.hasAccount {
+			curIssue.Issuer = cur.account
+		} else if cur.hasIssuer {
+			curIssue.Issuer = cur.issuer
+		}
+		if cur.hasCurrency {
+			curIssue.Currency = cur.currency
+			if curIssue.IsXRP() {
+				curIssue.Issuer = [20]byte{}
+			}
+		}
+
+		// Handle account-to-account transitions (DirectStep or implied steps)
+		if cur.hasAccount && next.hasAccount {
+			// Check if we need an implied account step
+			// Per rippled: if curIssue.account != cur.account AND curIssue.account != next.account
+			if !curIssue.IsXRP() && curIssue.Issuer != cur.account && curIssue.Issuer != next.account {
+				// Insert implied DirectStep to curIssue.Issuer first
+				// Check for loop BEFORE creating step
+				if result := ctx.CheckDirectStepLoop(cur.account, curIssue.Issuer, curIssue.Currency); result != tx.TesSUCCESS {
+					return nil, result
+				}
+				directStep := NewDirectStepI(cur.account, curIssue.Issuer, curIssue.Currency, prevStep, false)
+				// Check NoRipple constraint
+				if result := directStep.CheckWithPrevStep(view, prevStep); result != tx.TesSUCCESS {
+					return nil, result
+				}
+				strand = append(strand, directStep)
+				prevStep = directStep
+
+				// Check for loop BEFORE creating step
+				if result := ctx.CheckDirectStepLoop(curIssue.Issuer, next.account, curIssue.Currency); result != tx.TesSUCCESS {
+					return nil, result
+				}
+				// Now create step from curIssue.Issuer to next
+				directStep = NewDirectStepI(curIssue.Issuer, next.account, curIssue.Currency, prevStep, isLast)
+				// Check NoRipple constraint
+				if result := directStep.CheckWithPrevStep(view, prevStep); result != tx.TesSUCCESS {
+					return nil, result
+				}
+				strand = append(strand, directStep)
+				prevStep = directStep
+			} else {
+				// Direct step from cur to next
+				if curIssue.IsXRP() {
+					// XRP endpoint step
+					if i == 0 {
+						// Check for XRP loop
+						if result := ctx.CheckXRPEndpointLoop(false); result != tx.TesSUCCESS {
+							return nil, result
+						}
+						step := NewXRPEndpointStep(cur.account, false) // source
+						strand = append(strand, step)
+						prevStep = step
+					}
+					if isLast {
+						// Check for XRP loop
+						if result := ctx.CheckXRPEndpointLoop(true); result != tx.TesSUCCESS {
+							return nil, result
+						}
+						step := NewXRPEndpointStep(next.account, true) // destination
+						strand = append(strand, step)
+					}
+				} else {
+					// Check for loop BEFORE creating step
+					if result := ctx.CheckDirectStepLoop(cur.account, next.account, curIssue.Currency); result != tx.TesSUCCESS {
+						return nil, result
+					}
+					directStep := NewDirectStepI(cur.account, next.account, curIssue.Currency, prevStep, isLast)
+					// Check NoRipple constraint
+					if result := directStep.CheckWithPrevStep(view, prevStep); result != tx.TesSUCCESS {
+						return nil, result
+					}
+					strand = append(strand, directStep)
+					prevStep = directStep
+				}
+			}
+		} else if cur.hasAccount && !next.hasAccount && (next.hasCurrency || next.hasIssuer) {
+			// Account to offer (currency change)
+			// Reference: rippled PaySteps.cpp toStep()
+
+			// If source is XRP, need XRPEndpointStep first (only if this is the first element)
+			// Reference: rippled PaySteps.cpp creates XRPEndpointStep for source when entering book
+			if curIssue.IsXRP() && i == 0 {
+				// Check for XRP loop
+				if result := ctx.CheckXRPEndpointLoop(false); result != tx.TesSUCCESS {
+					return nil, result
+				}
+				xrpStep := NewXRPEndpointStep(cur.account, false) // source
+				strand = append(strand, xrpStep)
+				prevStep = xrpStep
+			} else if !curIssue.IsXRP() && curIssue.Issuer != cur.account {
+				// May need implied DirectStep first for IOU
+				// Check for loop BEFORE creating step
+				if result := ctx.CheckDirectStepLoop(cur.account, curIssue.Issuer, curIssue.Currency); result != tx.TesSUCCESS {
+					return nil, result
+				}
+				directStep := NewDirectStepI(cur.account, curIssue.Issuer, curIssue.Currency, prevStep, false)
+				// Check NoRipple constraint
+				if result := directStep.CheckWithPrevStep(view, prevStep); result != tx.TesSUCCESS {
+					return nil, result
+				}
+				strand = append(strand, directStep)
+				prevStep = directStep
+			}
+
+			// Determine output issue
+			outCurrency := curIssue.Currency
+			if next.hasCurrency {
+				outCurrency = next.currency
+			}
+			outIssuer := curIssue.Issuer
+			if next.hasIssuer {
+				outIssuer = next.issuer
+			}
+			outIssue := Issue{Currency: outCurrency, Issuer: outIssuer}
+			// XRP must have zero issuer
+			if outIssue.IsXRP() {
+				outIssue.Issuer = [20]byte{}
+			}
+
+			// Always create book step for offer path elements
+			// Reference: rippled PaySteps.cpp toStep() always creates BookStep,
+			// then check() validates it (returns temBAD_PATH for same in/out issue)
+			if curIssue.IsXRP() && outIssue.IsXRP() {
+				return nil, tx.TemBAD_PATH // Invalid: XRP to XRP book
+			}
+			// Check for same in/out issue BEFORE loop check
+			// Reference: rippled BookStep.cpp check() lines 1346-1351
+			if curIssue.Currency == outIssue.Currency && curIssue.Issuer == outIssue.Issuer {
+				return nil, tx.TemBAD_PATH
+			}
+			// Check for book loop BEFORE creating step
+			if result := ctx.CheckBookStepLoop(outIssue); result != tx.TesSUCCESS {
+				return nil, result
+			}
+			bookStep := NewBookStep(curIssue, outIssue, src, dst, prevStep, false)
+			strand = append(strand, bookStep)
+			prevStep = bookStep
+			curIssue = outIssue
+		} else if !cur.hasAccount && next.hasAccount {
+			// Offer to account
+			if !curIssue.IsXRP() && curIssue.Issuer != next.account {
+				if curIssue.IsXRP() {
+					if !isLast {
+						return nil, tx.TemBAD_PATH // Invalid path
+					}
+					// Check for XRP loop
+					if result := ctx.CheckXRPEndpointLoop(true); result != tx.TesSUCCESS {
+						return nil, result
+					}
+					// XRP endpoint
+					step := NewXRPEndpointStep(next.account, true)
+					strand = append(strand, step)
+				} else {
+					// Check for loop BEFORE creating step
+					if result := ctx.CheckDirectStepLoop(curIssue.Issuer, next.account, curIssue.Currency); result != tx.TesSUCCESS {
+						return nil, result
+					}
+					// Implied DirectStep from curIssue.Issuer to next
+					directStep := NewDirectStepI(curIssue.Issuer, next.account, curIssue.Currency, prevStep, isLast)
+					// Check NoRipple constraint
+					if result := directStep.CheckWithPrevStep(view, prevStep); result != tx.TesSUCCESS {
+						return nil, result
+					}
+					strand = append(strand, directStep)
+					prevStep = directStep
+				}
+			}
+		} else if !cur.hasAccount && !next.hasAccount && (next.hasCurrency || next.hasIssuer) {
+			// Offer to offer (consecutive currency changes)
+			// Reference: rippled PaySteps.cpp toStep() lines 105-130
+			outCurrency := curIssue.Currency
+			if next.hasCurrency {
+				outCurrency = next.currency
+			}
+			outIssuer := curIssue.Issuer
+			if next.hasIssuer {
+				outIssuer = next.issuer
+			}
+			outIssue := Issue{Currency: outCurrency, Issuer: outIssuer}
+			// XRP must have zero issuer
+			if outIssue.IsXRP() {
+				outIssue.Issuer = [20]byte{}
+			}
+
+			// Always create book step for offer path elements
+			// Reference: rippled PaySteps.cpp toStep() always creates BookStep,
+			// then check() validates it (returns temBAD_PATH for same in/out issue)
+			if curIssue.IsXRP() && outIssue.IsXRP() {
+				return nil, tx.TemBAD_PATH // Invalid: XRP to XRP book
+			}
+			// Check for same in/out issue BEFORE loop check
+			// Reference: rippled BookStep.cpp check() lines 1346-1351
+			if curIssue.Currency == outIssue.Currency && curIssue.Issuer == outIssue.Issuer {
+				return nil, tx.TemBAD_PATH
+			}
+			// Check for book loop BEFORE creating step
+			if result := ctx.CheckBookStepLoop(outIssue); result != tx.TesSUCCESS {
+				return nil, result
+			}
+			bookStep := NewBookStep(curIssue, outIssue, src, dst, prevStep, false)
+			strand = append(strand, bookStep)
+			prevStep = bookStep
+			curIssue = outIssue
+		}
+	}
+
+	// Validate the strand
+	if err := validateStrand(strand, view); err != nil {
+		return nil, tx.TemBAD_PATH
+	}
+
+	return strand, tx.TesSUCCESS
 }
 
 // ToStrand converts a single path to an executable strand
 // This matches rippled's toStrand() implementation in PaySteps.cpp
 func ToStrand(
+	view *PaymentSandbox,
+	src, dst [20]byte,
+	dstIssue Issue,
+	srcIssue *Issue,
+	path []PathStep,
+	isDefaultPath bool,
+) (Strand, error) {
+	ctx := NewStrandContext(view, src, dst)
+	strand, result := ToStrandWithContext(ctx, src, dst, dstIssue, srcIssue, path, isDefaultPath)
+	if result != tx.TesSUCCESS {
+		return nil, nil // Return nil error for backward compatibility
+	}
+	return strand, nil
+}
+
+// ToStrandLegacy is the old implementation without loop detection.
+// Kept for reference but deprecated.
+func ToStrandLegacy(
 	view *PaymentSandbox,
 	src, dst [20]byte,
 	dstIssue Issue,
@@ -125,7 +672,9 @@ func ToStrand(
 
 	// If sendMaxIssue has a different account (issuer) than src, insert it
 	// This is the key for cross-issuer ripple payments!
-	if srcIssue != nil && srcIssue.Issuer != src {
+	// Skip for XRP - the XRP pseudo-account (zero bytes) is not a real account
+	// and shouldn't be inserted as an intermediate node.
+	if srcIssue != nil && srcIssue.Issuer != src && !srcIssue.IsXRP() {
 		// Check if first path element isn't already this account
 		needsInsert := true
 		if len(path) > 0 && hasAccount(path[0]) {

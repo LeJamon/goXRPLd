@@ -221,11 +221,15 @@ const (
 	TemBAD_SIGNER         TxResultCode = "temBAD_SIGNER"
 	TemBAD_QUORUM         TxResultCode = "temBAD_QUORUM"
 	TemBAD_WEIGHT         TxResultCode = "temBAD_WEIGHT"
-	TemBAD_TICK_SIZE      TxResultCode = "temBAD_TICK_SIZE"
-	TemINVALID_ACCOUNT_ID TxResultCode = "temINVALID_ACCOUNT_ID"
-	TemUNCERTAIN          TxResultCode = "temUNCERTAIN"
-	TemUNKNOWN            TxResultCode = "temUNKNOWN"
-	TemSEQ_AND_TICKET     TxResultCode = "temSEQ_AND_TICKET"
+	TemBAD_TICK_SIZE       TxResultCode = "temBAD_TICK_SIZE"
+	TemINVALID_ACCOUNT_ID  TxResultCode = "temINVALID_ACCOUNT_ID"
+	TemUNCERTAIN           TxResultCode = "temUNCERTAIN"
+	TemUNKNOWN             TxResultCode = "temUNKNOWN"
+	TemSEQ_AND_TICKET      TxResultCode = "temSEQ_AND_TICKET"
+	TemBAD_SEND_XRP_PATHS  TxResultCode = "temBAD_SEND_XRP_PATHS"
+	TemBAD_SEND_XRP_MAX    TxResultCode = "temBAD_SEND_XRP_MAX"
+	TemBAD_SEND_XRP_PARTIAL TxResultCode = "temBAD_SEND_XRP_PARTIAL"
+	TemBAD_SEND_XRP_NO_DIRECT TxResultCode = "temBAD_SEND_XRP_NO_DIRECT"
 )
 
 // ResultCodeCategory returns the category of a result code.

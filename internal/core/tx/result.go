@@ -262,6 +262,18 @@ func (r Result) String() string {
 		return "tecARRAY_EMPTY"
 	case TecARRAY_TOO_LARGE:
 		return "tecARRAY_TOO_LARGE"
+	case TecDUPLICATE:
+		return "tecDUPLICATE"
+	case TecUNFUNDED_AMM:
+		return "tecUNFUNDED_AMM"
+	case TecAMM_BALANCE:
+		return "tecAMM_BALANCE"
+	case TecAMM_FAILED:
+		return "tecAMM_FAILED"
+	case TecAMM_INVALID_TOKENS:
+		return "tecAMM_INVALID_TOKENS"
+	case TecAMM_NOT_EMPTY:
+		return "tecAMM_NOT_EMPTY"
 	case TemEMPTY_DID:
 		return "temEMPTY_DID"
 	case TefFAILURE:
@@ -304,6 +316,8 @@ func (r Result) String() string {
 		return "temBAD_FEE"
 	case TemBAD_ISSUER:
 		return "temBAD_ISSUER"
+	case TemBAD_LIMIT:
+		return "temBAD_LIMIT"
 	case TemBAD_SEQUENCE:
 		return "temBAD_SEQUENCE"
 	case TemBAD_SIGNATURE:
@@ -326,6 +340,30 @@ func (r Result) String() string {
 		return "temUNCERTAIN"
 	case TemUNKNOWN:
 		return "temUNKNOWN"
+	case TemBAD_PATH:
+		return "temBAD_PATH"
+	case TemBAD_PATH_LOOP:
+		return "temBAD_PATH_LOOP"
+	case TemBAD_OFFER:
+		return "temBAD_OFFER"
+	case TemBAD_SEND_XRP_LIMIT:
+		return "temBAD_SEND_XRP_LIMIT"
+	case TemBAD_SEND_XRP_MAX:
+		return "temBAD_SEND_XRP_MAX"
+	case TemBAD_SEND_XRP_NO_DIRECT:
+		return "temBAD_SEND_XRP_NO_DIRECT"
+	case TemBAD_SEND_XRP_PARTIAL:
+		return "temBAD_SEND_XRP_PARTIAL"
+	case TemBAD_SEND_XRP_PATHS:
+		return "temBAD_SEND_XRP_PATHS"
+	case TemRIPPLE_EMPTY:
+		return "temRIPPLE_EMPTY"
+	case TemBAD_TRANSFER_RATE:
+		return "temBAD_TRANSFER_RATE"
+	case TemBAD_EXPIRATION:
+		return "temBAD_EXPIRATION"
+	case TemBAD_AMM_TOKENS:
+		return "temBAD_AMM_TOKENS"
 	case TerRETRY:
 		return "terRETRY"
 	case TerFUNDS_SPENT:
@@ -344,8 +382,14 @@ func (r Result) String() string {
 		return "terPRE_SEQ"
 	case TerLAST:
 		return "terLAST"
+	case TerNO_RIPPLE:
+		return "terNO_RIPPLE"
 	case TerQUEUED:
 		return "terQUEUED"
+	case TerPRE_TICKET:
+		return "terPRE_TICKET"
+	case TerNO_AMM:
+		return "terNO_AMM"
 	case TerSUBMITTED:
 		return "terSUBMITTED"
 	default:

@@ -230,6 +230,12 @@ func compareAccountIDs(a, b [20]byte) int {
 	return 0
 }
 
+// IsLowAccount returns true if account1 is the "low" account in a trust line.
+// Trust lines store accounts in sorted order (low < high lexicographically).
+func IsLowAccount(account1, account2 [20]byte) bool {
+	return compareAccountIDs(account1, account2) < 0
+}
+
 // currencyToBytes converts a currency code to its 20-byte representation.
 // Standard 3-character codes are zero-padded (e.g., "USD" -> 0x0000000000000000005553440000000000000000)
 // Hex strings are decoded directly.

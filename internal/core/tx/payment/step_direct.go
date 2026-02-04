@@ -466,7 +466,9 @@ func (s *DirectStepI) accountHolds(sb *PaymentSandbox) tx.Amount {
 	// Negative balance = LOW OWES HIGH (LOW has debt to HIGH)
 	balance := rs.Balance
 
-	if sle.CompareAccountIDs(s.src, s.dst) < 0 {
+	srcIsLow := sle.CompareAccountIDs(s.src, s.dst) < 0
+
+	if srcIsLow {
 		// src is low account
 		return balance
 	}
@@ -573,6 +575,12 @@ func (s *DirectStepI) rippleCredit(sb *PaymentSandbox, amount tx.Amount, issuer 
 	return nil
 }
 
+// DirectStepSrcAcct returns the source account for NoRipple checking
+// Reference: rippled Steps.h directStepSrcAcct()
+func (s *DirectStepI) DirectStepSrcAcct() *[20]byte {
+	return &s.src
+}
+
 // Check validates the DirectStepI before use
 func (s *DirectStepI) Check(sb *PaymentSandbox) tx.Result {
 	// Check trust line exists
@@ -583,6 +591,220 @@ func (s *DirectStepI) Check(sb *PaymentSandbox) tx.Result {
 	}
 	if !exists {
 		return tx.TerNO_LINE
+	}
+
+	// Check freeze status
+	// Reference: rippled StepChecks.h checkFreeze()
+	if result := checkFreeze(sb, s.src, s.dst, s.currency); result != tx.TesSUCCESS {
+		return result
+	}
+
+	// Check authorization
+	// Reference: rippled DirectStep.cpp checkAuth()
+	if result := checkAuth(sb, s.src, s.dst, s.currency); result != tx.TesSUCCESS {
+		return result
+	}
+
+	return tx.TesSUCCESS
+}
+
+// checkAuth checks if the trust line is properly authorized when RequireAuth is set.
+// Reference: rippled DirectStep.cpp checkAuth()
+func checkAuth(view *PaymentSandbox, src, dst [20]byte, currency string) tx.Result {
+	// Get the trust line
+	trustLineKey := keylet.Line(src, dst, currency)
+	data, err := view.Read(trustLineKey)
+	if err != nil || data == nil {
+		return tx.TerNO_LINE
+	}
+
+	rs, err := sle.ParseRippleState(data)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	// Determine which account is low/high
+	srcIsLow := sle.CompareAccountIDs(src, dst) < 0
+
+	// Check both sides for RequireAuth
+	srcKey := keylet.Account(src)
+	dstKey := keylet.Account(dst)
+
+	srcData, _ := view.Read(srcKey)
+	dstData, _ := view.Read(dstKey)
+
+	// If src has RequireAuth, check if dst is authorized
+	if srcData != nil {
+		srcAccount, err := sle.ParseAccountRoot(srcData)
+		if err == nil && (srcAccount.Flags&sle.LsfRequireAuth) != 0 {
+			// src requires auth, check if dst (the other side) is authorized
+			if srcIsLow {
+				// src is low, dst is high. Check if high side is authorized by low (src)
+				if (rs.Flags & sle.LsfHighAuth) == 0 {
+					return tx.TerNO_AUTH
+				}
+			} else {
+				// src is high, dst is low. Check if low side is authorized by high (src)
+				if (rs.Flags & sle.LsfLowAuth) == 0 {
+					return tx.TerNO_AUTH
+				}
+			}
+		}
+	}
+
+	// If dst has RequireAuth, check if src is authorized
+	if dstData != nil {
+		dstAccount, err := sle.ParseAccountRoot(dstData)
+		if err == nil && (dstAccount.Flags&sle.LsfRequireAuth) != 0 {
+			// dst requires auth, check if src (the other side) is authorized
+			if srcIsLow {
+				// src is low, dst is high. Check if low side is authorized by high (dst)
+				if (rs.Flags & sle.LsfLowAuth) == 0 {
+					return tx.TerNO_AUTH
+				}
+			} else {
+				// src is high, dst is low. Check if high side is authorized by low (dst)
+				if (rs.Flags & sle.LsfHighAuth) == 0 {
+					return tx.TerNO_AUTH
+				}
+			}
+		}
+	}
+
+	return tx.TesSUCCESS
+}
+
+// checkFreeze checks if a trust line is frozen.
+// Reference: rippled StepChecks.h checkFreeze()
+// Returns terNO_LINE if the trust line is frozen, tesSUCCESS otherwise.
+func checkFreeze(view *PaymentSandbox, src, dst [20]byte, currency string) tx.Result {
+	// Get the trust line
+	trustLineKey := keylet.Line(src, dst, currency)
+	data, err := view.Read(trustLineKey)
+	if err != nil || data == nil {
+		return tx.TerNO_LINE
+	}
+
+	rs, err := sle.ParseRippleState(data)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	// Determine which account is low/high
+	srcIsLow := sle.CompareAccountIDs(src, dst) < 0
+
+	// Check individual freeze
+	// If src is low, check if high (dst) has frozen the line
+	// If src is high, check if low (dst) has frozen the line
+	if srcIsLow {
+		// dst is high, check if high has frozen
+		if (rs.Flags & sle.LsfHighFreeze) != 0 {
+			return tx.TerNO_LINE
+		}
+	} else {
+		// dst is low, check if low has frozen
+		if (rs.Flags & sle.LsfLowFreeze) != 0 {
+			return tx.TerNO_LINE
+		}
+	}
+
+	// Check global freeze on both accounts
+	// Reference: rippled StepChecks.h:51-56
+	srcKey := keylet.Account(src)
+	dstKey := keylet.Account(dst)
+
+	srcData, _ := view.Read(srcKey)
+	dstData, _ := view.Read(dstKey)
+
+	if srcData != nil {
+		srcAccount, err := sle.ParseAccountRoot(srcData)
+		if err == nil && (srcAccount.Flags&sle.LsfGlobalFreeze) != 0 {
+			return tx.TerNO_LINE
+		}
+	}
+
+	if dstData != nil {
+		dstAccount, err := sle.ParseAccountRoot(dstData)
+		if err == nil && (dstAccount.Flags&sle.LsfGlobalFreeze) != 0 {
+			return tx.TerNO_LINE
+		}
+	}
+
+	return tx.TesSUCCESS
+}
+
+// CheckWithPrevStep validates the DirectStepI with NoRipple checking against previous step.
+// Reference: rippled DirectStep.cpp make_DirectStepI() lines 918-923
+func (s *DirectStepI) CheckWithPrevStep(sb *PaymentSandbox, prevStep Step) tx.Result {
+	// First do basic check
+	if result := s.Check(sb); result != tx.TesSUCCESS {
+		return result
+	}
+
+	// If there's a previous DirectStep, check NoRipple constraint
+	// Reference: rippled DirectStep.cpp:918-923
+	if prevStep != nil {
+		if prevDirectStep, ok := prevStep.(*DirectStepI); ok {
+			prevSrc := prevDirectStep.src
+			result := checkNoRipple(sb, prevSrc, s.src, s.dst, s.currency)
+			if result != tx.TesSUCCESS {
+				return result
+			}
+		}
+	}
+
+	return tx.TesSUCCESS
+}
+
+// checkNoRipple checks if the middle account (cur) has NoRipple set on both sides.
+// Reference: rippled StepChecks.h checkNoRipple()
+func checkNoRipple(view *PaymentSandbox, prev, cur, next [20]byte, currency string) tx.Result {
+	// Fetch the ripple lines into and out of this node
+	sleInKey := keylet.Line(prev, cur, currency)
+	sleOutKey := keylet.Line(cur, next, currency)
+
+	sleInData, err := view.Read(sleInKey)
+	if err != nil || sleInData == nil {
+		return tx.TerNO_LINE
+	}
+
+	sleOutData, err := view.Read(sleOutKey)
+	if err != nil || sleOutData == nil {
+		return tx.TerNO_LINE
+	}
+
+	sleIn, err := sle.ParseRippleState(sleInData)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	sleOut, err := sle.ParseRippleState(sleOutData)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	// Check NoRipple flags
+	// Reference: rippled StepChecks.h:105-106
+	// The flag to check depends on account ordering in the trust line
+	curIsHighIn := sle.CompareAccountIDs(cur, prev) > 0
+	curIsHighOut := sle.CompareAccountIDs(cur, next) > 0
+
+	var noRippleIn, noRippleOut bool
+	if curIsHighIn {
+		noRippleIn = (sleIn.Flags & sle.LsfHighNoRipple) != 0
+	} else {
+		noRippleIn = (sleIn.Flags & sle.LsfLowNoRipple) != 0
+	}
+
+	if curIsHighOut {
+		noRippleOut = (sleOut.Flags & sle.LsfHighNoRipple) != 0
+	} else {
+		noRippleOut = (sleOut.Flags & sle.LsfLowNoRipple) != 0
+	}
+
+	// If BOTH sides have NoRipple set, return terNO_RIPPLE
+	if noRippleIn && noRippleOut {
+		return tx.TerNO_RIPPLE
 	}
 
 	return tx.TesSUCCESS

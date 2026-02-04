@@ -40,6 +40,28 @@ func getNFTIssuer(nftokenID [32]byte) [20]byte {
 	return issuer
 }
 
+// getNFTokenFlags extracts the flags from an NFTokenID (first 2 bytes)
+func getNFTokenFlags(nftokenID string) uint16 {
+	if len(nftokenID) < 4 {
+		return 0
+	}
+	// First 4 hex chars = 2 bytes = flags
+	var flags uint16
+	for i := 0; i < 4 && i < len(nftokenID); i++ {
+		flags <<= 4
+		c := nftokenID[i]
+		switch {
+		case c >= '0' && c <= '9':
+			flags |= uint16(c - '0')
+		case c >= 'a' && c <= 'f':
+			flags |= uint16(c - 'a' + 10)
+		case c >= 'A' && c <= 'F':
+			flags |= uint16(c - 'A' + 10)
+		}
+	}
+	return flags
+}
+
 // getNFTTransferFee extracts the transfer fee from an NFTokenID
 func getNFTTransferFee(nftokenID [32]byte) uint16 {
 	return binary.BigEndian.Uint16(nftokenID[2:4])
