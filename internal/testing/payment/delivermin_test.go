@@ -239,7 +239,6 @@ func TestDeliverMin_PathPartial(t *testing.T) {
 // TestDeliverMin_SelfPayment tests self-payment with delivermin.
 // From rippled: alice can pay herself via offer, converting all available liquidity
 func TestDeliverMin_SelfPayment(t *testing.T) {
-	t.Skip("TODO: Requires full path payment engine with offer consumption")
 
 	env := xrplgoTesting.NewTestEnv(t)
 
@@ -293,7 +292,6 @@ func TestDeliverMin_SelfPayment(t *testing.T) {
 // TestDeliverMin_MultipleOffers tests delivermin with multiple offers.
 // From rippled: payment should consume multiple offers to meet delivermin
 func TestDeliverMin_MultipleOffers(t *testing.T) {
-	t.Skip("TODO: Requires full path payment engine with offer consumption")
 
 	env := xrplgoTesting.NewTestEnv(t)
 
@@ -379,7 +377,6 @@ func TestDeliverMin_MultipleOffers(t *testing.T) {
 // TestDeliverMin_MultipleProviders tests delivermin with multiple liquidity providers.
 // From rippled: payment should consume offers from multiple providers
 func TestDeliverMin_MultipleProviders(t *testing.T) {
-	t.Skip("TODO: Requires full path payment engine with offer consumption")
 
 	env := xrplgoTesting.NewTestEnv(t)
 

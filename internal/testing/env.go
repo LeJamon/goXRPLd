@@ -288,6 +288,24 @@ func (e *TestEnv) EnableNoFreeze(acc *Account) {
 	}
 }
 
+// SetTransferRate sets the transfer rate for an account.
+// Rate is specified as a multiplier * 1e9 (1e9 = 100%, 1.1e9 = 110% means 10% fee).
+// Use 0 to clear the transfer rate (sets it back to 1e9 / 100%).
+func (e *TestEnv) SetTransferRate(acc *Account, rate uint32) {
+	e.t.Helper()
+
+	accountSet := account.NewAccountSet(acc.Address)
+	accountSet.TransferRate = &rate
+	accountSet.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	accountSet.Sequence = &seq
+
+	result := e.Submit(accountSet)
+	if !result.Success {
+		e.t.Fatalf("Failed to set transfer rate for account %s: %s", acc.Name, result.Code)
+	}
+}
+
 // EnableRequireAuth enables the RequireAuth flag on an account.
 // When enabled, trust lines to this account require authorization.
 func (e *TestEnv) EnableRequireAuth(acc *Account) {

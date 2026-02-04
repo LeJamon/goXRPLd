@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/payment"
 	xrplgoTesting "github.com/LeJamon/goXRPLd/internal/testing"
 	"github.com/LeJamon/goXRPLd/internal/testing/trustset"
 	"github.com/stretchr/testify/require"
@@ -113,25 +114,255 @@ func TestFlow_PartialPayments(t *testing.T) {
 // TestFlow_LineQuality tests line quality/transfer rate.
 // From rippled: Flow_test::testLineQuality
 func TestFlow_LineQuality(t *testing.T) {
-	t.Skip("TODO: Line quality requires QualityIn/QualityOut trust line support")
+	// Test QualityOut on bob's trust line with alice
+	// bob -> alice -> carol; bobAliceQOut varies
+	for _, bobAliceQOut := range []uint32{80, 100, 120} {
+		t.Run("QualityOut_"+string(rune('0'+bobAliceQOut/10))+string(rune('0'+bobAliceQOut%10)), func(t *testing.T) {
+			env := xrplgoTesting.NewTestEnv(t)
 
-	t.Log("Flow line quality test: requires quality support")
+			alice := xrplgoTesting.NewAccount("alice")
+			bob := xrplgoTesting.NewAccount("bob")
+			carol := xrplgoTesting.NewAccount("carol")
+
+			env.FundAmount(alice, uint64(xrplgoTesting.XRP(10000)))
+			env.FundAmount(bob, uint64(xrplgoTesting.XRP(10000)))
+			env.FundAmount(carol, uint64(xrplgoTesting.XRP(10000)))
+			env.Close()
+
+			// bob trusts alice with QualityOut setting
+			// QualityOut affects how much bob pays when sending through this line
+			qualityOutValue := bobAliceQOut * 10_000_000 // Convert percentage to quality (100% = 1e9)
+			bobTrust := trustset.TrustLine(bob, "USD", alice, "10").QualityOut(qualityOutValue)
+			result := env.Submit(bobTrust.Build())
+			xrplgoTesting.RequireTxSuccess(t, result)
+
+			// carol trusts alice normally
+			result = env.Submit(trustset.TrustLine(carol, "USD", alice, "10").Build())
+			xrplgoTesting.RequireTxSuccess(t, result)
+			env.Close()
+
+			// alice pays bob 10 USD
+			usd10 := tx.NewIssuedAmountFromFloat64(10, "USD", alice.Address)
+			result = env.Submit(PayIssued(alice, bob, usd10).Build())
+			xrplgoTesting.RequireTxSuccess(t, result)
+			env.Close()
+
+			// Verify bob has 10 USD
+			bobUsd := env.BalanceIOU(bob, "USD", alice)
+			require.InDelta(t, 10.0, bobUsd, 0.0001, "Bob should have 10 USD")
+
+			// bob pays carol 5 USD (sendmax 5)
+			usd5 := tx.NewIssuedAmountFromFloat64(5, "USD", alice.Address)
+			result = env.Submit(PayIssued(bob, carol, usd5).SendMax(usd5).Build())
+			xrplgoTesting.RequireTxSuccess(t, result)
+			env.Close()
+
+			// Verify carol has 5 USD
+			carolUsd := env.BalanceIOU(carol, "USD", alice)
+			require.InDelta(t, 5.0, carolUsd, 0.0001, "Carol should have 5 USD")
+
+			// Verify bob has 5 USD remaining (10 - 5)
+			bobUsd = env.BalanceIOU(bob, "USD", alice)
+			require.InDelta(t, 5.0, bobUsd, 0.0001, "Bob should have 5 USD remaining")
+		})
+	}
+
+	t.Log("Flow line quality test passed")
 }
 
 // TestFlow_BookStep tests book step (offer matching).
 // From rippled: Flow_test::testBookStep
 func TestFlow_BookStep(t *testing.T) {
-	t.Skip("TODO: Book step requires DEX offer matching")
+	t.Run("IOU/IOU offer", func(t *testing.T) {
+		// Simple IOU/IOU offer test from rippled
+		env := xrplgoTesting.NewTestEnv(t)
 
-	t.Log("Flow book step test: requires offer matching")
+		gw := xrplgoTesting.NewAccount("gateway")
+		alice := xrplgoTesting.NewAccount("alice")
+		bob := xrplgoTesting.NewAccount("bob")
+		carol := xrplgoTesting.NewAccount("carol")
+
+		env.FundAmount(gw, uint64(xrplgoTesting.XRP(10000)))
+		env.FundAmount(alice, uint64(xrplgoTesting.XRP(10000)))
+		env.FundAmount(bob, uint64(xrplgoTesting.XRP(10000)))
+		env.FundAmount(carol, uint64(xrplgoTesting.XRP(10000)))
+		env.Close()
+
+		// Setup trust lines for USD and BTC
+		result := env.Submit(trustset.TrustLine(alice, "USD", gw, "1000").Build())
+		xrplgoTesting.RequireTxSuccess(t, result)
+		result = env.Submit(trustset.TrustLine(alice, "BTC", gw, "1000").Build())
+		xrplgoTesting.RequireTxSuccess(t, result)
+		result = env.Submit(trustset.TrustLine(bob, "USD", gw, "1000").Build())
+		xrplgoTesting.RequireTxSuccess(t, result)
+		result = env.Submit(trustset.TrustLine(bob, "BTC", gw, "1000").Build())
+		xrplgoTesting.RequireTxSuccess(t, result)
+		result = env.Submit(trustset.TrustLine(carol, "USD", gw, "1000").Build())
+		xrplgoTesting.RequireTxSuccess(t, result)
+		result = env.Submit(trustset.TrustLine(carol, "BTC", gw, "1000").Build())
+		xrplgoTesting.RequireTxSuccess(t, result)
+		env.Close()
+
+		// alice gets 50 BTC, bob gets 50 USD
+		btc50 := tx.NewIssuedAmountFromFloat64(50, "BTC", gw.Address)
+		usd50 := tx.NewIssuedAmountFromFloat64(50, "USD", gw.Address)
+		result = env.Submit(PayIssued(gw, alice, btc50).Build())
+		xrplgoTesting.RequireTxSuccess(t, result)
+		result = env.Submit(PayIssued(gw, bob, usd50).Build())
+		xrplgoTesting.RequireTxSuccess(t, result)
+		env.Close()
+
+		// bob creates offer: sell 50 USD for 50 BTC
+		result = env.CreateOffer(bob, usd50, btc50) // TakerGets=USD, TakerPays=BTC
+		xrplgoTesting.RequireTxSuccess(t, result)
+		env.Close()
+
+		// alice pays carol 50 USD using BTC through the offer
+		// Use Paths with a path element specifying just the output currency
+		// This tells the strand builder to go through the BTC->USD order book
+		paymentTx := PayIssued(alice, carol, usd50).
+			Paths([][]payment.PathStep{{
+				{Currency: "USD", Issuer: gw.Address},
+			}}).
+			SendMax(btc50).
+			Build()
+		t.Logf("Payment tx: %+v", paymentTx)
+		result = env.Submit(paymentTx)
+		xrplgoTesting.RequireTxSuccess(t, result)
+		env.Close()
+
+		// Verify balances
+		// alice should have 0 BTC (spent 50)
+		aliceBtc := env.BalanceIOU(alice, "BTC", gw)
+		require.Equal(t, 0.0, aliceBtc, "Alice should have 0 BTC")
+
+		// bob should have 50 BTC (received from offer), 0 USD (sold through offer)
+		bobBtc := env.BalanceIOU(bob, "BTC", gw)
+		bobUsd := env.BalanceIOU(bob, "USD", gw)
+		require.Equal(t, 50.0, bobBtc, "Bob should have 50 BTC from offer")
+		require.Equal(t, 0.0, bobUsd, "Bob should have 0 USD after offer consumed")
+
+		// carol should have 50 USD (received from payment)
+		carolUsd := env.BalanceIOU(carol, "USD", gw)
+		require.Equal(t, 50.0, carolUsd, "Carol should have 50 USD")
+
+		t.Log("IOU/IOU offer test passed")
+	})
+
+	t.Run("XRP/IOU offer", func(t *testing.T) {
+		// Simple XRP/IOU offer (XRP bridge) test
+		env := xrplgoTesting.NewTestEnv(t)
+
+		gw := xrplgoTesting.NewAccount("gateway")
+		alice := xrplgoTesting.NewAccount("alice")
+		bob := xrplgoTesting.NewAccount("bob")
+		carol := xrplgoTesting.NewAccount("carol")
+
+		env.FundAmount(gw, uint64(xrplgoTesting.XRP(10000)))
+		env.FundAmount(alice, uint64(xrplgoTesting.XRP(10000)))
+		env.FundAmount(bob, uint64(xrplgoTesting.XRP(10000)))
+		env.FundAmount(carol, uint64(xrplgoTesting.XRP(10000)))
+		env.Close()
+
+		// Setup trust lines for USD
+		result := env.Submit(trustset.TrustLine(bob, "USD", gw, "1000").Build())
+		xrplgoTesting.RequireTxSuccess(t, result)
+		result = env.Submit(trustset.TrustLine(carol, "USD", gw, "1000").Build())
+		xrplgoTesting.RequireTxSuccess(t, result)
+		env.Close()
+
+		// bob gets 100 USD
+		usd100 := tx.NewIssuedAmountFromFloat64(100, "USD", gw.Address)
+		result = env.Submit(PayIssued(gw, bob, usd100).Build())
+		xrplgoTesting.RequireTxSuccess(t, result)
+		env.Close()
+
+		// bob creates offer: sell 100 USD for 100 XRP
+		xrp100 := tx.NewXRPAmount(100_000_000)
+		result = env.CreateOffer(bob, usd100, xrp100) // TakerGets=USD, TakerPays=XRP
+		xrplgoTesting.RequireTxSuccess(t, result)
+		env.Close()
+
+		// alice pays carol 100 USD using XRP through the offer
+		result = env.Submit(PayIssued(alice, carol, usd100).
+			PathsXRP().
+			SendMax(xrp100).
+			Build())
+		xrplgoTesting.RequireTxSuccess(t, result)
+		env.Close()
+
+		// Verify bob has 0 USD
+		bobUsd := env.BalanceIOU(bob, "USD", gw)
+		require.Equal(t, 0.0, bobUsd, "Bob should have 0 USD after offer consumed")
+
+		// carol should have 100 USD
+		carolUsd := env.BalanceIOU(carol, "USD", gw)
+		require.Equal(t, 100.0, carolUsd, "Carol should have 100 USD")
+
+		t.Log("XRP/IOU offer test passed")
+	})
 }
 
 // TestFlow_TransferRate tests transfer rate.
 // From rippled: Flow_test::testTransferRate
 func TestFlow_TransferRate(t *testing.T) {
-	t.Skip("TODO: Transfer rate requires TransferRate account field support")
+	env := xrplgoTesting.NewTestEnv(t)
 
-	t.Log("Flow transfer rate test: requires transfer rate support")
+	gw := xrplgoTesting.NewAccount("gateway")
+	alice := xrplgoTesting.NewAccount("alice")
+	bob := xrplgoTesting.NewAccount("bob")
+
+	env.FundAmount(gw, uint64(xrplgoTesting.XRP(10000)))
+	env.FundAmount(alice, uint64(xrplgoTesting.XRP(10000)))
+	env.FundAmount(bob, uint64(xrplgoTesting.XRP(10000)))
+	env.Close()
+
+	// Set 25% transfer rate on gateway (1.25e9 = 125% means sender pays 25% extra)
+	env.SetTransferRate(gw, 1_250_000_000)
+	env.Close()
+
+	// Set up trust lines
+	result := env.Submit(trustset.TrustLine(alice, "USD", gw, "1000").Build())
+	xrplgoTesting.RequireTxSuccess(t, result)
+	result = env.Submit(trustset.TrustLine(bob, "USD", gw, "1000").Build())
+	xrplgoTesting.RequireTxSuccess(t, result)
+	env.Close()
+
+	// Gateway creates offer: gives USD(125), receives XRP(125)
+	// (TakerGets=USD, TakerPays=XRP)
+	usd125 := tx.NewIssuedAmountFromFloat64(125, "USD", gw.Address)
+	xrp125 := tx.NewXRPAmount(125_000_000) // 125 XRP in drops
+	result = env.CreateOffer(gw, usd125, xrp125)
+	xrplgoTesting.RequireTxSuccess(t, result)
+	env.Close()
+
+	aliceBalanceBefore := env.Balance(alice)
+
+	// alice pays bob 100 USD using XRP (sendmax 200 XRP)
+	// Due to 25% transfer rate, alice needs to send more XRP
+	usd100 := tx.NewIssuedAmountFromFloat64(100, "USD", gw.Address)
+	xrp200 := tx.NewXRPAmount(200_000_000)
+	paymentTx := PayIssued(alice, bob, usd100).
+		PathsXRP().
+		SendMax(xrp200).
+		Build()
+	result = env.Submit(paymentTx)
+	xrplgoTesting.RequireTxSuccess(t, result)
+	env.Close()
+
+	// Verify bob received 100 USD
+	bobUsd := env.BalanceIOU(bob, "USD", gw)
+	require.InDelta(t, 100.0, bobUsd, 0.0001, "Bob should have 100 USD")
+
+	// Verify alice spent 125 XRP (plus tx fee)
+	// With 25% transfer rate: to deliver 100 USD, alice needs 125 XRP worth
+	aliceBalanceAfter := env.Balance(alice)
+	xrpSpent := int64(aliceBalanceBefore) - int64(aliceBalanceAfter)
+	// Alice should have spent 125 XRP (125,000,000 drops) + fee (10 drops)
+	expectedSpent := int64(125_000_010)
+	require.InDelta(t, expectedSpent, xrpSpent, 100, "Alice should have spent ~125 XRP plus fee")
+
+	t.Log("Flow transfer rate test passed")
 }
 
 // TestFlow_FalseDryChanges tests false dry changes.

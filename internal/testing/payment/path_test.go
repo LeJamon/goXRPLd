@@ -8,6 +8,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	xrplgoTesting "github.com/LeJamon/goXRPLd/internal/testing"
 	"github.com/LeJamon/goXRPLd/internal/testing/trustset"
+	"github.com/stretchr/testify/require"
 )
 
 // TestPath_NoDirectPathNoIntermediaryNoAlternatives tests path finding with no available paths.
@@ -65,9 +66,16 @@ func TestPath_DirectPathNoIntermediary(t *testing.T) {
 
 // TestPath_PaymentAutoPathFind tests payment with auto path finding.
 // From rippled: payment_auto_path_find
+// Reference: Path_test.cpp lines 356-373
+//
+//	env.fund(XRP(10000), "alice", "bob", gw);
+//	env.trust(USD(600), "alice");
+//	env.trust(USD(700), "bob");
+//	env(pay(gw, "alice", USD(70)));
+//	env(pay("alice", "bob", USD(24)));
+//	env.require(balance("alice", USD(46)));
+//	env.require(balance("bob", USD(24)));
 func TestPath_PaymentAutoPathFind(t *testing.T) {
-	t.Skip("TODO: Auto path finding requires IOU payment support")
-
 	env := xrplgoTesting.NewTestEnv(t)
 
 	gw := xrplgoTesting.NewAccount("gateway")
@@ -92,19 +100,31 @@ func TestPath_PaymentAutoPathFind(t *testing.T) {
 	xrplgoTesting.RequireTxSuccess(t, result)
 	env.Close()
 
-	// alice pays bob 24 USD via gateway
+	// alice pays bob 24 USD via gateway (auto path finding)
 	usd24 := tx.NewIssuedAmountFromFloat64(24, "USD", gw.Address)
 	payTx := PayIssued(alice, bob, usd24).Build()
 
 	result = env.Submit(payTx)
 	xrplgoTesting.RequireTxSuccess(t, result)
-	t.Log("Auto path find test: payment succeeded")
+	env.Close()
+
+	// Verify balances
+	aliceBalance := env.BalanceIOU(alice, "USD", gw)
+	require.InDelta(t, 46.0, aliceBalance, 0.0001, "Alice should have 46 USD")
+
+	bobBalance := env.BalanceIOU(bob, "USD", gw)
+	require.InDelta(t, 24.0, bobBalance, 0.0001, "Bob should have 24 USD")
 }
 
 // TestPath_IndirectPath tests indirect path through intermediary.
 // From rippled: indirect_paths_path_find
+// Reference: Path_test.cpp lines 878-895
+//
+//	env.trust(Account("alice")["USD"](1000), "bob");
+//	env.trust(Account("bob")["USD"](1000), "carol");
+//	// alice can pay carol through bob
 func TestPath_IndirectPath(t *testing.T) {
-	t.Skip("TODO: Indirect paths require IOU payment support")
+	t.Skip("TODO: Requires IOU payment with rippling through intermediary")
 
 	env := xrplgoTesting.NewTestEnv(t)
 
@@ -118,18 +138,30 @@ func TestPath_IndirectPath(t *testing.T) {
 	env.Close()
 
 	// alice -> bob -> carol trust chain
+	// bob trusts alice for USD (alice can issue USD to bob)
 	result := env.Submit(trustset.TrustLine(bob, "USD", alice, "1000").Build())
 	xrplgoTesting.RequireTxSuccess(t, result)
+	// carol trusts bob for USD (bob can issue USD to carol)
 	result = env.Submit(trustset.TrustLine(carol, "USD", bob, "1000").Build())
 	xrplgoTesting.RequireTxSuccess(t, result)
 	env.Close()
 
-	// alice can pay carol through bob
+	// alice pays carol through bob (rippling)
+	// This requires the amount to be issued by alice since bob trusts alice
 	usd5 := tx.NewIssuedAmountFromFloat64(5, "USD", alice.Address)
 	payTx := PayIssued(alice, carol, usd5).Build()
 
 	result = env.Submit(payTx)
-	t.Log("Indirect path test result:", result.Code)
+	xrplgoTesting.RequireTxSuccess(t, result)
+	env.Close()
+
+	// Verify: bob should have -5 USD (owes alice), carol should have 5 USD (bob owes her)
+	// This is rippling: alice issues to bob, bob issues to carol
+	bobAliceBalance := env.BalanceIOU(bob, "USD", alice)
+	require.InDelta(t, -5.0, bobAliceBalance, 0.0001, "Bob should owe alice 5 USD")
+
+	carolBobBalance := env.BalanceIOU(carol, "USD", bob)
+	require.InDelta(t, 5.0, carolBobBalance, 0.0001, "Carol should have 5 USD from bob")
 }
 
 // TestPath_AlternativePathsConsumeBestFirst tests that best quality path is used first.
@@ -232,8 +264,6 @@ func TestPath_TrustNormalClear(t *testing.T) {
 // TestPath_TrustAutoClear tests that trust lines auto-clear when balance returns to zero.
 // From rippled: trust_auto_clear_trust_auto_clear
 func TestPath_TrustAutoClear(t *testing.T) {
-	t.Skip("TODO: Trust auto clear requires IOU payment support")
-
 	env := xrplgoTesting.NewTestEnv(t)
 
 	alice := xrplgoTesting.NewAccount("alice")
@@ -243,27 +273,34 @@ func TestPath_TrustAutoClear(t *testing.T) {
 	env.FundAmount(bob, uint64(xrplgoTesting.XRP(10000)))
 	env.Close()
 
-	// alice trusts bob
+	// alice trusts bob for USD (bob can issue USD to alice)
 	result := env.Submit(trustset.TrustLine(alice, "USD", bob, "1000").Build())
 	xrplgoTesting.RequireTxSuccess(t, result)
 	env.Close()
 
-	// bob pays alice 50 USD
+	// bob pays alice 50 USD (bob issues 50 USD to alice)
 	usd50 := tx.NewIssuedAmountFromFloat64(50, "USD", bob.Address)
 	result = env.Submit(PayIssued(bob, alice, usd50).Build())
 	xrplgoTesting.RequireTxSuccess(t, result)
+	env.Close()
 
-	// alice sets trust to 0 (but still has balance)
+	// Verify alice has 50 USD from bob
+	aliceBalance := env.BalanceIOU(alice, "USD", bob)
+	require.InDelta(t, 50.0, aliceBalance, 0.0001, "Alice should have 50 USD from bob")
+
+	// alice sets trust limit to 0 (but still has balance, so trust line remains)
 	result = env.Submit(trustset.TrustLine(alice, "USD", bob, "0").Build())
 	xrplgoTesting.RequireTxSuccess(t, result)
 	env.Close()
 
-	// alice pays back 50 USD - trust line should auto-delete
+	// alice pays back 50 USD to bob - trust line should auto-delete when balance is zero
 	result = env.Submit(PayIssued(alice, bob, usd50).Build())
 	xrplgoTesting.RequireTxSuccess(t, result)
 	env.Close()
 
-	t.Log("Trust auto clear test: trust line auto-deletion verification TBD")
+	// Verify alice has 0 USD balance (trust line may be deleted)
+	aliceBalance = env.BalanceIOU(alice, "USD", bob)
+	require.InDelta(t, 0.0, aliceBalance, 0.0001, "Alice should have 0 USD after repayment")
 }
 
 // TestPath_NoRippleCombinations tests various NoRipple flag combinations.
@@ -394,8 +431,6 @@ func TestPath_ViaGateway(t *testing.T) {
 // TestPath_IssuerToRepay tests path finding when repaying issuer.
 // From rippled: path_find_05 case A - Borrow or repay
 func TestPath_IssuerToRepay(t *testing.T) {
-	t.Skip("TODO: Issuer repay path requires IOU payment support")
-
 	env := xrplgoTesting.NewTestEnv(t)
 
 	gw := xrplgoTesting.NewAccount("gateway")
@@ -405,30 +440,37 @@ func TestPath_IssuerToRepay(t *testing.T) {
 	env.FundAmount(alice, uint64(xrplgoTesting.XRP(10000)))
 	env.Close()
 
-	// alice trusts gateway
+	// alice trusts gateway for HKD
 	result := env.Submit(trustset.TrustLine(alice, "HKD", gw, "2000").Build())
 	xrplgoTesting.RequireTxSuccess(t, result)
 	env.Close()
 
-	// Fund alice
+	// Gateway funds alice with 1000 HKD
 	hkd1000 := tx.NewIssuedAmountFromFloat64(1000, "HKD", gw.Address)
 	result = env.Submit(PayIssued(gw, alice, hkd1000).Build())
 	xrplgoTesting.RequireTxSuccess(t, result)
 	env.Close()
+
+	// Verify alice has 1000 HKD
+	aliceBalance := env.BalanceIOU(alice, "HKD", gw)
+	require.InDelta(t, 1000.0, aliceBalance, 0.0001, "Alice should have 1000 HKD")
 
 	// alice repays gateway 10 HKD - should be direct (no path needed)
 	hkd10 := tx.NewIssuedAmountFromFloat64(10, "HKD", gw.Address)
 	payTx := PayIssued(alice, gw, hkd10).Build()
 
 	result = env.Submit(payTx)
-	t.Log("Issuer repay test result:", result.Code)
+	xrplgoTesting.RequireTxSuccess(t, result)
+	env.Close()
+
+	// Verify alice has 990 HKD remaining
+	aliceBalance = env.BalanceIOU(alice, "HKD", gw)
+	require.InDelta(t, 990.0, aliceBalance, 0.0001, "Alice should have 990 HKD after repayment")
 }
 
 // TestPath_CommonGateway tests path through common gateway.
 // From rippled: path_find_05 case B - Common gateway
 func TestPath_CommonGateway(t *testing.T) {
-	t.Skip("TODO: Common gateway path requires IOU payment support")
-
 	env := xrplgoTesting.NewTestEnv(t)
 
 	gw := xrplgoTesting.NewAccount("gateway")
@@ -440,25 +482,38 @@ func TestPath_CommonGateway(t *testing.T) {
 	env.FundAmount(bob, uint64(xrplgoTesting.XRP(10000)))
 	env.Close()
 
-	// Both trust the same gateway
+	// Both trust the same gateway for HKD
 	result := env.Submit(trustset.TrustLine(alice, "HKD", gw, "2000").Build())
 	xrplgoTesting.RequireTxSuccess(t, result)
 	result = env.Submit(trustset.TrustLine(bob, "HKD", gw, "2000").Build())
 	xrplgoTesting.RequireTxSuccess(t, result)
 	env.Close()
 
-	// Fund alice
+	// Gateway funds alice with 1000 HKD
 	hkd1000 := tx.NewIssuedAmountFromFloat64(1000, "HKD", gw.Address)
 	result = env.Submit(PayIssued(gw, alice, hkd1000).Build())
 	xrplgoTesting.RequireTxSuccess(t, result)
 	env.Close()
 
-	// alice pays bob through common gateway
+	// Verify initial balances
+	aliceBalance := env.BalanceIOU(alice, "HKD", gw)
+	require.InDelta(t, 1000.0, aliceBalance, 0.0001, "Alice should have 1000 HKD initially")
+
+	// alice pays bob 10 HKD through common gateway
+	// Path: alice -> gw -> bob
 	hkd10 := tx.NewIssuedAmountFromFloat64(10, "HKD", gw.Address)
 	payTx := PayIssued(alice, bob, hkd10).Build()
 
 	result = env.Submit(payTx)
-	t.Log("Common gateway test result:", result.Code)
+	xrplgoTesting.RequireTxSuccess(t, result)
+	env.Close()
+
+	// Verify final balances
+	aliceBalance = env.BalanceIOU(alice, "HKD", gw)
+	require.InDelta(t, 990.0, aliceBalance, 0.0001, "Alice should have 990 HKD after payment")
+
+	bobBalance := env.BalanceIOU(bob, "HKD", gw)
+	require.InDelta(t, 10.0, bobBalance, 0.0001, "Bob should have 10 HKD from alice")
 }
 
 // TestPath_XRPBridge tests XRP bridge between currencies.
