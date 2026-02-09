@@ -516,6 +516,13 @@ func (e *Engine) preflight(tx Transaction) Result {
 		}
 	}
 
+	// tfInnerBatchTxn flag validation
+	// Reference: rippled Transactor.cpp preflight0() - tfInnerBatchTxn can only be set
+	// when processing inner batch transactions, never on directly submitted transactions.
+	if common.Flags != nil && *common.Flags&TfInnerBatchTxn != 0 {
+		return TemINVALID_FLAG
+	}
+
 	// Fee validation
 	if result := e.validateFee(common); result != TesSUCCESS {
 		return result
@@ -851,8 +858,17 @@ func (e *Engine) preclaim(tx Transaction) Result {
 		}
 	}
 
-	// Check that account can pay the fee
+	// Batch minimum fee validation
+	// Reference: rippled Transactor::checkFee() - telINSUF_FEE_P for insufficient batch fee
 	fee := e.calculateFee(tx)
+	if feeCalc, ok := tx.(BatchFeeCalculator); ok {
+		minFee := feeCalc.CalculateMinimumFee(e.config.BaseFee)
+		if fee < minFee {
+			return TelINSUF_FEE_P
+		}
+	}
+
+	// Check that account can pay the fee
 	if account.Balance < fee {
 		return TerINSUF_FEE_B
 	}
