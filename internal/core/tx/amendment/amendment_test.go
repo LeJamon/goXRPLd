@@ -475,7 +475,7 @@ func TestAmendmentCheckForVariousTransactionTypes(t *testing.T) {
 		engine := NewEngine(view, config)
 
 		tx := NewBatch("rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh")
-		tx.AddRawTransaction("001234ABCD") // Dummy blob
+		tx.AddInnerTransaction(makeDummyInnerTx()) // Dummy inner tx
 		tx.Common.Fee = "12"
 		seq := uint32(1)
 		tx.Common.Sequence = &seq

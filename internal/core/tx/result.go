@@ -276,6 +276,10 @@ func (r Result) String() string {
 		return "tecAMM_NOT_EMPTY"
 	case TemEMPTY_DID:
 		return "temEMPTY_DID"
+	case TemARRAY_EMPTY:
+		return "temARRAY_EMPTY"
+	case TemARRAY_TOO_LARGE:
+		return "temARRAY_TOO_LARGE"
 	case TefFAILURE:
 		return "tefFAILURE"
 	case TefALREADY:

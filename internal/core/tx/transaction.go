@@ -49,6 +49,12 @@ type Appliable interface {
 	Apply(ctx *ApplyContext) Result
 }
 
+// BatchFeeCalculator is implemented by transaction types that need custom minimum fee calculation.
+// Used by Batch transactions which require a higher fee based on inner tx count and signers.
+type BatchFeeCalculator interface {
+	CalculateMinimumFee(baseFee uint64) uint64
+}
+
 // Amount is an alias for sle.Amount — represents either XRP (as drops int64) or an issued currency amount
 type Amount = sle.Amount
 
