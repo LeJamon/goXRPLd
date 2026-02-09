@@ -12,22 +12,79 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/testing/nft"
 )
 
-// TestEnabled tests that NFT operations work when amendment is enabled.
+// TestEnabled tests that NFT operations are disabled without the amendment and enabled with it.
 // Reference: rippled NFToken_test.cpp testEnabled
 func TestEnabled(t *testing.T) {
-	env := jtx.NewTestEnv(t)
+	// Test 1: With amendment DISABLED, all NFT transactions should return temDISABLED
+	t.Run("Disabled", func(t *testing.T) {
+		env := jtx.NewTestEnv(t)
 
-	alice := jtx.NewAccount("alice")
-	env.Fund(alice)
-	env.Close()
+		alice := jtx.NewAccount("alice")
+		env.Fund(alice)
+		env.Close()
 
-	// Mint an NFT
-	mintTx := nft.NFTokenMint(alice, 0).Build()
-	result := env.Submit(mintTx)
-	if !result.Success {
-		t.Fatalf("Failed to mint NFT: %s - %s", result.Code, result.Message)
-	}
-	env.Close()
+		// Disable NFT amendments
+		env.DisableFeature("NonFungibleTokensV1")
+		env.DisableFeature("NonFungibleTokensV1_1")
+
+		// NFTokenMint should fail
+		mintTx := nft.NFTokenMint(alice, 0).Build()
+		result := env.Submit(mintTx)
+		if result.Code != "temDISABLED" {
+			t.Errorf("NFTokenMint: expected temDISABLED, got %s", result.Code)
+		}
+
+		// NFTokenBurn should fail (using fake NFT ID)
+		fakeNFTID := "0008000000000000000000000000000000000000000000000000000000000001"
+		burnTx := nftoken.NewNFTokenBurn(alice.Address, fakeNFTID)
+		burnTx.Fee = "10"
+		result = env.Submit(burnTx)
+		if result.Code != "temDISABLED" {
+			t.Errorf("NFTokenBurn: expected temDISABLED, got %s", result.Code)
+		}
+
+		// NFTokenCreateOffer should fail
+		offerTx := nft.NFTokenCreateSellOffer(alice, fakeNFTID, tx.NewXRPAmount(1000000)).Build()
+		result = env.Submit(offerTx)
+		if result.Code != "temDISABLED" {
+			t.Errorf("NFTokenCreateOffer: expected temDISABLED, got %s", result.Code)
+		}
+
+		// NFTokenCancelOffer should fail
+		fakeOfferID := "0000000000000000000000000000000000000000000000000000000000000001"
+		cancelTx := nftoken.NewNFTokenCancelOffer(alice.Address, []string{fakeOfferID})
+		cancelTx.Fee = "10"
+		result = env.Submit(cancelTx)
+		if result.Code != "temDISABLED" {
+			t.Errorf("NFTokenCancelOffer: expected temDISABLED, got %s", result.Code)
+		}
+
+		// NFTokenAcceptOffer should fail
+		acceptTx := nftoken.NewNFTokenAcceptOffer(alice.Address)
+		acceptTx.NFTokenBuyOffer = fakeOfferID
+		acceptTx.Fee = "10"
+		result = env.Submit(acceptTx)
+		if result.Code != "temDISABLED" {
+			t.Errorf("NFTokenAcceptOffer: expected temDISABLED, got %s", result.Code)
+		}
+	})
+
+	// Test 2: With amendment ENABLED, NFT transactions should work
+	t.Run("Enabled", func(t *testing.T) {
+		env := jtx.NewTestEnv(t)
+
+		alice := jtx.NewAccount("alice")
+		env.Fund(alice)
+		env.Close()
+
+		// Mint an NFT (amendment enabled by default)
+		mintTx := nft.NFTokenMint(alice, 0).Build()
+		result := env.Submit(mintTx)
+		if !result.Success {
+			t.Fatalf("Failed to mint NFT: %s - %s", result.Code, result.Message)
+		}
+		env.Close()
+	})
 
 	t.Log("testEnabled passed")
 }
