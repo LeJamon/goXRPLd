@@ -579,3 +579,69 @@ func TestPayChan_ClaimRenewAndCloseConflict(t *testing.T) {
 
 	t.Log("PayChan claim renew and close conflict test passed")
 }
+
+// TestEnabled tests that PayChan operations are disabled without the PayChan amendment.
+func TestEnabled(t *testing.T) {
+	t.Run("Disabled", func(t *testing.T) {
+		env := xrplgoTesting.NewTestEnv(t)
+
+		alice := xrplgoTesting.NewAccount("alice")
+		bob := xrplgoTesting.NewAccount("bob")
+		env.FundAmount(alice, uint64(xrplgoTesting.XRP(10000)))
+		env.FundAmount(bob, uint64(xrplgoTesting.XRP(10000)))
+		env.Close()
+
+		env.DisableFeature("PayChan")
+
+		// PaymentChannelCreate should fail
+		createTx := paychan.NewPaymentChannelCreate(
+			alice.Address, bob.Address,
+			tx.NewXRPAmount(1000_000_000),
+			uint32(100), alice.PublicKeyHex(),
+		)
+		createTx.Fee = "10"
+		seq := env.Seq(alice)
+		createTx.Sequence = &seq
+		result := env.Submit(createTx)
+		require.Equal(t, "temDISABLED", result.Code, "PaymentChannelCreate: expected temDISABLED")
+
+		// PaymentChannelFund should fail
+		fakeChannelID := "0000000000000000000000000000000000000000000000000000000000000000"
+		fundTx := paychan.NewPaymentChannelFund(alice.Address, fakeChannelID, tx.NewXRPAmount(100_000_000))
+		fundTx.Fee = "10"
+		seq = env.Seq(alice)
+		fundTx.Sequence = &seq
+		result = env.Submit(fundTx)
+		require.Equal(t, "temDISABLED", result.Code, "PaymentChannelFund: expected temDISABLED")
+
+		// PaymentChannelClaim should fail
+		claimTx := paychan.NewPaymentChannelClaim(alice.Address, fakeChannelID)
+		claimTx.Fee = "10"
+		seq = env.Seq(alice)
+		claimTx.Sequence = &seq
+		result = env.Submit(claimTx)
+		require.Equal(t, "temDISABLED", result.Code, "PaymentChannelClaim: expected temDISABLED")
+	})
+
+	t.Run("Enabled", func(t *testing.T) {
+		env := xrplgoTesting.NewTestEnv(t)
+
+		alice := xrplgoTesting.NewAccount("alice")
+		bob := xrplgoTesting.NewAccount("bob")
+		env.FundAmount(alice, uint64(xrplgoTesting.XRP(10000)))
+		env.FundAmount(bob, uint64(xrplgoTesting.XRP(10000)))
+		env.Close()
+
+		createTx := paychan.NewPaymentChannelCreate(
+			alice.Address, bob.Address,
+			tx.NewXRPAmount(1000_000_000),
+			uint32(100), alice.PublicKeyHex(),
+		)
+		createTx.Fee = "10"
+		seq := env.Seq(alice)
+		createTx.Sequence = &seq
+		result := env.Submit(createTx)
+		xrplgoTesting.RequireTxSuccess(t, result)
+		env.Close()
+	})
+}

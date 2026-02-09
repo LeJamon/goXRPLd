@@ -15,13 +15,14 @@ import (
 // TestEnabled tests that DID transactions are disabled without the featureDID amendment.
 // Reference: rippled DID_test.cpp testEnabled
 func TestEnabled(t *testing.T) {
-	t.Skip("testEnabled requires amendment support in test environment")
-
 	env := jtx.NewTestEnv(t)
 
 	alice := jtx.NewAccount("alice")
 	env.Fund(alice)
 	env.Close()
+
+	// Disable the DID amendment
+	env.DisableFeature("DID")
 
 	// Verify initial owner count
 	info := env.AccountInfo(alice)

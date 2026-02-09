@@ -507,6 +507,15 @@ func (e *Engine) preflight(tx Transaction) Result {
 		return result
 	}
 
+	// Amendment check - verify all required amendments are enabled
+	// Reference: rippled checks this in each transaction's preflight() method
+	for _, amendmentName := range tx.RequiredAmendments() {
+		feature := amendment.GetFeatureByName(amendmentName)
+		if feature != nil && !e.rules().Enabled(feature.ID) {
+			return TemDISABLED
+		}
+	}
+
 	// Fee validation
 	if result := e.validateFee(common); result != TesSUCCESS {
 		return result

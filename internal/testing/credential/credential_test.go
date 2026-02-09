@@ -570,8 +570,6 @@ func TestCredentialTypeLimits(t *testing.T) {
 // TestEnabled tests that credential transactions are disabled without the amendment.
 // Reference: rippled Credentials_test.cpp testFeatureFailed
 func TestEnabled(t *testing.T) {
-	t.Skip("testEnabled requires amendment support in test environment")
-
 	credType := "abcde"
 
 	issuer := jtx.NewAccount("issuer")
@@ -580,6 +578,9 @@ func TestEnabled(t *testing.T) {
 	env := jtx.NewTestEnv(t)
 	env.Fund(issuer, subject)
 	env.Close()
+
+	// Disable the Credentials amendment
+	env.DisableFeature("Credentials")
 
 	// Without the featureCredentials amendment, all credential transactions should fail
 	t.Run("CreateDisabled", func(t *testing.T) {

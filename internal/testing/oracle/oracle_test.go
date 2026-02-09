@@ -827,3 +827,67 @@ func TestConstants(t *testing.T) {
 	// MaxPriceScale is 8 per rippled Oracle_test.cpp line 354
 	assert.Equal(t, 8, oracle.MaxPriceScale)
 }
+
+// =============================================================================
+// TestEnabled - Amendment Tests
+// Reference: rippled Oracle_test.cpp testAmendment (lines 835-857)
+// =============================================================================
+
+// TestEnabled tests that Oracle operations are disabled without the PriceOracle amendment.
+func TestEnabled(t *testing.T) {
+	// Test 1: With amendment DISABLED, all Oracle transactions should return temDISABLED
+	t.Run("Disabled", func(t *testing.T) {
+		env := jtx.NewTestEnv(t)
+
+		alice := jtx.NewAccount("alice")
+		env.Fund(alice)
+		env.Close()
+
+		// Disable PriceOracle amendment
+		env.DisableFeature("PriceOracle")
+
+		// OracleSet should fail
+		oracleSetTx := oracletest.OracleSet(alice, 1, 750000000).
+			ProviderHex(32).
+			AssetClassHex(8).
+			AddPrice("XRP", "USD", 740, 1).
+			Build()
+		result := env.Submit(oracleSetTx)
+		if result.Code != "temDISABLED" {
+			t.Errorf("OracleSet: expected temDISABLED, got %s", result.Code)
+		}
+
+		// OracleDelete should fail
+		oracleDeleteTx := oracletest.OracleDelete(alice, 1).Build()
+		result = env.Submit(oracleDeleteTx)
+		if result.Code != "temDISABLED" {
+			t.Errorf("OracleDelete: expected temDISABLED, got %s", result.Code)
+		}
+	})
+
+	// Test 2: With amendment ENABLED, Oracle transactions should work (may fail for other reasons)
+	t.Run("Enabled", func(t *testing.T) {
+		env := jtx.NewTestEnv(t)
+
+		alice := jtx.NewAccount("alice")
+		env.Fund(alice)
+		env.Close()
+
+		// Create Oracle (amendment enabled by default)
+		oracleSetTx := oracletest.OracleSet(alice, 1, 750000000).
+			ProviderHex(32).
+			AssetClassHex(8).
+			AddPrice("XRP", "USD", 740, 1).
+			Build()
+		result := env.Submit(oracleSetTx)
+		// Should not be temDISABLED since amendment is enabled
+		if result.Code == "temDISABLED" {
+			t.Errorf("OracleSet with amendment enabled should not return temDISABLED")
+		}
+		// Note: May fail for other reasons (e.g., LastUpdateTime validation),
+		// but the important thing is it's not temDISABLED
+		env.Close()
+	})
+
+	t.Log("testEnabled passed")
+}
