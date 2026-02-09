@@ -8,7 +8,9 @@ import (
 type CheckData struct {
 	Account        [20]byte
 	DestinationID  [20]byte
-	SendMax        uint64 // For XRP checks; IOU checks would need more fields
+	SendMax        uint64 // XRP drops (when IsNativeSendMax is true)
+	SendMaxAmount  Amount // Full Amount representation (for both XRP and IOU)
+	IsNativeSendMax bool
 	Sequence       uint32
 	Expiration     uint32
 	InvoiceID      [32]byte
@@ -95,10 +97,22 @@ func ParseCheck(data []byte) (*CheckData, error) {
 				rawAmount := binary.BigEndian.Uint64(data[offset : offset+8])
 				if fieldCode == 9 { // SendMax
 					check.SendMax = rawAmount & 0x3FFFFFFFFFFFFFFF
+					check.IsNativeSendMax = true
+					check.SendMaxAmount = NewXRPAmountFromInt(int64(check.SendMax))
 				}
 				offset += 8
 			} else {
-				// IOU amount - skip 48 bytes
+				// IOU amount - 48 bytes total
+				if offset+48 > len(data) {
+					return check, nil
+				}
+				if fieldCode == 9 { // SendMax
+					iouAmount, err := ParseIOUAmountBinary(data[offset : offset+48])
+					if err == nil {
+						check.SendMaxAmount = iouAmount
+						check.IsNativeSendMax = false
+					}
+				}
 				offset += 48
 			}
 

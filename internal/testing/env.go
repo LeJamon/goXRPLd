@@ -486,6 +486,8 @@ func (e *TestEnv) Submit(transaction interface{}) TxResult {
 	}
 
 	// Create engine config
+	// ParentCloseTime is in Ripple epoch seconds (Unix - 946684800)
+	parentCloseTime := uint32(e.clock.Now().Unix() - 946684800)
 	engineConfig := tx.EngineConfig{
 		BaseFee:                   e.baseFee,
 		ReserveBase:               e.reserveBase,
@@ -493,6 +495,7 @@ func (e *TestEnv) Submit(transaction interface{}) TxResult {
 		LedgerSequence:            e.ledger.Sequence(),
 		SkipSignatureVerification: true, // Skip signatures in test mode
 		Rules:                     e.rulesBuilder.Build(),
+		ParentCloseTime:           parentCloseTime,
 	}
 
 	// Create engine with current ledger

@@ -3,12 +3,28 @@ package check
 import (
 	"encoding/hex"
 	"fmt"
+	"strconv"
+
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
+	"github.com/LeJamon/goXRPLd/internal/core/tx"
 )
 
+// parseFee parses the fee string (in drops) to uint64.
+// Returns 0 if the fee is empty or invalid.
+func parseFee(fee string) uint64 {
+	if fee == "" {
+		return 0
+	}
+	v, err := strconv.ParseUint(fee, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
 // serializeCheck serializes a Check ledger entry
-func serializeCheck(checkTx *CheckCreate, ownerID, destID [20]byte, sequence uint32, sendMax uint64) ([]byte, error) {
+func serializeCheck(checkTx *CheckCreate, ownerID, destID [20]byte, sequence uint32, sendMax tx.Amount) ([]byte, error) {
 	ownerAddress, err := addresscodec.EncodeAccountIDToClassicAddress(ownerID[:])
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode owner address: %w", err)
@@ -23,10 +39,20 @@ func serializeCheck(checkTx *CheckCreate, ownerID, destID [20]byte, sequence uin
 		"LedgerEntryType": "Check",
 		"Account":         ownerAddress,
 		"Destination":     destAddress,
-		"SendMax":         fmt.Sprintf("%d", sendMax),
 		"Sequence":        sequence,
 		"OwnerNode":       "0",
 		"Flags":           uint32(0),
+	}
+
+	// Serialize SendMax - XRP as string drops, IOU as object
+	if sendMax.IsNative() {
+		jsonObj["SendMax"] = fmt.Sprintf("%d", sendMax.Drops())
+	} else {
+		jsonObj["SendMax"] = map[string]any{
+			"value":    sendMax.Value(),
+			"currency": sendMax.Currency,
+			"issuer":   sendMax.Issuer,
+		}
 	}
 
 	if checkTx.Expiration != nil {
