@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/LeJamon/goXRPLd/internal/core/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
@@ -272,6 +273,35 @@ func (a *AccountSet) Apply(ctx *tx.ApplyContext) tx.Result {
 		uClearFlag = *a.ClearFlag
 	}
 
+	// Clawback / NoFreeze mutual exclusion preclaim checks
+	// Reference: rippled SetAccount.cpp preclaim() lines 281-307
+	if ctx.Rules().Enabled(amendment.FeatureClawback) {
+		if uSetFlag == AccountSetFlagAllowTrustLineClawback {
+			// Cannot set clawback if NoFreeze is already set
+			if (uFlagsIn & sle.LsfNoFreeze) != 0 {
+				return tx.TecNO_PERMISSION
+			}
+			// Owner directory must be empty
+			ownerDirKey := keylet.OwnerDir(ctx.AccountID)
+			dirExists, dirErr := ctx.View.Exists(ownerDirKey)
+			if dirErr == nil && dirExists {
+				dirData, readErr := ctx.View.Read(ownerDirKey)
+				if readErr == nil {
+					dirNode, parseErr := sle.ParseDirectoryNode(dirData)
+					if parseErr == nil && len(dirNode.Indexes) > 0 {
+						return tx.TecOWNERS
+					}
+				}
+			}
+		}
+		if uSetFlag == AccountSetFlagNoFreeze {
+			// Cannot set NoFreeze if clawback is already set
+			if (uFlagsIn & sle.LsfAllowTrustLineClawback) != 0 {
+				return tx.TecNO_PERMISSION
+			}
+		}
+	}
+
 	// RequireAuth
 	if uSetFlag == AccountSetFlagRequireAuth && (uFlagsIn&sle.LsfRequireAuth) == 0 {
 		uFlagsOut |= sle.LsfRequireAuth
@@ -385,8 +415,9 @@ func (a *AccountSet) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 	}
 
-	// AllowTrustLineClawback (cannot be cleared once set)
-	if uSetFlag == AccountSetFlagAllowTrustLineClawback {
+	// AllowTrustLineClawback (cannot be cleared once set, gated by amendment)
+	// Reference: rippled SetAccount.cpp doApply() lines 663-668
+	if ctx.Rules().Enabled(amendment.FeatureClawback) && uSetFlag == AccountSetFlagAllowTrustLineClawback {
 		uFlagsOut |= sle.LsfAllowTrustLineClawback
 	}
 
