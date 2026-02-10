@@ -1,10 +1,7 @@
 package testing
 
 import (
-	"github.com/LeJamon/goXRPLd/internal/core/tx/account"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/depositpreauth"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/offer"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
+	"encoding/hex"
 	"testing"
 	"time"
 
@@ -15,7 +12,14 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/genesis"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/account"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/depositpreauth"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/offer"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/payment"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/signerlist"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/ticket"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/trustset"
 )
 
 // TestEnv manages a test ledger environment for transaction testing.
@@ -455,9 +459,9 @@ func (e *TestEnv) Submit(transaction interface{}) TxResult {
 		return TxResult{Code: "temINVALID", Success: false, Message: "Invalid transaction type"}
 	}
 
-	// Auto-fill sequence if not set
+	// Auto-fill sequence if not set (skip when using tickets)
 	common := txn.GetCommon()
-	if common.Sequence == nil {
+	if common.Sequence == nil && common.TicketSequence == nil {
 		// Look up the account to get current sequence
 		_, accountID, err := addresscodec.DecodeClassicAddressToAccountID(common.Account)
 		if err != nil {
@@ -874,4 +878,644 @@ func formatUint64(n uint64) string {
 	}
 
 	return string(digits)
+}
+
+// ===========================================================================
+// Phase 1a: Signature helpers
+// ===========================================================================
+
+// privateKeyHex returns the prefixed hex private key for use with tx.SignTransaction.
+// tx.SignTransaction expects 0x00 prefix for secp256k1 and 0xED prefix for ed25519.
+func privateKeyHex(acc *Account) string {
+	switch acc.KeyType {
+	case KeyTypeEd25519:
+		return "ED" + hex.EncodeToString(acc.PrivateKey)
+	case KeyTypeSecp256k1:
+		return "00" + hex.EncodeToString(acc.PrivateKey)
+	default:
+		panic("unsupported key type: " + acc.KeyType)
+	}
+}
+
+// SignWith signs a transaction using a specific account's key pair.
+// Sets SigningPubKey and TxnSignature on the transaction.
+// Reference: rippled's sig.h — sig(account) funclet.
+func (e *TestEnv) SignWith(txn tx.Transaction, signer *Account) tx.Transaction {
+	e.t.Helper()
+
+	common := txn.GetCommon()
+	common.SigningPubKey = hex.EncodeToString(signer.PublicKey)
+
+	sig, err := tx.SignTransaction(txn, privateKeyHex(signer))
+	if err != nil {
+		e.t.Fatalf("Failed to sign transaction: %v", err)
+	}
+	common.TxnSignature = sig
+
+	return txn
+}
+
+// SubmitSigned signs the transaction with the account's own key and submits
+// with signature verification enabled.
+// The signing account is inferred from the transaction's Account field.
+func (e *TestEnv) SubmitSigned(transaction interface{}) TxResult {
+	e.t.Helper()
+
+	txn, ok := transaction.(tx.Transaction)
+	if !ok {
+		e.t.Fatalf("Transaction does not implement tx.Transaction interface")
+		return TxResult{Code: "temINVALID", Success: false, Message: "Invalid transaction type"}
+	}
+
+	// Look up the account by address
+	acc := e.findAccountByAddress(txn.GetCommon().Account)
+	if acc == nil {
+		e.t.Fatalf("SubmitSigned: account %s not registered in test env", txn.GetCommon().Account)
+		return TxResult{Code: "terNO_ACCOUNT", Success: false, Message: "Account not found"}
+	}
+
+	// Auto-fill BEFORE signing, since sequence/fee are part of the signed payload.
+	e.autoFillForSigning(txn)
+	e.SignWith(txn, acc)
+	return e.submitWithSigVerification(txn)
+}
+
+// SubmitSignedWith signs the transaction with a different key (e.g. a regular key)
+// and submits with signature verification enabled.
+// Reference: rippled's sig(account) — sign with regular key.
+func (e *TestEnv) SubmitSignedWith(transaction interface{}, signer *Account) TxResult {
+	e.t.Helper()
+
+	txn, ok := transaction.(tx.Transaction)
+	if !ok {
+		e.t.Fatalf("Transaction does not implement tx.Transaction interface")
+		return TxResult{Code: "temINVALID", Success: false, Message: "Invalid transaction type"}
+	}
+
+	// Auto-fill BEFORE signing, since sequence/fee are part of the signed payload.
+	e.autoFillForSigning(txn)
+	e.SignWith(txn, signer)
+	return e.submitWithSigVerification(txn)
+}
+
+// SubmitMultiSigned attaches multi-signatures from the given signers and submits
+// with signature verification enabled.
+// Each signer signs the transaction with their key, sorted by account ID.
+// Reference: rippled's msig(signers...) funclet.
+func (e *TestEnv) SubmitMultiSigned(transaction interface{}, signers []*Account) TxResult {
+	e.t.Helper()
+
+	txn, ok := transaction.(tx.Transaction)
+	if !ok {
+		e.t.Fatalf("Transaction does not implement tx.Transaction interface")
+		return TxResult{Code: "temINVALID", Success: false, Message: "Invalid transaction type"}
+	}
+
+	// Auto-fill BEFORE signing, since sequence/fee are part of the signed payload.
+	e.autoFillForSigning(txn)
+
+	common := txn.GetCommon()
+
+	// Clear single-signature fields for multi-sign
+	common.SigningPubKey = ""
+	common.TxnSignature = ""
+
+	// Calculate multi-sign fee: (numSigners + 1) * baseFee
+	multisigFee := uint64(len(signers)+1) * e.baseFee
+	common.Fee = formatUint64(multisigFee)
+
+	// Each signer signs and is added (AddMultiSigner maintains sorted order)
+	for _, signer := range signers {
+		sig, err := tx.SignTransactionForMultiSign(txn, signer.Address, privateKeyHex(signer))
+		if err != nil {
+			e.t.Fatalf("Failed to multi-sign for %s: %v", signer.Name, err)
+		}
+
+		err = tx.AddMultiSigner(txn, signer.Address, hex.EncodeToString(signer.PublicKey), sig)
+		if err != nil {
+			e.t.Fatalf("Failed to add multi-signer %s: %v", signer.Name, err)
+		}
+	}
+
+	return e.submitWithSigVerification(txn)
+}
+
+// autoFillForSigning fills in sequence and fee fields before signing.
+// This must be called before signing, since these fields are part of the signed payload.
+func (e *TestEnv) autoFillForSigning(txn tx.Transaction) {
+	e.t.Helper()
+
+	common := txn.GetCommon()
+
+	// Auto-fill sequence if not set
+	if common.Sequence == nil && common.TicketSequence == nil {
+		_, accountID, err := addresscodec.DecodeClassicAddressToAccountID(common.Account)
+		if err != nil {
+			e.t.Fatalf("autoFillForSigning: failed to decode account address: %v", err)
+			return
+		}
+
+		var id [20]byte
+		copy(id[:], accountID)
+		accountKey := keylet.Account(id)
+
+		data, err := e.ledger.Read(accountKey)
+		if err != nil || data == nil {
+			e.t.Fatalf("autoFillForSigning: failed to read account: %v", err)
+			return
+		}
+
+		accountRoot, err := sle.ParseAccountRootFromBytes(data)
+		if err != nil {
+			e.t.Fatalf("autoFillForSigning: failed to parse account root: %v", err)
+			return
+		}
+
+		seq := accountRoot.Sequence
+		common.Sequence = &seq
+	}
+
+	// Auto-fill fee if not set
+	if common.Fee == "" {
+		common.Fee = formatUint64(e.baseFee)
+	}
+}
+
+// submitWithSigVerification is the internal submit path with signature verification enabled.
+// Callers must auto-fill and sign BEFORE calling this.
+func (e *TestEnv) submitWithSigVerification(txn tx.Transaction) TxResult {
+	e.t.Helper()
+
+	parentCloseTime := uint32(e.clock.Now().Unix() - 946684800)
+	engineConfig := tx.EngineConfig{
+		BaseFee:                   e.baseFee,
+		ReserveBase:               e.reserveBase,
+		ReserveIncrement:          e.reserveIncrement,
+		LedgerSequence:            e.ledger.Sequence(),
+		SkipSignatureVerification: false, // Verify signatures
+		Rules:                     e.rulesBuilder.Build(),
+		ParentCloseTime:           parentCloseTime,
+	}
+
+	engine := tx.NewEngine(e.ledger, engineConfig)
+	applyResult := engine.Apply(txn)
+
+	return TxResult{
+		Code:    applyResult.Result.String(),
+		Success: applyResult.Result.IsSuccess(),
+		Message: applyResult.Message,
+	}
+}
+
+// findAccountByAddress looks up a registered account by its XRPL address.
+func (e *TestEnv) findAccountByAddress(address string) *Account {
+	for _, acc := range e.accounts {
+		if acc.Address == address {
+			return acc
+		}
+	}
+	return nil
+}
+
+// ===========================================================================
+// Phase 1b: Regular Key helpers
+// ===========================================================================
+
+// SetRegularKey sets a regular key on an account.
+// Reference: rippled's regkey(account, signer) in regkey.h
+func (e *TestEnv) SetRegularKey(acc, regularKey *Account) {
+	e.t.Helper()
+
+	setKey := signerlist.NewSetRegularKey(acc.Address)
+	setKey.SetKey(regularKey.Address)
+	setKey.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	setKey.Sequence = &seq
+
+	result := e.Submit(setKey)
+	if !result.Success {
+		e.t.Fatalf("Failed to set regular key for %s: %s", acc.Name, result.Code)
+	}
+}
+
+// DisableRegularKey removes the regular key from an account.
+// Reference: rippled's regkey(account, disabled) in regkey.h
+func (e *TestEnv) DisableRegularKey(acc *Account) {
+	e.t.Helper()
+
+	setKey := signerlist.NewSetRegularKey(acc.Address)
+	setKey.ClearKey()
+	setKey.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	setKey.Sequence = &seq
+
+	result := e.Submit(setKey)
+	if !result.Success {
+		e.t.Fatalf("Failed to disable regular key for %s: %s", acc.Name, result.Code)
+	}
+}
+
+// ===========================================================================
+// Phase 1c: SignerList helpers
+// ===========================================================================
+
+// TestSigner represents a signer entry for use in SetSignerList.
+type TestSigner struct {
+	Account *Account
+	Weight  uint16
+}
+
+// SetSignerList sets a signer list on an account.
+// Reference: rippled's signers(account, quorum, signerList) in multisign.h
+func (e *TestEnv) SetSignerList(acc *Account, quorum uint32, signers []TestSigner) {
+	e.t.Helper()
+
+	sl := signerlist.NewSignerListSet(acc.Address, quorum)
+	for _, s := range signers {
+		sl.AddSigner(s.Account.Address, s.Weight)
+	}
+	sl.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	sl.Sequence = &seq
+
+	result := e.Submit(sl)
+	if !result.Success {
+		e.t.Fatalf("Failed to set signer list for %s: %s", acc.Name, result.Code)
+	}
+}
+
+// RemoveSignerList removes the signer list from an account.
+// Reference: rippled's signers(account, none) in multisign.h
+func (e *TestEnv) RemoveSignerList(acc *Account) {
+	e.t.Helper()
+
+	sl := signerlist.NewSignerListSet(acc.Address, 0)
+	sl.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	sl.Sequence = &seq
+
+	result := e.Submit(sl)
+	if !result.Success {
+		e.t.Fatalf("Failed to remove signer list for %s: %s", acc.Name, result.Code)
+	}
+}
+
+// ===========================================================================
+// Phase 1d: Ticket helpers
+// ===========================================================================
+
+// CreateTickets creates N tickets for an account.
+// Returns the first ticket sequence number.
+// Reference: rippled's ticket::create(account, count) in ticket.h
+func (e *TestEnv) CreateTickets(acc *Account, count uint32) uint32 {
+	e.t.Helper()
+
+	// The starting ticket sequence is the account's current sequence
+	startSeq := e.Seq(acc)
+
+	tc := ticket.NewTicketCreate(acc.Address, count)
+	tc.Fee = formatUint64(e.baseFee)
+	seq := startSeq
+	tc.Sequence = &seq
+
+	result := e.Submit(tc)
+	if !result.Success {
+		e.t.Fatalf("Failed to create %d tickets for %s: %s", count, acc.Name, result.Code)
+	}
+
+	return startSeq + 1 // Tickets start at seq+1 (seq itself is consumed by TicketCreate)
+}
+
+// WithTicketSeq sets TicketSequence on a transaction (Sequence becomes 0).
+// Reference: rippled's ticket::use(ticketSeq) in ticket.h
+func WithTicketSeq(transaction tx.Transaction, ticketSeq uint32) tx.Transaction {
+	common := transaction.GetCommon()
+	zero := uint32(0)
+	common.Sequence = &zero
+	common.TicketSequence = &ticketSeq
+	return transaction
+}
+
+// ===========================================================================
+// Phase 2: Query & Convenience Helpers
+// ===========================================================================
+
+// OwnerCount returns the owner count for an account (0 if account doesn't exist).
+// Reference: rippled's Env::ownerCount(account) in Env.h
+func (e *TestEnv) OwnerCount(acc *Account) uint32 {
+	e.t.Helper()
+	info := e.AccountInfo(acc)
+	if info == nil {
+		return 0
+	}
+	return info.OwnerCount
+}
+
+// LedgerEntryExists checks if a ledger entry exists by keylet.
+func (e *TestEnv) LedgerEntryExists(key keylet.Keylet) bool {
+	e.t.Helper()
+	exists, err := e.ledger.Exists(key)
+	if err != nil {
+		e.t.Fatalf("Failed to check ledger entry existence: %v", err)
+		return false
+	}
+	return exists
+}
+
+// LedgerEntry reads a raw ledger entry by keylet.
+func (e *TestEnv) LedgerEntry(key keylet.Keylet) ([]byte, error) {
+	e.t.Helper()
+	return e.ledger.Read(key)
+}
+
+// FundNoRipple funds accounts WITHOUT enabling DefaultRipple.
+// Reference: rippled's noripple(accounts...) in Env.h
+func (e *TestEnv) FundNoRipple(accounts ...*Account) {
+	e.t.Helper()
+	for _, acc := range accounts {
+		e.FundAmountNoRipple(acc, uint64(XRP(1000)))
+	}
+}
+
+// FundAmountNoRipple funds an account with a specific amount but does NOT enable DefaultRipple.
+func (e *TestEnv) FundAmountNoRipple(acc *Account, amount uint64) {
+	e.t.Helper()
+
+	e.accounts[acc.Name] = acc
+
+	master := e.accounts["master"]
+	if master == nil {
+		e.t.Fatal("Master account not found")
+	}
+
+	seq := e.Seq(master)
+	pay := payment.NewPayment(master.Address, acc.Address, tx.NewXRPAmount(int64(amount)))
+	pay.Fee = formatUint64(e.baseFee)
+	pay.Sequence = &seq
+
+	result := e.Submit(pay)
+	if !result.Success {
+		e.t.Fatalf("Failed to fund account %s (no ripple): %s", acc.Name, result.Code)
+	}
+}
+
+// Noop submits a no-op AccountSet to bump an account's sequence number.
+// Reference: rippled's noop(account) in noop.h
+func (e *TestEnv) Noop(acc *Account) {
+	e.t.Helper()
+
+	accountSet := account.NewAccountSet(acc.Address)
+	accountSet.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	accountSet.Sequence = &seq
+
+	result := e.Submit(accountSet)
+	if !result.Success {
+		e.t.Fatalf("Failed noop for %s: %s", acc.Name, result.Code)
+	}
+}
+
+// Trust creates a trust line and refunds the fee from master.
+// Reference: rippled's Env::trust(amount, account) in Env.h
+func (e *TestEnv) Trust(acc *Account, amount tx.Amount) {
+	e.t.Helper()
+
+	ts := trustset.NewTrustSet(acc.Address, amount)
+	ts.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	ts.Sequence = &seq
+
+	result := e.Submit(ts)
+	if !result.Success {
+		e.t.Fatalf("Failed to set trust line for %s: %s", acc.Name, result.Code)
+	}
+
+	// Refund the fee from master (matching rippled's behavior)
+	master := e.accounts["master"]
+	if master == nil {
+		return
+	}
+	masterSeq := e.Seq(master)
+	refund := payment.NewPayment(master.Address, acc.Address, tx.NewXRPAmount(int64(e.baseFee)))
+	refund.Fee = formatUint64(e.baseFee)
+	refund.Sequence = &masterSeq
+
+	e.Submit(refund)
+}
+
+// EnableDisallowIncomingCheck enables the DisallowIncomingCheck flag on an account.
+func (e *TestEnv) EnableDisallowIncomingCheck(acc *Account) {
+	e.t.Helper()
+	as := account.NewAccountSet(acc.Address)
+	flag := account.AccountSetFlagDisallowIncomingCheck
+	as.SetFlag = &flag
+	as.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	as.Sequence = &seq
+	result := e.Submit(as)
+	if !result.Success {
+		e.t.Fatalf("Failed to enable DisallowIncomingCheck for %s: %s", acc.Name, result.Code)
+	}
+}
+
+// DisableDisallowIncomingCheck disables the DisallowIncomingCheck flag on an account.
+func (e *TestEnv) DisableDisallowIncomingCheck(acc *Account) {
+	e.t.Helper()
+	as := account.NewAccountSet(acc.Address)
+	flag := account.AccountSetFlagDisallowIncomingCheck
+	as.ClearFlag = &flag
+	as.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	as.Sequence = &seq
+	result := e.Submit(as)
+	if !result.Success {
+		e.t.Fatalf("Failed to disable DisallowIncomingCheck for %s: %s", acc.Name, result.Code)
+	}
+}
+
+// EnableDisallowIncomingPayChan enables the DisallowIncomingPayChan flag on an account.
+func (e *TestEnv) EnableDisallowIncomingPayChan(acc *Account) {
+	e.t.Helper()
+	as := account.NewAccountSet(acc.Address)
+	flag := account.AccountSetFlagDisallowIncomingPayChan
+	as.SetFlag = &flag
+	as.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	as.Sequence = &seq
+	result := e.Submit(as)
+	if !result.Success {
+		e.t.Fatalf("Failed to enable DisallowIncomingPayChan for %s: %s", acc.Name, result.Code)
+	}
+}
+
+// DisableDisallowIncomingPayChan disables the DisallowIncomingPayChan flag on an account.
+func (e *TestEnv) DisableDisallowIncomingPayChan(acc *Account) {
+	e.t.Helper()
+	as := account.NewAccountSet(acc.Address)
+	flag := account.AccountSetFlagDisallowIncomingPayChan
+	as.ClearFlag = &flag
+	as.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	as.Sequence = &seq
+	result := e.Submit(as)
+	if !result.Success {
+		e.t.Fatalf("Failed to disable DisallowIncomingPayChan for %s: %s", acc.Name, result.Code)
+	}
+}
+
+// EnableDisallowIncomingNFTokenOffer enables the DisallowIncomingNFTokenOffer flag on an account.
+func (e *TestEnv) EnableDisallowIncomingNFTokenOffer(acc *Account) {
+	e.t.Helper()
+	as := account.NewAccountSet(acc.Address)
+	flag := account.AccountSetFlagDisallowIncomingNFTokenOffer
+	as.SetFlag = &flag
+	as.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	as.Sequence = &seq
+	result := e.Submit(as)
+	if !result.Success {
+		e.t.Fatalf("Failed to enable DisallowIncomingNFTokenOffer for %s: %s", acc.Name, result.Code)
+	}
+}
+
+// DisableDisallowIncomingNFTokenOffer disables the DisallowIncomingNFTokenOffer flag on an account.
+func (e *TestEnv) DisableDisallowIncomingNFTokenOffer(acc *Account) {
+	e.t.Helper()
+	as := account.NewAccountSet(acc.Address)
+	flag := account.AccountSetFlagDisallowIncomingNFTokenOffer
+	as.ClearFlag = &flag
+	as.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	as.Sequence = &seq
+	result := e.Submit(as)
+	if !result.Success {
+		e.t.Fatalf("Failed to disable DisallowIncomingNFTokenOffer for %s: %s", acc.Name, result.Code)
+	}
+}
+
+// EnableDisallowIncomingTrustline enables the DisallowIncomingTrustline flag on an account.
+func (e *TestEnv) EnableDisallowIncomingTrustline(acc *Account) {
+	e.t.Helper()
+	as := account.NewAccountSet(acc.Address)
+	flag := account.AccountSetFlagDisallowIncomingTrustline
+	as.SetFlag = &flag
+	as.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	as.Sequence = &seq
+	result := e.Submit(as)
+	if !result.Success {
+		e.t.Fatalf("Failed to enable DisallowIncomingTrustline for %s: %s", acc.Name, result.Code)
+	}
+}
+
+// DisableDisallowIncomingTrustline disables the DisallowIncomingTrustline flag on an account.
+func (e *TestEnv) DisableDisallowIncomingTrustline(acc *Account) {
+	e.t.Helper()
+	as := account.NewAccountSet(acc.Address)
+	flag := account.AccountSetFlagDisallowIncomingTrustline
+	as.ClearFlag = &flag
+	as.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(acc)
+	as.Sequence = &seq
+	result := e.Submit(as)
+	if !result.Success {
+		e.t.Fatalf("Failed to disable DisallowIncomingTrustline for %s: %s", acc.Name, result.Code)
+	}
+}
+
+// FreezeTrustLine freezes a specific trust line (issuer-side freeze).
+// Reference: rippled's trust(account, amount, peer, tfSetFreeze)
+func (e *TestEnv) FreezeTrustLine(issuer, holder *Account, currency string) {
+	e.t.Helper()
+
+	// The issuer sets a trust line with the Freeze flag
+	amount := sle.NewIssuedAmountFromFloat64(0, currency, holder.Address)
+	ts := trustset.NewTrustSet(issuer.Address, amount)
+	ts.SetFreeze()
+	ts.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(issuer)
+	ts.Sequence = &seq
+
+	result := e.Submit(ts)
+	if !result.Success {
+		e.t.Fatalf("Failed to freeze trust line %s/%s for %s: %s", currency, issuer.Name, holder.Name, result.Code)
+	}
+}
+
+// UnfreezeTrustLine unfreezes a specific trust line.
+func (e *TestEnv) UnfreezeTrustLine(issuer, holder *Account, currency string) {
+	e.t.Helper()
+
+	amount := sle.NewIssuedAmountFromFloat64(0, currency, holder.Address)
+	ts := trustset.NewTrustSet(issuer.Address, amount)
+	ts.SetFlags(ts.GetFlags() | trustset.TrustSetFlagClearFreeze)
+	ts.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(issuer)
+	ts.Sequence = &seq
+
+	result := e.Submit(ts)
+	if !result.Success {
+		e.t.Fatalf("Failed to unfreeze trust line %s/%s for %s: %s", currency, issuer.Name, holder.Name, result.Code)
+	}
+}
+
+// AuthorizeTrustLine authorizes a trust line (when RequireAuth is set on the issuer).
+// Reference: rippled's trust(account, amount, tfSetfAuth)
+func (e *TestEnv) AuthorizeTrustLine(issuer, holder *Account, currency string) {
+	e.t.Helper()
+
+	amount := sle.NewIssuedAmountFromFloat64(0, currency, holder.Address)
+	ts := trustset.NewTrustSet(issuer.Address, amount)
+	ts.SetFlags(ts.GetFlags() | trustset.TrustSetFlagSetfAuth)
+	ts.Fee = formatUint64(e.baseFee)
+	seq := e.Seq(issuer)
+	ts.Sequence = &seq
+
+	result := e.Submit(ts)
+	if !result.Success {
+		e.t.Fatalf("Failed to authorize trust line %s/%s for %s: %s", currency, issuer.Name, holder.Name, result.Code)
+	}
+}
+
+// IncLedgerSeqForAccDel closes enough ledgers so account deletion is allowed.
+// rippled requires 256 ledgers after account creation before deletion.
+// Reference: rippled's incLgrSeqForAccDel() in acctdelete.h
+func (e *TestEnv) IncLedgerSeqForAccDel(acc *Account) {
+	e.t.Helper()
+
+	// AccountDelete requires the account's sequence to be at least 256 ledgers
+	// behind the current ledger sequence. Close ledgers until this is satisfied.
+	for e.LedgerSeq()-e.Seq(acc) < 256 {
+		e.Close()
+	}
+}
+
+// Limit returns the trust line limit for an account/issue.
+// Returns 0 if the trust line doesn't exist.
+// Reference: rippled's Env::limit(account, issue)
+func (e *TestEnv) Limit(holder, issuer *Account, currency string) float64 {
+	e.t.Helper()
+
+	lineKey := keylet.Line(holder.ID, issuer.ID, currency)
+	exists, err := e.ledger.Exists(lineKey)
+	if err != nil || !exists {
+		return 0
+	}
+
+	data, err := e.ledger.Read(lineKey)
+	if err != nil {
+		return 0
+	}
+
+	rs, err := sle.ParseRippleState(data)
+	if err != nil {
+		return 0
+	}
+
+	// Determine which side is the holder's limit
+	isLow := keylet.IsLowAccount(holder.ID, issuer.ID)
+	if isLow {
+		return rs.LowLimit.Float64()
+	}
+	return rs.HighLimit.Float64()
 }

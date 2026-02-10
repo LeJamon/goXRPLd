@@ -261,17 +261,29 @@ func structToMap(v reflect.Value) map[string]any {
 			continue
 		}
 
-		// Get field name from JSON tag, fallback to struct field name
+		// Get field name and options from JSON tag, fallback to struct field name
 		jsonTag := field.Tag.Get("json")
 		name := field.Name
+		omitempty := false
 		if jsonTag != "" && jsonTag != "-" {
 			parts := strings.Split(jsonTag, ",")
 			if parts[0] != "" {
 				name = parts[0]
 			}
+			for _, opt := range parts[1:] {
+				if opt == "omitempty" {
+					omitempty = true
+				}
+			}
 		}
 
 		fv := v.Field(i)
+
+		// Skip empty values when omitempty is set
+		if omitempty && isEmptyValue(fv) {
+			continue
+		}
+
 		// Recursively convert nested structs
 		if fv.Kind() == reflect.Struct {
 			result[name] = structToMap(fv)

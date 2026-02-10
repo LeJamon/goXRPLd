@@ -137,7 +137,7 @@ func (ec *EscrowCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Create the escrow entry
 	accountID, _ := sle.DecodeAccountID(ec.Account)
-	sequence := *ec.GetCommon().Sequence // Use the transaction sequence
+	sequence := ec.GetCommon().SeqProxy()
 
 	escrowKey := keylet.Escrow(accountID, sequence)
 

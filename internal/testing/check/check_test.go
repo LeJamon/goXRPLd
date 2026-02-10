@@ -156,19 +156,42 @@ func TestCheck_CreateValid(t *testing.T) {
 		env.Close()
 	})
 
-	// Note: Regular key and multisign tests are included for TDD.
-	// They will fail until those features are implemented for checks.
+	// Reference: rippled Check_test.cpp testCreateValid (lines 266-289)
 	t.Run("RegularKey", func(t *testing.T) {
-		// alice uses her regular key to create a check
-		// alie := jtx.NewAccountWithKeyType("alie", "ed25519")
-		// TODO: env.SetRegularKey(alice, alie) once available
-		// env(check::create(alice, bob, USD(50)), sig(alie));
-		t.Skip("Regular key support not yet available in test env")
+		// alice uses her regular key to create a check.
+		alie := jtx.NewAccountWithKeyType("alie", jtx.KeyTypeEd25519)
+		env.SetRegularKey(alice, alie)
+		env.Close()
+
+		aliceOwnerCount := env.OwnerCount(alice)
+
+		result := env.SubmitSignedWith(check.CheckCreate(alice, bob, USD(50)).Build(), alie)
+		jtx.RequireTxSuccess(t, result)
+		env.Close()
+		jtx.RequireOwnerCount(t, env, alice, aliceOwnerCount+1)
 	})
 
 	t.Run("MultiSign", func(t *testing.T) {
-		// alice uses multisigning to create a check
-		t.Skip("Multisign support not yet available in test env")
+		// Set up signers on alice.
+		bogie := jtx.NewAccount("bogie")
+		demon := jtx.NewAccountWithKeyType("demon", jtx.KeyTypeEd25519)
+
+		env.SetSignerList(alice, 2, []jtx.TestSigner{
+			{Account: bogie, Weight: 1},
+			{Account: demon, Weight: 1},
+		})
+		env.Close()
+
+		aliceOwnerCount := env.OwnerCount(alice)
+
+		// alice uses multisigning to create a check.
+		result := env.SubmitMultiSigned(
+			check.CheckCreate(alice, bob, USD(50)).Build(),
+			[]*jtx.Account{bogie, demon},
+		)
+		jtx.RequireTxSuccess(t, result)
+		env.Close()
+		jtx.RequireOwnerCount(t, env, alice, aliceOwnerCount+1)
 	})
 }
 
@@ -861,8 +884,74 @@ func TestCheck_CashIOU(t *testing.T) {
 	})
 
 	t.Run("MultiSign", func(t *testing.T) {
-		// Multi-signature check cashing
-		t.Skip("Multisign support not yet available in test env")
+		// Reference: rippled Check_test.cpp testCashIOU (lines 1045-1082)
+		env := jtx.NewTestEnv(t)
+
+		gw := jtx.NewAccount("gateway")
+		alice := jtx.NewAccount("alice")
+		bob := jtx.NewAccount("bob")
+		USD := func(value float64) tx.Amount {
+			return tx.NewIssuedAmountFromFloat64(value, "USD", gw.Address)
+		}
+
+		env.Fund(gw, alice, bob)
+		env.Close()
+
+		// alice creates checks ahead of time.
+		chkID1 := check.GetCheckID(alice, env.Seq(alice))
+		env.Submit(check.CheckCreate(alice, bob, USD(1)).Build())
+		env.Close()
+
+		chkID2 := check.GetCheckID(alice, env.Seq(alice))
+		env.Submit(check.CheckCreate(alice, bob, USD(2)).Build())
+		env.Close()
+
+		// Set up trust lines and fund alice.
+		env.Submit(trustset.TrustSet(alice, USD(20)).Build())
+		env.Submit(trustset.TrustSet(bob, USD(20)).Build())
+		env.Close()
+		env.Submit(payment.PayIssued(gw, alice, USD(8)).Build())
+		env.Close()
+
+		// Give bob a regular key and signers.
+		bobby := jtx.NewAccount("bobby")
+		env.SetRegularKey(bob, bobby)
+		env.Close()
+
+		bogie := jtx.NewAccount("bogie")
+		demon := jtx.NewAccountWithKeyType("demon", jtx.KeyTypeEd25519)
+		env.SetSignerList(bob, 2, []jtx.TestSigner{
+			{Account: bogie, Weight: 1},
+			{Account: demon, Weight: 1},
+		})
+		env.Close()
+
+		// bob's signer list has an owner count of 1 (featureMultiSignReserve enabled).
+		// bob owns: 1 trust line + 1 signer list = 2
+		signersCount := uint32(1)
+		jtx.RequireOwnerCount(t, env, bob, signersCount+1)
+
+		// bob uses his regular key to cash a check.
+		result := env.SubmitSignedWith(
+			check.CheckCashAmount(bob, chkID1, USD(1)).Build(), bobby)
+		jtx.RequireTxSuccess(t, result)
+		env.Close()
+		jtx.RequireIOUBalance(t, env, alice, gw, "USD", 7)
+		jtx.RequireIOUBalance(t, env, bob, gw, "USD", 1)
+		jtx.RequireOwnerCount(t, env, alice, 2) // 1 trust line + 1 check remaining
+		jtx.RequireOwnerCount(t, env, bob, signersCount+1)
+
+		// bob uses multisigning to cash a check.
+		result = env.SubmitMultiSigned(
+			check.CheckCashAmount(bob, chkID2, USD(2)).Build(),
+			[]*jtx.Account{bogie, demon},
+		)
+		jtx.RequireTxSuccess(t, result)
+		env.Close()
+		jtx.RequireIOUBalance(t, env, alice, gw, "USD", 5)
+		jtx.RequireIOUBalance(t, env, bob, gw, "USD", 3)
+		jtx.RequireOwnerCount(t, env, alice, 1) // 1 trust line, 0 checks
+		jtx.RequireOwnerCount(t, env, bob, signersCount+1)
 	})
 }
 
@@ -1436,14 +1525,24 @@ func TestCheck_CancelValid(t *testing.T) {
 	env.Submit(check.CheckCreate(alice, bob, USD(10)).Expiration(now + 1).Build())
 	env.Close()
 
-	jtx.RequireOwnerCount(t, env, alice, 9)
+	// Two checks to cancel using a regular key and using multisigning.
+	// Reference: rippled Check_test.cpp testCancelValid (lines 1733-1740)
+	chkIDReg := check.GetCheckID(alice, env.Seq(alice))
+	env.Submit(check.CheckCreate(alice, bob, USD(10)).Build())
+	env.Close()
+
+	chkIDMSig := check.GetCheckID(alice, env.Seq(alice))
+	env.Submit(check.CheckCreate(alice, bob, tx.NewXRPAmount(jtx.XRP(10))).Build())
+	env.Close()
+
+	jtx.RequireOwnerCount(t, env, alice, 11)
 
 	// Creator cancels
 	t.Run("CreatorCancels", func(t *testing.T) {
 		result := env.Submit(check.CheckCancel(alice, chkID1).Build())
 		jtx.RequireTxSuccess(t, result)
 		env.Close()
-		jtx.RequireOwnerCount(t, env, alice, 8)
+		jtx.RequireOwnerCount(t, env, alice, 10)
 	})
 
 	// Destination cancels
@@ -1451,7 +1550,7 @@ func TestCheck_CancelValid(t *testing.T) {
 		result := env.Submit(check.CheckCancel(bob, chkID2).Build())
 		jtx.RequireTxSuccess(t, result)
 		env.Close()
-		jtx.RequireOwnerCount(t, env, alice, 7)
+		jtx.RequireOwnerCount(t, env, alice, 9)
 	})
 
 	// Outsider can't cancel non-expired check
@@ -1459,7 +1558,7 @@ func TestCheck_CancelValid(t *testing.T) {
 		result := env.Submit(check.CheckCancel(zoe, chkID3).Build())
 		require.Equal(t, "tecNO_PERMISSION", result.Code)
 		env.Close()
-		jtx.RequireOwnerCount(t, env, alice, 7)
+		jtx.RequireOwnerCount(t, env, alice, 9)
 	})
 
 	// Creator cancels unexpired check
@@ -1467,7 +1566,7 @@ func TestCheck_CancelValid(t *testing.T) {
 		result := env.Submit(check.CheckCancel(alice, chkIDNotExp1).Build())
 		jtx.RequireTxSuccess(t, result)
 		env.Close()
-		jtx.RequireOwnerCount(t, env, alice, 6)
+		jtx.RequireOwnerCount(t, env, alice, 8)
 	})
 
 	// Destination cancels unexpired check
@@ -1475,7 +1574,7 @@ func TestCheck_CancelValid(t *testing.T) {
 		result := env.Submit(check.CheckCancel(bob, chkIDNotExp2).Build())
 		jtx.RequireTxSuccess(t, result)
 		env.Close()
-		jtx.RequireOwnerCount(t, env, alice, 5)
+		jtx.RequireOwnerCount(t, env, alice, 7)
 	})
 
 	// Outsider can't cancel unexpired check
@@ -1483,7 +1582,7 @@ func TestCheck_CancelValid(t *testing.T) {
 		result := env.Submit(check.CheckCancel(zoe, chkIDNotExp3).Build())
 		require.Equal(t, "tecNO_PERMISSION", result.Code)
 		env.Close()
-		jtx.RequireOwnerCount(t, env, alice, 5)
+		jtx.RequireOwnerCount(t, env, alice, 7)
 	})
 
 	// Advance time past expiration
@@ -1495,7 +1594,7 @@ func TestCheck_CancelValid(t *testing.T) {
 		result := env.Submit(check.CheckCancel(alice, chkIDExp1).Build())
 		jtx.RequireTxSuccess(t, result)
 		env.Close()
-		jtx.RequireOwnerCount(t, env, alice, 4)
+		jtx.RequireOwnerCount(t, env, alice, 6)
 	})
 
 	// Destination cancels expired check
@@ -1503,7 +1602,7 @@ func TestCheck_CancelValid(t *testing.T) {
 		result := env.Submit(check.CheckCancel(bob, chkIDExp2).Build())
 		jtx.RequireTxSuccess(t, result)
 		env.Close()
-		jtx.RequireOwnerCount(t, env, alice, 3)
+		jtx.RequireOwnerCount(t, env, alice, 5)
 	})
 
 	// Outsider CAN cancel expired check
@@ -1511,29 +1610,61 @@ func TestCheck_CancelValid(t *testing.T) {
 		result := env.Submit(check.CheckCancel(zoe, chkIDExp3).Build())
 		jtx.RequireTxSuccess(t, result)
 		env.Close()
-		jtx.RequireOwnerCount(t, env, alice, 2)
+		jtx.RequireOwnerCount(t, env, alice, 4)
 	})
 
-	// Regular key and multisign cancel
+	// Use a regular key and also multisign to cancel checks.
+	// Reference: rippled Check_test.cpp testCancelValid (lines 1792-1820)
 	t.Run("RegularKey", func(t *testing.T) {
-		t.Skip("Regular key support not yet available in test env")
+		alie := jtx.NewAccountWithKeyType("alie", jtx.KeyTypeEd25519)
+		env.SetRegularKey(alice, alie)
+		env.Close()
+
+		// alice uses her regular key to cancel a check.
+		result := env.SubmitSignedWith(check.CheckCancel(alice, chkIDReg).Build(), alie)
+		jtx.RequireTxSuccess(t, result)
+		env.Close()
+		// 4 checks remain - 1 cancelled = 3 checks + 1 signer list (set below)
+		jtx.RequireOwnerCount(t, env, alice, 3)
 	})
 
 	t.Run("MultiSign", func(t *testing.T) {
-		t.Skip("Multisign support not yet available in test env")
+		bogie := jtx.NewAccount("bogie")
+		demon := jtx.NewAccountWithKeyType("demon", jtx.KeyTypeEd25519)
+
+		env.SetSignerList(alice, 2, []jtx.TestSigner{
+			{Account: bogie, Weight: 1},
+			{Account: demon, Weight: 1},
+		})
+		env.Close()
+
+		// featureMultiSignReserve is enabled: signer list = 1 owner
+		signersCount := uint32(1)
+
+		// alice uses multisigning to cancel a check.
+		result := env.SubmitMultiSigned(
+			check.CheckCancel(alice, chkIDMSig).Build(),
+			[]*jtx.Account{bogie, demon},
+		)
+		jtx.RequireTxSuccess(t, result)
+		env.Close()
+		jtx.RequireOwnerCount(t, env, alice, signersCount+2)
 	})
 
-	// Cancel remaining checks
+	// Creator and destination cancel the remaining checks.
+	// Reference: rippled Check_test.cpp testCancelValid (lines 1822-1831)
 	t.Run("CleanupRemaining", func(t *testing.T) {
+		signersCount := uint32(1)
+
 		result := env.Submit(check.CheckCancel(alice, chkID3).Build())
 		jtx.RequireTxSuccess(t, result)
 		env.Close()
-		jtx.RequireOwnerCount(t, env, alice, 1)
+		jtx.RequireOwnerCount(t, env, alice, signersCount+1)
 
 		result = env.Submit(check.CheckCancel(bob, chkIDNotExp3).Build())
 		jtx.RequireTxSuccess(t, result)
 		env.Close()
-		jtx.RequireOwnerCount(t, env, alice, 0)
+		jtx.RequireOwnerCount(t, env, alice, signersCount+0)
 	})
 }
 
@@ -1637,30 +1768,127 @@ func TestCheck_WithTickets(t *testing.T) {
 	env.Fund(gw, alice, bob)
 	env.Close()
 
-	// TODO: Acquire tickets for alice and bob
-	// env(ticket::create(alice, 10));
-	// env(ticket::create(bob, 10));
+	// alice and bob grab enough tickets for all of the following transactions.
+	// Note that once tickets are acquired, account sequence numbers should not advance.
+	aliceTicketSeq := env.CreateTickets(alice, 10)
+	aliceSeq := env.Seq(alice)
 
-	// Set up trust lines using tickets
-	// env(trust(alice, USD(1000)), ticket::use(alice));
-	// env(trust(bob, USD(1000)), ticket::use(bob));
+	bobTicketSeq := env.CreateTickets(bob, 10)
+	bobSeq := env.Seq(bob)
 
-	_ = USD // prevent unused variable error
+	env.Close()
+	jtx.RequireOwnerCount(t, env, alice, 10)
+	jtx.RequireOwnerCount(t, env, bob, 10)
 
-	// Create checks using tickets
-	// chkIdXrp1 := check.GetCheckID(alice, env.Seq(alice))
-	// env(check::create(alice, bob, XRP(200)), ticket::use(alice))
+	// Set up trust lines using tickets.
+	aliceTrust := trustset.TrustSet(alice, USD(1000)).Build()
+	jtx.WithTicketSeq(aliceTrust, aliceTicketSeq)
+	aliceTicketSeq++
+	result := env.Submit(aliceTrust)
+	jtx.RequireTxSuccess(t, result)
 
-	// Fund alice with USD
-	// env(pay(gw, alice, USD(900)))
+	bobTrust := trustset.TrustSet(bob, USD(1000)).Build()
+	jtx.WithTicketSeq(bobTrust, bobTicketSeq)
+	bobTicketSeq++
+	result = env.Submit(bobTrust)
+	jtx.RequireTxSuccess(t, result)
+	env.Close()
 
-	// Bob cancels checks using tickets
-	// env(check::cancel(bob, chkIdXrp1), ticket::use(bob))
+	// Owner counts stay at 10: used 1 ticket each (-1) but created 1 trust line each (+1).
+	jtx.RequireOwnerCount(t, env, alice, 10)
+	jtx.RequireOwnerCount(t, env, bob, 10)
 
-	// Bob cashes checks using tickets
-	// env(check::cash(bob, chkIdXrp2, XRP(300)), ticket::use(bob))
+	// Sequences should not have advanced.
+	jtx.RequireSequence(t, env, alice, aliceSeq)
+	jtx.RequireSequence(t, env, bob, bobSeq)
 
-	t.Log("TODO: Ticket support not yet available - implement when tickets are added")
+	// Fund alice with USD.
+	result = env.Submit(payment.PayIssued(gw, alice, USD(900)).Build())
+	jtx.RequireTxSuccess(t, result)
+	env.Close()
+
+	// alice creates four checks using tickets: two XRP, two IOU.
+	chkIdXrp1 := check.GetCheckID(alice, aliceTicketSeq)
+	chkCreateXrp1 := check.CheckCreate(alice, bob, tx.NewXRPAmount(jtx.XRP(200))).Build()
+	jtx.WithTicketSeq(chkCreateXrp1, aliceTicketSeq)
+	aliceTicketSeq++
+	result = env.Submit(chkCreateXrp1)
+	jtx.RequireTxSuccess(t, result)
+
+	chkIdXrp2 := check.GetCheckID(alice, aliceTicketSeq)
+	chkCreateXrp2 := check.CheckCreate(alice, bob, tx.NewXRPAmount(jtx.XRP(300))).Build()
+	jtx.WithTicketSeq(chkCreateXrp2, aliceTicketSeq)
+	aliceTicketSeq++
+	result = env.Submit(chkCreateXrp2)
+	jtx.RequireTxSuccess(t, result)
+
+	chkIdUsd1 := check.GetCheckID(alice, aliceTicketSeq)
+	chkCreateUsd1 := check.CheckCreate(alice, bob, USD(200)).Build()
+	jtx.WithTicketSeq(chkCreateUsd1, aliceTicketSeq)
+	aliceTicketSeq++
+	result = env.Submit(chkCreateUsd1)
+	jtx.RequireTxSuccess(t, result)
+
+	chkIdUsd2 := check.GetCheckID(alice, aliceTicketSeq)
+	chkCreateUsd2 := check.CheckCreate(alice, bob, USD(300)).Build()
+	jtx.WithTicketSeq(chkCreateUsd2, aliceTicketSeq)
+	aliceTicketSeq++
+	result = env.Submit(chkCreateUsd2)
+	jtx.RequireTxSuccess(t, result)
+
+	env.Close()
+
+	// Alice used 4 tickets but created 4 checks. Owner count stays at 10.
+	jtx.RequireOwnerCount(t, env, alice, 10)
+	jtx.RequireSequence(t, env, alice, aliceSeq)
+	jtx.RequireOwnerCount(t, env, bob, 10)
+	jtx.RequireSequence(t, env, bob, bobSeq)
+
+	// Bob cancels two of alice's checks using tickets.
+	cancelXrp1 := check.CheckCancel(bob, chkIdXrp1).Build()
+	jtx.WithTicketSeq(cancelXrp1, bobTicketSeq)
+	bobTicketSeq++
+	result = env.Submit(cancelXrp1)
+	jtx.RequireTxSuccess(t, result)
+
+	cancelUsd2 := check.CheckCancel(bob, chkIdUsd2).Build()
+	jtx.WithTicketSeq(cancelUsd2, bobTicketSeq)
+	bobTicketSeq++
+	result = env.Submit(cancelUsd2)
+	jtx.RequireTxSuccess(t, result)
+	env.Close()
+
+	// Alice: 10 - 2 cancelled checks = 8; sequence unchanged.
+	jtx.RequireOwnerCount(t, env, alice, 8)
+	jtx.RequireSequence(t, env, alice, aliceSeq)
+
+	// Bob: 10 - 2 tickets used = 8; sequence unchanged.
+	jtx.RequireOwnerCount(t, env, bob, 8)
+	jtx.RequireSequence(t, env, bob, bobSeq)
+
+	// Bob cashes alice's two remaining checks using tickets.
+	cashXrp2 := check.CheckCashAmount(bob, chkIdXrp2, tx.NewXRPAmount(jtx.XRP(300))).Build()
+	jtx.WithTicketSeq(cashXrp2, bobTicketSeq)
+	bobTicketSeq++
+	result = env.Submit(cashXrp2)
+	jtx.RequireTxSuccess(t, result)
+
+	cashUsd1 := check.CheckCashAmount(bob, chkIdUsd1, USD(200)).Build()
+	jtx.WithTicketSeq(cashUsd1, bobTicketSeq)
+	bobTicketSeq++
+	result = env.Submit(cashUsd1)
+	jtx.RequireTxSuccess(t, result)
+	env.Close()
+
+	// Alice: 8 - 2 cashed checks = 6; sequence unchanged.
+	jtx.RequireOwnerCount(t, env, alice, 6)
+	jtx.RequireSequence(t, env, alice, aliceSeq)
+	jtx.RequireIOUBalance(t, env, alice, gw, "USD", 700)
+
+	// Bob: 8 - 2 tickets used = 6; sequence unchanged.
+	jtx.RequireOwnerCount(t, env, bob, 6)
+	jtx.RequireSequence(t, env, bob, bobSeq)
+	jtx.RequireIOUBalance(t, env, bob, gw, "USD", 200)
 }
 
 // TestCheck_TrustLineCreation tests automatic trust line creation when cashing checks.

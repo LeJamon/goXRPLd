@@ -368,9 +368,9 @@ func TestSignerListSetFlatten(t *testing.T) {
 				if m["SignerQuorum"] != uint32(2) {
 					t.Errorf("expected SignerQuorum=2, got %v", m["SignerQuorum"])
 				}
-				entries, ok := m["SignerEntries"].([]signerlist.SignerEntry)
+				entries, ok := m["SignerEntries"].([]map[string]any)
 				if !ok {
-					t.Fatalf("SignerEntries should be []SignerEntry, got %T", m["SignerEntries"])
+					t.Fatalf("SignerEntries should be []map[string]any, got %T", m["SignerEntries"])
 				}
 				if len(entries) != 2 {
 					t.Errorf("expected 2 entries, got %d", len(entries))

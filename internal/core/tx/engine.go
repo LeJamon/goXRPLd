@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 
+	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
 	"github.com/LeJamon/goXRPLd/internal/core/amendment"
@@ -568,20 +569,10 @@ func (e *Engine) preflight(tx Transaction) Result {
 				}
 			}
 		} else {
-			// Single-signed transaction
+			// Single-signed transaction — verify cryptographic signature validity.
+			// The signing key authorization (master vs regular key) is checked in preclaim.
 			if err := VerifySignature(tx); err != nil {
-				switch err {
-				case ErrMissingSignature:
-					return TemBAD_SIGNATURE
-				case ErrMissingPublicKey:
-					return TemBAD_SIGNATURE
-				case ErrInvalidSignature:
-					return TemBAD_SIGNATURE
-				case ErrPublicKeyMismatch:
-					return TemBAD_SRC_ACCOUNT
-				default:
-					return TemBAD_SIGNATURE
-				}
+				return TemBAD_SIGNATURE
 			}
 		}
 	}
@@ -848,8 +839,44 @@ func (e *Engine) preclaim(tx Transaction) Result {
 		return TefINTERNAL
 	}
 
-	// Check sequence number
-	if common.Sequence != nil {
+	// Check single-sign authorization (master key or regular key)
+	// Reference: rippled Transactor::checkSingleSign in Transactor.cpp
+	// Multi-signed transactions are already verified in preflight via VerifyMultiSignature.
+	if !e.config.SkipSignatureVerification && !IsMultiSigned(tx) && common.SigningPubKey != "" {
+		signerAddress, addrErr := addresscodec.EncodeClassicAddressFromPublicKeyHex(common.SigningPubKey)
+		if addrErr != nil {
+			return TefBAD_AUTH
+		}
+
+		isMasterDisabled := (account.Flags & sle.LsfDisableMaster) != 0
+
+		if signerAddress == account.RegularKey {
+			// Signed with regular key — allowed
+		} else if !isMasterDisabled && signerAddress == common.Account {
+			// Signed with enabled master key — allowed
+		} else if isMasterDisabled && signerAddress == common.Account {
+			// Signed with disabled master key
+			return TefMASTER_DISABLED
+		} else {
+			// Signed with an unauthorized key
+			return TefBAD_AUTH
+		}
+	}
+
+	// Check sequence number or ticket
+	// Reference: rippled Transactor::checkSeqProxy in Transactor.cpp
+	if common.TicketSequence != nil {
+		// Ticket-based transaction: validate the ticket exists
+		if *common.TicketSequence >= account.Sequence {
+			// Ticket hasn't been created yet
+			return TerPRE_TICKET
+		}
+		ticketKey := keylet.Ticket(accountID, *common.TicketSequence)
+		ticketExists, ticketErr := e.view.Exists(ticketKey)
+		if ticketErr != nil || !ticketExists {
+			return TefNO_TICKET
+		}
+	} else if common.Sequence != nil {
 		if *common.Sequence < account.Sequence {
 			return TefPAST_SEQ
 		}
@@ -912,9 +939,11 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 	originalBalance := account.Balance
 	originalSequence := account.Sequence
 
-	// Deduct fee and increment sequence
+	// Deduct fee and handle sequence/ticket
+	// Reference: rippled Transactor::consumeSeqProxy in Transactor.cpp
 	account.Balance -= fee
-	if common.Sequence != nil {
+	isTicket := common.TicketSequence != nil
+	if !isTicket && common.Sequence != nil {
 		account.Sequence = *common.Sequence + 1
 	}
 
@@ -944,13 +973,32 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 		result = TesSUCCESS
 	}
 
+	// Consume ticket on success or tec results
+	// Reference: rippled Transactor::consumeSeqProxy — ticket is always consumed
+	if isTicket && (result == TesSUCCESS || result.IsTec()) {
+		ticketKey := keylet.Ticket(accountID, *common.TicketSequence)
+		if result == TesSUCCESS {
+			if err := table.Erase(ticketKey); err != nil {
+				return TefINTERNAL
+			}
+		} else {
+			// For tec, erase directly from view
+			if err := e.view.Erase(ticketKey); err != nil {
+				return TefINTERNAL
+			}
+		}
+		if account.OwnerCount > 0 {
+			account.OwnerCount--
+		}
+	}
+
 	// For tec results, only apply fee/sequence changes, not transaction effects
 	// Reference: rippled - tec codes claim the fee but don't apply transaction effects
 	if result.IsTec() {
 		// Apply only fee and sequence changes to the source account
 		account.Balance = originalBalance - fee
 		account.Sequence = originalSequence
-		if common.Sequence != nil {
+		if !isTicket && common.Sequence != nil {
 			account.Sequence = *common.Sequence + 1
 		}
 

@@ -235,7 +235,7 @@ func (c *CheckCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Create the check entry
 	accountID := ctx.AccountID
-	sequence := *c.GetCommon().Sequence
+	sequence := c.GetCommon().SeqProxy()
 
 	checkKey := keylet.Check(accountID, sequence)
 
