@@ -128,11 +128,11 @@ func ParseDID(data []byte) (*DIDData, error) {
 				return did, nil
 			}
 			switch fieldCode {
-			case 9: // URI
+			case 5: // URI (nth=5 in definitions.json)
 				did.URI = hex.EncodeToString(data[offset : offset+length])
-			case 26: // DIDDocument
+			case 26: // DIDDocument (nth=26 in definitions.json)
 				did.DIDDocument = hex.EncodeToString(data[offset : offset+length])
-			case 27: // Data
+			case 27: // Data (nth=27 in definitions.json)
 				did.Data = hex.EncodeToString(data[offset : offset+length])
 			}
 			offset += length

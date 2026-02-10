@@ -2,9 +2,11 @@ package did
 
 import (
 	"encoding/hex"
+
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	txamendment "github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
@@ -115,7 +117,7 @@ func (d *DIDSet) Flatten() (map[string]any, error) {
 
 // RequiredAmendments returns the amendments required for this transaction type
 func (d *DIDSet) RequiredAmendments() []string {
-	return []string{amendment.AmendmentDID}
+	return []string{txamendment.AmendmentDID}
 }
 
 // Apply applies a DIDSet transaction to the ledger state.
@@ -190,8 +192,10 @@ func (d *DIDSet) Apply(ctx *tx.ApplyContext) tx.Result {
 		did.Data = d.Data
 	}
 
-	// Check that at least one field is set (fixEmptyDID amendment)
-	if did.URI == "" && did.DIDDocument == "" && did.Data == "" {
+	// Check that at least one field is set (only when fixEmptyDID is enabled)
+	// Reference: rippled DID.cpp lines 163-169
+	if ctx.Rules().Enabled(amendment.FeatureFixEmptyDID) &&
+		did.URI == "" && did.DIDDocument == "" && did.Data == "" {
 		return tx.TecEMPTY_DID
 	}
 
