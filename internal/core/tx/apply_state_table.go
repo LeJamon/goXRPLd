@@ -187,6 +187,14 @@ func (t *ApplyStateTable) Erase(k keylet.Keylet) error {
 	return nil
 }
 
+// IsErased returns true if the entry at the given key has been erased.
+func (t *ApplyStateTable) IsErased(k keylet.Keylet) bool {
+	if entry, exists := t.items[k.Key]; exists {
+		return entry.Action == ActionErase
+	}
+	return false
+}
+
 // AdjustDropsDestroyed records destroyed XRP
 func (t *ApplyStateTable) AdjustDropsDestroyed(drops XRPAmount.XRPAmount) {
 	t.drops = t.drops.Add(drops)

@@ -59,6 +59,12 @@ func (c *CredentialAccept) Validate() error {
 	if c.Issuer == "" {
 		return ErrCredentialNoIssuer
 	}
+	if issuerID, err := sle.DecodeAccountID(c.Issuer); err == nil {
+		var zeroAccount [20]byte
+		if issuerID == zeroAccount {
+			return ErrCredentialNoIssuer
+		}
+	}
 
 	// Validate CredentialType field (required, max 64 bytes)
 	// Reference: rippled Credentials.cpp:316-323
@@ -87,6 +93,49 @@ func (c *CredentialAccept) Flatten() (map[string]any, error) {
 // RequiredAmendments returns the amendments required for this transaction type
 func (c *CredentialAccept) RequiredAmendments() []string {
 	return []string{amendment.AmendmentCredentials}
+}
+
+// ApplyOnTec applies side-effects for tecEXPIRED: delete the expired credential and adjust owner count.
+// Reference: rippled Transactor.cpp removeExpiredCredentials()
+func (c *CredentialAccept) ApplyOnTec(ctx *tx.ApplyContext) tx.Result {
+	if c.Issuer == "" || c.CredentialType == "" {
+		return tx.TemINVALID
+	}
+
+	issuerID, err := sle.DecodeAccountID(c.Issuer)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	credTypeBytes, err := hex.DecodeString(c.CredentialType)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	// credential(subject=sender, issuer, credType)
+	credKeylet := keylet.Credential(ctx.AccountID, issuerID, credTypeBytes)
+
+	// Check the credential exists and is expired
+	credData, err := ctx.View.Read(credKeylet)
+	if err != nil || credData == nil {
+		return tx.TesSUCCESS
+	}
+
+	cred, err := ParseCredentialEntry(credData)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	if !checkCredentialExpired(cred, ctx.Config.ParentCloseTime) {
+		return tx.TesSUCCESS
+	}
+
+	// Use DeleteSLE to properly clean up directories and owner counts
+	if err := DeleteSLE(ctx.View, credKeylet, cred); err != nil {
+		return tx.TefINTERNAL
+	}
+
+	return tx.TesSUCCESS
 }
 
 // Apply applies the CredentialAccept transaction to ledger state.
@@ -125,7 +174,7 @@ func (c *CredentialAccept) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	// Parse the credential entry
-	cred, err := parseCredentialEntry(credData)
+	cred, err := ParseCredentialEntry(credData)
 	if err != nil {
 		return tx.TefINTERNAL
 	}

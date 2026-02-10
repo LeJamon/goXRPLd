@@ -400,6 +400,26 @@ func (r Result) String() string {
 		return "temBAD_EXPIRATION"
 	case TemBAD_AMM_TOKENS:
 		return "temBAD_AMM_TOKENS"
+	case TemBAD_SIGNER:
+		return "temBAD_SIGNER"
+	case TemBAD_QUORUM:
+		return "temBAD_QUORUM"
+	case TemBAD_WEIGHT:
+		return "temBAD_WEIGHT"
+	case TemBAD_TICK_SIZE:
+		return "temBAD_TICK_SIZE"
+	case TemINVALID_ACCOUNT_ID:
+		return "temINVALID_ACCOUNT_ID"
+	case TemCAN_NOT_PREAUTH_SELF:
+		return "temCAN_NOT_PREAUTH_SELF"
+	case TemINVALID_COUNT:
+		return "temINVALID_COUNT"
+	case TemSEQ_AND_TICKET:
+		return "temSEQ_AND_TICKET"
+	case TemBAD_NFTOKEN_TRANSFER_FEE:
+		return "temBAD_NFTOKEN_TRANSFER_FEE"
+	case TemBAD_REGKEY:
+		return "temBAD_REGKEY"
 	case TerRETRY:
 		return "terRETRY"
 	case TerFUNDS_SPENT:

@@ -1011,6 +1011,31 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 			return TefINTERNAL
 		}
 
+		// Special case: tecEXPIRED allows side-effects (e.g., expired credential deletion)
+		// Reference: rippled Transactor.cpp - tecEXPIRED re-applies removeExpiredCredentials
+		if result == TecEXPIRED {
+			if tecApplier, ok := tx.(TecApplier); ok {
+				tecCtx := &ApplyContext{
+					View:      e.view,
+					Account:   account,
+					AccountID: accountID,
+					Config:    e.config,
+					TxHash:    txHash,
+					Metadata:  metadata,
+					Engine:    e,
+				}
+				tecApplier.ApplyOnTec(tecCtx)
+				// Re-serialize the account after side-effects
+				updatedData, err = sle.SerializeAccountRoot(account)
+				if err != nil {
+					return TefINTERNAL
+				}
+				if err := e.view.Update(accountKey, updatedData); err != nil {
+					return TefINTERNAL
+				}
+			}
+		}
+
 		// Generate minimal metadata for fee-only application
 		metadata.AffectedNodes = []AffectedNode{
 			{
@@ -1024,14 +1049,16 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 	}
 
 	// For success, apply all changes through the table
-	// Update the source account through the table
-	updatedData, err := sle.SerializeAccountRoot(account)
-	if err != nil {
-		return TefINTERNAL
-	}
+	// Update the source account through the table (unless erased by e.g. AccountDelete)
+	if !table.IsErased(accountKey) {
+		updatedData, err := sle.SerializeAccountRoot(account)
+		if err != nil {
+			return TefINTERNAL
+		}
 
-	if err := table.Update(accountKey, updatedData); err != nil {
-		return TefINTERNAL
+		if err := table.Update(accountKey, updatedData); err != nil {
+			return TefINTERNAL
+		}
 	}
 
 	// Apply all tracked changes to the base view and generate metadata automatically

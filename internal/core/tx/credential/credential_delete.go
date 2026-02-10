@@ -64,7 +64,22 @@ func (c *CredentialDelete) Validate() error {
 
 	// If present, Subject and Issuer must not be zero accounts
 	// Reference: rippled Credentials.cpp:235-241
-	// (In Go, empty string already handles this case)
+	if c.Subject != "" {
+		if subjectID, err := sle.DecodeAccountID(c.Subject); err == nil {
+			var zeroAccount [20]byte
+			if subjectID == zeroAccount {
+				return ErrCredentialZeroAccount
+			}
+		}
+	}
+	if c.Issuer != "" {
+		if issuerID, err := sle.DecodeAccountID(c.Issuer); err == nil {
+			var zeroAccount [20]byte
+			if issuerID == zeroAccount {
+				return ErrCredentialZeroAccount
+			}
+		}
+	}
 
 	// Validate CredentialType field (required, max 64 bytes)
 	// Reference: rippled Credentials.cpp:243-249
@@ -139,7 +154,7 @@ func (c *CredentialDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	// Parse the credential entry
-	cred, err := parseCredentialEntry(credData)
+	cred, err := ParseCredentialEntry(credData)
 	if err != nil {
 		return tx.TefINTERNAL
 	}
@@ -153,6 +168,16 @@ func (c *CredentialDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	if !isSubject && !isIssuer && !isExpired {
 		return tx.TecNO_PERMISSION
+	}
+
+	// Remove from issuer's owner directory
+	issuerDirKey := keylet.OwnerDir(issuerID)
+	sle.DirRemove(ctx.View, issuerDirKey, cred.IssuerNode, credKeylet.Key, false)
+
+	// Remove from subject's owner directory (if different from issuer)
+	if subjectID != issuerID {
+		subjectDirKey := keylet.OwnerDir(subjectID)
+		sle.DirRemove(ctx.View, subjectDirKey, cred.SubjectNode, credKeylet.Key, false)
 	}
 
 	// Delete the credential

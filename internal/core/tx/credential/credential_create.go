@@ -60,10 +60,16 @@ func (c *CredentialCreate) Validate() error {
 		return tx.ErrInvalidFlags
 	}
 
-	// Subject is required
+	// Subject is required and must not be the zero account
 	// Reference: rippled Credentials.cpp:73-77
 	if c.Subject == "" {
 		return ErrCredentialNoSubject
+	}
+	if subjectID, err := sle.DecodeAccountID(c.Subject); err == nil {
+		var zeroAccount [20]byte
+		if subjectID == zeroAccount {
+			return ErrCredentialNoSubject
+		}
 	}
 
 	// Validate URI field length (optional but if present must be valid)
@@ -170,7 +176,6 @@ func (c *CredentialCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		Subject:        subjectID,
 		Issuer:         ctx.AccountID,
 		CredentialType: credTypeBytes,
-		IssuerNode:     0, // Would be set by dirInsert
 	}
 
 	// Set expiration if provided
@@ -189,6 +194,28 @@ func (c *CredentialCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Self-issue: if subject == issuer, auto-accept
 	if subjectID == ctx.AccountID {
 		cred.SetAccepted()
+	}
+
+	// Insert into issuer's owner directory
+	issuerDirKey := keylet.OwnerDir(ctx.AccountID)
+	issuerDirResult, err := sle.DirInsert(ctx.View, issuerDirKey, credKeylet.Key, func(dir *sle.DirectoryNode) {
+		dir.Owner = ctx.AccountID
+	})
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+	cred.IssuerNode = issuerDirResult.Page
+
+	// Insert into subject's owner directory (if different from issuer)
+	if subjectID != ctx.AccountID {
+		subjectDirKey := keylet.OwnerDir(subjectID)
+		subjectDirResult, err := sle.DirInsert(ctx.View, subjectDirKey, credKeylet.Key, func(dir *sle.DirectoryNode) {
+			dir.Owner = subjectID
+		})
+		if err != nil {
+			return tx.TefINTERNAL
+		}
+		cred.SubjectNode = subjectDirResult.Page
 	}
 
 	// Serialize the credential entry
