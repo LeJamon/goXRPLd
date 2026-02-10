@@ -956,3 +956,52 @@ func DirRemove(view LedgerView, directory keylet.Keylet, page uint64, itemKey [3
 
 	return result, nil
 }
+
+// DirForEach iterates all entries in a directory (across all pages), calling fn
+// for each item key. If fn returns a non-nil error, iteration stops and the error
+// is returned. Returns nil if the directory does not exist.
+// Reference: rippled cdirFirst/cdirNext pattern.
+func DirForEach(view LedgerView, dirKey keylet.Keylet, fn func(itemKey [32]byte) error) error {
+	// Read root page
+	rootData, err := view.Read(dirKey)
+	if err != nil || rootData == nil {
+		return nil // Directory doesn't exist — nothing to iterate
+	}
+
+	root, err := ParseDirectoryNode(rootData)
+	if err != nil {
+		return fmt.Errorf("failed to parse directory root: %w", err)
+	}
+
+	// Iterate root page entries
+	for _, idx := range root.Indexes {
+		if err := fn(idx); err != nil {
+			return err
+		}
+	}
+
+	// Follow IndexNext chain through subsequent pages
+	nextPage := root.IndexNext
+	for nextPage != 0 {
+		pageKeylet := keylet.DirPage(dirKey.Key, nextPage)
+		pageData, err := view.Read(pageKeylet)
+		if err != nil || pageData == nil {
+			break
+		}
+
+		page, err := ParseDirectoryNode(pageData)
+		if err != nil {
+			return fmt.Errorf("failed to parse directory page %d: %w", nextPage, err)
+		}
+
+		for _, idx := range page.Indexes {
+			if err := fn(idx); err != nil {
+				return err
+			}
+		}
+
+		nextPage = page.IndexNext
+	}
+
+	return nil
+}

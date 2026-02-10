@@ -1,7 +1,9 @@
 package sle
 
 import (
+	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"reflect"
 	"strings"
 )
@@ -379,4 +381,18 @@ func (t *SLETracker) GenerateAffectedNodes() []AffectedNode {
 		}
 	}
 	return nodes
+}
+
+// GetLedgerEntryType extracts the LedgerEntryType (UInt16, field code 1) from raw
+// binary SLE data without a full codec decode. The first field in XRPL binary
+// format is always the LedgerEntryType encoded as header byte 0x11 + 2 bytes value.
+func GetLedgerEntryType(data []byte) (uint16, error) {
+	if len(data) < 3 {
+		return 0, errors.New("data too short to contain LedgerEntryType")
+	}
+	// Header byte for UInt16 (type 1) + field code 1 = 0x11
+	if data[0] != 0x11 {
+		return 0, errors.New("unexpected header byte, expected 0x11 for LedgerEntryType")
+	}
+	return binary.BigEndian.Uint16(data[1:3]), nil
 }

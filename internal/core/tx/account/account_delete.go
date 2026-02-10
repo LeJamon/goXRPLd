@@ -2,8 +2,11 @@ package account
 
 import (
 	"errors"
+
+	"github.com/LeJamon/goXRPLd/internal/core/ledger/entry"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/credential"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
@@ -62,13 +65,15 @@ func (a *AccountDelete) Flatten() (map[string]any, error) {
 }
 
 // Apply applies the AccountDelete transaction to ledger state.
+// Reference: rippled DeleteAccount.cpp DeleteAccount::doApply()
 func (a *AccountDelete) Apply(ctx *tx.ApplyContext) tx.Result {
-	if ctx.Account.OwnerCount > 0 {
-		return tx.TecHAS_OBLIGATIONS
-	}
-
-	if !ctx.Config.Standalone && ctx.Account.Sequence < 256 {
-		return tx.TefTOO_BIG
+	// Check minimum ledger gap: account must have existed for at least 256 ledgers.
+	// Use the transaction's Sequence (pre-increment value), matching rippled's preclaim().
+	// Reference: rippled DeleteAccount.cpp accountDeleteMinLedgerGap = 256
+	if a.Common.Sequence != nil {
+		if ctx.Config.LedgerSequence-*a.Common.Sequence < 256 {
+			return tx.TecTOO_SOON
+		}
 	}
 
 	destID, err := sle.DecodeAccountID(a.Destination)
@@ -80,6 +85,51 @@ func (a *AccountDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 	destData, err := ctx.View.Read(destKey)
 	if err != nil {
 		return tx.TecNO_DST
+	}
+
+	// Cascade-delete all non-obligation directory entries.
+	// Collect all keys first, then delete — avoids modifying directory during iteration.
+	// Reference: rippled DeleteAccount.cpp nonObligationDeleter()
+	ownerDirKey := keylet.OwnerDir(ctx.AccountID)
+	var entryKeys [][32]byte
+
+	err = sle.DirForEach(ctx.View, ownerDirKey, func(itemKey [32]byte) error {
+		entryKeys = append(entryKeys, itemKey)
+		return nil
+	})
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	for _, itemKey := range entryKeys {
+		itemKeylet := keylet.Keylet{Key: itemKey}
+		data, err := ctx.View.Read(itemKeylet)
+		if err != nil || data == nil {
+			continue
+		}
+
+		entryType, err := sle.GetLedgerEntryType(data)
+		if err != nil {
+			return tx.TecHAS_OBLIGATIONS
+		}
+
+		switch entry.Type(entryType) {
+		case entry.TypeCredential:
+			cred, err := credential.ParseCredentialEntry(data)
+			if err != nil {
+				return tx.TecHAS_OBLIGATIONS
+			}
+			if err := credential.DeleteSLE(ctx.View, itemKeylet, cred); err != nil {
+				return tx.TecHAS_OBLIGATIONS
+			}
+		default:
+			return tx.TecHAS_OBLIGATIONS
+		}
+	}
+
+	// Erase any remaining empty owner directory root page
+	if dirData, err := ctx.View.Read(ownerDirKey); err == nil && dirData != nil {
+		ctx.View.Erase(ownerDirKey)
 	}
 
 	destAccount, err := sle.ParseAccountRoot(destData)

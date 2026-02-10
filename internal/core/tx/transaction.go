@@ -49,6 +49,14 @@ type Appliable interface {
 	Apply(ctx *ApplyContext) Result
 }
 
+// TecApplier is implemented by transaction types that need to apply side-effects
+// even when returning a tec result code. In rippled, tecEXPIRED is special-cased
+// to re-apply expired credential deletions after the view is reset.
+// Reference: rippled Transactor.cpp - tecEXPIRED handling with removeExpiredCredentials
+type TecApplier interface {
+	ApplyOnTec(ctx *ApplyContext) Result
+}
+
 // BatchFeeCalculator is implemented by transaction types that need custom minimum fee calculation.
 // Used by Batch transactions which require a higher fee based on inner tx count and signers.
 type BatchFeeCalculator interface {

@@ -2,8 +2,10 @@ package credential
 
 import (
 	"encoding/hex"
+	"fmt"
 
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
+	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
@@ -61,8 +63,8 @@ func credentialKeylet(subject, issuer [20]byte, credentialType []byte) [32]byte 
 	return crypto.Sha512Half(input)
 }
 
-// parseCredentialEntry parses a Credential ledger entry from binary data
-func parseCredentialEntry(data []byte) (*CredentialEntry, error) {
+// ParseCredentialEntry parses a Credential ledger entry from binary data
+func ParseCredentialEntry(data []byte) (*CredentialEntry, error) {
 	hexStr := hex.EncodeToString(data)
 	jsonObj, err := binarycodec.Decode(hexStr)
 	if err != nil {
@@ -96,9 +98,21 @@ func parseCredentialEntry(data []byte) (*CredentialEntry, error) {
 	}
 
 	// Parse Expiration (optional)
-	if exp, ok := jsonObj["Expiration"].(float64); ok {
-		expVal := uint32(exp)
-		cred.Expiration = &expVal
+	// The binary codec returns UInt32 fields as native uint32, not float64.
+	if exp := jsonObj["Expiration"]; exp != nil {
+		switch v := exp.(type) {
+		case uint32:
+			cred.Expiration = &v
+		case float64:
+			expVal := uint32(v)
+			cred.Expiration = &expVal
+		case int:
+			expVal := uint32(v)
+			cred.Expiration = &expVal
+		case int64:
+			expVal := uint32(v)
+			cred.Expiration = &expVal
+		}
 	}
 
 	// Parse URI (optional, Blob/VL field stored as hex)
@@ -219,4 +233,75 @@ func checkCredentialExpired(cred *CredentialEntry, closeTime uint32) bool {
 		return false
 	}
 	return closeTime > *cred.Expiration
+}
+
+// DeleteSLE deletes a credential from the ledger, removing it from both the
+// issuer's and subject's owner directories and adjusting owner counts.
+// Reference: rippled CredentialHelpers.cpp credentials::deleteSLE()
+func DeleteSLE(view tx.LedgerView, credKey keylet.Keylet, cred *CredentialEntry) error {
+	// Remove from issuer's owner directory
+	issuerDirKey := keylet.OwnerDir(cred.Issuer)
+	_, err := sle.DirRemove(view, issuerDirKey, cred.IssuerNode, credKey.Key, false)
+	if err != nil {
+		return fmt.Errorf("failed to remove credential from issuer directory: %w", err)
+	}
+
+	// Adjust issuer's owner count if they own the credential slot
+	// Owner logic: if not accepted, issuer owns it. If accepted and subject==issuer, issuer owns it.
+	issuerOwns := !cred.IsAccepted() || (cred.Subject == cred.Issuer)
+	if issuerOwns {
+		if err := adjustOwnerCount(view, cred.Issuer, -1); err != nil {
+			return err
+		}
+	}
+
+	// Remove from subject's owner directory (if different from issuer)
+	if cred.Subject != cred.Issuer {
+		subjectDirKey := keylet.OwnerDir(cred.Subject)
+		_, err := sle.DirRemove(view, subjectDirKey, cred.SubjectNode, credKey.Key, false)
+		if err != nil {
+			return fmt.Errorf("failed to remove credential from subject directory: %w", err)
+		}
+
+		// Adjust subject's owner count if they own the credential slot
+		if cred.IsAccepted() {
+			if err := adjustOwnerCount(view, cred.Subject, -1); err != nil {
+				return err
+			}
+		}
+	}
+
+	// Erase the credential from the ledger
+	if err := view.Erase(credKey); err != nil {
+		return fmt.Errorf("failed to erase credential: %w", err)
+	}
+
+	return nil
+}
+
+// adjustOwnerCount reads an account, adjusts its OwnerCount, and writes it back.
+func adjustOwnerCount(view tx.LedgerView, accountID [20]byte, delta int) error {
+	accountKey := keylet.Account(accountID)
+	data, err := view.Read(accountKey)
+	if err != nil || data == nil {
+		return nil // Account doesn't exist (may have been deleted)
+	}
+
+	account, err := sle.ParseAccountRoot(data)
+	if err != nil {
+		return fmt.Errorf("failed to parse account root: %w", err)
+	}
+
+	if delta < 0 && account.OwnerCount > 0 {
+		account.OwnerCount--
+	} else if delta > 0 {
+		account.OwnerCount++
+	}
+
+	updated, err := sle.SerializeAccountRoot(account)
+	if err != nil {
+		return fmt.Errorf("failed to serialize account root: %w", err)
+	}
+
+	return view.Update(accountKey, updated)
 }
