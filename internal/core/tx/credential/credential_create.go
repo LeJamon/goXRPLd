@@ -7,7 +7,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 )
 
 func init() {
@@ -112,8 +112,8 @@ func (c *CredentialCreate) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (c *CredentialCreate) RequiredAmendments() []string {
-	return []string{amendment.AmendmentCredentials}
+func (c *CredentialCreate) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureCredentials}
 }
 
 // Apply applies the CredentialCreate transaction to ledger state.

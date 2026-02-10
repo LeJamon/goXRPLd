@@ -5,7 +5,7 @@ import (
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
@@ -91,8 +91,8 @@ func (x *XChainCreateBridge) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (x *XChainCreateBridge) RequiredAmendments() []string {
-	return []string{amendment.AmendmentXChainBridge}
+func (x *XChainCreateBridge) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureXChainBridge}
 }
 
 // XChainModifyBridge modifies an existing cross-chain bridge.
@@ -139,8 +139,8 @@ func (x *XChainModifyBridge) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (x *XChainModifyBridge) RequiredAmendments() []string {
-	return []string{amendment.AmendmentXChainBridge}
+func (x *XChainModifyBridge) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureXChainBridge}
 }
 
 // XChainCreateClaimID creates a claim ID for cross-chain transfers.
@@ -191,8 +191,8 @@ func (x *XChainCreateClaimID) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (x *XChainCreateClaimID) RequiredAmendments() []string {
-	return []string{amendment.AmendmentXChainBridge}
+func (x *XChainCreateClaimID) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureXChainBridge}
 }
 
 // XChainCommit commits assets to a cross-chain transfer.
@@ -246,8 +246,8 @@ func (x *XChainCommit) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (x *XChainCommit) RequiredAmendments() []string {
-	return []string{amendment.AmendmentXChainBridge}
+func (x *XChainCommit) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureXChainBridge}
 }
 
 // XChainClaim claims assets from a cross-chain transfer.
@@ -309,8 +309,8 @@ func (x *XChainClaim) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (x *XChainClaim) RequiredAmendments() []string {
-	return []string{amendment.AmendmentXChainBridge}
+func (x *XChainClaim) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureXChainBridge}
 }
 
 // XChainAccountCreateCommit commits to create an account on the other chain.
@@ -369,8 +369,8 @@ func (x *XChainAccountCreateCommit) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (x *XChainAccountCreateCommit) RequiredAmendments() []string {
-	return []string{amendment.AmendmentXChainBridge}
+func (x *XChainAccountCreateCommit) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureXChainBridge}
 }
 
 // XChainAddClaimAttestation adds a witness attestation for a claim.
@@ -457,8 +457,8 @@ func (x *XChainAddClaimAttestation) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (x *XChainAddClaimAttestation) RequiredAmendments() []string {
-	return []string{amendment.AmendmentXChainBridge}
+func (x *XChainAddClaimAttestation) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureXChainBridge}
 }
 
 // XChainAddAccountCreateAttestation adds a witness attestation for account creation.
@@ -535,8 +535,8 @@ func (x *XChainAddAccountCreateAttestation) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (x *XChainAddAccountCreateAttestation) RequiredAmendments() []string {
-	return []string{amendment.AmendmentXChainBridge}
+func (x *XChainAddAccountCreateAttestation) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureXChainBridge}
 }
 
 // Apply applies the XChainCreateBridge transaction to the ledger.

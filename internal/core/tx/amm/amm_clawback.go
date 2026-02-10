@@ -5,7 +5,7 @@ import (
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
@@ -116,8 +116,8 @@ func (a *AMMClawback) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (a *AMMClawback) RequiredAmendments() []string {
-	return []string{amendment.AmendmentAMM, amendment.AmendmentFixUniversalNumber, amendment.AmendmentAMMClawback}
+func (a *AMMClawback) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureAMM, amendment.FeatureFixUniversalNumber, amendment.FeatureAMMClawback}
 }
 
 // Apply applies the AMMClawback transaction to ledger state.

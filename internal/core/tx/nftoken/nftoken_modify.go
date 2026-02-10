@@ -4,7 +4,7 @@ import (
 	"errors"
 
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 )
 
 func init() {
@@ -85,8 +85,8 @@ func (n *NFTokenModify) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (n *NFTokenModify) RequiredAmendments() []string {
-	return []string{amendment.AmendmentDynamicNFT}
+func (n *NFTokenModify) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureDynamicNFT}
 }
 
 // Apply applies the NFTokenModify transaction to the ledger.

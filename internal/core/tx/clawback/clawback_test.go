@@ -4,7 +4,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"testing"
 
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -202,15 +202,15 @@ func TestClawbackRequiredAmendments(t *testing.T) {
 	t.Run("IOU clawback requires Clawback amendment", func(t *testing.T) {
 		clawbackTx := NewClawback("rIssuer", tx.NewIssuedAmountFromFloat64(100.0, "USD", "rHolder"))
 		amendments := clawbackTx.RequiredAmendments()
-		assert.Contains(t, amendments, amendment.AmendmentClawback)
-		assert.NotContains(t, amendments, amendment.AmendmentMPTokensV1)
+		assert.Contains(t, amendments, amendment.FeatureClawback)
+		assert.NotContains(t, amendments, amendment.FeatureMPTokensV1)
 	})
 
 	t.Run("MPToken clawback requires Clawback and MPTokensV1 amendments", func(t *testing.T) {
 		clawbackTx := NewMPTokenClawback("rIssuer", "rHolder", tx.NewIssuedAmountFromFloat64(100.0, "MPT", "rIssuer"))
 		amendments := clawbackTx.RequiredAmendments()
-		assert.Contains(t, amendments, amendment.AmendmentClawback)
-		assert.Contains(t, amendments, amendment.AmendmentMPTokensV1)
+		assert.Contains(t, amendments, amendment.FeatureClawback)
+		assert.Contains(t, amendments, amendment.FeatureMPTokensV1)
 	})
 }
 

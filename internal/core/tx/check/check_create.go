@@ -6,7 +6,6 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	txamendment "github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
@@ -96,8 +95,8 @@ func (c *CheckCreate) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (c *CheckCreate) RequiredAmendments() []string {
-	return []string{txamendment.AmendmentChecks}
+func (c *CheckCreate) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureChecks}
 }
 
 // Apply implements preclaim + doApply matching rippled's CreateCheck.

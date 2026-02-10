@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 )
 
 func init() {
@@ -238,8 +238,8 @@ func (o *OracleSet) AddPriceDataDelete(baseAsset, quoteAsset string) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (o *OracleSet) RequiredAmendments() []string {
-	return []string{amendment.AmendmentPriceOracle}
+func (o *OracleSet) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeaturePriceOracle}
 }
 
 // Apply applies an OracleSet transaction to the ledger state.

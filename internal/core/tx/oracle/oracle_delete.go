@@ -3,7 +3,7 @@ package oracle
 import (
 	"errors"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 )
 
 func init() {
@@ -54,8 +54,8 @@ func (o *OracleDelete) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (o *OracleDelete) RequiredAmendments() []string {
-	return []string{amendment.AmendmentPriceOracle}
+func (o *OracleDelete) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeaturePriceOracle}
 }
 
 // Apply applies an OracleDelete transaction to the ledger state.

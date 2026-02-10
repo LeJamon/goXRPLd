@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 )
 
 func init() {
@@ -77,8 +77,8 @@ func (m *MPTokenIssuanceDestroy) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (m *MPTokenIssuanceDestroy) RequiredAmendments() []string {
-	return []string{amendment.AmendmentMPTokensV1}
+func (m *MPTokenIssuanceDestroy) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureMPTokensV1}
 }
 
 // Apply applies the MPTokenIssuanceDestroy transaction to ledger state.

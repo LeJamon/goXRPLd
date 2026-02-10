@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	tx2 "github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -396,14 +396,14 @@ func TestPermissionedDomainRequiredAmendments(t *testing.T) {
 	t.Run("PermissionedDomainSet", func(t *testing.T) {
 		tx := NewPermissionedDomainSet("rOwner")
 		amendments := tx.RequiredAmendments()
-		assert.Contains(t, amendments, amendment.AmendmentPermissionedDomains)
-		assert.Contains(t, amendments, amendment.AmendmentCredentials)
+		assert.Contains(t, amendments, amendment.FeaturePermissionedDomains)
+		assert.Contains(t, amendments, amendment.FeatureCredentials)
 	})
 
 	t.Run("PermissionedDomainDelete", func(t *testing.T) {
 		tx := NewPermissionedDomainDelete("rOwner", makeValidDomainID())
 		amendments := tx.RequiredAmendments()
-		assert.Contains(t, amendments, amendment.AmendmentPermissionedDomains)
+		assert.Contains(t, amendments, amendment.FeaturePermissionedDomains)
 	})
 }
 

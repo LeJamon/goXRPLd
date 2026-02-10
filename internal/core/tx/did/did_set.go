@@ -6,7 +6,6 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	txamendment "github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
@@ -116,8 +115,8 @@ func (d *DIDSet) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (d *DIDSet) RequiredAmendments() []string {
-	return []string{txamendment.AmendmentDID}
+func (d *DIDSet) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureDID}
 }
 
 // Apply applies a DIDSet transaction to the ledger state.

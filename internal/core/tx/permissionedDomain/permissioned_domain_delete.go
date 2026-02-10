@@ -6,7 +6,7 @@ import (
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 )
 
 func init() {
@@ -83,8 +83,8 @@ func (p *PermissionedDomainDelete) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (p *PermissionedDomainDelete) RequiredAmendments() []string {
-	return []string{amendment.AmendmentPermissionedDomains}
+func (p *PermissionedDomainDelete) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeaturePermissionedDomains}
 }
 
 // Apply applies the PermissionedDomainDelete transaction to the ledger.

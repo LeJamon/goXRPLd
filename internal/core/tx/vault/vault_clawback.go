@@ -6,7 +6,7 @@ import (
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
@@ -117,8 +117,8 @@ func (v *VaultClawback) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (v *VaultClawback) RequiredAmendments() []string {
-	return []string{amendment.AmendmentSingleAssetVault}
+func (v *VaultClawback) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureSingleAssetVault}
 }
 
 // Apply applies the VaultClawback transaction to the ledger.

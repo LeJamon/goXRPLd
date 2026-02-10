@@ -1,7 +1,7 @@
 package did
 
 import (
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
@@ -52,8 +52,8 @@ func (d *DIDDelete) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (d *DIDDelete) RequiredAmendments() []string {
-	return []string{amendment.AmendmentDID}
+func (d *DIDDelete) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureDID}
 }
 
 // Apply applies a DIDDelete transaction to the ledger state.

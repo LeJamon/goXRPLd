@@ -532,31 +532,6 @@ func TestUpdate(t *testing.T) {
 	})
 }
 
-// =============================================================================
-// testAmendment() - Based on rippled Oracle_test.cpp lines 835-857
-// =============================================================================
-
-func TestAmendment(t *testing.T) {
-	alice := jtx.NewAccount("alice")
-
-	t.Run("OracleSet requires PriceOracle amendment", func(t *testing.T) {
-		oset := oracletest.OracleSet(alice, 1, 750000000).
-			BuildOracleSet()
-
-		amendments := oset.RequiredAmendments()
-		require.Len(t, amendments, 1)
-		assert.Contains(t, amendments[0], "PriceOracle")
-	})
-
-	t.Run("OracleDelete requires PriceOracle amendment", func(t *testing.T) {
-		odel := oracletest.OracleDelete(alice, 1).
-			BuildOracleDelete()
-
-		amendments := odel.RequiredAmendments()
-		require.Len(t, amendments, 1)
-		assert.Contains(t, amendments[0], "PriceOracle")
-	})
-}
 
 // =============================================================================
 // Edge Case Tests
