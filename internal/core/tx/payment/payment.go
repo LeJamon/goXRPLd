@@ -1339,14 +1339,10 @@ func (p *Payment) applyIOUIssuePartial(ctx *tx.ApplyContext, dest *sle.AccountRo
 	rippleState.PreviousTxnID = ctx.TxHash
 	rippleState.PreviousTxnLgrSeq = ctx.Config.LedgerSequence
 
-	// Serialize and update
-	updatedTrustLine, err := sle.SerializeRippleState(rippleState)
-	if err != nil {
-		return tx.TefINTERNAL, tx.Amount{}
-	}
-
-	if err := ctx.View.Update(trustLineKey, updatedTrustLine); err != nil {
-		return tx.TefINTERNAL, tx.Amount{}
+	// Check for trust line cleanup (default state → delete)
+	// Reference: rippled View.cpp rippleCreditIOU() lines 1692-1745
+	if result := trustLineCleanup(ctx, dest, senderID, destID, trustLineKey, rippleState); result != tx.TesSUCCESS {
+		return result, tx.Amount{}
 	}
 
 	ctx.Metadata.DeliveredAmount = &maxDeliverable
@@ -1431,14 +1427,10 @@ func (p *Payment) applyIOURedeemPartial(ctx *tx.ApplyContext, dest *sle.AccountR
 	rippleState.PreviousTxnID = ctx.TxHash
 	rippleState.PreviousTxnLgrSeq = ctx.Config.LedgerSequence
 
-	// Serialize and update
-	updatedTrustLine, err := sle.SerializeRippleState(rippleState)
-	if err != nil {
-		return tx.TefINTERNAL, tx.Amount{}
-	}
-
-	if err := ctx.View.Update(trustLineKey, updatedTrustLine); err != nil {
-		return tx.TefINTERNAL, tx.Amount{}
+	// Check for trust line cleanup (default state → delete)
+	// Reference: rippled View.cpp rippleCreditIOU() lines 1692-1745
+	if result := trustLineCleanup(ctx, dest, senderID, destID, trustLineKey, rippleState); result != tx.TesSUCCESS {
+		return result, tx.Amount{}
 	}
 
 	ctx.Metadata.DeliveredAmount = &maxDeliverable
@@ -1656,4 +1648,127 @@ func (p *Payment) applyIOUTransferPartial(ctx *tx.ApplyContext, dest *sle.Accoun
 	ctx.Metadata.DeliveredAmount = &maxDeliverable
 
 	return tx.TesSUCCESS, maxDeliverable
+}
+
+// trustLineCleanup checks if a trust line is in default state after a balance modification
+// and deletes it if so, adjusting OwnerCount for both accounts.
+// This matches rippled's rippleCreditIOU() logic in View.cpp lines 1692-1745.
+//
+// Parameters:
+//   - ctx: apply context (ctx.Account = transaction sender, identified by senderID)
+//   - dest: the other account's AccountRoot (identified by destID)
+//   - senderID, destID: the two account IDs on the trust line
+//   - tlKey: the keylet for the trust line
+//   - rs: the already-modified RippleState (balance updated, not yet serialized)
+//
+// On success, either updates or erases the trust line via ctx.View. Returns TesSUCCESS.
+func trustLineCleanup(ctx *tx.ApplyContext, dest *sle.AccountRoot, senderID, destID [20]byte, tlKey keylet.Keylet, rs *sle.RippleState) tx.Result {
+	senderIsLow := sle.CompareAccountIDsForLine(senderID, destID) < 0
+
+	// Get both accounts' DefaultRipple flags
+	var lowDefRipple, highDefRipple bool
+	if senderIsLow {
+		lowDefRipple = (ctx.Account.Flags & sle.LsfDefaultRipple) != 0
+		highDefRipple = (dest.Flags & sle.LsfDefaultRipple) != 0
+	} else {
+		lowDefRipple = (dest.Flags & sle.LsfDefaultRipple) != 0
+		highDefRipple = (ctx.Account.Flags & sle.LsfDefaultRipple) != 0
+	}
+
+	bLowReserveSet := rs.LowQualityIn != 0 || rs.LowQualityOut != 0 ||
+		((rs.Flags&sle.LsfLowNoRipple) == 0) != lowDefRipple ||
+		(rs.Flags&sle.LsfLowFreeze) != 0 || !rs.LowLimit.IsZero() ||
+		rs.Balance.Signum() > 0
+
+	bHighReserveSet := rs.HighQualityIn != 0 || rs.HighQualityOut != 0 ||
+		((rs.Flags&sle.LsfHighNoRipple) == 0) != highDefRipple ||
+		(rs.Flags&sle.LsfHighFreeze) != 0 || !rs.HighLimit.IsZero() ||
+		rs.Balance.Signum() < 0
+
+	bLowReserved := (rs.Flags & sle.LsfLowReserve) != 0
+	bHighReserved := (rs.Flags & sle.LsfHighReserve) != 0
+
+	bDefault := !bLowReserveSet && !bHighReserveSet
+
+	if bDefault && rs.Balance.IsZero() {
+		// Remove from both owner directories before erasing
+		// Reference: rippled trustDelete() in View.cpp
+		var lowID, highID [20]byte
+		if senderIsLow {
+			lowID = senderID
+			highID = destID
+		} else {
+			lowID = destID
+			highID = senderID
+		}
+		lowDirKey := keylet.OwnerDir(lowID)
+		sle.DirRemove(ctx.View, lowDirKey, rs.LowNode, tlKey.Key, false)
+		highDirKey := keylet.OwnerDir(highID)
+		sle.DirRemove(ctx.View, highDirKey, rs.HighNode, tlKey.Key, false)
+
+		// Delete the trust line
+		if err := ctx.View.Erase(tlKey); err != nil {
+			return tx.TefINTERNAL
+		}
+
+		// Decrement OwnerCount for both sides that had reserve set
+		if bLowReserved {
+			if senderIsLow {
+				if ctx.Account.OwnerCount > 0 {
+					ctx.Account.OwnerCount--
+				}
+			} else {
+				if dest.OwnerCount > 0 {
+					dest.OwnerCount--
+				}
+			}
+		}
+		if bHighReserved {
+			if !senderIsLow {
+				if ctx.Account.OwnerCount > 0 {
+					ctx.Account.OwnerCount--
+				}
+			} else {
+				if dest.OwnerCount > 0 {
+					dest.OwnerCount--
+				}
+			}
+		}
+
+		// Write dest account back if its OwnerCount changed
+		destChanged := (bLowReserved && !senderIsLow) || (bHighReserved && senderIsLow)
+		if destChanged {
+			destKey := keylet.Account(destID)
+			destUpdatedData, serErr := sle.SerializeAccountRoot(dest)
+			if serErr != nil {
+				return tx.TefINTERNAL
+			}
+			if err := ctx.View.Update(destKey, destUpdatedData); err != nil {
+				return tx.TefINTERNAL
+			}
+		}
+	} else {
+		// Adjust reserve flags
+		if bLowReserveSet && !bLowReserved {
+			rs.Flags |= sle.LsfLowReserve
+		} else if !bLowReserveSet && bLowReserved {
+			rs.Flags &^= sle.LsfLowReserve
+		}
+		if bHighReserveSet && !bHighReserved {
+			rs.Flags |= sle.LsfHighReserve
+		} else if !bHighReserveSet && bHighReserved {
+			rs.Flags &^= sle.LsfHighReserve
+		}
+
+		// Serialize and update
+		updatedData, serErr := sle.SerializeRippleState(rs)
+		if serErr != nil {
+			return tx.TefINTERNAL
+		}
+		if err := ctx.View.Update(tlKey, updatedData); err != nil {
+			return tx.TefINTERNAL
+		}
+	}
+
+	return tx.TesSUCCESS
 }
