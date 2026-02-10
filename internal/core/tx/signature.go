@@ -92,10 +92,10 @@ func VerifySignature(tx Transaction) error {
 		return ErrMissingPublicKey
 	}
 
-	// Verify the public key corresponds to the account
-	if err := verifyPublicKeyMatchesAccount(common.SigningPubKey, common.Account); err != nil {
-		return err
-	}
+	// Note: We do NOT check whether the public key matches the account here.
+	// That check (master key vs regular key) is done in preclaim where the
+	// ledger state is available. This matches rippled's preflight1 which only
+	// verifies the cryptographic signature validity.
 
 	// Get the message that was signed
 	signingPayload, err := getSigningPayload(tx)

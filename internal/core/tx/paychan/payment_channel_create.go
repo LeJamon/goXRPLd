@@ -147,7 +147,7 @@ func (pc *PaymentChannelCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Create pay channel
 	accountID, _ := sle.DecodeAccountID(pc.Account)
-	sequence := *pc.GetCommon().Sequence
+	sequence := pc.GetCommon().SeqProxy()
 
 	channelKey := keylet.PayChannel(accountID, destID, sequence)
 

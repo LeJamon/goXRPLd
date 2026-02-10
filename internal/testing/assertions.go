@@ -2,8 +2,10 @@ package testing
 
 import (
 	"fmt"
+	"math"
 	"testing"
 
+	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/stretchr/testify/require"
 )
 
@@ -338,4 +340,84 @@ func XRPMinusFee(env *TestEnv, amountXRP int64) uint64 {
 // XRPMinusFees calculates expected XRP balance after paying multiple fees.
 func XRPMinusFees(env *TestEnv, amountXRP int64, numFees int) uint64 {
 	return uint64(XRP(amountXRP)) - uint64(numFees)*env.BaseFee()
+}
+
+// RequireIOUBalance asserts that an account has the expected IOU balance.
+// The balance is from the holder's perspective.
+// Reference: rippled's require(env.balance(alice, USD) == USD(100))
+func RequireIOUBalance(t *testing.T, env *TestEnv, holder, issuer *Account, currency string, expected float64) {
+	t.Helper()
+	actual := env.BalanceIOU(holder, currency, issuer)
+	require.InDelta(t, expected, actual, 1e-10,
+		"Account %s IOU balance mismatch for %s/%s: expected %f, got %f",
+		holder.Name, currency, issuer.Name, expected, actual)
+}
+
+// RequireIOUBalanceApprox asserts that an account IOU balance is within a tolerance of the expected value.
+func RequireIOUBalanceApprox(t *testing.T, env *TestEnv, holder, issuer *Account, currency string, expected, tolerance float64) {
+	t.Helper()
+	actual := env.BalanceIOU(holder, currency, issuer)
+	diff := math.Abs(actual - expected)
+	require.LessOrEqual(t, diff, tolerance,
+		"Account %s IOU balance mismatch for %s/%s: expected %f +/- %f, got %f (diff: %f)",
+		holder.Name, currency, issuer.Name, expected, tolerance, actual, diff)
+}
+
+// RequireLedgerEntryExists asserts that a ledger entry exists at the given keylet.
+func RequireLedgerEntryExists(t *testing.T, env *TestEnv, key keylet.Keylet) {
+	t.Helper()
+	require.True(t, env.LedgerEntryExists(key),
+		"Expected ledger entry to exist at keylet %v", key)
+}
+
+// RequireLedgerEntryNotExists asserts that a ledger entry does NOT exist at the given keylet.
+func RequireLedgerEntryNotExists(t *testing.T, env *TestEnv, key keylet.Keylet) {
+	t.Helper()
+	require.False(t, env.LedgerEntryExists(key),
+		"Expected ledger entry to NOT exist at keylet %v", key)
+}
+
+// RequireTicketCount asserts that an account has the expected number of tickets.
+// This uses the OwnerCount as a proxy; for precise counting of just tickets,
+// we would need to iterate the owner directory and filter by entry type.
+func RequireTicketCount(t *testing.T, env *TestEnv, acc *Account, expected uint32) {
+	t.Helper()
+	// Tickets are tracked in owner count. If this is the only owned object type,
+	// OwnerCount == ticket count. For tests that mix object types, use RequireOwnerCount.
+	info := env.AccountInfo(acc)
+	require.NotNil(t, info, "Account %s does not exist", acc.Name)
+	require.Equal(t, expected, info.OwnerCount,
+		"Account %s ticket count (owner count) mismatch: expected %d, got %d",
+		acc.Name, expected, info.OwnerCount)
+}
+
+// RequireSignerListCount asserts that an account has the expected number of signer lists.
+// On the XRPL, an account can have at most one signer list, so expected is 0 or 1.
+func RequireSignerListCount(t *testing.T, env *TestEnv, acc *Account, expected uint32) {
+	t.Helper()
+	key := keylet.SignerList(acc.ID)
+	exists := env.LedgerEntryExists(key)
+	if expected == 0 {
+		require.False(t, exists,
+			"Account %s expected no signer list, but one exists", acc.Name)
+	} else {
+		require.True(t, exists,
+			"Account %s expected signer list to exist, but it doesn't", acc.Name)
+	}
+}
+
+// RequireTrustLineExists asserts that a trust line exists between two accounts for a currency.
+func RequireTrustLineExists(t *testing.T, env *TestEnv, acc1, acc2 *Account, currency string) {
+	t.Helper()
+	require.True(t, env.TrustLineExists(acc1, acc2, currency),
+		"Expected trust line to exist between %s and %s for %s",
+		acc1.Name, acc2.Name, currency)
+}
+
+// RequireTrustLineNotExists asserts that a trust line does NOT exist between two accounts for a currency.
+func RequireTrustLineNotExists(t *testing.T, env *TestEnv, acc1, acc2 *Account, currency string) {
+	t.Helper()
+	require.False(t, env.TrustLineExists(acc1, acc2, currency),
+		"Expected no trust line between %s and %s for %s",
+		acc1.Name, acc2.Name, currency)
 }

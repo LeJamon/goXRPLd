@@ -252,6 +252,38 @@ func (r Result) String() string {
 		return "tecINTERNAL"
 	case TecOVERSIZE:
 		return "tecOVERSIZE"
+	case TecCRYPTOCONDITION_ERROR:
+		return "tecCRYPTOCONDITION_ERROR"
+	case TecINVARIANT_FAILED:
+		return "tecINVARIANT_FAILED"
+	case TecEXPIRED:
+		return "tecEXPIRED"
+	case TecKILLED:
+		return "tecKILLED"
+	case TecHAS_OBLIGATIONS:
+		return "tecHAS_OBLIGATIONS"
+	case TecTOO_SOON:
+		return "tecTOO_SOON"
+	case TecMAX_SEQUENCE_REACHED:
+		return "tecMAX_SEQUENCE_REACHED"
+	case TecNO_SUITABLE_NFTOKEN_PAGE:
+		return "tecNO_SUITABLE_NFTOKEN_PAGE"
+	case TecNFTOKEN_BUY_SELL_MISMATCH:
+		return "tecNFTOKEN_BUY_SELL_MISMATCH"
+	case TecNFTOKEN_OFFER_TYPE_MISMATCH:
+		return "tecNFTOKEN_OFFER_TYPE_MISMATCH"
+	case TecCANT_ACCEPT_OWN_NFTOKEN_OFFER:
+		return "tecCANT_ACCEPT_OWN_NFTOKEN_OFFER"
+	case TecINSUFFICIENT_FUNDS:
+		return "tecINSUFFICIENT_FUNDS"
+	case TecOBJECT_NOT_FOUND:
+		return "tecOBJECT_NOT_FOUND"
+	case TecINSUFFICIENT_PAYMENT:
+		return "tecINSUFFICIENT_PAYMENT"
+	case TecNO_SUITABLE_PAGE:
+		return "tecNO_SUITABLE_PAGE"
+	case TecNO_PERMISSION_XCHAIN:
+		return "tecNO_PERMISSION_XCHAIN"
 	case TecEMPTY_DID:
 		return "tecEMPTY_DID"
 	case TecINVALID_UPDATE_TIME:

@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
+	"github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 	ed25519 "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/ed25519"
 	secp256k1 "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/secp256k1"
 )
@@ -242,4 +244,74 @@ func (a *Account) Human() string {
 // String implements the Stringer interface for debugging.
 func (a *Account) String() string {
 	return a.Name + " (" + a.Address + ")"
+}
+
+// IOU returns a tx.Amount for this account as issuer of the given currency.
+// Usage: gw.IOU("USD", 100) returns an issued amount of 100 USD from gw.
+// Reference: rippled's Account::operator[]("USD")(100)
+func (a *Account) IOU(currency string, value float64) tx.Amount {
+	return sle.NewIssuedAmountFromFloat64(value, currency, a.Address)
+}
+
+// NewAccountFromSeed creates a test account from a base58-encoded seed string.
+// This is useful for recreating accounts from known seeds (e.g., from rippled test vectors).
+func NewAccountFromSeed(name, base58Seed string) *Account {
+	seedBytes, algo, err := addresscodec.DecodeSeed(base58Seed)
+	if err != nil {
+		panic("failed to decode base58 seed: " + err.Error())
+	}
+
+	// Determine key type from algorithm
+	keyType := KeyTypeSecp256k1
+	privKeyHex, pubKeyHex, err := algo.DeriveKeypair(seedBytes, false)
+	if err != nil {
+		panic("failed to derive keypair from seed: " + err.Error())
+	}
+
+	// Check if this is ed25519 by looking at the public key prefix
+	pubKeyBytes, _ := hex.DecodeString(pubKeyHex)
+	if len(pubKeyBytes) > 0 && pubKeyBytes[0] == 0xED {
+		keyType = KeyTypeEd25519
+	}
+
+	// Decode private key (remove the leading prefix if present)
+	privKey, err := hex.DecodeString(privKeyHex)
+	if err != nil {
+		panic("failed to decode private key: " + err.Error())
+	}
+	if len(privKey) == 33 {
+		privKey = privKey[1:]
+	}
+
+	// Decode public key
+	pubKey, err := hex.DecodeString(pubKeyHex)
+	if err != nil {
+		panic("failed to decode public key: " + err.Error())
+	}
+
+	// Generate classic address from public key
+	address, err := addresscodec.EncodeClassicAddressFromPublicKeyHex(pubKeyHex)
+	if err != nil {
+		panic("failed to generate address: " + err.Error())
+	}
+
+	// Get the account ID (20 bytes)
+	_, accountIDBytes, err := addresscodec.DecodeClassicAddressToAccountID(address)
+	if err != nil {
+		panic("failed to decode account ID: " + err.Error())
+	}
+
+	var accountID [20]byte
+	copy(accountID[:], accountIDBytes)
+
+	return &Account{
+		Name:       name,
+		KeyType:    keyType,
+		Seed:       seedBytes,
+		Address:    address,
+		PublicKey:  pubKey,
+		PrivateKey: privKey,
+		ID:         accountID,
+		Sequence:   1,
+	}
 }

@@ -237,7 +237,7 @@ func (c *NFTokenCreateOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	// Create the offer using keylet based on account + sequence
-	sequence := *c.GetCommon().Sequence
+	sequence := c.GetCommon().SeqProxy()
 	offerKey := keylet.NFTokenOffer(accountID, sequence)
 
 	offerData, err := serializeNFTokenOffer(c, accountID, tokenID, amountXRP, sequence)

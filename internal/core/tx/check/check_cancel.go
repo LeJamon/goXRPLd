@@ -3,9 +3,10 @@ package check
 import (
 	"encoding/hex"
 	"errors"
+
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	txamendment "github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
@@ -14,8 +15,6 @@ func init() {
 		return &CheckCancel{BaseTx: *tx.NewBaseTx(tx.TypeCheckCancel, "")}
 	})
 }
-
-// CheckCreate creates a Check that can be cashed by the destination.
 
 // CheckCancel cancels a Check.
 type CheckCancel struct {
@@ -38,10 +37,16 @@ func (c *CheckCancel) TxType() tx.Type {
 	return tx.TypeCheckCancel
 }
 
-// Validate validates the CheckCancel transaction
+// Validate implements preflight validation matching rippled's CancelCheck::preflight().
 func (c *CheckCancel) Validate() error {
 	if err := c.BaseTx.Validate(); err != nil {
 		return err
+	}
+
+	// No flags allowed except universal flags
+	// Reference: CancelCheck.cpp L42-47
+	if c.GetFlags()&tx.TfUniversalMask != 0 {
+		return errors.New("temINVALID_FLAG: invalid flags")
 	}
 
 	if c.CheckID == "" {
@@ -58,10 +63,10 @@ func (c *CheckCancel) Flatten() (map[string]any, error) {
 
 // RequiredAmendments returns the amendments required for this transaction type
 func (c *CheckCancel) RequiredAmendments() []string {
-	return []string{amendment.AmendmentChecks}
+	return []string{txamendment.AmendmentChecks}
 }
 
-// Apply applies the CheckCancel transaction to ledger state.
+// Apply implements preclaim + doApply matching rippled's CancelCheck.
 func (c *CheckCancel) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Parse check ID
 	checkID, err := hex.DecodeString(c.CheckID)
@@ -74,6 +79,7 @@ func (c *CheckCancel) Apply(ctx *tx.ApplyContext) tx.Result {
 	checkKey := keylet.Keylet{Key: checkKeyBytes}
 
 	// Read check
+	// Reference: CancelCheck.cpp L55-60
 	checkData, err := ctx.View.Read(checkKey)
 	if err != nil {
 		return tx.TecNO_ENTRY
@@ -85,27 +91,38 @@ func (c *CheckCancel) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TefINTERNAL
 	}
 
-	accountID, _ := sle.DecodeAccountID(c.Account)
+	accountID := ctx.AccountID
 	isCreator := check.Account == accountID
 	isDestination := check.DestinationID == accountID
 
-	// Only creator or destination can cancel
-	if !isCreator && !isDestination {
-		// Unless the check is expired
-		if check.Expiration == 0 {
+	// Permission check based on expiration
+	// Reference: CancelCheck.cpp L64-83
+	// If expiration exists AND current time < expiration (not yet expired):
+	//   Only creator or destination can cancel
+	// If expired or no expiration: anyone can cancel expired, but only creator/dest for non-expired
+	if check.Expiration == 0 {
+		// No expiration set - only creator or destination can cancel
+		if !isCreator && !isDestination {
 			return tx.TecNO_PERMISSION
 		}
-		// In full implementation, check if expired
-		// For standalone mode, allow anyone to cancel expired checks
+	} else if check.Expiration > ctx.Config.ParentCloseTime {
+		// Not yet expired - only creator or destination can cancel
+		if !isCreator && !isDestination {
+			return tx.TecNO_PERMISSION
+		}
 	}
+	// If expired (Expiration > 0 && Expiration <= ParentCloseTime), anyone can cancel
 
-	// Delete the check - deletion tracked automatically by ApplyStateTable
+	// --- doApply ---
+
+	// Delete the check
 	if err := ctx.View.Erase(checkKey); err != nil {
 		return tx.TefINTERNAL
 	}
 
-	// If the canceller is also the creator, decrease their owner count
+	// Adjust creator's owner count
 	if isCreator {
+		// Canceller is the creator
 		if ctx.Account.OwnerCount > 0 {
 			ctx.Account.OwnerCount--
 		}

@@ -2,11 +2,12 @@ package check
 
 import (
 	"errors"
-	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	txamendment "github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
 func init() {
@@ -48,23 +49,42 @@ func (c *CheckCreate) TxType() tx.Type {
 	return tx.TypeCheckCreate
 }
 
-// Validate validates the CheckCreate transaction
+// Validate implements preflight validation matching rippled's CreateCheck::preflight().
 func (c *CheckCreate) Validate() error {
 	if err := c.BaseTx.Validate(); err != nil {
 		return err
 	}
 
-	if c.Destination == "" {
-		return errors.New("Destination is required")
-	}
-
-	if c.SendMax.IsZero() {
-		return errors.New("SendMax is required")
+	// No flags allowed except universal flags
+	// Reference: CreateCheck.cpp L41-46
+	if c.GetFlags()&tx.TfUniversalMask != 0 {
+		return errors.New("temINVALID_FLAG: invalid flags")
 	}
 
 	// Cannot create check to self
+	// Reference: CreateCheck.cpp L47-52
 	if c.Account == c.Destination {
-		return errors.New("cannot create check to self")
+		return errors.New("temREDUNDANT: cannot create check to self")
+	}
+
+	// SendMax must be positive
+	// Reference: CreateCheck.cpp L55-61
+	if c.SendMax.Signum() <= 0 {
+		return errors.New("temBAD_AMOUNT: SendMax must be positive")
+	}
+
+	// Cannot use bad currency (XRP as IOU or null currency)
+	// Reference: CreateCheck.cpp L63-67
+	if !c.SendMax.IsNative() {
+		if c.SendMax.Currency == "XRP" || c.SendMax.Currency == "\x00\x00\x00" || c.SendMax.Currency == "" {
+			return errors.New("temBAD_CURRENCY: invalid currency")
+		}
+	}
+
+	// Expiration must not be zero if provided
+	// Reference: CreateCheck.cpp L70-77
+	if c.Expiration != nil && *c.Expiration == 0 {
+		return errors.New("temBAD_EXPIRATION: expiration must not be zero")
 	}
 
 	return nil
@@ -77,49 +97,155 @@ func (c *CheckCreate) Flatten() (map[string]any, error) {
 
 // RequiredAmendments returns the amendments required for this transaction type
 func (c *CheckCreate) RequiredAmendments() []string {
-	return []string{amendment.AmendmentChecks}
+	return []string{txamendment.AmendmentChecks}
 }
 
-// Apply applies the CheckCreate transaction to ledger state.
+// Apply implements preclaim + doApply matching rippled's CreateCheck.
 func (c *CheckCreate) Apply(ctx *tx.ApplyContext) tx.Result {
+	// --- Preclaim checks ---
+
 	// Verify destination exists
+	// Reference: CreateCheck.cpp L85-90
 	destID, err := sle.DecodeAccountID(c.Destination)
 	if err != nil {
 		return tx.TemINVALID
 	}
 
 	destKey := keylet.Account(destID)
-	exists, _ := ctx.View.Exists(destKey)
-	if !exists {
+	destData, err := ctx.View.Read(destKey)
+	if err != nil {
 		return tx.TecNO_DST
 	}
 
-	// Parse SendMax - only XRP supported for now
-	var sendMax uint64
-	if c.SendMax.IsNative() {
-		sendMax = uint64(c.SendMax.Drops())
-	}
-
-	// Check balance for XRP checks
-	if c.SendMax.Currency == "" && sendMax > 0 {
-		if ctx.Account.Balance < sendMax {
-			return tx.TecUNFUNDED
-		}
-	}
-
-	// Create the check entry
-	accountID, _ := sle.DecodeAccountID(c.Account)
-	sequence := *c.GetCommon().Sequence
-
-	checkKey := keylet.Check(accountID, sequence)
-
-	// Serialize check
-	checkData, err := serializeCheck(c, accountID, destID, sequence, sendMax)
+	destAccount, err := sle.ParseAccountRoot(destData)
 	if err != nil {
 		return tx.TefINTERNAL
 	}
 
-	// Insert check - creation tracked automatically by ApplyStateTable
+	// Check DisallowIncoming flag on destination
+	// Reference: CreateCheck.cpp L93-98
+	rules := ctx.Rules()
+	if rules.Enabled(amendment.FeatureDisallowIncoming) {
+		if destAccount.Flags&sle.LsfDisallowIncomingCheck != 0 {
+			return tx.TecNO_PERMISSION
+		}
+	}
+
+	// Check RequireDestTag on destination
+	// Reference: CreateCheck.cpp L107-113
+	if destAccount.Flags&sle.LsfRequireDestTag != 0 && c.DestinationTag == nil {
+		return tx.TecDST_TAG_NEEDED
+	}
+
+	// IOU-specific checks
+	// Reference: CreateCheck.cpp L116-161
+	if !c.SendMax.IsNative() {
+		issuerID, err := sle.DecodeAccountID(c.SendMax.Issuer)
+		if err != nil {
+			return tx.TefINTERNAL
+		}
+
+		// Check global freeze on issuer
+		// Reference: CreateCheck.cpp L117-125
+		issuerKey := keylet.Account(issuerID)
+		issuerData, err := ctx.View.Read(issuerKey)
+		if err != nil {
+			return tx.TefINTERNAL
+		}
+		issuerAccount, err := sle.ParseAccountRoot(issuerData)
+		if err != nil {
+			return tx.TefINTERNAL
+		}
+		if issuerAccount.Flags&sle.LsfGlobalFreeze != 0 {
+			return tx.TecFROZEN
+		}
+
+		accountID := ctx.AccountID
+
+		// Check source trust line freeze (if source is not issuer)
+		// Reference: CreateCheck.cpp L131-145
+		if accountID != issuerID {
+			srcTLKey := keylet.Line(accountID, issuerID, c.SendMax.Currency)
+			srcTLExists, _ := ctx.View.Exists(srcTLKey)
+			if srcTLExists {
+				srcTLData, err := ctx.View.Read(srcTLKey)
+				if err == nil {
+					srcTL, err := sle.ParseRippleState(srcTLData)
+					if err == nil {
+						srcIsLow := keylet.IsLowAccount(accountID, issuerID)
+						if srcIsLow {
+							if srcTL.Flags&sle.LsfHighFreeze != 0 {
+								return tx.TecFROZEN
+							}
+						} else {
+							if srcTL.Flags&sle.LsfLowFreeze != 0 {
+								return tx.TecFROZEN
+							}
+						}
+					}
+				}
+			}
+		}
+
+		// Check destination trust line freeze (if dest is not issuer)
+		// For destination, check if DESTINATION froze their own line (not issuer freeze)
+		// Reference: CreateCheck.cpp L146-159
+		if destID != issuerID {
+			dstTLKey := keylet.Line(destID, issuerID, c.SendMax.Currency)
+			dstTLExists, _ := ctx.View.Exists(dstTLKey)
+			if dstTLExists {
+				dstTLData, err := ctx.View.Read(dstTLKey)
+				if err == nil {
+					dstTL, err := sle.ParseRippleState(dstTLData)
+					if err == nil {
+						dstIsLow := keylet.IsLowAccount(destID, issuerID)
+						// Check if the destination froze their own side
+						if dstIsLow {
+							if dstTL.Flags&sle.LsfLowFreeze != 0 {
+								return tx.TecFROZEN
+							}
+						} else {
+							if dstTL.Flags&sle.LsfHighFreeze != 0 {
+								return tx.TecFROZEN
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Check expiration
+	// Reference: CreateCheck.cpp L162-166
+	if c.Expiration != nil && *c.Expiration <= ctx.Config.ParentCloseTime {
+		return tx.TecEXPIRED
+	}
+
+	// --- doApply ---
+
+	// Reserve check: account must afford owner count + 1
+	// Reference: CreateCheck.cpp L181-186
+	// Use prior balance (before fee deduction) as rippled uses mPriorBalance
+	feeDrops := parseFee(c.Fee)
+	priorBalance := ctx.Account.Balance + feeDrops
+	reserve := ctx.AccountReserve(ctx.Account.OwnerCount + 1)
+	if priorBalance < reserve {
+		return tx.TecINSUFFICIENT_RESERVE
+	}
+
+	// Create the check entry
+	accountID := ctx.AccountID
+	sequence := c.GetCommon().SeqProxy()
+
+	checkKey := keylet.Check(accountID, sequence)
+
+	// Serialize check
+	checkData, err := serializeCheck(c, accountID, destID, sequence, c.SendMax)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	// Insert check
 	if err := ctx.View.Insert(checkKey, checkData); err != nil {
 		return tx.TefINTERNAL
 	}

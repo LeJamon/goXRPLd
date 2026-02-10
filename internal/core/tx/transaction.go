@@ -237,7 +237,17 @@ func (c *Common) ToMap() map[string]any {
 		m["NetworkID"] = *c.NetworkID
 	}
 	if len(c.Signers) > 0 {
-		m["Signers"] = c.Signers
+		signers := make([]map[string]any, len(c.Signers))
+		for i, sw := range c.Signers {
+			signers[i] = map[string]any{
+				"Signer": map[string]any{
+					"Account":       sw.Signer.Account,
+					"SigningPubKey": sw.Signer.SigningPubKey,
+					"TxnSignature":  sw.Signer.TxnSignature,
+				},
+			}
+		}
+		m["Signers"] = signers
 	}
 	if c.SourceTag != nil {
 		m["SourceTag"] = *c.SourceTag
@@ -253,6 +263,20 @@ func (c *Common) ToMap() map[string]any {
 	}
 
 	return m
+}
+
+// SeqProxy returns the effective sequence value for this transaction.
+// For ticket-based transactions (TicketSequence set), returns the ticket sequence.
+// For normal transactions, returns the Sequence value.
+// Reference: rippled STTx::getSeqProxy()
+func (c *Common) SeqProxy() uint32 {
+	if c.TicketSequence != nil {
+		return *c.TicketSequence
+	}
+	if c.Sequence != nil {
+		return *c.Sequence
+	}
+	return 0
 }
 
 // BaseTx provides a base implementation for transactions

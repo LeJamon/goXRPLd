@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
@@ -356,29 +357,32 @@ func (a *AccountSet) Apply(ctx *tx.ApplyContext) tx.Result {
 		account.NFTokenMinter = ""
 	}
 
-	// Disallow Incoming flags
-	if uSetFlag == AccountSetFlagDisallowIncomingNFTokenOffer {
-		uFlagsOut |= sle.LsfDisallowIncomingNFTokenOffer
-	} else if uClearFlag == AccountSetFlagDisallowIncomingNFTokenOffer {
-		uFlagsOut &^= sle.LsfDisallowIncomingNFTokenOffer
-	}
+	// Disallow Incoming flags - gated by featureDisallowIncoming amendment
+	// Reference: rippled SetAccount.cpp L630-651
+	if ctx.Rules().Enabled(amendment.FeatureDisallowIncoming) {
+		if uSetFlag == AccountSetFlagDisallowIncomingNFTokenOffer {
+			uFlagsOut |= sle.LsfDisallowIncomingNFTokenOffer
+		} else if uClearFlag == AccountSetFlagDisallowIncomingNFTokenOffer {
+			uFlagsOut &^= sle.LsfDisallowIncomingNFTokenOffer
+		}
 
-	if uSetFlag == AccountSetFlagDisallowIncomingCheck {
-		uFlagsOut |= sle.LsfDisallowIncomingCheck
-	} else if uClearFlag == AccountSetFlagDisallowIncomingCheck {
-		uFlagsOut &^= sle.LsfDisallowIncomingCheck
-	}
+		if uSetFlag == AccountSetFlagDisallowIncomingCheck {
+			uFlagsOut |= sle.LsfDisallowIncomingCheck
+		} else if uClearFlag == AccountSetFlagDisallowIncomingCheck {
+			uFlagsOut &^= sle.LsfDisallowIncomingCheck
+		}
 
-	if uSetFlag == AccountSetFlagDisallowIncomingPayChan {
-		uFlagsOut |= sle.LsfDisallowIncomingPayChan
-	} else if uClearFlag == AccountSetFlagDisallowIncomingPayChan {
-		uFlagsOut &^= sle.LsfDisallowIncomingPayChan
-	}
+		if uSetFlag == AccountSetFlagDisallowIncomingPayChan {
+			uFlagsOut |= sle.LsfDisallowIncomingPayChan
+		} else if uClearFlag == AccountSetFlagDisallowIncomingPayChan {
+			uFlagsOut &^= sle.LsfDisallowIncomingPayChan
+		}
 
-	if uSetFlag == AccountSetFlagDisallowIncomingTrustline {
-		uFlagsOut |= sle.LsfDisallowIncomingTrustline
-	} else if uClearFlag == AccountSetFlagDisallowIncomingTrustline {
-		uFlagsOut &^= sle.LsfDisallowIncomingTrustline
+		if uSetFlag == AccountSetFlagDisallowIncomingTrustline {
+			uFlagsOut |= sle.LsfDisallowIncomingTrustline
+		} else if uClearFlag == AccountSetFlagDisallowIncomingTrustline {
+			uFlagsOut &^= sle.LsfDisallowIncomingTrustline
+		}
 	}
 
 	// AllowTrustLineClawback (cannot be cleared once set)

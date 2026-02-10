@@ -609,8 +609,29 @@ func (s *DirectStepI) Check(sb *PaymentSandbox) tx.Result {
 }
 
 // checkAuth checks if the trust line is properly authorized when RequireAuth is set.
-// Reference: rippled DirectStep.cpp checkAuth()
+// Reference: rippled DirectStep.cpp check() - auth section (lines 420-430)
+// Only checks if the SOURCE requires auth and has authorized the trust line.
+// The auth flag checked is on the source's own side:
+//   (src > dst) ? lsfHighAuth : lsfLowAuth
+// Auth is only checked when the balance is zero.
 func checkAuth(view *PaymentSandbox, src, dst [20]byte, currency string) tx.Result {
+	// Read source account to check RequireAuth
+	srcKey := keylet.Account(src)
+	srcData, err := view.Read(srcKey)
+	if err != nil || srcData == nil {
+		return tx.TesSUCCESS
+	}
+
+	srcAccount, err := sle.ParseAccountRoot(srcData)
+	if err != nil {
+		return tx.TesSUCCESS
+	}
+
+	// Only check auth if source has RequireAuth
+	if (srcAccount.Flags & sle.LsfRequireAuth) == 0 {
+		return tx.TesSUCCESS
+	}
+
 	// Get the trust line
 	trustLineKey := keylet.Line(src, dst, currency)
 	data, err := view.Read(trustLineKey)
@@ -623,52 +644,21 @@ func checkAuth(view *PaymentSandbox, src, dst [20]byte, currency string) tx.Resu
 		return tx.TefINTERNAL
 	}
 
-	// Determine which account is low/high
-	srcIsLow := sle.CompareAccountIDs(src, dst) < 0
-
-	// Check both sides for RequireAuth
-	srcKey := keylet.Account(src)
-	dstKey := keylet.Account(dst)
-
-	srcData, _ := view.Read(srcKey)
-	dstData, _ := view.Read(dstKey)
-
-	// If src has RequireAuth, check if dst is authorized
-	if srcData != nil {
-		srcAccount, err := sle.ParseAccountRoot(srcData)
-		if err == nil && (srcAccount.Flags&sle.LsfRequireAuth) != 0 {
-			// src requires auth, check if dst (the other side) is authorized
-			if srcIsLow {
-				// src is low, dst is high. Check if high side is authorized by low (src)
-				if (rs.Flags & sle.LsfHighAuth) == 0 {
-					return tx.TerNO_AUTH
-				}
-			} else {
-				// src is high, dst is low. Check if low side is authorized by high (src)
-				if (rs.Flags & sle.LsfLowAuth) == 0 {
-					return tx.TerNO_AUTH
-				}
-			}
-		}
+	// Check the source's own auth flag
+	// Reference: rippled DirectStep.cpp L420:
+	//   auto const authField = (src_ > dst_) ? lsfHighAuth : lsfLowAuth;
+	srcIsHigh := sle.CompareAccountIDs(src, dst) > 0
+	var authFlag uint32
+	if srcIsHigh {
+		authFlag = sle.LsfHighAuth
+	} else {
+		authFlag = sle.LsfLowAuth
 	}
 
-	// If dst has RequireAuth, check if src is authorized
-	if dstData != nil {
-		dstAccount, err := sle.ParseAccountRoot(dstData)
-		if err == nil && (dstAccount.Flags&sle.LsfRequireAuth) != 0 {
-			// dst requires auth, check if src (the other side) is authorized
-			if srcIsLow {
-				// src is low, dst is high. Check if low side is authorized by high (dst)
-				if (rs.Flags & sle.LsfLowAuth) == 0 {
-					return tx.TerNO_AUTH
-				}
-			} else {
-				// src is high, dst is low. Check if high side is authorized by low (dst)
-				if (rs.Flags & sle.LsfHighAuth) == 0 {
-					return tx.TerNO_AUTH
-				}
-			}
-		}
+	// Only block if auth flag is NOT set AND balance is zero
+	// Reference: rippled DirectStep.cpp L422-430
+	if (rs.Flags&authFlag) == 0 && rs.Balance.Signum() == 0 {
+		return tx.TerNO_AUTH
 	}
 
 	return tx.TesSUCCESS

@@ -29,12 +29,14 @@ func IsTrustlineFrozen(view LedgerView, accountID, issuerID [20]byte, currency s
 		return false
 	}
 
-	// Check freeze flags
-	accountIsLow := sle.CompareAccountIDsForLine(accountID, issuerID) < 0
-	if accountIsLow {
-		return (rs.Flags & sle.LsfLowFreeze) != 0
+	// Check if the ISSUER has frozen this trust line.
+	// Reference: rippled View.cpp isFrozen() - checks the issuer's freeze flag:
+	//   (issuer > account) ? lsfHighFreeze : lsfLowFreeze
+	issuerIsHigh := sle.CompareAccountIDsForLine(issuerID, accountID) > 0
+	if issuerIsHigh {
+		return (rs.Flags & sle.LsfHighFreeze) != 0
 	}
-	return (rs.Flags & sle.LsfHighFreeze) != 0
+	return (rs.Flags & sle.LsfLowFreeze) != 0
 }
 
 // IsIndividualFrozen checks if a specific account is individually frozen for an asset.
