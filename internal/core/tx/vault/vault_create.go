@@ -7,7 +7,7 @@ import (
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 )
 
 func init() {
@@ -133,8 +133,8 @@ func (v *VaultCreate) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (v *VaultCreate) RequiredAmendments() []string {
-	return []string{amendment.AmendmentSingleAssetVault}
+func (v *VaultCreate) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureSingleAssetVault}
 }
 
 // Apply applies the VaultCreate transaction to the ledger.

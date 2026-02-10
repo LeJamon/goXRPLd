@@ -7,7 +7,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/credential"
 )
 
@@ -134,8 +134,8 @@ func (p *PermissionedDomainSet) AddAcceptedCredential(issuer, credentialType str
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (p *PermissionedDomainSet) RequiredAmendments() []string {
-	return []string{amendment.AmendmentPermissionedDomains, amendment.AmendmentCredentials}
+func (p *PermissionedDomainSet) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeaturePermissionedDomains, amendment.FeatureCredentials}
 }
 
 // Apply applies the PermissionedDomainSet transaction to the ledger.

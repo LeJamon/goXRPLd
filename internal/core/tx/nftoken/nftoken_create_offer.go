@@ -5,7 +5,7 @@ import (
 	"errors"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
@@ -137,8 +137,8 @@ func (n *NFTokenCreateOffer) SetSellOffer() {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (n *NFTokenCreateOffer) RequiredAmendments() []string {
-	return []string{amendment.AmendmentNonFungibleTokensV1}
+func (n *NFTokenCreateOffer) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureNonFungibleTokensV1}
 }
 
 // Apply applies the NFTokenCreateOffer transaction to the ledger.

@@ -3,7 +3,7 @@ package tx
 import (
 	"testing"
 
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -153,7 +153,7 @@ func TestLedgerStateFixConstructors(t *testing.T) {
 func TestLedgerStateFixRequiredAmendments(t *testing.T) {
 	tx := NewNFTokenPageLinkFix("rAdmin", "rOwner")
 	amendments := tx.RequiredAmendments()
-	assert.Contains(t, amendments, amendment.AmendmentFixNFTokenPageLinks)
+	assert.Contains(t, amendments, amendment.FeatureFixNFTokenPageLinks)
 }
 
 // =============================================================================

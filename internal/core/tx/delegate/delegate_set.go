@@ -3,7 +3,7 @@ package delegate
 import (
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
@@ -59,8 +59,8 @@ func (d *DelegateSet) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (d *DelegateSet) RequiredAmendments() []string {
-	return []string{amendment.AmendmentPermissionDelegation}
+func (d *DelegateSet) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeaturePermissionDelegation}
 }
 
 // Apply applies the DelegateSet transaction to the ledger.

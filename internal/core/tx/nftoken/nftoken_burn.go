@@ -7,7 +7,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 )
 
 func init() {
@@ -59,8 +59,8 @@ func (n *NFTokenBurn) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (n *NFTokenBurn) RequiredAmendments() []string {
-	return []string{amendment.AmendmentNonFungibleTokensV1}
+func (n *NFTokenBurn) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureNonFungibleTokensV1}
 }
 
 // Apply applies the NFTokenBurn transaction to the ledger.

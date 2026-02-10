@@ -4,9 +4,9 @@ import (
 	"encoding/hex"
 	"errors"
 
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	txamendment "github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
@@ -62,8 +62,8 @@ func (c *CheckCancel) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (c *CheckCancel) RequiredAmendments() []string {
-	return []string{txamendment.AmendmentChecks}
+func (c *CheckCancel) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureChecks}
 }
 
 // Apply implements preclaim + doApply matching rippled's CancelCheck.

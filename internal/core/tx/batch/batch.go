@@ -6,7 +6,7 @@ import (
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
@@ -227,8 +227,8 @@ func (b *Batch) AddInnerTransaction(innerTx tx.Transaction) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (b *Batch) RequiredAmendments() []string {
-	return []string{amendment.AmendmentBatch}
+func (b *Batch) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureBatch}
 }
 
 // Apply applies the Batch transaction to the ledger.

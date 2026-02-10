@@ -5,7 +5,7 @@ import (
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
@@ -86,8 +86,8 @@ func (a *AMMCreate) Flatten() (map[string]any, error) {
 }
 
 // RequiredAmendments returns the amendments required for this transaction type
-func (a *AMMCreate) RequiredAmendments() []string {
-	return []string{amendment.AmendmentAMM, amendment.AmendmentFixUniversalNumber}
+func (a *AMMCreate) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureAMM, amendment.FeatureFixUniversalNumber}
 }
 
 // Apply applies the AMMCreate transaction to ledger state.

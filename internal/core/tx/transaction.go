@@ -38,9 +38,9 @@ type Transaction interface {
 	// SetRawBytes stores the original serialized bytes
 	SetRawBytes([]byte)
 
-	// RequiredAmendments returns the list of amendment names that must be enabled
-	// for this transaction type to be valid. Returns empty slice if no amendments required.
-	RequiredAmendments() []string
+	// RequiredAmendments returns the list of amendment feature IDs that must be enabled
+	// for this transaction type to be valid. Returns nil if no amendments required.
+	RequiredAmendments() [][32]byte
 }
 
 // Appliable is implemented by transaction types that can apply themselves to ledger state.
@@ -315,7 +315,7 @@ func (b *BaseTx) Flatten() (map[string]any, error) {
 
 // RequiredAmendments returns no required amendments by default.
 // Transaction types that require amendments should override this.
-func (b *BaseTx) RequiredAmendments() []string {
+func (b *BaseTx) RequiredAmendments() [][32]byte {
 	return nil
 }
 

@@ -6,8 +6,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/payment"
 )
 
@@ -359,7 +359,7 @@ func TestBatchAddInnerTransaction(t *testing.T) {
 func TestBatchRequiredAmendments(t *testing.T) {
 	b := NewBatch("rOuter")
 	amendments := b.RequiredAmendments()
-	assert.Contains(t, amendments, amendment.AmendmentBatch)
+	assert.Contains(t, amendments, amendment.FeatureBatch)
 }
 
 // =============================================================================
