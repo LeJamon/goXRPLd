@@ -24,7 +24,8 @@ const (
 	spaceTicket     uint16 = 'T' // Ticket
 	spaceSignerList uint16 = 'S' // Signer list
 	spaceCheck      uint16 = 'C' // Check
-	spaceDepPreauth uint16 = 'p' // Deposit preauthorization
+	spaceDepPreauth     uint16 = 'p' // Deposit preauthorization
+	spaceDepPreauthCred uint16 = 'P' // Deposit preauthorization (credential-based)
 	spaceNFTokenOff  uint16 = 'q' // NFToken offer
 	spaceNFTokenPg   uint16 = 'P' // NFToken page
 	spaceNFTBuyOffers  uint16 = 'h' // NFToken buy offers directory
@@ -193,6 +194,41 @@ func DepositPreauth(owner, authorized [20]byte) Keylet {
 	return Keylet{
 		Type: entry.TypeDepositPreauth,
 		Key:  indexHash(spaceDepPreauth, owner[:], authorized[:]),
+	}
+}
+
+// CredentialPair represents an (issuer, credentialType) pair for credential-based
+// deposit preauth keylet computation. Pairs must be sorted before use.
+type CredentialPair struct {
+	Issuer         [20]byte
+	CredentialType []byte
+}
+
+// DepositPreauthCredentials returns the keylet for a credential-based deposit
+// preauthorization entry. The credentials must already be sorted.
+// Reference: rippled Indexes.cpp depositPreauth(owner, authCreds)
+func DepositPreauthCredentials(owner [20]byte, sortedCreds []CredentialPair) Keylet {
+	// For each credential pair, compute sha512Half(issuer, credType)
+	data := make([][]byte, 0, 1+len(sortedCreds))
+	data = append(data, owner[:])
+	for _, c := range sortedCreds {
+		h := crypto.Sha512Half(c.Issuer[:], c.CredentialType)
+		hashBytes := make([]byte, 32)
+		copy(hashBytes, h[:])
+		data = append(data, hashBytes)
+	}
+
+	return Keylet{
+		Type: entry.TypeDepositPreauth,
+		Key:  indexHash(spaceDepPreauthCred, data...),
+	}
+}
+
+// DepositPreauthByID returns a DepositPreauth keylet for a known entry key.
+func DepositPreauthByID(key [32]byte) Keylet {
+	return Keylet{
+		Type: entry.TypeDepositPreauth,
+		Key:  key,
 	}
 }
 

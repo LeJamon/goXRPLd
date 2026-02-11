@@ -25,8 +25,9 @@ type PaymentBuilder struct {
 	deliverMin *tx.Amount
 	paths      [][]payment.PathStep
 	sequence   *uint32
-	flags      uint32
-	memos      []tx.MemoWrapper
+	flags         uint32
+	memos         []tx.MemoWrapper
+	credentialIDs []string
 }
 
 // Pay creates a new PaymentBuilder for an XRP payment.
@@ -155,6 +156,14 @@ func (b *PaymentBuilder) LimitQuality() *PaymentBuilder {
 	return b
 }
 
+// CredentialIDs sets the credential IDs for authorized deposits.
+// Each ID is a 64-character hex hash of a credential ledger entry.
+// Reference: rippled credentials::ids({credIdx})
+func (b *PaymentBuilder) CredentialIDs(ids []string) *PaymentBuilder {
+	b.credentialIDs = ids
+	return b
+}
+
 // WithMemo adds a memo to the transaction.
 func (b *PaymentBuilder) WithMemo(memoType, memoData, memoFormat string) *PaymentBuilder {
 	b.memos = append(b.memos, tx.MemoWrapper{
@@ -205,6 +214,9 @@ func (b *PaymentBuilder) Build() tx.Transaction {
 	}
 	if len(b.memos) > 0 {
 		payment.Memos = b.memos
+	}
+	if b.credentialIDs != nil {
+		payment.CredentialIDs = b.credentialIDs
 	}
 
 	return payment

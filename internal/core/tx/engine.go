@@ -1024,12 +1024,14 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 					Engine:    e,
 				}
 				tecApplier.ApplyOnTec(tecCtx)
-				// Re-serialize the account after side-effects
-				updatedData, err = sle.SerializeAccountRoot(account)
-				if err != nil {
+				// Re-read the account from view after side-effects
+				// (ApplyOnTec may have modified owner count via credential deletion)
+				accountData, err := e.view.Read(accountKey)
+				if err != nil || accountData == nil {
 					return TefINTERNAL
 				}
-				if err := e.view.Update(accountKey, updatedData); err != nil {
+				account, err = sle.ParseAccountRoot(accountData)
+				if err != nil {
 					return TefINTERNAL
 				}
 			}
