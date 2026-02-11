@@ -54,7 +54,10 @@ func (t *TicketCreate) Flatten() (map[string]any, error) {
 }
 
 // Apply applies the TicketCreate transaction to ledger state.
+// Reference: rippled CreateTicket.cpp doApply()
 func (t *TicketCreate) Apply(ctx *tx.ApplyContext) tx.Result {
+	ownerDirKey := keylet.OwnerDir(ctx.AccountID)
+
 	for i := uint32(0); i < t.TicketCount; i++ {
 		ticketSeq := ctx.Account.Sequence + i
 
@@ -67,6 +70,14 @@ func (t *TicketCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 
 		if err := ctx.View.Insert(ticketKey, ticketData); err != nil {
 			return tx.TefINTERNAL
+		}
+
+		// Add ticket to owner directory
+		_, err = sle.DirInsert(ctx.View, ownerDirKey, ticketKey.Key, func(dir *sle.DirectoryNode) {
+			dir.Owner = ctx.AccountID
+		})
+		if err != nil {
+			return tx.TecDIR_FULL
 		}
 	}
 

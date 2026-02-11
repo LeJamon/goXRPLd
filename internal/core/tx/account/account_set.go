@@ -371,10 +371,13 @@ func (a *AccountSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	// DepositAuth
-	if uSetFlag == AccountSetFlagDepositAuth {
-		uFlagsOut |= sle.LsfDepositAuth
-	} else if uClearFlag == AccountSetFlagDepositAuth {
-		uFlagsOut &^= sle.LsfDepositAuth
+	// Reference: rippled SetAccount.cpp:488-503 — gated behind featureDepositAuth
+	if ctx.Rules().Enabled(amendment.FeatureDepositAuth) {
+		if uSetFlag == AccountSetFlagDepositAuth {
+			uFlagsOut |= sle.LsfDepositAuth
+		} else if uClearFlag == AccountSetFlagDepositAuth {
+			uFlagsOut &^= sle.LsfDepositAuth
+		}
 	}
 
 	// AuthorizedNFTokenMinter

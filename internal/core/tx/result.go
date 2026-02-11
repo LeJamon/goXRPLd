@@ -335,6 +335,8 @@ func (r Result) String() string {
 		return "tefMAX_LEDGER"
 	case TefBAD_SIGNATURE:
 		return "tefBAD_SIGNATURE"
+	case TefNO_TICKET:
+		return "tefNO_TICKET"
 	case TelLOCAL_ERROR:
 		return "telLOCAL_ERROR"
 	case TelBAD_DOMAIN:

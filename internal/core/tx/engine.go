@@ -32,8 +32,9 @@ const (
 	// Networks with ID <= this value are legacy networks
 	LegacyNetworkIDThreshold = 1024
 
-	// DefaultMaxFee is the default maximum fee (1 XRP = 1,000,000 drops)
-	DefaultMaxFee = 1000000
+	// DefaultMaxFee is the maximum legal fee amount matching rippled's INITIAL_XRP.
+	// Reference: rippled SystemParameters.h isLegalAmount() — fee <= INITIAL_XRP
+	DefaultMaxFee = 100_000_000_000_000_000 // 100 billion XRP in drops
 
 	// QualityOne Per rippled: QUALITY_ONE (1e9 = 1000000000) is treated as default (stored as 0)
 	QualityOne uint32 = 1000000000
@@ -973,15 +974,19 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 	}
 
 	// Consume ticket on success or tec results
-	// Reference: rippled Transactor::consumeSeqProxy — ticket is always consumed
+	// Reference: rippled Transactor::consumeSeqProxy + ticketDelete
 	if isTicket && (result == TesSUCCESS || result.IsTec()) {
 		ticketKey := keylet.Ticket(accountID, *common.TicketSequence)
+		ownerDirKey := keylet.OwnerDir(accountID)
 		if result == TesSUCCESS {
+			// Remove ticket from owner directory (page 0)
+			sle.DirRemove(table, ownerDirKey, 0, ticketKey.Key, true)
 			if err := table.Erase(ticketKey); err != nil {
 				return TefINTERNAL
 			}
 		} else {
-			// For tec, erase directly from view
+			// For tec, operate directly on view
+			sle.DirRemove(e.view, ownerDirKey, 0, ticketKey.Key, true)
 			if err := e.view.Erase(ticketKey); err != nil {
 				return TefINTERNAL
 			}
