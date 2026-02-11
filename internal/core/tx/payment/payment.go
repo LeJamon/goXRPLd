@@ -1,14 +1,18 @@
 package payment
 
 import (
+	"bytes"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 
-	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
-
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	tx "github.com/LeJamon/goXRPLd/internal/core/tx"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/credential"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
 func init() {
@@ -104,6 +108,12 @@ type Payment struct {
 
 	// DeliverMin is the minimum amount to deliver (optional, for partial payments)
 	DeliverMin *tx.Amount `json:"DeliverMin,omitempty" xrpl:"DeliverMin,omitempty,amount"`
+
+	// CredentialIDs is a list of credential ledger entry IDs (uint256 hashes as hex strings)
+	// used to authorize the payment when the destination requires deposit preauthorization
+	// via credentials.
+	// Reference: rippled sfCredentialIDs
+	CredentialIDs []string `json:"CredentialIDs,omitempty" xrpl:"CredentialIDs,omitempty"`
 }
 
 // PathStep represents a single step in a payment path
@@ -133,6 +143,10 @@ const (
 	MaxPathLength = 8
 )
 
+// maxCredentialsArraySize is the maximum number of credential IDs allowed.
+// Reference: rippled Protocol.h maxCredentialsArraySize = 8
+const maxCredentialsArraySize = 8
+
 // NewPayment creates a new Payment transaction
 func NewPayment(account, destination string, amount tx.Amount) *Payment {
 	return &Payment{
@@ -145,6 +159,15 @@ func NewPayment(account, destination string, amount tx.Amount) *Payment {
 // TxType returns the transaction type
 func (p *Payment) TxType() tx.Type {
 	return tx.TypePayment
+}
+
+// RequiredAmendments returns amendments required for this transaction.
+// Reference: rippled Payment.cpp preflight() - featureCredentials check for sfCredentialIDs
+func (p *Payment) RequiredAmendments() [][32]byte {
+	if p.CredentialIDs != nil {
+		return [][32]byte{amendment.FeatureCredentials}
+	}
+	return nil
 }
 
 // Validate validates the payment transaction
@@ -255,6 +278,23 @@ func (p *Payment) Validate() error {
 		return err
 	}
 
+	// Validate CredentialIDs field
+	// Reference: rippled credentials::checkFields() in CredentialHelpers.cpp
+	if p.CredentialIDs != nil {
+		if len(p.CredentialIDs) == 0 || len(p.CredentialIDs) > maxCredentialsArraySize {
+			return errors.New("temMALFORMED: Invalid credentials array size")
+		}
+
+		// Check for duplicates
+		seen := make(map[string]bool, len(p.CredentialIDs))
+		for _, id := range p.CredentialIDs {
+			if seen[id] {
+				return errors.New("temMALFORMED: Duplicate credential ID")
+			}
+			seen[id] = true
+		}
+	}
+
 	return nil
 }
 
@@ -363,6 +403,200 @@ func (p *Payment) SetNoDirectRipple() {
 	p.SetFlags(flags)
 }
 
+// validateCredentials performs preclaim-level validation of CredentialIDs.
+// Checks each credential exists in the ledger, belongs to the sender, and is accepted.
+// Reference: rippled credentials::valid() in CredentialHelpers.cpp
+func (p *Payment) validateCredentials(ctx *tx.ApplyContext) tx.Result {
+	if len(p.CredentialIDs) == 0 {
+		return tx.TesSUCCESS
+	}
+
+	for _, idHex := range p.CredentialIDs {
+		credIDBytes, err := hex.DecodeString(idHex)
+		if err != nil || len(credIDBytes) != 32 {
+			return tx.TecBAD_CREDENTIALS
+		}
+		var credID [32]byte
+		copy(credID[:], credIDBytes)
+
+		credKey := keylet.CredentialByID(credID)
+		credData, err := ctx.View.Read(credKey)
+		if err != nil || credData == nil {
+			return tx.TecBAD_CREDENTIALS
+		}
+
+		cred, err := credential.ParseCredentialEntry(credData)
+		if err != nil {
+			return tx.TecBAD_CREDENTIALS
+		}
+
+		// Subject must be the transaction sender
+		if cred.Subject != ctx.AccountID {
+			return tx.TecBAD_CREDENTIALS
+		}
+
+		// Credential must be accepted
+		if !cred.IsAccepted() {
+			return tx.TecBAD_CREDENTIALS
+		}
+	}
+
+	return tx.TesSUCCESS
+}
+
+// removeExpiredCredentials checks for expired credentials and deletes them.
+// Returns true if any credentials were expired.
+// Reference: rippled credentials::removeExpired() in CredentialHelpers.cpp
+func (p *Payment) removeExpiredCredentials(ctx *tx.ApplyContext) bool {
+	if len(p.CredentialIDs) == 0 {
+		return false
+	}
+
+	closeTime := ctx.Config.ParentCloseTime
+	anyExpired := false
+
+	for _, idHex := range p.CredentialIDs {
+		credIDBytes, err := hex.DecodeString(idHex)
+		if err != nil || len(credIDBytes) != 32 {
+			continue
+		}
+		var credID [32]byte
+		copy(credID[:], credIDBytes)
+
+		credKey := keylet.CredentialByID(credID)
+		credData, err := ctx.View.Read(credKey)
+		if err != nil || credData == nil {
+			continue
+		}
+
+		cred, err := credential.ParseCredentialEntry(credData)
+		if err != nil {
+			continue
+		}
+
+		// Check expiration
+		if cred.Expiration != nil && closeTime > *cred.Expiration {
+			// Delete expired credential from ledger
+			_ = credential.DeleteSLE(ctx.View, credKey, cred)
+			anyExpired = true
+		}
+	}
+
+	return anyExpired
+}
+
+// ApplyOnTec implements TecApplier. When tecEXPIRED is returned, this re-runs
+// credential expiration deletion against the engine's view so the side-effects persist.
+// Reference: rippled Transactor.cpp - tecEXPIRED re-applies removeExpiredCredentials
+func (p *Payment) ApplyOnTec(ctx *tx.ApplyContext) tx.Result {
+	p.removeExpiredCredentials(ctx)
+	return tx.TecEXPIRED
+}
+
+// authorizedDepositPreauth checks if the provided credentials match a
+// credential-based DepositPreauth entry on the destination account.
+// Reference: rippled credentials::authorizedDepositPreauth() in CredentialHelpers.cpp
+func (p *Payment) authorizedDepositPreauth(ctx *tx.ApplyContext, dstAccountID [20]byte) tx.Result {
+	// Read each credential, extract (Issuer, CredentialType) pairs
+	type credPair struct {
+		issuer   [20]byte
+		credType []byte
+	}
+	pairs := make([]credPair, 0, len(p.CredentialIDs))
+
+	seen := make(map[string]bool)
+	for _, idHex := range p.CredentialIDs {
+		credIDBytes, err := hex.DecodeString(idHex)
+		if err != nil || len(credIDBytes) != 32 {
+			return tx.TefINTERNAL
+		}
+		var credID [32]byte
+		copy(credID[:], credIDBytes)
+
+		credKey := keylet.CredentialByID(credID)
+		credData, err := ctx.View.Read(credKey)
+		if err != nil || credData == nil {
+			return tx.TefINTERNAL
+		}
+
+		cred, err := credential.ParseCredentialEntry(credData)
+		if err != nil {
+			return tx.TefINTERNAL
+		}
+
+		// Build a dedup key from (Issuer, CredentialType)
+		pairKey := credentialPairKey(cred.Issuer, cred.CredentialType)
+		if seen[pairKey] {
+			return tx.TefINTERNAL
+		}
+		seen[pairKey] = true
+
+		pairs = append(pairs, credPair{issuer: cred.Issuer, credType: cred.CredentialType})
+	}
+
+	// Sort pairs by (issuer, credType) to match keylet computation
+	sort.Slice(pairs, func(i, j int) bool {
+		cmp := bytes.Compare(pairs[i].issuer[:], pairs[j].issuer[:])
+		if cmp != 0 {
+			return cmp < 0
+		}
+		return bytes.Compare(pairs[i].credType, pairs[j].credType) < 0
+	})
+
+	// Convert to keylet.CredentialPair
+	keyletPairs := make([]keylet.CredentialPair, len(pairs))
+	for i, cp := range pairs {
+		keyletPairs[i] = keylet.CredentialPair{
+			Issuer:         cp.issuer,
+			CredentialType: cp.credType,
+		}
+	}
+
+	// Check if credential-based DepositPreauth exists for destination
+	preauthKey := keylet.DepositPreauthCredentials(dstAccountID, keyletPairs)
+	if exists, _ := ctx.View.Exists(preauthKey); !exists {
+		return tx.TecNO_PERMISSION
+	}
+
+	return tx.TesSUCCESS
+}
+
+// credentialPairKey returns a unique string key for deduplication of (issuer, credType) pairs.
+func credentialPairKey(issuer [20]byte, credType []byte) string {
+	return hex.EncodeToString(issuer[:]) + ":" + hex.EncodeToString(credType)
+}
+
+// verifyDepositPreauth checks deposit authorization for a payment.
+// Reference: rippled verifyDepositPreauth() in Payment.cpp
+func (p *Payment) verifyDepositPreauth(ctx *tx.ApplyContext, srcAccountID, dstAccountID [20]byte, dstAccount *sle.AccountRoot) tx.Result {
+	credentialsPresent := len(p.CredentialIDs) > 0
+
+	// Remove expired credentials first
+	if credentialsPresent {
+		if p.removeExpiredCredentials(ctx) {
+			return tx.TecEXPIRED
+		}
+	}
+
+	// Check if destination requires deposit authorization
+	if dstAccount != nil && (dstAccount.Flags&sle.LsfDepositAuth) != 0 {
+		// Self-payments always allowed
+		if srcAccountID != dstAccountID {
+			// Try account-based DepositPreauth first
+			preauthKey := keylet.DepositPreauth(dstAccountID, srcAccountID)
+			if exists, _ := ctx.View.Exists(preauthKey); !exists {
+				// Account-based preauth not found — try credential-based
+				if !credentialsPresent {
+					return tx.TecNO_PERMISSION
+				}
+				return p.authorizedDepositPreauth(ctx, dstAccountID)
+			}
+		}
+	}
+
+	return tx.TesSUCCESS
+}
+
 // Apply applies the Payment transaction to the ledger state.
 func (p *Payment) Apply(ctx *tx.ApplyContext) tx.Result {
 	// XRP-to-XRP payment (direct payment)
@@ -464,37 +698,28 @@ func (p *Payment) applyXRPPayment(ctx *tx.ApplyContext) tx.Result {
 			return tx.TecDST_TAG_NEEDED
 		}
 
+		// Validate credentials (preclaim)
+		if result := p.validateCredentials(ctx); result != tx.TesSUCCESS {
+			return result
+		}
+
 		// Check deposit authorization
 		// Reference: rippled Payment.cpp:641-677
-		// If destination has lsfDepositAuth flag set, payments require preauthorization
-		// EXCEPT: to prevent account "wedging", allow small payments if BOTH conditions are true:
-		//   1. Destination balance <= base reserve (account is at or below minimum)
-		//   2. Payment amount <= base reserve
+		// XRP payments have a wedge-prevention exemption: if BOTH the payment amount
+		// AND destination balance are <= base reserve, deposit preauth is NOT required.
 		if (destAccount.Flags & sle.LsfDepositAuth) != 0 {
 			dstReserve := ctx.Config.ReserveBase
 
-			// Check if the exception applies (prevents account wedging)
 			if amountDrops > dstReserve || destAccount.Balance > dstReserve {
-				// Must check for preauthorization
-				senderAccountID, err := sle.DecodeAccountID(ctx.Account.Account)
-				if err != nil {
-					return tx.TefINTERNAL
-				}
-
-				// Look up the DepositPreauth ledger entry
-				depositPreauthKey := keylet.DepositPreauth(destAccountID, senderAccountID)
-				preauthExists, err := ctx.View.Exists(depositPreauthKey)
-				if err != nil {
-					return tx.TefINTERNAL
-				}
-
-				if !preauthExists {
-					// Sender is not preauthorized to deposit to this account
-					return tx.TecNO_PERMISSION
+				if result := p.verifyDepositPreauth(ctx, ctx.AccountID, destAccountID, destAccount); result != tx.TesSUCCESS {
+					return result
 				}
 			}
-			// If both conditions are true (small payment to low-balance account),
-			// payment is allowed without preauthorization
+		} else if len(p.CredentialIDs) > 0 {
+			// Even without lsfDepositAuth, remove expired credentials if present
+			if p.removeExpiredCredentials(ctx) {
+				return tx.TecEXPIRED
+			}
 		}
 
 		// Credit destination
@@ -673,28 +898,17 @@ func (p *Payment) applyIOUPayment(ctx *tx.ApplyContext) tx.Result {
 		return tx.TecDST_TAG_NEEDED
 	}
 
+	// Validate credentials (preclaim)
+	if result := p.validateCredentials(ctx); result != tx.TesSUCCESS {
+		return result
+	}
+
 	// Check deposit authorization for IOU payments (including path-finding payments)
 	// Reference: rippled Payment.cpp:429-464
-	// IOU payments (ripple=true) require either:
-	// 1. Destination does not have lsfDepositAuth set, OR
-	// 2. Sender is destination (self-payment), OR
-	// 3. Sender is preauthorized via DepositPreauth
-	// This check MUST happen before path finding because path payments also need this check.
-	if (destAccount.Flags & sle.LsfDepositAuth) != 0 {
-		// Check if this is a self-payment (always allowed)
-		if senderAccountID != destAccountID {
-			// Look up the DepositPreauth ledger entry
-			depositPreauthKey := keylet.DepositPreauth(destAccountID, senderAccountID)
-			preauthExists, err := ctx.View.Exists(depositPreauthKey)
-			if err != nil {
-				return tx.TefINTERNAL
-			}
-
-			if !preauthExists {
-				// Sender is not preauthorized to deposit to this account
-				return tx.TecNO_PERMISSION
-			}
-		}
+	// IOU payments require deposit preauthorization if destination has lsfDepositAuth.
+	// No wedge-prevention exemption for IOU payments (unlike XRP).
+	if result := p.verifyDepositPreauth(ctx, senderAccountID, destAccountID, destAccount); result != tx.TesSUCCESS {
+		return result
 	}
 
 	// For path-finding payments, use the Flow Engine (RippleCalculate)

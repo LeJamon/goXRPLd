@@ -72,6 +72,7 @@ const (
 	TecTOKEN_PAIR_NOT_FOUND          Result = 171
 	TecARRAY_EMPTY                   Result = 172
 	TecARRAY_TOO_LARGE               Result = 173
+	TecBAD_CREDENTIALS               Result = 193
 
 	// tefFAILURE and related codes (-199 to -100)
 	// Transaction failed, fee claimed but tx not applied
@@ -294,6 +295,8 @@ func (r Result) String() string {
 		return "tecARRAY_EMPTY"
 	case TecARRAY_TOO_LARGE:
 		return "tecARRAY_TOO_LARGE"
+	case TecBAD_CREDENTIALS:
+		return "tecBAD_CREDENTIALS"
 	case TecDUPLICATE:
 		return "tecDUPLICATE"
 	case TecUNFUNDED_AMM:

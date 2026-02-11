@@ -29,6 +29,11 @@ type EscrowFinish struct {
 
 	// Fulfillment is the fulfillment for the condition (optional)
 	Fulfillment string `json:"Fulfillment,omitempty" xrpl:"Fulfillment,omitempty"`
+
+	// CredentialIDs is a list of credential ledger entry IDs (uint256 hashes as hex strings)
+	// Used for deposit preauth with credentials.
+	// Reference: rippled sfCredentialIDs
+	CredentialIDs []string `json:"CredentialIDs,omitempty" xrpl:"CredentialIDs,omitempty"`
 }
 
 // NewEscrowFinish creates a new EscrowFinish transaction

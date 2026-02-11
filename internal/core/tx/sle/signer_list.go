@@ -175,3 +175,77 @@ func SerializeDepositPreauth(ownerID, authorizedID [20]byte) ([]byte, error) {
 
 	return hex.DecodeString(hexStr)
 }
+
+// DepositPreauthCredential represents a credential in a credential-based deposit preauth entry.
+type DepositPreauthCredential struct {
+	Issuer         string // base58 address
+	CredentialType string // hex-encoded
+}
+
+// SerializeDepositPreauthCredentials serializes a credential-based DepositPreauth ledger entry.
+// The credentials should already be sorted.
+// Reference: rippled DepositPreauth.cpp doApply() sfAuthorizeCredentials branch
+func SerializeDepositPreauthCredentials(ownerID [20]byte, credentials []DepositPreauthCredential) ([]byte, error) {
+	ownerAddress, err := addresscodec.EncodeAccountIDToClassicAddress(ownerID[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode owner address: %w", err)
+	}
+
+	// Build the AuthorizeCredentials array
+	credArray := make([]map[string]any, len(credentials))
+	for i, c := range credentials {
+		credArray[i] = map[string]any{
+			"Credential": map[string]any{
+				"Issuer":         c.Issuer,
+				"CredentialType": c.CredentialType,
+			},
+		}
+	}
+
+	jsonObj := map[string]any{
+		"LedgerEntryType":      "DepositPreauth",
+		"Account":              ownerAddress,
+		"AuthorizeCredentials": credArray,
+		"OwnerNode":            "0",
+		"Flags":                uint32(0),
+	}
+
+	hexStr, err := binarycodec.Encode(jsonObj)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode DepositPreauth (credentials): %w", err)
+	}
+
+	return hex.DecodeString(hexStr)
+}
+
+// DepositPreauthEntry holds parsed fields from a DepositPreauth ledger entry.
+type DepositPreauthEntry struct {
+	Account   [20]byte
+	OwnerNode uint64
+}
+
+// ParseDepositPreauth parses a DepositPreauth ledger entry from binary data.
+// Extracts Account and OwnerNode needed for removeFromLedger.
+func ParseDepositPreauth(data []byte) (*DepositPreauthEntry, error) {
+	hexStr := hex.EncodeToString(data)
+	jsonObj, err := binarycodec.Decode(hexStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode DepositPreauth: %w", err)
+	}
+
+	entry := &DepositPreauthEntry{}
+
+	if account, ok := jsonObj["Account"].(string); ok {
+		accountID, err := DecodeAccountID(account)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode Account: %w", err)
+		}
+		entry.Account = accountID
+	}
+
+	if ownerNode, ok := jsonObj["OwnerNode"].(string); ok {
+		entry.OwnerNode = parseUint64Hex(ownerNode)
+	}
+
+	return entry, nil
+}
