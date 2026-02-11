@@ -24,6 +24,32 @@ const (
 	maxSerializedFulfillment = 256
 )
 
+// ValidateConditionFormat validates that a hex-encoded condition is well-formed
+// and is a supported type (PREIMAGE-SHA-256). Used during preflight/Validate().
+// Reference: rippled Escrow.cpp preflight() condition deserialization check
+func ValidateConditionFormat(conditionHex string) error {
+	if conditionHex == "" {
+		return errors.New("empty condition")
+	}
+	condBytes, err := hex.DecodeString(conditionHex)
+	if err != nil || len(condBytes) == 0 {
+		return errors.New("invalid condition encoding")
+	}
+	_, condType, consumed, err := parseConditionFull(condBytes)
+	if err != nil {
+		return err
+	}
+	// Reject trailing data — the condition must be exactly the right length
+	if consumed != len(condBytes) {
+		return errors.New("condition has trailing data")
+	}
+	// Only PREIMAGE-SHA-256 is supported without CryptoConditionsSuite amendment
+	if condType != conditionTypePreimageSha256 {
+		return errors.New("unsupported condition type")
+	}
+	return nil
+}
+
 // validateCryptoCondition verifies that a fulfillment matches its condition
 // Reference: rippled Escrow.cpp checkCondition()
 //
@@ -67,9 +93,14 @@ func checkCondition(fulfillment, condition []byte) error {
 	}
 
 	// Parse condition to extract fingerprint
-	fingerprint, condType, err := parseCondition(condition)
+	fingerprint, condType, condConsumed, err := parseConditionFull(condition)
 	if err != nil {
 		return fmt.Errorf("failed to parse condition: %w", err)
+	}
+
+	// Reject trailing data in condition
+	if condConsumed != len(condition) {
+		return errors.New("condition has trailing data")
 	}
 
 	// Only PREIMAGE-SHA-256 is supported
@@ -78,9 +109,14 @@ func checkCondition(fulfillment, condition []byte) error {
 	}
 
 	// Parse fulfillment to extract preimage
-	preimage, fulfType, err := parseFulfillment(fulfillment)
+	preimage, fulfType, fulfConsumed, err := parseFulfillment(fulfillment)
 	if err != nil {
 		return fmt.Errorf("failed to parse fulfillment: %w", err)
+	}
+
+	// Reject trailing data in fulfillment
+	if fulfConsumed != len(fulfillment) {
+		return errors.New("fulfillment has trailing data")
 	}
 
 	// Types must match
@@ -107,8 +143,14 @@ func checkCondition(fulfillment, condition []byte) error {
 // parseCondition parses a crypto-condition and extracts the fingerprint and type
 // Reference: rippled Condition.h/cpp deserialize
 func parseCondition(data []byte) (fingerprint []byte, condType uint8, err error) {
+	fp, ct, _, e := parseConditionFull(data)
+	return fp, ct, e
+}
+
+// parseConditionFull parses a crypto-condition and returns fingerprint, type, and bytes consumed
+func parseConditionFull(data []byte) (fingerprint []byte, condType uint8, consumed int, err error) {
 	if len(data) < 4 {
-		return nil, 0, errors.New("condition too short")
+		return nil, 0, 0, errors.New("condition too short")
 	}
 
 	offset := 0
@@ -121,53 +163,57 @@ func parseCondition(data []byte) (fingerprint []byte, condType uint8, err error)
 	// 0xA0 = 1010 0000 = constructed (0x20) + context-specific (0x80) + tag 0
 	// Type is encoded in the low 5 bits after the class bits
 	if (tag & 0xE0) != 0xA0 {
-		return nil, 0, errors.New("invalid condition tag")
+		return nil, 0, 0, errors.New("invalid condition tag")
 	}
 	condType = tag & 0x1F
 
 	// Parse length
 	length, bytesRead, err := parseASN1Length(data[offset:])
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	offset += bytesRead
 
 	if offset+length > len(data) {
-		return nil, 0, errors.New("condition length exceeds data")
+		return nil, 0, 0, errors.New("condition length exceeds data")
 	}
+
+	// Total consumed = tag + length bytes + body
+	consumed = offset + length
 
 	// Parse fingerprint (tag 0x80)
 	if offset >= len(data) || data[offset] != 0x80 {
-		return nil, 0, errors.New("expected fingerprint tag")
+		return nil, 0, 0, errors.New("expected fingerprint tag")
 	}
 	offset++
 
 	// Parse fingerprint length
 	fpLength, bytesRead, err := parseASN1Length(data[offset:])
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	offset += bytesRead
 
 	if fpLength != 32 {
-		return nil, 0, errors.New("invalid fingerprint length for PREIMAGE-SHA-256")
+		return nil, 0, 0, errors.New("invalid fingerprint length for PREIMAGE-SHA-256")
 	}
 
 	if offset+fpLength > len(data) {
-		return nil, 0, errors.New("fingerprint exceeds condition data")
+		return nil, 0, 0, errors.New("fingerprint exceeds condition data")
 	}
 
 	fingerprint = make([]byte, fpLength)
 	copy(fingerprint, data[offset:offset+fpLength])
 
-	return fingerprint, condType, nil
+	return fingerprint, condType, consumed, nil
 }
 
-// parseFulfillment parses a crypto-fulfillment and extracts the preimage and type
+// parseFulfillment parses a crypto-fulfillment and extracts the preimage and type.
+// Also returns total bytes consumed for trailing-data validation.
 // Reference: rippled Fulfillment.h/cpp deserialize, PreimageSha256.h deserialize
-func parseFulfillment(data []byte) (preimage []byte, fulfType uint8, err error) {
+func parseFulfillment(data []byte) (preimage []byte, fulfType uint8, consumed int, err error) {
 	if len(data) < 4 {
-		return nil, 0, errors.New("fulfillment too short")
+		return nil, 0, 0, errors.New("fulfillment too short")
 	}
 
 	offset := 0
@@ -178,46 +224,49 @@ func parseFulfillment(data []byte) (preimage []byte, fulfType uint8, err error) 
 
 	// Extract fulfillment type from tag
 	if (tag & 0xE0) != 0xA0 {
-		return nil, 0, errors.New("invalid fulfillment tag")
+		return nil, 0, 0, errors.New("invalid fulfillment tag")
 	}
 	fulfType = tag & 0x1F
 
 	// Parse length
-	_, bytesRead, err := parseASN1Length(data[offset:])
+	length, bytesRead, err := parseASN1Length(data[offset:])
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	offset += bytesRead
+
+	// Total consumed = tag + length bytes + body
+	consumed = offset + length
 
 	// For PREIMAGE-SHA-256, next is the preimage (tag 0x80)
 	if fulfType == conditionTypePreimageSha256 {
 		if offset >= len(data) || data[offset] != 0x80 {
-			return nil, 0, errors.New("expected preimage tag")
+			return nil, 0, 0, errors.New("expected preimage tag")
 		}
 		offset++
 
 		// Parse preimage length
 		preimageLength, bytesRead, err := parseASN1Length(data[offset:])
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, 0, err
 		}
 		offset += bytesRead
 
 		if preimageLength > maxPreimageLength {
-			return nil, 0, errors.New("preimage too long")
+			return nil, 0, 0, errors.New("preimage too long")
 		}
 
 		if offset+preimageLength > len(data) {
-			return nil, 0, errors.New("preimage exceeds fulfillment data")
+			return nil, 0, 0, errors.New("preimage exceeds fulfillment data")
 		}
 
 		preimage = make([]byte, preimageLength)
 		copy(preimage, data[offset:offset+preimageLength])
 
-		return preimage, fulfType, nil
+		return preimage, fulfType, consumed, nil
 	}
 
-	return nil, 0, errors.New("unsupported fulfillment type")
+	return nil, 0, 0, errors.New("unsupported fulfillment type")
 }
 
 // parseASN1Length parses a DER-encoded length

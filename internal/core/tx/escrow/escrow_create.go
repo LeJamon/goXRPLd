@@ -8,6 +8,7 @@ import (
 
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
@@ -38,8 +39,9 @@ type EscrowCreate struct {
 	// FinishAfter is the time after which the escrow can be finished (optional)
 	FinishAfter *uint32 `json:"FinishAfter,omitempty" xrpl:"FinishAfter,omitempty"`
 
-	// Condition is the crypto-condition that must be fulfilled (optional)
-	Condition string `json:"Condition,omitempty" xrpl:"Condition,omitempty"`
+	// Condition is the crypto-condition that must be fulfilled (optional).
+	// Pointer to distinguish "not set" (nil) from "set to empty" (ptr to "").
+	Condition *string `json:"Condition,omitempty" xrpl:"Condition,omitempty"`
 }
 
 // NewEscrowCreate creates a new EscrowCreate transaction
@@ -61,6 +63,12 @@ func (e *EscrowCreate) TxType() tx.Type {
 func (e *EscrowCreate) Validate() error {
 	if err := e.BaseTx.Validate(); err != nil {
 		return err
+	}
+
+	// Check for invalid flags
+	// Reference: rippled Escrow.cpp preflight() fix1543 flag check
+	if e.GetFlags()&tx.TfUniversalMask != 0 {
+		return errors.New("temINVALID_FLAG: invalid flags")
 	}
 
 	if e.Destination == "" {
@@ -93,10 +101,18 @@ func (e *EscrowCreate) Validate() error {
 		}
 	}
 
-	// With fix1571: In the absence of a FinishAfter, must have a Condition
-	// Reference: rippled Escrow.cpp:160-167
-	if e.FinishAfter == nil && e.Condition == "" {
-		return errors.New("temMALFORMED: must specify FinishAfter or Condition")
+	// NOTE: fix1571 check (FinishAfter or Condition required) is done in Apply()
+	// where we have access to amendment rules. See EscrowCreate.Apply().
+
+	// Validate condition format if present
+	// Reference: rippled Escrow.cpp:170-190 condition deserialization
+	if e.Condition != nil {
+		if *e.Condition == "" {
+			return errors.New("temMALFORMED: empty condition")
+		}
+		if err := ValidateConditionFormat(*e.Condition); err != nil {
+			return errors.New("temMALFORMED: invalid condition")
+		}
 	}
 
 	return nil
@@ -108,28 +124,85 @@ func (e *EscrowCreate) Flatten() (map[string]any, error) {
 }
 
 // Apply applies an EscrowCreate transaction
+// Reference: rippled Escrow.cpp EscrowCreate::doApply()
 func (ec *EscrowCreate) Apply(ctx *tx.ApplyContext) tx.Result {
+	rules := ctx.Rules()
+	closeTime := ctx.Config.ParentCloseTime
+
+	// Amendment-gated preflight: fix1571 requires FinishAfter or Condition
+	// Reference: rippled Escrow.cpp:160-167
+	if rules.Enabled(amendment.FeatureFix1571) {
+		if ec.FinishAfter == nil && (ec.Condition == nil || *ec.Condition == "") {
+			return tx.TemMALFORMED
+		}
+	}
+
+	// Time validation against parent close time
+	// Reference: rippled Escrow.cpp:457-489
+	if rules.Enabled(amendment.FeatureFix1571) {
+		// fix1571: after() means strictly greater than
+		if ec.CancelAfter != nil && closeTime > *ec.CancelAfter {
+			return tx.TecNO_PERMISSION
+		}
+		if ec.FinishAfter != nil && closeTime > *ec.FinishAfter {
+			return tx.TecNO_PERMISSION
+		}
+	} else {
+		// pre-fix1571: >= comparison
+		if ec.CancelAfter != nil && closeTime >= *ec.CancelAfter {
+			return tx.TecNO_PERMISSION
+		}
+		if ec.FinishAfter != nil && closeTime >= *ec.FinishAfter {
+			return tx.TecNO_PERMISSION
+		}
+	}
+
 	// Get the amount to escrow
 	amount := ec.Amount.Drops()
 	if amount <= 0 {
 		return tx.TemINVALID
 	}
 
-	// Check that account has sufficient balance (after fee)
-	if ctx.Account.Balance < uint64(amount) {
-		return tx.TecUNFUNDED
-	}
-
 	// Verify destination exists
+	// Reference: rippled Escrow.cpp:511-512
 	destID, err := sle.DecodeAccountID(ec.Destination)
 	if err != nil {
 		return tx.TemINVALID
 	}
 
 	destKey := keylet.Account(destID)
-	exists, _ := ctx.View.Exists(destKey)
-	if !exists {
+	destData, err := ctx.View.Read(destKey)
+	if err != nil {
 		return tx.TecNO_DST
+	}
+
+	destAccount, err := sle.ParseAccountRoot(destData)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	// Destination tag check
+	// Reference: rippled Escrow.cpp:517-519
+	if (destAccount.Flags&sle.LsfRequireDestTag) != 0 && ec.DestinationTag == nil {
+		return tx.TecDST_TAG_NEEDED
+	}
+
+	// DisallowXRP check (only when DepositAuth amendment is NOT enabled)
+	// Reference: rippled Escrow.cpp:523-525
+	if !rules.Enabled(amendment.FeatureDepositAuth) {
+		if (destAccount.Flags & sle.LsfDisallowXRP) != 0 {
+			return tx.TecNO_TARGET
+		}
+	}
+
+	// Reserve check
+	// Reference: rippled Escrow.cpp:496-509
+	reserve := ctx.AccountReserve(ctx.Account.OwnerCount + 1)
+	if ctx.Account.Balance < reserve {
+		return tx.TecINSUFFICIENT_RESERVE
+	}
+	if ctx.Account.Balance < reserve+uint64(amount) {
+		return tx.TecUNFUNDED
 	}
 
 	// Deduct the escrow amount from the account
@@ -152,7 +225,40 @@ func (ec *EscrowCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TefINTERNAL
 	}
 
-	// Increase owner count
+	// Owner directory: insert escrow into owner's directory
+	// Reference: rippled Escrow.cpp:550-558
+	ownerDirKey := keylet.OwnerDir(accountID)
+	_, err = sle.DirInsert(ctx.View, ownerDirKey, escrowKey.Key, func(dir *sle.DirectoryNode) {
+		dir.Owner = accountID
+	})
+	if err != nil {
+		return tx.TecDIR_FULL
+	}
+
+	// If cross-account, insert into destination's owner directory and
+	// increment destination's OwnerCount.
+	// Reference: rippled Escrow.cpp:560-570 + adjustOwnerCount
+	if destID != accountID {
+		destDirKey := keylet.OwnerDir(destID)
+		_, err = sle.DirInsert(ctx.View, destDirKey, escrowKey.Key, func(dir *sle.DirectoryNode) {
+			dir.Owner = destID
+		})
+		if err != nil {
+			return tx.TecDIR_FULL
+		}
+
+		// Increment destination's OwnerCount
+		destAccount.OwnerCount++
+		destUpdatedData2, err := sle.SerializeAccountRoot(destAccount)
+		if err != nil {
+			return tx.TefINTERNAL
+		}
+		if err := ctx.View.Update(destKey, destUpdatedData2); err != nil {
+			return tx.TefINTERNAL
+		}
+	}
+
+	// Increase owner count for the escrow creator
 	ctx.Account.OwnerCount++
 
 	return tx.TesSUCCESS
@@ -187,8 +293,17 @@ func serializeEscrow(txn *EscrowCreate, ownerID, destID [20]byte, sequence uint3
 		jsonObj["CancelAfter"] = *txn.CancelAfter
 	}
 
-	if txn.Condition != "" {
-		jsonObj["Condition"] = txn.Condition
+	if txn.Condition != nil && *txn.Condition != "" {
+		jsonObj["Condition"] = *txn.Condition
+	}
+
+	// SourceTag from Common fields
+	if txn.GetCommon().SourceTag != nil {
+		jsonObj["SourceTag"] = *txn.GetCommon().SourceTag
+	}
+
+	if txn.DestinationTag != nil {
+		jsonObj["DestinationTag"] = *txn.DestinationTag
 	}
 
 	hexStr, err := binarycodec.Encode(jsonObj)

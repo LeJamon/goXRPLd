@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 	"github.com/stretchr/testify/require"
 )
 
@@ -378,17 +379,33 @@ func RequireLedgerEntryNotExists(t *testing.T, env *TestEnv, key keylet.Keylet) 
 }
 
 // RequireTicketCount asserts that an account has the expected number of tickets.
-// This uses the OwnerCount as a proxy; for precise counting of just tickets,
-// we would need to iterate the owner directory and filter by entry type.
+// This iterates the owner directory and counts entries of type Ticket (0x0054),
+// matching rippled's owner_count<ltTICKET> behavior.
 func RequireTicketCount(t *testing.T, env *TestEnv, acc *Account, expected uint32) {
 	t.Helper()
-	// Tickets are tracked in owner count. If this is the only owned object type,
-	// OwnerCount == ticket count. For tests that mix object types, use RequireOwnerCount.
-	info := env.AccountInfo(acc)
-	require.NotNil(t, info, "Account %s does not exist", acc.Name)
-	require.Equal(t, expected, info.OwnerCount,
-		"Account %s ticket count (owner count) mismatch: expected %d, got %d",
-		acc.Name, expected, info.OwnerCount)
+	dirKey := keylet.OwnerDir(acc.ID)
+	var count uint32
+	err := sle.DirForEach(env.ledger, dirKey, func(itemKey [32]byte) error {
+		// Read the entry and check its LedgerEntryType
+		entryKey := keylet.Keylet{Key: itemKey}
+		data, readErr := env.ledger.Read(entryKey)
+		if readErr != nil || len(data) == 0 {
+			return nil
+		}
+		entryType, typeErr := sle.GetLedgerEntryType(data)
+		if typeErr != nil {
+			return nil
+		}
+		// Ticket type = 0x0054
+		if entryType == 0x0054 {
+			count++
+		}
+		return nil
+	})
+	require.NoError(t, err, "Account %s: failed to iterate owner directory", acc.Name)
+	require.Equal(t, expected, count,
+		"Account %s ticket count mismatch: expected %d, got %d",
+		acc.Name, expected, count)
 }
 
 // RequireSignerListCount asserts that an account has the expected number of signer lists.

@@ -36,6 +36,7 @@ type EscrowCreateBuilder struct {
 	sourceTag   *uint32
 	fee         int64
 	sequence    *uint32
+	flags       uint32
 }
 
 // EscrowCreate creates a new EscrowCreateBuilder.
@@ -113,6 +114,12 @@ func (b *EscrowCreateBuilder) Sequence(seq uint32) *EscrowCreateBuilder {
 	return b
 }
 
+// Flags sets the transaction flags (e.g., tfPassive for testing invalid flags).
+func (b *EscrowCreateBuilder) Flags(flags uint32) *EscrowCreateBuilder {
+	b.flags = flags
+	return b
+}
+
 // Build constructs the EscrowCreate transaction.
 func (b *EscrowCreateBuilder) Build() tx.Transaction {
 	amount := tx.NewXRPAmount(b.amount)
@@ -126,7 +133,8 @@ func (b *EscrowCreateBuilder) Build() tx.Transaction {
 		e.CancelAfter = b.cancelAfter
 	}
 	if b.condition != nil {
-		e.Condition = hex.EncodeToString(b.condition)
+		s := hex.EncodeToString(b.condition)
+		e.Condition = &s
 	}
 	if b.destTag != nil {
 		e.DestinationTag = b.destTag
@@ -136,6 +144,9 @@ func (b *EscrowCreateBuilder) Build() tx.Transaction {
 	}
 	if b.sequence != nil {
 		e.SetSequence(*b.sequence)
+	}
+	if b.flags != 0 {
+		e.SetFlags(b.flags)
 	}
 
 	return e
@@ -148,13 +159,14 @@ func (b *EscrowCreateBuilder) BuildEscrowCreate() *escrowtx.EscrowCreate {
 
 // EscrowFinishBuilder provides a fluent interface for building EscrowFinish transactions.
 type EscrowFinishBuilder struct {
-	finisher    *testing.Account
-	owner       *testing.Account
-	offerSeq    uint32
-	condition   []byte
-	fulfillment []byte
-	fee         uint64
-	sequence    *uint32
+	finisher      *testing.Account
+	owner         *testing.Account
+	offerSeq      uint32
+	condition     []byte
+	fulfillment   []byte
+	fee           uint64
+	sequence      *uint32
+	credentialIDs []string
 }
 
 // EscrowFinish creates a new EscrowFinishBuilder.
@@ -217,19 +229,30 @@ func (b *EscrowFinishBuilder) Sequence(seq uint32) *EscrowFinishBuilder {
 	return b
 }
 
+// CredentialIDs sets the credential IDs for deposit preauth with credentials.
+func (b *EscrowFinishBuilder) CredentialIDs(ids []string) *EscrowFinishBuilder {
+	b.credentialIDs = ids
+	return b
+}
+
 // Build constructs the EscrowFinish transaction.
 func (b *EscrowFinishBuilder) Build() tx.Transaction {
 	e := escrowtx.NewEscrowFinish(b.finisher.Address, b.owner.Address, b.offerSeq)
 	e.Fee = fmt.Sprintf("%d", b.fee)
 
 	if b.condition != nil {
-		e.Condition = hex.EncodeToString(b.condition)
+		s := hex.EncodeToString(b.condition)
+		e.Condition = &s
 	}
 	if b.fulfillment != nil {
-		e.Fulfillment = hex.EncodeToString(b.fulfillment)
+		s := hex.EncodeToString(b.fulfillment)
+		e.Fulfillment = &s
 	}
 	if b.sequence != nil {
 		e.SetSequence(*b.sequence)
+	}
+	if len(b.credentialIDs) > 0 {
+		e.CredentialIDs = b.credentialIDs
 	}
 
 	return e

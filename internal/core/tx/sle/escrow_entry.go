@@ -7,12 +7,20 @@ import (
 
 // EscrowData represents an Escrow ledger entry
 type EscrowData struct {
-	Account       [20]byte
-	DestinationID [20]byte
-	Amount        uint64
-	Condition     string
-	CancelAfter   uint32
-	FinishAfter   uint32
+	Account         [20]byte
+	DestinationID   [20]byte
+	Amount          uint64
+	Condition       string
+	CancelAfter     uint32
+	FinishAfter     uint32
+	SourceTag       uint32
+	HasSourceTag    bool
+	DestinationTag  uint32
+	HasDestTag      bool
+	OwnerNode       uint64
+	DestinationNode uint64
+	HasDestNode     bool
+	Flags           uint32
 }
 
 // ParseEscrow parses an Escrow ledger entry from binary data
@@ -61,17 +69,33 @@ func ParseEscrow(data []byte) (*EscrowData, error) {
 			value := binary.BigEndian.Uint32(data[offset : offset+4])
 			offset += 4
 			switch fieldCode {
-			case 36: // FinishAfter
-				escrow.FinishAfter = value
-			case 37: // CancelAfter
+			case 2: // Flags
+				escrow.Flags = value
+			case 3: // SourceTag
+				escrow.SourceTag = value
+				escrow.HasSourceTag = true
+			case 14: // DestinationTag
+				escrow.DestinationTag = value
+				escrow.HasDestTag = true
+			case 36: // CancelAfter (nth=36 per definitions.json)
 				escrow.CancelAfter = value
+			case 37: // FinishAfter (nth=37 per definitions.json)
+				escrow.FinishAfter = value
 			}
 
 		case FieldTypeUInt64:
 			if offset+8 > len(data) {
 				return escrow, nil
 			}
+			value := binary.BigEndian.Uint64(data[offset : offset+8])
 			offset += 8
+			switch fieldCode {
+			case 4: // OwnerNode (nth=4 per definitions.json)
+				escrow.OwnerNode = value
+			case 9: // DestinationNode (nth=9 per definitions.json)
+				escrow.DestinationNode = value
+				escrow.HasDestNode = true
+			}
 
 		case FieldTypeAmount:
 			if offset+8 > len(data) {
@@ -112,7 +136,7 @@ func ParseEscrow(data []byte) (*EscrowData, error) {
 			if offset+length > len(data) {
 				return escrow, nil
 			}
-			if fieldCode == 25 { // Condition
+			if fieldCode == 17 { // Condition (nth=17 per definitions.json)
 				escrow.Condition = hex.EncodeToString(data[offset : offset+length])
 			}
 			offset += length
