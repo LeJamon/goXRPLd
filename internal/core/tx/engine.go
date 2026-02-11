@@ -32,8 +32,9 @@ const (
 	// Networks with ID <= this value are legacy networks
 	LegacyNetworkIDThreshold = 1024
 
-	// DefaultMaxFee is the default maximum fee (1 XRP = 1,000,000 drops)
-	DefaultMaxFee = 1000000
+	// DefaultMaxFee is the maximum legal fee amount matching rippled's INITIAL_XRP.
+	// Reference: rippled SystemParameters.h isLegalAmount() — fee <= INITIAL_XRP
+	DefaultMaxFee = 100_000_000_000_000_000 // 100 billion XRP in drops
 
 	// QualityOne Per rippled: QUALITY_ONE (1e9 = 1000000000) is treated as default (stored as 0)
 	QualityOne uint32 = 1000000000
