@@ -341,6 +341,12 @@ func (r Result) String() string {
 		return "tefMAX_LEDGER"
 	case TefBAD_SIGNATURE:
 		return "tefBAD_SIGNATURE"
+	case TefBAD_QUORUM:
+		return "tefBAD_QUORUM"
+	case TefNOT_MULTI_SIGNING:
+		return "tefNOT_MULTI_SIGNING"
+	case TefBAD_AUTH_MASTER:
+		return "tefBAD_AUTH_MASTER"
 	case TefTOO_BIG:
 		return "tefTOO_BIG"
 	case TefNO_TICKET:

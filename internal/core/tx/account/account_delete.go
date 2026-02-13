@@ -7,6 +7,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/credential"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/oracle"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
@@ -120,6 +121,15 @@ func (a *AccountDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 				return tx.TecHAS_OBLIGATIONS
 			}
 			if err := credential.DeleteSLE(ctx.View, itemKeylet, cred); err != nil {
+				return tx.TecHAS_OBLIGATIONS
+			}
+		case entry.TypeOracle:
+			oracleData, err := sle.ParseOracle(data)
+			if err != nil {
+				return tx.TecHAS_OBLIGATIONS
+			}
+			// nil ownerCount — account is being deleted, no need to adjust
+			if result := oracle.DeleteOracleFromView(ctx.View, itemKeylet, oracleData, ctx.AccountID, nil); result != tx.TesSUCCESS {
 				return tx.TecHAS_OBLIGATIONS
 			}
 		default:
