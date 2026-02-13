@@ -51,9 +51,10 @@ var offerFeatureSets = []featureSet{
 }
 
 // newEnvWithFeatures creates a test environment with the given features disabled.
+// Uses PebbleDB-backed SHAMaps to prevent OOM in heavy offer tests (crossing_limits etc.).
 func newEnvWithFeatures(t *testing.T, disabledFeatures []string) *jtx.TestEnv {
 	t.Helper()
-	env := jtx.NewTestEnv(t)
+	env := jtx.NewTestEnvBacked(t)
 	for _, f := range disabledFeatures {
 		env.DisableFeature(f)
 	}

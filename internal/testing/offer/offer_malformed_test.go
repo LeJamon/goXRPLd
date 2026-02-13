@@ -23,7 +23,7 @@ func TestOffer_Malformed(t *testing.T) {
 }
 
 func testMalformed(t *testing.T, disabledFeatures []string) {
-	env := jtx.NewTestEnv(t)
+	env := jtx.NewTestEnvBacked(t)
 	for _, f := range disabledFeatures {
 		env.DisableFeature(f)
 	}

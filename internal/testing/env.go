@@ -52,9 +52,9 @@ type TestEnv struct {
 	// Reference: rippled's FeatureBitset in test/jtx/Env.h
 	rulesBuilder *amendment.RulesBuilder
 
-	// Shared state map family for backed SHAMaps.
-	// Uses NodeStoreFamily backed by in-memory nodestore (matching geth's test pattern)
-	// with LRU cache. Enables efficient snapshots and lazy loading.
+	// Optional state map family for backed SHAMaps (PebbleDB on disk).
+	// Only set when using NewTestEnvBacked() for heavy tests that would OOM otherwise.
+	// When nil, SHAMaps use unbacked mode (fast, full in-memory clones).
 	stateFamily *shamap.NodeStoreFamily
 }
 
@@ -79,15 +79,6 @@ func NewTestEnv(t *testing.T) *TestEnv {
 		fees,
 	)
 
-	// Enable backed state map using PebbleDB in a temp directory.
-	// Data goes to disk; only the LRU cache lives in RAM — prevents OOM.
-	stateFamily, err := shamap.NewPebbleNodeStoreFamily(t.TempDir(), 2000)
-	if err != nil {
-		t.Fatalf("Failed to create state family: %v", err)
-	}
-	t.Cleanup(func() { stateFamily.Close() })
-	genesisLedger.SetStateMapFamily(stateFamily)
-
 	// Create the first open ledger
 	clock := NewManualClock()
 	openLedger, err := ledger.NewOpen(genesisLedger, clock.Now())
@@ -108,12 +99,6 @@ func NewTestEnv(t *testing.T) *TestEnv {
 		reserveIncrement: 2_000_000,  // 2 XRP
 		// Initialize with all supported amendments enabled (like rippled's testable_amendments())
 		rulesBuilder: amendment.NewRulesBuilder().FromPreset(amendment.PresetAllSupported),
-		stateFamily:  stateFamily,
-	}
-
-	// Store genesis state root hash in history (lightweight, no full ledger reference)
-	if h, err := genesisLedger.StateMapHash(); err == nil {
-		env.ledgerRootHashes[1] = h
 	}
 
 	// Register master account
@@ -121,6 +106,44 @@ func NewTestEnv(t *testing.T) *TestEnv {
 	env.accounts[master.Name] = master
 
 	return env
+}
+
+// NewTestEnvBacked creates a test environment with PebbleDB-backed SHAMaps.
+// Use this for heavy tests (e.g., crossing_limits with 2000+ offers) that would
+// OOM with unbacked mode. Data goes to disk; only the LRU cache lives in RAM.
+func NewTestEnvBacked(t *testing.T) *TestEnv {
+	t.Helper()
+	env := NewTestEnv(t)
+	env.enablePebbleBacking(t)
+	return env
+}
+
+// NewTestEnvWithConfigBacked creates a test environment with custom config and PebbleDB backing.
+func NewTestEnvWithConfigBacked(t *testing.T, cfg genesis.Config) *TestEnv {
+	t.Helper()
+	env := NewTestEnvWithConfig(t, cfg)
+	env.enablePebbleBacking(t)
+	return env
+}
+
+// enablePebbleBacking enables PebbleDB-backed SHAMaps on the environment.
+// Must be called before any transactions are submitted.
+func (e *TestEnv) enablePebbleBacking(t *testing.T) {
+	t.Helper()
+	stateFamily, err := shamap.NewPebbleNodeStoreFamily(t.TempDir(), 2000)
+	if err != nil {
+		t.Fatalf("Failed to create state family: %v", err)
+	}
+	t.Cleanup(func() { stateFamily.Close() })
+	e.stateFamily = stateFamily
+	e.genesisLedger.SetStateMapFamily(stateFamily)
+
+	// Recreate the open ledger so it inherits the backed state map
+	openLedger, err := ledger.NewOpen(e.genesisLedger, e.clock.Now())
+	if err != nil {
+		t.Fatalf("Failed to recreate open ledger with backing: %v", err)
+	}
+	e.ledger = openLedger
 }
 
 // NewTestEnvWithConfig creates a new test environment with custom genesis configuration.
@@ -141,14 +164,6 @@ func NewTestEnvWithConfig(t *testing.T, cfg genesis.Config) *TestEnv {
 		fees,
 	)
 
-	// Enable backed state map using PebbleDB in a temp directory
-	stateFamily, err := shamap.NewPebbleNodeStoreFamily(t.TempDir(), 2000)
-	if err != nil {
-		t.Fatalf("Failed to create state family: %v", err)
-	}
-	t.Cleanup(func() { stateFamily.Close() })
-	genesisLedger.SetStateMapFamily(stateFamily)
-
 	clock := NewManualClock()
 	openLedger, err := ledger.NewOpen(genesisLedger, clock.Now())
 	if err != nil {
@@ -168,11 +183,6 @@ func NewTestEnvWithConfig(t *testing.T, cfg genesis.Config) *TestEnv {
 		reserveIncrement: uint64(cfg.Fees.ReserveIncrement.Drops()),
 		// Initialize with all supported amendments enabled (like rippled's testable_amendments())
 		rulesBuilder: amendment.NewRulesBuilder().FromPreset(amendment.PresetAllSupported),
-		stateFamily:  stateFamily,
-	}
-
-	if h, err := genesisLedger.StateMapHash(); err == nil {
-		env.ledgerRootHashes[1] = h
 	}
 	master := MasterAccount()
 	env.accounts[master.Name] = master
@@ -492,8 +502,10 @@ func (e *TestEnv) Close() {
 		e.ledgerRootHashes[e.ledger.Sequence()] = h
 	}
 
-	// Sweep nodestore caches to evict expired entries (matching rippled's sweep on close)
-	e.stateFamily.Sweep()
+	// Sweep nodestore caches if backed mode is enabled
+	if e.stateFamily != nil {
+		e.stateFamily.Sweep()
+	}
 
 	// Create new open ledger
 	newLedger, err := ledger.NewOpen(e.ledger, e.clock.Now())

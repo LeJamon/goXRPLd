@@ -24,7 +24,7 @@ import (
 // This test does NOT iterate over feature sets -- it runs once.
 // Reference: rippled Offer_test.cpp testFalseAssert (lines 5095-5110)
 func TestOffer_FalseAssert(t *testing.T) {
-	env := jtx.NewTestEnv(t)
+	env := jtx.NewTestEnvBacked(t)
 
 	alice := jtx.NewAccount("alice")
 	// alice is the issuer of USD
