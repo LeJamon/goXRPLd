@@ -11,6 +11,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/ledger"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/genesis"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
+	"github.com/LeJamon/goXRPLd/internal/core/shamap"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/account"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/depositpreauth"
@@ -34,8 +35,10 @@ type TestEnv struct {
 	// Genesis ledger reference
 	genesisLedger *ledger.Ledger
 
-	// Ledger history for verification
-	ledgerHistory map[uint32]*ledger.Ledger
+	// Lightweight ledger history: sequence → state map root hash.
+	// Matches rippled's LedgerHistory pattern — stores only hashes, not full objects.
+	// Past state can be reconstructed on demand via NewFromRootHash(hash, family).
+	ledgerRootHashes map[uint32][32]byte
 
 	// Current ledger sequence
 	currentSeq uint32
@@ -48,6 +51,11 @@ type TestEnv struct {
 	// Amendment rules - controls which amendments are enabled.
 	// Reference: rippled's FeatureBitset in test/jtx/Env.h
 	rulesBuilder *amendment.RulesBuilder
+
+	// Shared state map family for backed SHAMaps.
+	// Uses NodeStoreFamily backed by in-memory nodestore (matching geth's test pattern)
+	// with LRU cache. Enables efficient snapshots and lazy loading.
+	stateFamily *shamap.NodeStoreFamily
 }
 
 // NewTestEnv creates a new test environment with a genesis ledger.
@@ -71,6 +79,15 @@ func NewTestEnv(t *testing.T) *TestEnv {
 		fees,
 	)
 
+	// Enable backed state map using PebbleDB in a temp directory.
+	// Data goes to disk; only the LRU cache lives in RAM — prevents OOM.
+	stateFamily, err := shamap.NewPebbleNodeStoreFamily(t.TempDir(), 2000)
+	if err != nil {
+		t.Fatalf("Failed to create state family: %v", err)
+	}
+	t.Cleanup(func() { stateFamily.Close() })
+	genesisLedger.SetStateMapFamily(stateFamily)
+
 	// Create the first open ledger
 	clock := NewManualClock()
 	openLedger, err := ledger.NewOpen(genesisLedger, clock.Now())
@@ -84,17 +101,20 @@ func NewTestEnv(t *testing.T) *TestEnv {
 		clock:            clock,
 		accounts:         make(map[string]*Account),
 		genesisLedger:    genesisLedger,
-		ledgerHistory:    make(map[uint32]*ledger.Ledger),
+		ledgerRootHashes: make(map[uint32][32]byte),
 		currentSeq:       2,
 		baseFee:          10,
 		reserveBase:      10_000_000, // 10 XRP
 		reserveIncrement: 2_000_000,  // 2 XRP
 		// Initialize with all supported amendments enabled (like rippled's testable_amendments())
 		rulesBuilder: amendment.NewRulesBuilder().FromPreset(amendment.PresetAllSupported),
+		stateFamily:  stateFamily,
 	}
 
-	// Store genesis in history
-	env.ledgerHistory[1] = genesisLedger
+	// Store genesis state root hash in history (lightweight, no full ledger reference)
+	if h, err := genesisLedger.StateMapHash(); err == nil {
+		env.ledgerRootHashes[1] = h
+	}
 
 	// Register master account
 	master := MasterAccount()
@@ -121,6 +141,14 @@ func NewTestEnvWithConfig(t *testing.T, cfg genesis.Config) *TestEnv {
 		fees,
 	)
 
+	// Enable backed state map using PebbleDB in a temp directory
+	stateFamily, err := shamap.NewPebbleNodeStoreFamily(t.TempDir(), 2000)
+	if err != nil {
+		t.Fatalf("Failed to create state family: %v", err)
+	}
+	t.Cleanup(func() { stateFamily.Close() })
+	genesisLedger.SetStateMapFamily(stateFamily)
+
 	clock := NewManualClock()
 	openLedger, err := ledger.NewOpen(genesisLedger, clock.Now())
 	if err != nil {
@@ -133,16 +161,19 @@ func NewTestEnvWithConfig(t *testing.T, cfg genesis.Config) *TestEnv {
 		clock:            clock,
 		accounts:         make(map[string]*Account),
 		genesisLedger:    genesisLedger,
-		ledgerHistory:    make(map[uint32]*ledger.Ledger),
+		ledgerRootHashes: make(map[uint32][32]byte),
 		currentSeq:       2,
 		baseFee:          uint64(cfg.Fees.BaseFee.Drops()),
 		reserveBase:      uint64(cfg.Fees.ReserveBase.Drops()),
 		reserveIncrement: uint64(cfg.Fees.ReserveIncrement.Drops()),
 		// Initialize with all supported amendments enabled (like rippled's testable_amendments())
 		rulesBuilder: amendment.NewRulesBuilder().FromPreset(amendment.PresetAllSupported),
+		stateFamily:  stateFamily,
 	}
 
-	env.ledgerHistory[1] = genesisLedger
+	if h, err := genesisLedger.StateMapHash(); err == nil {
+		env.ledgerRootHashes[1] = h
+	}
 	master := MasterAccount()
 	env.accounts[master.Name] = master
 
@@ -194,6 +225,29 @@ func (e *TestEnv) FundAmount(acc *Account, amount uint64) {
 	// Enable DefaultRipple on the account (matching rippled's test environment)
 	// This allows trust lines to be properly deleted when limits are set to 0.
 	e.enableDefaultRipple(acc)
+}
+
+// Pay sends XRP from master to an already-funded account.
+// This is useful for tests that need to top-up an account with additional XRP
+// (e.g., to meet reserve requirements). Unlike FundAmount, this does not
+// register the account or enable DefaultRipple.
+func (e *TestEnv) Pay(acc *Account, drops uint64) {
+	e.t.Helper()
+
+	master := e.accounts["master"]
+	if master == nil {
+		e.t.Fatal("Master account not found")
+	}
+
+	seq := e.Seq(master)
+	p := payment.NewPayment(master.Address, acc.Address, tx.NewXRPAmount(int64(drops)))
+	p.Fee = formatUint64(e.baseFee)
+	p.Sequence = &seq
+
+	result := e.Submit(p)
+	if !result.Success {
+		e.t.Fatalf("Failed to pay %d drops to %s: %s", drops, acc.Name, result.Code)
+	}
 }
 
 // enableDefaultRipple enables the DefaultRipple flag on an account.
@@ -433,8 +487,13 @@ func (e *TestEnv) Close() {
 		e.t.Fatalf("Failed to validate ledger: %v", err)
 	}
 
-	// Store in history
-	e.ledgerHistory[e.ledger.Sequence()] = e.ledger
+	// Store lightweight state root hash in history (matching rippled's LedgerHistory pattern)
+	if h, err := e.ledger.StateMapHash(); err == nil {
+		e.ledgerRootHashes[e.ledger.Sequence()] = h
+	}
+
+	// Sweep nodestore caches to evict expired entries (matching rippled's sweep on close)
+	e.stateFamily.Sweep()
 
 	// Create new open ledger
 	newLedger, err := ledger.NewOpen(e.ledger, e.clock.Now())
@@ -651,6 +710,38 @@ func (e *TestEnv) TrustLineFlags(account, counterparty *Account, currency string
 	return rs.Flags
 }
 
+// ClearTrustLineAuth clears the authorization flags on a trust line between two accounts.
+// This directly modifies ledger state, simulating rippled's rawInsert for tests
+// that require unauthorized but funded trust lines.
+func (e *TestEnv) ClearTrustLineAuth(acc1, acc2 *Account, currency string) {
+	e.t.Helper()
+
+	lineKey := keylet.Line(acc1.ID, acc2.ID, currency)
+	data, err := e.ledger.Read(lineKey)
+	if err != nil {
+		e.t.Fatalf("ClearTrustLineAuth: trust line not found: %v", err)
+		return
+	}
+
+	rs, err := sle.ParseRippleState(data)
+	if err != nil {
+		e.t.Fatalf("ClearTrustLineAuth: failed to parse trust line: %v", err)
+		return
+	}
+
+	rs.Flags &^= sle.LsfLowAuth | sle.LsfHighAuth
+
+	updated, err := sle.SerializeRippleState(rs)
+	if err != nil {
+		e.t.Fatalf("ClearTrustLineAuth: failed to serialize: %v", err)
+		return
+	}
+
+	if err := e.ledger.Update(lineKey, updated); err != nil {
+		e.t.Fatalf("ClearTrustLineAuth: failed to update: %v", err)
+	}
+}
+
 // HasNoRipple checks if the account's side of the trust line has NoRipple set.
 func (e *TestEnv) HasNoRipple(account, counterparty *Account, currency string) bool {
 	e.t.Helper()
@@ -779,21 +870,49 @@ func (e *TestEnv) AccountInfo(acc *Account) *AccountInfo {
 	}
 
 	return &AccountInfo{
-		Address:    acc.Address,
-		Balance:    accountRoot.Balance,
-		Sequence:   accountRoot.Sequence,
-		OwnerCount: accountRoot.OwnerCount,
-		Flags:      accountRoot.Flags,
+		Address:         acc.Address,
+		Balance:         accountRoot.Balance,
+		Sequence:        accountRoot.Sequence,
+		OwnerCount:      accountRoot.OwnerCount,
+		Flags:           accountRoot.Flags,
+		MintedNFTokens:  accountRoot.MintedNFTokens,
+		BurnedNFTokens:  accountRoot.BurnedNFTokens,
+		NFTokenMinter:   accountRoot.NFTokenMinter,
 	}
 }
 
 // AccountInfo contains account information from the ledger.
 type AccountInfo struct {
-	Address    string
-	Balance    uint64
-	Sequence   uint32
-	OwnerCount uint32
-	Flags      uint32
+	Address         string
+	Balance         uint64
+	Sequence        uint32
+	OwnerCount      uint32
+	Flags           uint32
+	MintedNFTokens  uint32
+	BurnedNFTokens  uint32
+	NFTokenMinter   string
+}
+
+// MintedCount returns the number of NFTokens minted by this issuer.
+// Reference: rippled's mintedCount() test helper.
+func (e *TestEnv) MintedCount(acc *Account) uint32 {
+	e.t.Helper()
+	info := e.AccountInfo(acc)
+	if info == nil {
+		return 0
+	}
+	return info.MintedNFTokens
+}
+
+// BurnedCount returns the number of NFTokens burned for this issuer.
+// Reference: rippled's burnedCount() test helper.
+func (e *TestEnv) BurnedCount(acc *Account) uint32 {
+	e.t.Helper()
+	info := e.AccountInfo(acc)
+	if info == nil {
+		return 0
+	}
+	return info.BurnedNFTokens
 }
 
 // MasterAccount returns the master account for the test environment.

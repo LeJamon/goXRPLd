@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
+	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/nftoken"
 	"github.com/LeJamon/goXRPLd/internal/testing"
@@ -104,6 +105,14 @@ func (b *NFTokenMintBuilder) OnlyXRP() *NFTokenMintBuilder {
 // Transferable makes the token transferable by non-issuers.
 func (b *NFTokenMintBuilder) Transferable() *NFTokenMintBuilder {
 	b.flags |= nftoken.NFTokenMintFlagTransferable
+	return b
+}
+
+// TrustLine enables auto-trust line creation for the NFT.
+// When set, the NFT issuer can receive IOU transfer fees even without a pre-existing trust line.
+// Requires fixRemoveNFTokenAutoTrustLine to be DISABLED.
+func (b *NFTokenMintBuilder) TrustLine() *NFTokenMintBuilder {
+	b.flags |= nftoken.NFTokenMintFlagTrustLine
 	return b
 }
 
@@ -549,4 +558,23 @@ func isHexEncoded(s string) bool {
 		}
 	}
 	return len(s) > 0
+}
+
+// GetNextNFTokenID predicts the next NFT ID that will be generated when minting.
+// Must be called BEFORE submitting the NFTokenMint transaction.
+// Reference: rippled's token::getNextID(env, issuer, taxon, flags, xferFee).
+func GetNextNFTokenID(env *testing.TestEnv, issuer *testing.Account, taxon uint32, flags uint16, transferFee uint16) string {
+	// Get the current MintedNFTokens count (this will be the sequence for the next mint)
+	tokenSeq := env.MintedCount(issuer)
+	tokenID := nftoken.GenerateNFTokenID(issuer.ID, taxon, tokenSeq, flags, transferFee)
+	return hex.EncodeToString(tokenID[:])
+}
+
+// GetOfferIndex predicts the offer index (keylet) that will be created.
+// Must be called BEFORE submitting the NFTokenCreateOffer transaction.
+// Reference: rippled's keylet::nftoffer(account, env.seq(account)).key.
+func GetOfferIndex(env *testing.TestEnv, acc *testing.Account) string {
+	seq := env.Seq(acc)
+	k := keylet.NFTokenOffer(acc.ID, seq)
+	return hex.EncodeToString(k.Key[:])
 }

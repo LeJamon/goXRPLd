@@ -72,6 +72,7 @@ const (
 	TecTOKEN_PAIR_NOT_FOUND          Result = 171
 	TecARRAY_EMPTY                   Result = 172
 	TecARRAY_TOO_LARGE               Result = 173
+	TecLOCKED                        Result = 192
 	TecBAD_CREDENTIALS               Result = 193
 
 	// tefFAILURE and related codes (-199 to -100)
@@ -167,6 +168,7 @@ const (
 	TemEMPTY_DID           Result = -254
 	TemARRAY_EMPTY         Result = -253
 	TemARRAY_TOO_LARGE     Result = -252
+	TemBAD_TRANSFER_FEE    Result = -251
 
 	// terRETRY and related codes (-99 to -1)
 	// Retry later
@@ -295,6 +297,8 @@ func (r Result) String() string {
 		return "tecARRAY_EMPTY"
 	case TecARRAY_TOO_LARGE:
 		return "tecARRAY_TOO_LARGE"
+	case TecLOCKED:
+		return "tecLOCKED"
 	case TecBAD_CREDENTIALS:
 		return "tecBAD_CREDENTIALS"
 	case TecDUPLICATE:
@@ -315,6 +319,8 @@ func (r Result) String() string {
 		return "temARRAY_EMPTY"
 	case TemARRAY_TOO_LARGE:
 		return "temARRAY_TOO_LARGE"
+	case TemBAD_TRANSFER_FEE:
+		return "temBAD_TRANSFER_FEE"
 	case TefFAILURE:
 		return "tefFAILURE"
 	case TefALREADY:
@@ -335,8 +341,12 @@ func (r Result) String() string {
 		return "tefMAX_LEDGER"
 	case TefBAD_SIGNATURE:
 		return "tefBAD_SIGNATURE"
+	case TefTOO_BIG:
+		return "tefTOO_BIG"
 	case TefNO_TICKET:
 		return "tefNO_TICKET"
+	case TefNFTOKEN_IS_NOT_TRANSFERABLE:
+		return "tefNFTOKEN_IS_NOT_TRANSFERABLE"
 	case TelLOCAL_ERROR:
 		return "telLOCAL_ERROR"
 	case TelBAD_DOMAIN:

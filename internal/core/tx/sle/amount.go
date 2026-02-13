@@ -263,6 +263,11 @@ type Amount struct {
 
 	// Native indicates if this is XRP (true) or issued currency (false)
 	Native bool
+
+	// mptRaw stores the raw int64 value for MPT amounts, bypassing IOU normalization
+	// which loses precision for large values. The iou field is still set (normalized)
+	// for binary codec compatibility. Engine code should use MPTRaw() when available.
+	mptRaw *int64
 }
 
 // NewXRPAmountFromInt creates an XRP amount from drops as int64
@@ -283,6 +288,31 @@ func NewIssuedAmountFromValue(mantissa int64, exponent int, currency, issuer str
 		Native:   false,
 	}
 	return result
+}
+
+// NewMPTAmountDirect creates an MPT amount storing the raw int64 value directly.
+// Unlike IOU amounts, MPT amounts are whole numbers and should not be normalized.
+// The IOU mantissa/exponent is still normalized for binary codec compatibility,
+// but the raw int64 is preserved for engine use via MPTRaw().
+func NewMPTAmountDirect(value int64, currency, issuer string) Amount {
+	iouVal := NewIOUAmountValue(value, 0) // normalized for binary codec
+	raw := value
+	return Amount{
+		iou:      iouVal,
+		Currency: currency,
+		Issuer:   issuer,
+		Native:   false,
+		mptRaw:   &raw,
+	}
+}
+
+// MPTRaw returns the raw int64 value for MPT amounts, if available.
+// Returns (value, true) for MPT amounts, (0, false) for other amounts.
+func (a Amount) MPTRaw() (int64, bool) {
+	if a.mptRaw != nil {
+		return *a.mptRaw, true
+	}
+	return 0, false
 }
 
 // NewIssuedAmountFromFloat64 creates an issued currency amount from a float64 value.

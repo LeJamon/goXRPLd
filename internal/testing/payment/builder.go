@@ -28,6 +28,7 @@ type PaymentBuilder struct {
 	flags         uint32
 	memos         []tx.MemoWrapper
 	credentialIDs []string
+	mptIssuanceID string
 }
 
 // Pay creates a new PaymentBuilder for an XRP payment.
@@ -138,6 +139,12 @@ func (b *PaymentBuilder) Sequence(seq uint32) *PaymentBuilder {
 	return b
 }
 
+// Flags sets arbitrary transaction flags.
+func (b *PaymentBuilder) Flags(flags uint32) *PaymentBuilder {
+	b.flags |= flags
+	return b
+}
+
 // PartialPayment enables the partial payment flag.
 func (b *PaymentBuilder) PartialPayment() *PaymentBuilder {
 	b.flags |= payment.PaymentFlagPartialPayment
@@ -161,6 +168,12 @@ func (b *PaymentBuilder) LimitQuality() *PaymentBuilder {
 // Reference: rippled credentials::ids({credIdx})
 func (b *PaymentBuilder) CredentialIDs(ids []string) *PaymentBuilder {
 	b.credentialIDs = ids
+	return b
+}
+
+// MPTIssuanceID sets the MPT issuance ID for MPT direct payments.
+func (b *PaymentBuilder) MPTIssuanceID(id string) *PaymentBuilder {
+	b.mptIssuanceID = id
 	return b
 }
 
@@ -217,6 +230,9 @@ func (b *PaymentBuilder) Build() tx.Transaction {
 	}
 	if b.credentialIDs != nil {
 		payment.CredentialIDs = b.credentialIDs
+	}
+	if b.mptIssuanceID != "" {
+		payment.MPTokenIssuanceID = b.mptIssuanceID
 	}
 
 	return payment

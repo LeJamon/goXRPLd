@@ -10,15 +10,16 @@ import (
 
 // AccountSetBuilder provides a fluent interface for building AccountSet transactions.
 type AccountSetBuilder struct {
-	account      *testing.Account
-	setFlag      *uint32
-	clearFlag    *uint32
-	domain       string
-	transferRate *uint32
-	tickSize     *uint8
-	fee          uint64
-	sequence     *uint32
-	flags        uint32
+	account        *testing.Account
+	setFlag        *uint32
+	clearFlag      *uint32
+	domain         string
+	transferRate   *uint32
+	tickSize       *uint8
+	nfTokenMinter  string
+	fee            uint64
+	sequence       *uint32
+	flags          uint32
 }
 
 // AccountSet creates a new AccountSetBuilder.
@@ -127,6 +128,23 @@ func (b *AccountSetBuilder) AllowClawback() *AccountSetBuilder {
 	return b
 }
 
+// AuthorizedMinter sets the account as an authorized NFToken minter.
+// Reference: rippled's token::setMinter(account, minter).
+func (b *AccountSetBuilder) AuthorizedMinter(minter *testing.Account) *AccountSetBuilder {
+	flag := accounttx.AccountSetFlagAuthorizedNFTokenMinter
+	b.setFlag = &flag
+	b.nfTokenMinter = minter.Address
+	return b
+}
+
+// ClearMinter clears the authorized NFToken minter.
+func (b *AccountSetBuilder) ClearMinter() *AccountSetBuilder {
+	flag := accounttx.AccountSetFlagAuthorizedNFTokenMinter
+	b.clearFlag = &flag
+	b.nfTokenMinter = ""
+	return b
+}
+
 // Build constructs the AccountSet transaction.
 func (b *AccountSetBuilder) Build() tx.Transaction {
 	as := accounttx.NewAccountSet(b.account.Address)
@@ -146,6 +164,9 @@ func (b *AccountSetBuilder) Build() tx.Transaction {
 	}
 	if b.tickSize != nil {
 		as.TickSize = b.tickSize
+	}
+	if b.nfTokenMinter != "" {
+		as.NFTokenMinter = b.nfTokenMinter
 	}
 	if b.sequence != nil {
 		as.SetSequence(*b.sequence)

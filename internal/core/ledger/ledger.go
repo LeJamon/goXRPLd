@@ -531,6 +531,14 @@ func (l *Ledger) StateMapSnapshot() (*shamap.SHAMap, error) {
 	return l.stateMap.Snapshot(true)
 }
 
+// SetStateMapFamily sets the Family on the state map, enabling backed mode
+// with lazy loading and efficient snapshots.
+func (l *Ledger) SetStateMapFamily(family shamap.Family) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.stateMap.SetFamily(family)
+}
+
 // SerializeHeader returns the serialized ledger header bytes
 func (l *Ledger) SerializeHeader() []byte {
 	l.mu.RLock()

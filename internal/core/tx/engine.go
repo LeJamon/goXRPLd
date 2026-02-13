@@ -636,6 +636,8 @@ func parseValidationError(err error) Result {
 		"temARRAY_EMPTY":            TemARRAY_EMPTY,
 		"temARRAY_TOO_LARGE":        TemARRAY_TOO_LARGE,
 		"temBAD_AMM_TOKENS":         TemBAD_AMM_TOKENS,
+		"temBAD_TRANSFER_FEE":              TemBAD_TRANSFER_FEE,
+		"temBAD_NFTOKEN_TRANSFER_FEE":      TemBAD_NFTOKEN_TRANSFER_FEE,
 	}
 
 	// Check if the message starts with any known TER code
@@ -935,9 +937,12 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 
 	fee := e.calculateFee(tx)
 
-	// Store original account state for fee-only application
-	originalBalance := account.Balance
-	originalSequence := account.Sequence
+	// Save original serialized account data for tec recovery.
+	// On tec results, we restore the account to its original state
+	// and only apply fee deduction + sequence increment.
+	// Reference: rippled Transactor.cpp — saves/restores entire SLE on tec.
+	originalAccountData := make([]byte, len(accountData))
+	copy(originalAccountData, accountData)
 
 	// Deduct fee and handle sequence/ticket
 	// Reference: rippled Transactor::consumeSeqProxy in Transactor.cpp
@@ -999,12 +1004,21 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 	// For tec results, only apply fee/sequence changes, not transaction effects
 	// Reference: rippled - tec codes claim the fee but don't apply transaction effects
 	if result.IsTec() {
-		// Apply only fee and sequence changes to the source account
-		account.Balance = originalBalance - fee
-		account.Sequence = originalSequence
+		// Restore account to original state, then apply only fee/sequence.
+		// This discards any changes the transaction made to OwnerCount,
+		// MintedNFTokens, BurnedNFTokens, etc.
+		// Reference: rippled Transactor.cpp — restores original SLE on tec.
+		account, err = sle.ParseAccountRoot(originalAccountData)
+		if err != nil {
+			return TefINTERNAL
+		}
+		account.Balance -= fee
 		if !isTicket && common.Sequence != nil {
 			account.Sequence = *common.Sequence + 1
 		}
+		// Re-apply PreviousTxnID/PreviousTxnLgrSeq threading
+		account.PreviousTxnID = txHash
+		account.PreviousTxnLgrSeq = e.config.LedgerSequence
 
 		updatedData, err := sle.SerializeAccountRoot(account)
 		if err != nil {

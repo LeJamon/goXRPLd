@@ -1,6 +1,7 @@
 package tx
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -188,7 +189,13 @@ func ReflectFlatten(tx Transaction) (map[string]any, error) {
 				}
 			}
 
-			m[f.name] = val.Interface()
+			// UInt64 fields must be serialized as uppercase hex strings for the binary codec.
+			// The XRPL binary codec's UInt64.FromJSON expects a hex string representation.
+			if val.Kind() == reflect.Uint64 {
+				m[f.name] = fmt.Sprintf("%X", val.Uint())
+			} else {
+				m[f.name] = val.Interface()
+			}
 		}
 	}
 
