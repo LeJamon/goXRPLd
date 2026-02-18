@@ -1,6 +1,8 @@
 package payment
 
 import (
+	"math/big"
+
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 
 	tx "github.com/LeJamon/goXRPLd/internal/core/tx"
@@ -199,58 +201,42 @@ type Quality struct {
 
 // QualityFromAmounts creates a Quality from input and output amounts.
 // Quality = in / out, encoded using STAmount-like floating point representation.
-// Reference: rippled's getRate(offerOut, offerIn) in STAmount.cpp divides offerIn / offerOut.
+// Reference: rippled's getRate(offerOut, offerIn) in STAmount.cpp calls divide(offerIn, offerOut, noIssue()).
 // Despite the parameter order (out, in), it returns in / out.
 // Lower quality value means you pay less per unit received (better for taker).
 func QualityFromAmounts(in, out EitherAmount) Quality {
-	if out.IsZero() {
+	if out.IsZero() || in.IsZero() {
 		return Quality{Value: 0}
 	}
 
-	if in.IsZero() {
-		return Quality{Value: 0}
-	}
-
-	var inVal, outVal float64
+	// Convert both amounts to IOU-style for precise integer division.
+	// Reference: rippled's getRate() calls divide() which normalizes XRP amounts
+	// to [10^15, 10^16) mantissa range before performing the division.
+	var inAmt, outAmt tx.Amount
 	if in.IsNative {
-		inVal = float64(in.XRP)
+		inAmt = sle.NewIssuedAmountFromValue(in.XRP, 0, "", "")
 	} else {
-		inVal = in.IOU.Float64()
+		inAmt = in.IOU
 	}
 	if out.IsNative {
-		outVal = float64(out.XRP)
+		outAmt = sle.NewIssuedAmountFromValue(out.XRP, 0, "", "")
 	} else {
-		outVal = out.IOU.Float64()
+		outAmt = out.IOU
 	}
 
-	if outVal == 0 {
+	if outAmt.IsZero() {
 		return Quality{Value: 0}
 	}
 
-	// Quality = in / out (matching rippled's getRate which does offerIn / offerOut)
-	f64 := inVal / outVal
-	if f64 <= 0 {
+	// Quality = in / out using precise STAmount division
+	// Reference: rippled's getRate() → divide(offerIn, offerOut, noIssue())
+	result := inAmt.Div(outAmt, false)
+
+	mantissa := result.Mantissa()
+	exponent := result.Exponent()
+
+	if mantissa <= 0 {
 		return Quality{Value: 0}
-	}
-
-	// Calculate exponent and mantissa
-	// We want mantissa in range [10^15, 10^16)
-	exponent := 0
-	mantissa := f64
-
-	// Normalize: scale mantissa to [10^15, 10^16)
-	minMantissa := 1e15
-	maxMantissa := 1e16
-
-	if mantissa != 0 {
-		for mantissa < minMantissa {
-			mantissa *= 10
-			exponent--
-		}
-		for mantissa >= maxMantissa {
-			mantissa /= 10
-			exponent++
-		}
 	}
 
 	// Clamp exponent to valid range [-100, 155]
@@ -329,6 +315,127 @@ func (q Quality) Rate() tx.Amount {
 	return result
 }
 
+// CeilOutStrict limits the output amount and recalculates input using mulRoundStrict.
+// If amount.out > limit, compute result.in = mulRoundStrict(limit, quality.rate(), ...)
+// and clamp result.in to amount.in.
+// Reference: rippled Quality.cpp ceil_out_impl with mulRoundStrict (lines 115-155)
+func (q Quality) CeilOutStrict(amtIn, amtOut EitherAmount, limit EitherAmount, roundUp bool) (EitherAmount, EitherAmount) {
+	if amtOut.Compare(limit) <= 0 {
+		return amtIn, amtOut
+	}
+
+	// result.in = mulRoundStrict(limit, quality.rate(), amtIn.asset, roundUp)
+	qRate := q.Rate()
+
+	var limitAmt tx.Amount
+	if limit.IsNative {
+		limitAmt = sle.NewIssuedAmountFromValue(limit.XRP, 0, "", "")
+	} else {
+		limitAmt = limit.IOU
+	}
+
+	var inCurrency, inIssuer string
+	if amtIn.IsNative {
+		inCurrency = ""
+		inIssuer = ""
+	} else {
+		inCurrency = amtIn.IOU.Currency
+		inIssuer = amtIn.IOU.Issuer
+	}
+
+	resultIn := sle.MulRoundStrict(limitAmt, qRate, inCurrency, inIssuer, roundUp)
+
+	var resultInEither EitherAmount
+	if amtIn.IsNative {
+		// Convert IOU-style result back to XRP drops
+		drops := resultIn.Mantissa()
+		exp := resultIn.Exponent()
+		for exp > 0 {
+			drops *= 10
+			exp--
+		}
+		for exp < 0 {
+			drops /= 10
+			exp++
+		}
+		resultInEither = NewXRPEitherAmount(drops)
+	} else {
+		resultInEither = NewIOUEitherAmount(tx.NewIssuedAmount(
+			resultIn.Mantissa(), resultIn.Exponent(), inCurrency, inIssuer))
+	}
+
+	// Clamp: result.in must not exceed amount.in
+	if resultInEither.Compare(amtIn) > 0 {
+		resultInEither = amtIn
+	}
+
+	return resultInEither, limit
+}
+
+// CeilIn limits the input amount and recalculates output using divRound (non-strict).
+// Equivalent to rippled's ceil_in which uses divRound with hardcoded roundUp=true.
+// Used when fixReducedOffersV2 is NOT enabled.
+// Reference: rippled Quality.cpp ceil_in (lines 100-104) uses divRound (always rounds up)
+func (q Quality) CeilIn(amtIn, amtOut EitherAmount, limit EitherAmount) (EitherAmount, EitherAmount) {
+	// Non-strict: always roundUp=true, matching rippled's divRound (DontAffectNumberRoundMode)
+	return q.CeilInStrict(amtIn, amtOut, limit, true)
+}
+
+// CeilInStrict limits the input amount and recalculates output using divRoundStrict.
+// If amount.in > limit, compute result.out = divRoundStrict(limit, quality.rate(), ...)
+// and clamp result.out to amount.out.
+// Reference: rippled Quality.cpp ceil_in_impl with divRoundStrict (lines 75-113)
+func (q Quality) CeilInStrict(amtIn, amtOut EitherAmount, limit EitherAmount, roundUp bool) (EitherAmount, EitherAmount) {
+	if amtIn.Compare(limit) <= 0 {
+		return amtIn, amtOut
+	}
+
+	qRate := q.Rate()
+
+	var limitAmt tx.Amount
+	if limit.IsNative {
+		limitAmt = sle.NewIssuedAmountFromValue(limit.XRP, 0, "", "")
+	} else {
+		limitAmt = limit.IOU
+	}
+
+	var outCurrency, outIssuer string
+	if amtOut.IsNative {
+		outCurrency = ""
+		outIssuer = ""
+	} else {
+		outCurrency = amtOut.IOU.Currency
+		outIssuer = amtOut.IOU.Issuer
+	}
+
+	resultOut := sle.DivRoundStrict(limitAmt, qRate, outCurrency, outIssuer, roundUp)
+
+	var resultOutEither EitherAmount
+	if amtOut.IsNative {
+		drops := resultOut.Mantissa()
+		exp := resultOut.Exponent()
+		for exp > 0 {
+			drops *= 10
+			exp--
+		}
+		for exp < 0 {
+			drops /= 10
+			exp++
+		}
+		resultOutEither = NewXRPEitherAmount(drops)
+	} else {
+		resultOutEither = NewIOUEitherAmount(tx.NewIssuedAmount(
+			resultOut.Mantissa(), resultOut.Exponent(), outCurrency, outIssuer))
+	}
+
+	// Clamp: result.out must not exceed amount.out
+	if resultOutEither.Compare(amtOut) > 0 {
+		resultOutEither = amtOut
+	}
+
+	return limit, resultOutEither
+}
+
 // pow10 returns 10^n for small n values
 func pow10(n int) float64 {
 	if n == 0 {
@@ -349,15 +456,68 @@ func pow10(n int) float64 {
 	return result
 }
 
-// Compose multiplies two qualities together
+// Compose multiplies two qualities together using exact STAmount arithmetic.
+// This matches rippled's composed_quality() in Quality.cpp which uses mulRound().
+//
+// Algorithm:
+//  1. Extract mantissa/exponent from each quality (STAmount-like encoding)
+//  2. Multiply mantissas, divide by 10^14 with round-up (mulRound with roundUp=true)
+//  3. Canonicalize result mantissa to [10^15, 10^16-1] with round-up
+//  4. Encode back to quality format
+//
+// Reference: rippled Quality.cpp composed_quality() lines 157-180
 func (q Quality) Compose(other Quality) Quality {
-	// Get the actual rates
-	rate1 := q.Float64()
-	rate2 := other.Float64()
-	composedRate := rate1 * rate2
+	if q.Value == 0 || other.Value == 0 {
+		return Quality{Value: 0}
+	}
 
-	// Encode back to quality format
-	return qualityFromFloat64(composedRate)
+	// Extract mantissa and exponent from each quality
+	m1 := int64(q.Value & 0x00FFFFFFFFFFFFFF)
+	e1 := int((q.Value >> 56)) - 100
+	m2 := int64(other.Value & 0x00FFFFFFFFFFFFFF)
+	e2 := int((other.Value >> 56)) - 100
+
+	if m1 == 0 || m2 == 0 {
+		return Quality{Value: 0}
+	}
+
+	// mulRound(lhs_rate, rhs_rate, asset, roundUp=true) for positive values:
+	// amount = (m1 * m2 + 10^14 - 1) / 10^14
+	// Reference: rippled STAmount.cpp mulRoundImpl lines 1599-1610
+	bigM1 := new(big.Int).SetInt64(m1)
+	bigM2 := new(big.Int).SetInt64(m2)
+	product := new(big.Int).Mul(bigM1, bigM2)
+
+	tenTo14 := new(big.Int).SetInt64(100000000000000)    // 10^14
+	tenTo14m1 := new(big.Int).SetInt64(99999999999999)   // 10^14 - 1
+	product.Add(product, tenTo14m1)                       // round up
+	product.Div(product, tenTo14)
+
+	offset := e1 + e2 + 14
+
+	// canonicalizeRound with roundUp=true
+	// Reference: rippled STAmount.cpp canonicalizeRound
+	minMantissa := new(big.Int).SetInt64(1000000000000000)  // 10^15
+	maxMantissa := new(big.Int).SetInt64(9999999999999999)  // 10^16 - 1
+	ten := big.NewInt(10)
+	nine := big.NewInt(9)
+
+	// Scale up if too small
+	for product.Cmp(minMantissa) < 0 && product.Sign() > 0 {
+		product.Mul(product, ten)
+		offset--
+	}
+	// Scale down if too large, rounding up: (amount + 9) / 10
+	for product.Cmp(maxMantissa) > 0 {
+		product.Add(product, nine)
+		product.Div(product, ten)
+		offset++
+	}
+
+	storedExponent := uint64(offset + 100)
+	storedMantissa := product.Uint64()
+
+	return Quality{Value: (storedExponent << 56) | storedMantissa}
 }
 
 // qualityFromFloat64 encodes a float64 rate back to Quality format
@@ -498,11 +658,9 @@ func MulRatio(amt EitherAmount, num, den uint32, roundUp bool) EitherAmount {
 	}
 
 	if amt.IsNative {
-		result := (int64(amt.XRP) * int64(num)) / int64(den)
-		if roundUp && (int64(amt.XRP)*int64(num))%int64(den) != 0 {
-			result++
-		}
-		return NewXRPEitherAmount(result)
+		xrpAmt := tx.NewXRPAmount(amt.XRP)
+		result := xrpAmt.MulRatio(num, den, roundUp)
+		return NewXRPEitherAmount(result.Drops())
 	}
 
 	return NewIOUEitherAmount(amt.IOU.MulRatio(num, den, roundUp))

@@ -1,6 +1,7 @@
 package payment
 
 import (
+	"fmt"
 	"sort"
 
 	tx "github.com/LeJamon/goXRPLd/internal/core/tx"
@@ -104,6 +105,13 @@ func Flow(
 	const maxIterations = 2000
 	iterations := 0
 
+	// Global offer crossing limit: max 1000 offers consumed across all strands.
+	// When hit, all strands are deactivated to prevent SHAMap corruption from
+	// excessive offer deletions in a single transaction.
+	// Reference: rippled Flow.cpp / StrandFlow.h global crossing limit enforcement.
+	const maxOffersToConsume = 1000
+	var totalOffersUsed uint32
+
 	// Main flow loop
 	for !remainingOut.IsZero() && hasActiveStrands(strandQualities) && iterations < maxIterations {
 		iterations++
@@ -121,11 +129,13 @@ func Flow(
 
 			// Check quality limit
 			if limitQuality != nil && sq.quality.WorseThan(*limitQuality) {
+				fmt.Printf("[Flow] strand[%d] quality %v worse than limit %v → skip\n", sq.index, sq.quality, *limitQuality)
 				sq.active = false
 				continue
 			}
 
 			// Execute this strand
+			fmt.Printf("[Flow] executing strand[%d] quality=%v\n", sq.index, sq.quality)
 			result := ExecuteStrand(accumSandbox, sq.strand, remainingIn, remainingOut)
 
 			if !result.Success || result.Out.IsZero() {
@@ -168,8 +178,24 @@ func Flow(
 			allOfrsToRm[k] = v
 		}
 
+		// Track global offer consumption and enforce the 1000-offer crossing limit.
+		// Reference: rippled enforces this to prevent excessive deletions in one tx.
+		totalOffersUsed += bestResult.OffersUsed
+		if totalOffersUsed >= maxOffersToConsume {
+			for i := range strandQualities {
+				strandQualities[i].active = false
+			}
+		}
+
 		// Accumulate results
-		totalIn = totalIn.Add(bestResult.In)
+		// Handle type mismatch on first accumulation: when no sendMax was specified,
+		// totalIn defaults to XRP-zero but the strand may return IOU input.
+		// Reference: rippled uses STAmount(maxValue, in) which is properly typed.
+		if totalIn.IsZero() && totalIn.IsNative != bestResult.In.IsNative {
+			totalIn = bestResult.In
+		} else {
+			totalIn = totalIn.Add(bestResult.In)
+		}
 		totalOut = totalOut.Add(bestResult.Out)
 
 		// Update remaining amounts
@@ -267,6 +293,13 @@ func RippleCalculate(
 
 	// Convert paths to strands
 	strands, strandResult := ToStrands(sandbox, srcAccount, dstAccount, dstAmount, srcAmount, paths, addDefaultPath)
+	fmt.Printf("[RippleCalculate] ToStrands result=%v numStrands=%d dstAmount=%v srcAmount=%v\n", strandResult, len(strands), dstAmount, srcAmount)
+	for i, strand := range strands {
+		fmt.Printf("[RippleCalculate] strand[%d] steps=%d\n", i, len(strand))
+		for j, step := range strand {
+			fmt.Printf("  [%d] %T\n", j, step)
+		}
+	}
 	if strandResult != tx.TesSUCCESS || len(strands) == 0 {
 		if strandResult == tx.TesSUCCESS {
 			strandResult = tx.TecPATH_DRY
@@ -293,6 +326,7 @@ func RippleCalculate(
 
 	// Execute flow
 	result := Flow(sandbox, strands, outReq, partialPayment, qualityLimit, sendMax)
+	fmt.Printf("[RippleCalculate] Flow result: In=%v Out=%v Result=%v\n", result.In, result.Out, result.Result)
 
 	// Apply flow sandbox changes back to the main sandbox
 	if result.Result == tx.TesSUCCESS || result.Result == tx.TecPATH_PARTIAL {

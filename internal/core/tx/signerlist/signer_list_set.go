@@ -182,9 +182,15 @@ func (s *SetRegularKey) Apply(ctx *tx.ApplyContext) tx.Result {
 func (sl *SignerListSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	signerListKey := keylet.SignerList(ctx.AccountID)
 
+	ownerDirKey := keylet.OwnerDir(ctx.AccountID)
+
 	if sl.SignerQuorum == 0 {
+		// Remove signer list
 		exists, _ := ctx.View.Exists(signerListKey)
 		if exists {
+			// Remove from owner directory
+			// Reference: rippled SetSignerList.cpp removeSignersFromLedger
+			sle.DirRemove(ctx.View, ownerDirKey, 0, signerListKey.Key, true)
 			if err := ctx.View.Erase(signerListKey); err != nil {
 				return tx.TefINTERNAL
 			}
@@ -214,6 +220,9 @@ func (sl *SignerListSet) Apply(ctx *tx.ApplyContext) tx.Result {
 			if err := ctx.View.Insert(signerListKey, signerListData); err != nil {
 				return tx.TefINTERNAL
 			}
+			// Add to owner directory
+			// Reference: rippled SetSignerList.cpp applySignerEntries
+			sle.DirInsert(ctx.View, ownerDirKey, signerListKey.Key, nil)
 			ctx.Account.OwnerCount++
 		}
 	}

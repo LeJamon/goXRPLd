@@ -229,9 +229,10 @@ func (m *MPTokenAuthorize) applyIssuerPath(ctx *tx.ApplyContext, issuanceKey key
 	}
 
 	// Holder account must exist
+	// Reference: rippled MPTokenAuthorize.cpp:119 — ctx.view.exists(keylet::account(...))
 	holderAcctKey := keylet.Account(holderID)
-	_, err = ctx.View.Read(holderAcctKey)
-	if err != nil {
+	holderExists, err := ctx.View.Exists(holderAcctKey)
+	if err != nil || !holderExists {
 		return tx.TecNO_DST
 	}
 

@@ -175,7 +175,7 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Check issuer exists and get issuer account for flag checks
 	// Per rippled SetTrust.cpp: returns tecNO_DST when destination (issuer) doesn't exist
 	issuerData, err := ctx.View.Read(issuerKey)
-	if err != nil {
+	if err != nil || issuerData == nil {
 		return tx.TecNO_DST
 	}
 	issuerAccount, err := sle.ParseAccountRoot(issuerData)

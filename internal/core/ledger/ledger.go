@@ -214,6 +214,13 @@ func (l *Ledger) CloseTime() time.Time {
 	return l.header.CloseTime
 }
 
+// ParentCloseTime returns the parent ledger's close time
+func (l *Ledger) ParentCloseTime() time.Time {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.header.ParentCloseTime
+}
+
 // TotalDrops returns the total XRP in existence
 func (l *Ledger) TotalDrops() uint64 {
 	l.mu.RLock()
@@ -273,7 +280,7 @@ func (l *Ledger) Read(k keylet.Keylet) ([]byte, error) {
 		return nil, err
 	}
 	if !found {
-		return nil, ErrEntryNotFound
+		return nil, nil
 	}
 
 	return item.Data(), nil

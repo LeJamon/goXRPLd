@@ -44,9 +44,10 @@ const (
 	fieldCodeBaseFee uint8 = 5 // sfBaseFee (legacy)
 
 	// XRPAmount fields (Amount type) - modern XRPFees amendment
-	fieldCodeBaseFeeDrops          uint8 = 26 // sfBaseFeeDrops
-	fieldCodeReserveBaseDrops      uint8 = 27 // sfReserveBaseDrops
-	fieldCodeReserveIncrementDrops uint8 = 28 // sfReserveIncrementDrops
+	// Field codes from definitions.json: BaseFeeDrops=22, ReserveBaseDrops=23, ReserveIncrementDrops=24
+	fieldCodeBaseFeeDrops          uint8 = 22 // sfBaseFeeDrops
+	fieldCodeReserveBaseDrops      uint8 = 23 // sfReserveBaseDrops
+	fieldCodeReserveIncrementDrops uint8 = 24 // sfReserveIncrementDrops
 )
 
 // ParseFeeSettings parses fee settings data from binary format
@@ -57,6 +58,8 @@ func ParseFeeSettings(data []byte) (*FeeSettings, error) {
 
 	fee := &FeeSettings{}
 	offset := 0
+
+	fmt.Printf("[DEBUG ParseFeeSettings] data len=%d hex=%x\n", len(data), data)
 
 	for offset < len(data) {
 		if offset+1 > len(data) {
@@ -88,6 +91,8 @@ func ParseFeeSettings(data []byte) (*FeeSettings, error) {
 			fieldCode = data[offset]
 			offset++
 		}
+
+		fmt.Printf("[DEBUG ParseFeeSettings] offset=%d header=0x%02x typeCode=%d fieldCode=%d\n", offset, header, typeCode, fieldCode)
 
 		// Parse field based on type
 		switch typeCode {

@@ -57,7 +57,7 @@ func (t *ApplyStateTable) Read(k keylet.Keylet) ([]byte, error) {
 	// Check if already tracked
 	if entry, exists := t.items[k.Key]; exists {
 		if entry.Action == ActionErase {
-			return nil, fmt.Errorf("entry not found (deleted)")
+			return nil, nil
 		}
 		return entry.Current, nil
 	}
@@ -68,11 +68,13 @@ func (t *ApplyStateTable) Read(k keylet.Keylet) ([]byte, error) {
 		return nil, err
 	}
 
-	// Track as cached (read but not modified)
-	t.items[k.Key] = &TrackedEntry{
-		Action:   ActionCache,
-		Original: data,
-		Current:  data,
+	// Only track entries that exist in the base
+	if data != nil {
+		t.items[k.Key] = &TrackedEntry{
+			Action:   ActionCache,
+			Original: data,
+			Current:  data,
+		}
 	}
 
 	return data, nil
@@ -358,7 +360,7 @@ func (t *ApplyStateTable) threadOwners(data []byte, entryType string) {
 		} else {
 			// Read from base and add to tracking
 			ownerData, err := t.base.Read(ownerKey)
-			if err != nil {
+			if err != nil || ownerData == nil {
 				continue // Owner doesn't exist, skip
 			}
 			_, _, newData, changed := threadItem(ownerData, t.txHash, t.txSeq)

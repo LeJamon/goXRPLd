@@ -1553,9 +1553,10 @@ func TestToStrand_LastStepXRPFromOffer(t *testing.T) {
 	xrplgoTesting.RequireTxSuccess(t, result)
 	env.Close()
 
-	// Verify bob received XRP
-	bobBalance := env.Balance(bob)
-	require.Greater(t, bobBalance, uint64(xrplgoTesting.XRP(10000)), "Bob should have more XRP than initially")
+	// The rippled reference test (toStrand_test.cpp) only validates strand
+	// composition — not balances. Since bob is both the offer owner (selling XRP)
+	// and the payment destination (receiving XRP), his net XRP change is zero.
+	// The payment succeeding (checked above) is sufficient.
 }
 
 // TestPaymentSandbox_Reserve tests reserve handling.

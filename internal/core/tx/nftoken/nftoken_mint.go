@@ -187,7 +187,7 @@ func (m *NFTokenMint) Apply(ctx *tx.ApplyContext) tx.Result {
 		// Read issuer account for MintedNFTokens tracking
 		issuerKey = keylet.Account(issuerID)
 		issuerData, err := ctx.View.Read(issuerKey)
-		if err != nil {
+		if err != nil || issuerData == nil {
 			return tx.TecNO_ISSUER
 		}
 		issuerAccount, err = sle.ParseAccountRoot(issuerData)

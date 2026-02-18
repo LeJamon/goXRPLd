@@ -209,7 +209,7 @@ func (c *NFTokenCreateOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 		destKey := keylet.Account(destID)
 		destData, err := ctx.View.Read(destKey)
-		if err != nil {
+		if err != nil || destData == nil {
 			return tx.TecNO_DST
 		}
 		destAccount, err := sle.ParseAccountRoot(destData)
@@ -236,7 +236,7 @@ func (c *NFTokenCreateOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 		// without it uses accountHolds (issuer has no special treatment)
 		if !isSellOffer {
 			if ctx.Rules().Enabled(amendment.FeatureFixNonFungibleTokensV1_2) {
-				funds := tx.AccountFunds(ctx.View, accountID, c.Amount, true)
+				funds := tx.AccountFunds(ctx.View, accountID, c.Amount, true, ctx.Config.ReserveBase, ctx.Config.ReserveIncrement)
 				if funds.Signum() <= 0 {
 					return tx.TecUNFUNDED_OFFER
 				}
@@ -265,7 +265,8 @@ func (c *NFTokenCreateOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 			skipCheck := nftIssuerID == iouIssuerID && ctx.Rules().Enabled(amendment.FeatureNFTokenMintOffer)
 			if !skipCheck {
 				trustLineKey := keylet.Line(nftIssuerID, iouIssuerID, c.Amount.Currency)
-				if _, err := ctx.View.Read(trustLineKey); err != nil {
+				trustLineExists, _ := ctx.View.Exists(trustLineKey)
+				if !trustLineExists {
 					return tx.TecNO_LINE
 				}
 			}

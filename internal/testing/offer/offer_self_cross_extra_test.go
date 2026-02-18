@@ -252,7 +252,8 @@ func testSelfIssueOffer(t *testing.T, disabledFeatures []string) {
 	env.Close()
 
 	// alice's offer should be removed since she's at her reserve
-	jtx.RequireBalance(t, env, alice, uint64(jtx.XRP(250)))
+	// In rippled this was XRP(250) = 200 base + 50 owner; use dynamic reserve.
+	jtx.RequireBalance(t, env, alice, Reserve(env, 1))
 	jtx.RequireOwnerCount(t, env, alice, 1) // just the trust line
 	// alice should have 1 line (auto-created trust line)
 

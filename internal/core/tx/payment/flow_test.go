@@ -355,9 +355,10 @@ func TestXRPEndpointStep_QualityUpperBound(t *testing.T) {
 	if q == nil {
 		t.Fatal("expected non-nil quality")
 	}
-	// XRP has 1:1 quality
-	if q.Value != uint64(QualityOne) {
-		t.Errorf("expected quality=%d, got %d", QualityOne, q.Value)
+	// XRP has 1:1 quality — properly encoded as STAmount-like quality
+	expectedQ := qualityFromFloat64(1.0)
+	if q.Value != expectedQ.Value {
+		t.Errorf("expected quality=%d, got %d", expectedQ.Value, q.Value)
 	}
 	if dir != DebtDirectionIssues {
 		t.Error("expected DebtDirectionIssues")

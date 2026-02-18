@@ -357,6 +357,8 @@ func (r Result) String() string {
 		return "telLOCAL_ERROR"
 	case TelBAD_DOMAIN:
 		return "telBAD_DOMAIN"
+	case TelBAD_PUBLIC_KEY:
+		return "telBAD_PUBLIC_KEY"
 	case TelINSUF_FEE_P:
 		return "telINSUF_FEE_P"
 	case TelCAN_NOT_QUEUE:

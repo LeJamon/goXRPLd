@@ -257,26 +257,41 @@ func ParseAccountRoot(data []byte) (*AccountRoot, error) {
 			offset += length
 
 		case FieldTypeBlob:
-			// Variable length blob
+			// Variable length blob — XRPL VL encoding
 			if offset >= len(data) {
 				return account, nil
 			}
-			length := int(data[offset])
+			byte1 := int(data[offset])
 			offset++
-			if length > 192 {
-				// Extended length encoding
-				if length < 241 {
-					length = 193 + int(data[offset-1]) - 193
-				} else {
-					// Even more extended - skip for now
-					offset += 2
-					continue
+			var length int
+			if byte1 <= 192 {
+				// Single-byte encoding: length = byte1
+				length = byte1
+			} else if byte1 <= 240 {
+				// Two-byte encoding: length = 193 + ((byte1 - 193) * 256) + byte2
+				if offset >= len(data) {
+					return account, nil
 				}
+				byte2 := int(data[offset])
+				offset++
+				length = 193 + (byte1-193)*256 + byte2
+			} else {
+				// Three-byte encoding: length = 12481 + ((byte1 - 241) * 65536) + (byte2 * 256) + byte3
+				if offset+2 > len(data) {
+					return account, nil
+				}
+				byte2 := int(data[offset])
+				byte3 := int(data[offset+1])
+				offset += 2
+				length = 12481 + (byte1-241)*65536 + byte2*256 + byte3
 			}
 			if offset+length > len(data) {
 				return account, nil
 			}
-			if fieldCode == 7 { // Domain field
+			switch fieldCode {
+			case 2: // MessageKey field
+				account.MessageKey = hex.EncodeToString(data[offset : offset+length])
+			case 7: // Domain field
 				account.Domain = string(data[offset : offset+length])
 			}
 			offset += length
@@ -354,6 +369,11 @@ func SerializeAccountRoot(account *AccountRoot) ([]byte, error) {
 	// Add EmailHash if set
 	if account.EmailHash != "" {
 		jsonObj["EmailHash"] = strings.ToUpper(account.EmailHash)
+	}
+
+	// Add MessageKey if set
+	if account.MessageKey != "" {
+		jsonObj["MessageKey"] = strings.ToUpper(account.MessageKey)
 	}
 
 	// Add NFTokenMinter if set

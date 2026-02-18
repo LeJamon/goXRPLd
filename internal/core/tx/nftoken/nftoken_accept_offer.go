@@ -128,7 +128,7 @@ func (a *NFTokenAcceptOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 		buyOfferKey = keylet.Keylet{Type: entry.TypeNFTokenOffer, Key: buyOfferKeyBytes}
 
 		buyOfferData, err := ctx.View.Read(buyOfferKey)
-		if err != nil {
+		if err != nil || buyOfferData == nil {
 			return tx.TecOBJECT_NOT_FOUND
 		}
 		buyOffer, err = sle.ParseNFTokenOffer(buyOfferData)
@@ -162,7 +162,7 @@ func (a *NFTokenAcceptOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 		sellOfferKey = keylet.Keylet{Type: entry.TypeNFTokenOffer, Key: sellOfferKeyBytes}
 
 		sellOfferData, err := ctx.View.Read(sellOfferKey)
-		if err != nil {
+		if err != nil || sellOfferData == nil {
 			return tx.TecOBJECT_NOT_FOUND
 		}
 		sellOffer, err = sle.ParseNFTokenOffer(sellOfferData)
@@ -229,7 +229,7 @@ func (a *NFTokenAcceptOffer) iouPreclaimChecks(ctx *tx.ApplyContext, accountID [
 		// Reference: rippled — with fixNonFungibleTokensV1_2 uses accountFunds,
 		// without uses accountHolds (no issuer exception)
 		if fixV1_2 {
-			funds := tx.AccountFunds(ctx.View, buyOffer.Owner, buyAmount, true)
+			funds := tx.AccountFunds(ctx.View, buyOffer.Owner, buyAmount, true, ctx.Config.ReserveBase, ctx.Config.ReserveIncrement)
 			if funds.Compare(buyAmount) < 0 {
 				return tx.TecINSUFFICIENT_FUNDS
 			}
@@ -272,7 +272,7 @@ func (a *NFTokenAcceptOffer) iouPreclaimChecks(ctx *tx.ApplyContext, accountID [
 			}
 		} else if buyOffer == nil {
 			sellAmount := offerIOUToAmount(sellOffer)
-			funds := tx.AccountFunds(ctx.View, accountID, sellAmount, true)
+			funds := tx.AccountFunds(ctx.View, accountID, sellAmount, true, ctx.Config.ReserveBase, ctx.Config.ReserveIncrement)
 			if funds.Compare(sellAmount) < 0 {
 				return tx.TecINSUFFICIENT_FUNDS
 			}

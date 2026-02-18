@@ -56,6 +56,24 @@ func testPartialCross(t *testing.T, disabledFeatures []string) {
 		owners     int     // owners on account
 	}
 
+	// Compute reserve-dependent expected values.
+	// During offer crossing with noPreTrust, reserveReduction=-1 reduces
+	// the effective owner count to 0, so xrpLiquid uses R(0) as reserve.
+	// Available XRP = balance_after_fee - R(0).
+	ownerRes := env.ReserveIncrement()
+
+	// gay: available = R(1) - R(0) = ownerReserve
+	gayXrp := ownerRes
+
+	// hye: available = XRP(1000) - R(0)
+	hyeXrp := uint64(jtx.XRP(1000)) - Reserve(env, 0)
+
+	// kim: available = XRP(900) + R(2) - R(0) = XRP(900) + 2*ownerRes, capped by bookAmount
+	kimXrp := uint64(jtx.XRP(900)) + 2*ownerRes
+	if kimXrp > uint64(jtx.XRP(999)) {
+		kimXrp = uint64(jtx.XRP(999))
+	}
+
 	tests := []testData{
 		// No pre-established trust lines
 		{"ann", Reserve(env, 0) + 0*f, 1, noPreTrust, 1000, string(jtx.TecUNFUNDED_OFFER), f, 0, 0, 0},
@@ -64,11 +82,11 @@ func testPartialCross(t *testing.T, disabledFeatures []string) {
 		{"deb", 10 + Reserve(env, 0) + 1*f, 1, noPreTrust, 1000, "", 10 + f, 0.00001, 0, 1},
 		{"eve", Reserve(env, 1) + 0*f, 0, noPreTrust, 1000, "", f, 0, 1, 1},
 		{"flo", Reserve(env, 1) + 0*f, 1, noPreTrust, 1000, "", uint64(jtx.XRP(1)) + f, 1, 0, 1},
-		{"gay", Reserve(env, 1) + 1*f, 1000, noPreTrust, 1000, "", uint64(jtx.XRP(50)) + f, 50, 0, 1},
-		{"hye", uint64(jtx.XRP(1000)) + 1*f, 1000, noPreTrust, 1000, "", uint64(jtx.XRP(800)) + f, 800, 0, 1},
+		{"gay", Reserve(env, 1) + 1*f, 1000, noPreTrust, 1000, "", gayXrp + f, float64(gayXrp) / 1e6, 0, 1},
+		{"hye", uint64(jtx.XRP(1000)) + 1*f, 1000, noPreTrust, 1000, "", hyeXrp + f, float64(hyeXrp) / 1e6, 0, 1},
 		{"ivy", uint64(jtx.XRP(1)) + Reserve(env, 1) + 1*f, 1, noPreTrust, 1000, "", uint64(jtx.XRP(1)) + f, 1, 0, 1},
 		{"joy", uint64(jtx.XRP(1)) + Reserve(env, 2) + 1*f, 1, noPreTrust, 1000, "", uint64(jtx.XRP(1)) + f, 1, 1, 2},
-		{"kim", uint64(jtx.XRP(900)) + Reserve(env, 2) + 1*f, 999, noPreTrust, 1000, "", uint64(jtx.XRP(999)) + f, 999, 0, 1},
+		{"kim", uint64(jtx.XRP(900)) + Reserve(env, 2) + 1*f, 999, noPreTrust, 1000, "", kimXrp + f, float64(kimXrp) / 1e6, 0, 1},
 		{"liz", uint64(jtx.XRP(998)) + Reserve(env, 0) + 1*f, 999, noPreTrust, 1000, "", uint64(jtx.XRP(998)) + f, 998, 0, 1},
 		{"meg", uint64(jtx.XRP(998)) + Reserve(env, 1) + 1*f, 999, noPreTrust, 1000, "", uint64(jtx.XRP(999)) + f, 999, 0, 1},
 		{"nia", uint64(jtx.XRP(998)) + Reserve(env, 2) + 1*f, 999, noPreTrust, 1000, "", uint64(jtx.XRP(999)) + f, 999, 1, 2},
@@ -130,6 +148,16 @@ func testPartialCross(t *testing.T, disabledFeatures []string) {
 
 			// Account creates an offer - the heart of the test
 			acctOfferSeq := env.Seq(acct)
+
+			// Defer cleanup BEFORE assertions to prevent cascading failures.
+			// If assertions fail (FailNow), the test goroutine exits but
+			// defers still run, ensuring offers are cleaned up for the next test.
+			defer func() {
+				env.Submit(OfferCancel(acct, acctOfferSeq).Build())
+				env.Submit(OfferCancel(gw, gwOfferSeq).Build())
+				env.Close()
+			}()
+
 			result := env.Submit(OfferCreate(acct, USD(float64(tt.offerAmt)), jtx.XRPTxAmountFromXRP(float64(tt.offerAmt))).Build())
 			if tt.tec == "" {
 				jtx.RequireTxSuccess(t, result)
@@ -156,11 +184,6 @@ func testPartialCross(t *testing.T, disabledFeatures []string) {
 				require.True(t, amountsEqual(acctOffers[0].TakerPays, USD(float64(leftover))),
 					"Expected TakerPays = USD(%d), got %v", leftover, acctOffers[0].TakerPays)
 			}
-
-			// Clean up for next test
-			env.Submit(OfferCancel(acct, acctOfferSeq).Build())
-			env.Submit(OfferCancel(gw, gwOfferSeq).Build())
-			env.Close()
 		})
 	}
 }

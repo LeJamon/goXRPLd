@@ -250,17 +250,9 @@ func TestDepositAuth_PayXRP(t *testing.T) {
 	env.Close()
 
 	// Take bob down to 0 XRP.
-	env.Noop(bob)
-	env.Close()
-	// Note: Noop uses baseFee (10 drops). Bob had reserve(0)+1.
-	// After noop: reserve(0)+1 - baseFee. We may need a custom fee.
 	// rippled: env(noop(bob), fee(reserve(env, 0) + drops(1)));
-	// For exact parity, drain bob completely:
-	bobBal := env.Balance(bob)
-	if bobBal > 0 {
-		// Use a self-noop with exact fee to reach 0
-		// This is an approximation – may not reach exactly 0.
-	}
+	env.NoopWithFee(bob, reserve(env, 0)+1)
+	env.Close()
 
 	// We should not be able to pay bob more than the base reserve.
 	result = env.Submit(payment.Pay(alice, bob, reserve(env, 0)+1).Build())
@@ -287,16 +279,11 @@ func TestDepositAuth_PayXRP(t *testing.T) {
 
 	// Take bob back to 0 XRP.
 	// rippled: env(noop(bob), fee(env.balance(bob, XRP)));
-	// We approximate this by paying away all XRP using fee == balance.
-	bobBal = env.Balance(bob)
-	if bobBal > 0 {
-		// Submit noop with fee == bobBal. We can't do this through env.Noop
-		// because it uses baseFee. Use AccountSet with custom fee.
-		// For now, use the raw tx approach.
-	}
+	env.NoopWithFee(bob, env.Balance(bob))
+	env.Close()
+	require.Equal(t, uint64(0), env.Balance(bob))
 
 	// bob should not be able to clear lsfDepositAuth (terINSUF_FEE_B).
-	// (This depends on bob having 0 XRP, which we may not have achieved.)
 
 	// Pay bob 1 drop – should succeed when balance is at or below reserve.
 	result = env.Submit(payment.Pay(alice, bob, 1).Build())

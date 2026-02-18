@@ -145,9 +145,10 @@ func (m *MPTokenIssuanceSet) setHolderToken(ctx *tx.ApplyContext, issuanceKey ke
 	}
 
 	// Holder account must exist
+	// Reference: rippled MPTokenIssuanceSet.cpp:132 — ctx.view.exists(keylet::account(...))
 	holderAcctKey := keylet.Account(holderID)
-	_, err = ctx.View.Read(holderAcctKey)
-	if err != nil {
+	holderExists, err := ctx.View.Exists(holderAcctKey)
+	if err != nil || !holderExists {
 		return tx.TecNO_DST
 	}
 

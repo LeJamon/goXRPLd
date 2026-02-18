@@ -181,7 +181,7 @@ func locatePage(view tx.LedgerView, owner [20]byte, tokenID [32]byte) (keylet.Ke
 
 	// Start at max page
 	data, err := view.Read(maxKL)
-	if err != nil {
+	if err != nil || data == nil {
 		return keylet.Keylet{}, nil, nil // No pages for this owner
 	}
 
@@ -210,7 +210,7 @@ func locatePage(view tx.LedgerView, owner [20]byte, tokenID [32]byte) (keylet.Ke
 		// Previous page's key > first, so the right page might be further back
 		prevKL := keylet.Keylet{Type: currentKL.Type, Key: page.PreviousPageMin}
 		prevData, err := view.Read(prevKL)
-		if err != nil {
+		if err != nil || prevData == nil {
 			// Broken link — fall back to current page
 			return currentKL, page, nil
 		}
@@ -297,7 +297,7 @@ func getPageForToken(
 // or returns nil if no pages exist.
 func locatePageForInsert(view tx.LedgerView, owner [20]byte, first, maxKL keylet.Keylet) (keylet.Keylet, *sle.NFTokenPageData, error) {
 	data, err := view.Read(maxKL)
-	if err != nil {
+	if err != nil || data == nil {
 		return keylet.Keylet{}, nil, nil // No pages
 	}
 
@@ -321,7 +321,7 @@ func locatePageForInsert(view tx.LedgerView, owner [20]byte, first, maxKL keylet
 
 		prevKL := keylet.Keylet{Type: currentKL.Type, Key: page.PreviousPageMin}
 		prevData, err := view.Read(prevKL)
-		if err != nil {
+		if err != nil || prevData == nil {
 			return currentKL, page, nil
 		}
 
@@ -1092,7 +1092,7 @@ func (n *NFTokenAcceptOffer) acceptNFTokenBrokeredMode(ctx *tx.ApplyContext, acc
 		if transferFee != 0 && !buyAmount.IsZero() && sellerID != nftIssuerID && buyerID != nftIssuerID {
 			// Check issuer trust line (fixEnforceNFTokenTrustline)
 			nftFlags := getNFTFlagsFromID(sellOffer.NFTokenID)
-			if r := checkIssuerTrustLine(ctx, nftIssuerID, buyAmount, nftFlags); r != tx.TesSUCCESS {
+			if r := checkIssuerTrustLineForAccept(ctx, nftIssuerID, buyAmount, nftFlags); r != tx.TesSUCCESS {
 				return r
 			}
 			issuerCut := buyAmount.MulRatio(uint32(transferFee), transferFeeDivisor32, true)
@@ -1210,7 +1210,7 @@ func (n *NFTokenAcceptOffer) acceptNFTokenSellOfferDirect(ctx *tx.ApplyContext, 
 		if transferFee != 0 && !sellAmount.IsZero() && sellerID != nftIssuerID && accountID != nftIssuerID {
 			// Check issuer trust line (fixEnforceNFTokenTrustline)
 			nftFlags := getNFTFlagsFromID(sellOffer.NFTokenID)
-			if r := checkIssuerTrustLine(ctx, nftIssuerID, sellAmount, nftFlags); r != tx.TesSUCCESS {
+			if r := checkIssuerTrustLineForAccept(ctx, nftIssuerID, sellAmount, nftFlags); r != tx.TesSUCCESS {
 				return r
 			}
 			issuerCut := sellAmount.MulRatio(uint32(transferFee), transferFeeDivisor32, true)
@@ -1324,7 +1324,7 @@ func (n *NFTokenAcceptOffer) acceptNFTokenBuyOfferDirect(ctx *tx.ApplyContext, a
 		if transferFee != 0 && !buyAmount.IsZero() && accountID != nftIssuerID && buyerID != nftIssuerID {
 			// Check issuer trust line (fixEnforceNFTokenTrustline)
 			nftFlags := getNFTFlagsFromID(buyOffer.NFTokenID)
-			if r := checkIssuerTrustLine(ctx, nftIssuerID, buyAmount, nftFlags); r != tx.TesSUCCESS {
+			if r := checkIssuerTrustLineForAccept(ctx, nftIssuerID, buyAmount, nftFlags); r != tx.TesSUCCESS {
 				return r
 			}
 			issuerCut := buyAmount.MulRatio(uint32(transferFee), transferFeeDivisor32, true)

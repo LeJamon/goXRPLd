@@ -227,9 +227,23 @@ func (p *Payment) Validate() error {
 		return errors.New("temMALFORMED: Paths not allowed for MPT payment")
 	}
 
-	// Cannot send to self (temREDUNDANT)
-	// Reference: rippled Payment.cpp:159-167
-	if p.Account == p.Destination && (p.Amount.IsNative() || mptDirect) && !hasPaths {
+	// Cannot send to self with same source/destination asset (temREDUNDANT)
+	// Reference: rippled Payment.cpp:126-127,159-167
+	// srcAsset = maxSourceAmount.asset() (SendMax if set, else Amount)
+	// dstAsset = dstAmount.asset()
+	// Only redundant if equalTokens(srcAsset, dstAsset) — same currency+issuer
+	srcAmount := p.Amount
+	if p.SendMax != nil {
+		srcAmount = *p.SendMax
+	}
+	equalTokens := (srcAmount.IsNative() && p.Amount.IsNative()) ||
+		(!srcAmount.IsNative() && !p.Amount.IsNative() &&
+			srcAmount.Currency == p.Amount.Currency &&
+			srcAmount.Issuer == p.Amount.Issuer)
+	if mptDirect {
+		equalTokens = true // MPT direct: src and dst are same issuance
+	}
+	if p.Account == p.Destination && equalTokens && !hasPaths {
 		return errors.New("temREDUNDANT: cannot send to self without path")
 	}
 
@@ -630,17 +644,24 @@ func (p *Payment) verifyDepositPreauth(ctx *tx.ApplyContext, srcAccountID, dstAc
 
 // Apply applies the Payment transaction to the ledger state.
 func (p *Payment) Apply(ctx *tx.ApplyContext) tx.Result {
-	// XRP-to-XRP payment (direct payment)
-	if p.Amount.IsNative() {
-		return p.applyXRPPayment(ctx)
-	}
-
 	// MPT direct payment
 	if p.MPTokenIssuanceID != "" {
 		return p.applyMPTPayment(ctx)
 	}
 
-	// IOU payment - more complex, involves trust lines and paths
+	// Determine if this is a "ripple" payment (uses the flow engine).
+	// Reference: rippled Payment.cpp:435-436:
+	//   bool const ripple = (hasPaths || sendMax || !dstAmount.native()) && !mptDirect;
+	hasPaths := len(p.Paths) > 0
+	hasSendMax := p.SendMax != nil
+	ripple := hasPaths || hasSendMax || !p.Amount.IsNative()
+
+	if !ripple {
+		// XRP-to-XRP direct payment (no paths, no SendMax, Amount is native)
+		return p.applyXRPPayment(ctx)
+	}
+
+	// IOU / cross-currency payment - uses the flow engine
 	return p.applyIOUPayment(ctx)
 }
 
@@ -1232,7 +1253,8 @@ func (p *Payment) applyXRPPayment(ctx *tx.ApplyContext) tx.Result {
 	return tx.TesSUCCESS
 }
 
-// applyIOUPayment applies an IOU (issued currency) payment
+// applyIOUPayment applies an IOU (issued currency) or cross-currency payment.
+// This is called for any payment with paths, SendMax, or non-native Amount.
 // Reference: rippled/src/xrpld/app/tx/detail/Payment.cpp
 func (p *Payment) applyIOUPayment(ctx *tx.ApplyContext) tx.Result {
 	// Validate the amount
@@ -1254,6 +1276,14 @@ func (p *Payment) applyIOUPayment(ctx *tx.ApplyContext) tx.Result {
 		return tx.TemDST_NEEDED
 	}
 
+	// For cross-currency payments where Amount is XRP, we always need the flow engine
+	// (no issuer to decode, no direct IOU path possible)
+	if p.Amount.IsNative() {
+		// Cross-currency: Amount=XRP with SendMax=IOU or paths
+		// Always requires the flow engine
+		return p.applyRipplePayment(ctx, senderAccountID, destAccountID)
+	}
+
 	issuerAccountID, err := sle.DecodeAccountID(p.Amount.Issuer)
 	if err != nil {
 		return tx.TemBAD_ISSUER
@@ -1262,54 +1292,15 @@ func (p *Payment) applyIOUPayment(ctx *tx.ApplyContext) tx.Result {
 	// Use the tx.Amount directly (no conversion needed)
 	amount := p.Amount
 
-	// Detect payments that require RippleCalc (path finding)
 	// Reference: rippled Payment.cpp:435-436:
 	// bool const ripple = (hasPaths || sendMax || !dstAmount.native()) && !mptDirect;
-	//
-	// Payments that require path finding:
-	// 1. Explicit paths in the transaction
-	// 2. SendMax with different issuer than Amount (cross-issuer)
-	//
-	// Payments that DON'T require path finding (can be handled directly):
-	// - When sender == Amount.issuer (issue): issuer creates tokens for recipient
-	// - When dest == Amount.issuer AND no SendMax with different issuer (simple redemption)
-	//
-	// For now, we only support simple direct IOU payments (no path finding).
-	// Return tecPATH_DRY for payments that require RippleCalc.
+	// Since we're in the IOU branch (past IsNative() check), !dstAmount.native() is always
+	// true, so ALL IOU payments go through the flow engine (RippleCalc).
+	requiresPathFinding := true
 
 	// Determine payment type: is this a direct payment to/from issuer?
 	senderIsIssuer := senderAccountID == issuerAccountID
 	destIsIssuer := destAccountID == issuerAccountID
-
-	requiresPathFinding := false
-
-	// Check for explicit paths
-	if p.Paths != nil && len(p.Paths) > 0 {
-		requiresPathFinding = true
-	}
-
-	// Check for SendMax with cross-issuer
-	// When SendMax.issuer == sender, it means "use my trust line balance" - rippled
-	// determines the actual issuer from the sender's trust lines.
-	// When SendMax.issuer is explicitly a different third party (not sender, not Amount.issuer),
-	// that's a true cross-issuer payment requiring path finding.
-	if p.SendMax != nil && !senderIsIssuer {
-		sendMaxIssuer := p.SendMax.Issuer
-		// True cross-issuer: SendMax.issuer is a specific third-party issuer
-		// (not the sender, not the Amount.issuer)
-		if sendMaxIssuer != "" &&
-			sendMaxIssuer != p.Amount.Issuer &&
-			sendMaxIssuer != p.Common.Account {
-			requiresPathFinding = true
-		}
-	}
-
-	// Third-party transfers (sender is not issuer AND dest is not issuer) require path finding
-	// because the payment must "ripple" through the issuer (e.g., alice -> gw -> bob)
-	// Reference: rippled Payment.cpp - when ripple=true, uses RippleCalc
-	if !senderIsIssuer && !destIsIssuer {
-		requiresPathFinding = true
-	}
 
 	// Check destination exists (needed for DepositAuth check and destination flags)
 	destKey := keylet.Account(destAccountID)
@@ -1395,6 +1386,41 @@ func (p *Payment) applyIOUPayment(ctx *tx.ApplyContext) tx.Result {
 	return result
 }
 
+// applyRipplePayment handles cross-currency payments where Amount is XRP but
+// the payment goes through the order book (has SendMax or paths).
+// Reference: rippled Payment.cpp doApply() when ripple=true
+func (p *Payment) applyRipplePayment(ctx *tx.ApplyContext, senderID, destID [20]byte) tx.Result {
+	// Check destination exists
+	destKey := keylet.Account(destID)
+	destData, err := ctx.View.Read(destKey)
+	if err != nil || destData == nil {
+		return tx.TecNO_DST
+	}
+	destAccount, err := sle.ParseAccountRoot(destData)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	// Check destination tag requirement
+	if (destAccount.Flags&sle.LsfRequireDestTag) != 0 && p.DestinationTag == nil {
+		return tx.TecDST_TAG_NEEDED
+	}
+
+	// Validate credentials
+	if result := p.validateCredentials(ctx); result != tx.TesSUCCESS {
+		return result
+	}
+
+	// Check deposit authorization
+	if result := p.verifyDepositPreauth(ctx, senderID, destID, destAccount); result != tx.TesSUCCESS {
+		return result
+	}
+
+	// Use the flow engine (issuerID is unused for XRP amount, pass zero)
+	var zeroID [20]byte
+	return p.applyIOUPaymentWithPaths(ctx, senderID, destID, zeroID)
+}
+
 // applyIOUPaymentWithPaths handles IOU payments that require path finding using the Flow Engine.
 // This is the main entry point for cross-currency payments and payments with explicit paths.
 // Reference: rippled/src/xrpld/app/paths/RippleCalc.cpp
@@ -1432,6 +1458,18 @@ func (p *Payment) applyIOUPaymentWithPaths(ctx *tx.ApplyContext, senderID, destI
 	if sandbox != nil {
 		if err := sandbox.ApplyToView(ctx.View); err != nil {
 			return tx.TefINTERNAL
+		}
+	}
+
+	// Re-read the sender account from the view so the engine's post-Apply
+	// write-back includes balance changes made by the flow engine.
+	// Without this, ctx.Account has stale data that the engine would overwrite.
+	{
+		updatedData, err := ctx.View.Read(keylet.Account(senderID))
+		if err == nil && updatedData != nil {
+			if updated, parseErr := sle.ParseAccountRoot(updatedData); parseErr == nil {
+				*ctx.Account = *updated
+			}
 		}
 	}
 

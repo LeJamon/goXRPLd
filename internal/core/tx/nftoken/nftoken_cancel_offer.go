@@ -98,7 +98,7 @@ func (co *NFTokenCancelOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 		offerKey := keylet.Keylet{Type: entry.TypeNFTokenOffer, Key: offerKeyBytes}
 
 		offerData, err := ctx.View.Read(offerKey)
-		if err != nil {
+		if err != nil || offerData == nil {
 			continue
 		}
 
@@ -123,7 +123,7 @@ func (co *NFTokenCancelOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 			} else {
 				ownerKey := keylet.Account(offer.Owner)
 				ownerData, err := ctx.View.Read(ownerKey)
-				if err == nil {
+				if err == nil && ownerData != nil {
 					ownerAccount, err := sle.ParseAccountRoot(ownerData)
 					if err == nil {
 						ownerAccount.Balance += offer.Amount
@@ -144,7 +144,7 @@ func (co *NFTokenCancelOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 		} else {
 			ownerKey := keylet.Account(offer.Owner)
 			ownerData, err := ctx.View.Read(ownerKey)
-			if err == nil {
+			if err == nil && ownerData != nil {
 				ownerAccount, err := sle.ParseAccountRoot(ownerData)
 				if err == nil && ownerAccount.OwnerCount > 0 {
 					ownerAccount.OwnerCount--

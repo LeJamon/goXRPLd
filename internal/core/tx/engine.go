@@ -517,6 +517,12 @@ func (e *Engine) preflight(tx Transaction) Result {
 		}
 	}
 
+	// TicketSequence with disabled TicketBatch feature → temMALFORMED
+	// Reference: rippled Transactor.cpp preflight1() line 92
+	if common.TicketSequence != nil && !e.rules().Enabled(amendment.FeatureTicketBatch) {
+		return TemMALFORMED
+	}
+
 	// tfInnerBatchTxn flag validation
 	// Reference: rippled Transactor.cpp preflight0() - tfInnerBatchTxn can only be set
 	// when processing inner batch transactions, never on directly submitted transactions.
@@ -532,6 +538,12 @@ func (e *Engine) preflight(tx Transaction) Result {
 	// Sequence must be present (unless using tickets)
 	if common.Sequence == nil && common.TicketSequence == nil {
 		return TemBAD_SEQUENCE
+	}
+
+	// TicketSequence + AccountTxnID is invalid
+	// Reference: rippled Transactor.cpp preflight1() line 153
+	if common.TicketSequence != nil && common.AccountTxnID != "" {
+		return TemINVALID
 	}
 
 	// SourceTag validation - if present, it's already a uint32 via JSON parsing
@@ -638,6 +650,10 @@ func parseValidationError(err error) Result {
 		"temBAD_AMM_TOKENS":         TemBAD_AMM_TOKENS,
 		"temBAD_TRANSFER_FEE":              TemBAD_TRANSFER_FEE,
 		"temBAD_NFTOKEN_TRANSFER_FEE":      TemBAD_NFTOKEN_TRANSFER_FEE,
+		"temINVALID_COUNT":                 TemINVALID_COUNT,
+		// tel (local) codes
+		"telBAD_DOMAIN":     TelBAD_DOMAIN,
+		"telBAD_PUBLIC_KEY": TelBAD_PUBLIC_KEY,
 	}
 
 	// Check if the message starts with any known TER code
@@ -865,6 +881,14 @@ func (e *Engine) preclaim(tx Transaction) Result {
 		}
 	}
 
+	// Check for both Sequence (non-zero) and TicketSequence set → temSEQ_AND_TICKET
+	// Reference: rippled Transactor::checkSeqProxy in Transactor.cpp line 375
+	if common.Sequence != nil && *common.Sequence != 0 && common.TicketSequence != nil {
+		if e.rules().Enabled(amendment.FeatureTicketBatch) {
+			return TemSEQ_AND_TICKET
+		}
+	}
+
 	// Check sequence number or ticket
 	// Reference: rippled Transactor::checkSeqProxy in Transactor.cpp
 	if common.TicketSequence != nil {
@@ -959,23 +983,65 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 	// Create ApplyStateTable for transaction-specific changes
 	table := NewApplyStateTable(e.view, txHash, e.config.LedgerSequence)
 
+	// Write the fee-deducted, sequence-incremented account to the table BEFORE Apply().
+	// This matches rippled's Transactor::apply() which modifies the account SLE
+	// (fee deduction, sequence increment) before calling doApply().
+	// Without this, reads during Apply() would see the pre-fee balance.
+	{
+		preApplyData, preApplyErr := sle.SerializeAccountRoot(account)
+		if preApplyErr != nil {
+			return TefINTERNAL
+		}
+		if err := table.Update(accountKey, preApplyData); err != nil {
+			return TefINTERNAL
+		}
+	}
+
 	// Type-specific application - all operations go through the table
 	var result Result
 
+	// Determine if the transaction was signed with the master key.
+	// Reference: rippled SetAccount.cpp sigWithMaster — compares
+	// calcAccountID(SigningPubKey) against the account ID.
+	// When signature verification is skipped (test mode), assume master key.
+	sigWithMaster := e.config.SkipSignatureVerification
+	if common.SigningPubKey != "" {
+		signerAddr, addrErr := addresscodec.EncodeClassicAddressFromPublicKeyHex(common.SigningPubKey)
+		if addrErr == nil {
+			sigWithMaster = signerAddr == common.Account
+		}
+	}
+
 	// All transaction types implement Appliable
 	ctx := &ApplyContext{
-		View:      table,
-		Account:   account,
-		AccountID: accountID,
-		Config:    e.config,
-		TxHash:    txHash,
-		Metadata:  metadata,
-		Engine:    e,
+		View:            table,
+		Account:         account,
+		AccountID:       accountID,
+		Config:          e.config,
+		TxHash:          txHash,
+		Metadata:        metadata,
+		Engine:          e,
+		SignedWithMaster: sigWithMaster,
 	}
+
+	// Set NumberSwitchover based on fixUniversalNumber amendment.
+	// When enabled, IOUAmount arithmetic uses Guard-based precision (XRPLNumber).
+	// Reference: rippled's setSTNumberSwitchover() in IOUAmount.cpp
+	sle.SetNumberSwitchover(ctx.Rules().Enabled(amendment.FeatureFixUniversalNumber))
+
 	if appliable, ok := tx.(Appliable); ok {
 		result = appliable.Apply(ctx)
 	} else {
 		result = TesSUCCESS
+	}
+
+	// If tx.Apply() returned a non-applied result (tem*/tef*/ter*), discard all changes.
+	// This handles transactions like OfferCreate that perform their own preflight/preclaim
+	// inside Apply() and may return tem* codes after the engine has already set up the
+	// ApplyStateTable. In rippled, these codes are caught before doApply() runs.
+	// No fee is charged and no state is modified for non-applied results.
+	if !result.IsSuccess() && !result.IsTec() {
+		return result
 	}
 
 	// Consume ticket on success or tec results
@@ -1015,6 +1081,14 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 		account.Balance -= fee
 		if !isTicket && common.Sequence != nil {
 			account.Sequence = *common.Sequence + 1
+		}
+		// Re-apply ticket consumption OwnerCount decrease.
+		// The ticket was erased above (on the base view), but restoring
+		// the original account data overwrote the OwnerCount-- we applied
+		// during ticket consumption. Re-apply it here.
+		// Reference: rippled Transactor.cpp — tec still consumes the ticket.
+		if isTicket && account.OwnerCount > 0 {
+			account.OwnerCount--
 		}
 		// Re-apply PreviousTxnID/PreviousTxnLgrSeq threading
 		account.PreviousTxnID = txHash

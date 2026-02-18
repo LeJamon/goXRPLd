@@ -39,8 +39,12 @@ func testSelfCrossLowQualityOffer(t *testing.T, disabledFeatures []string) {
 
 	f := env.BaseFee()
 
-	// ann: reserve(env, 2) + drops(9999640) + fee
-	env.FundAmount(ann, Reserve(env, 2)+9999640+f)
+	// ann: reserve(env, 2) + extra + fee, where extra < reserve increment.
+	// This ensures ann can hold 2 items but cannot afford reserve for a 3rd.
+	// In rippled this was 9999640 (with 50M increment); scale proportionally.
+	increment := Reserve(env, 3) - Reserve(env, 2)
+	extra := increment - 360
+	env.FundAmount(ann, Reserve(env, 2)+extra+f)
 	// gw: reserve(env, 2) + fee * 4
 	env.FundAmount(gw, Reserve(env, 2)+f*4)
 	env.Close()

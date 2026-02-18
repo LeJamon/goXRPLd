@@ -96,6 +96,11 @@ func NewPaymentSandbox(view tx.LedgerView) *PaymentSandbox {
 	}
 }
 
+// DebugCounts returns the number of modifications, insertions, and deletions in this sandbox
+func (s *PaymentSandbox) DebugCounts() (int, int, int) {
+	return len(s.modifications), len(s.insertions), len(s.deletions)
+}
+
 // SetTransactionContext sets the current transaction hash and ledger sequence
 // for PreviousTxnID/PreviousTxnLgrSeq updates when modifying ledger objects.
 func (s *PaymentSandbox) SetTransactionContext(txHash [32]byte, ledgerSeq uint32) {
@@ -215,11 +220,30 @@ func (s *PaymentSandbox) Exists(k keylet.Keylet) (bool, error) {
 // Insert adds a new ledger entry to the sandbox
 func (s *PaymentSandbox) Insert(k keylet.Keylet, data []byte) error {
 	key := k.Key
-	// Remove from deletions if present
-	delete(s.deletions, key)
 	// Copy data to avoid external mutations
 	dataCopy := make([]byte, len(data))
 	copy(dataCopy, data)
+
+	// If re-inserting a previously deleted entry, check whether it existed
+	// in the base view. If so, this is effectively a modification (the base
+	// view still has the old entry), not a fresh insertion. Without this,
+	// ApplyToView would attempt Insert on the base view and fail with
+	// "entry already exists".
+	// Reference: rippled OpenView::insert → if erased && existed in parent → modify
+	if _, wasDeleted := s.deletions[key]; wasDeleted {
+		delete(s.deletions, key)
+		// Check if the entry existed in the base view before this sandbox
+		origData, _ := s.readOriginal(k)
+		if origData != nil {
+			// Entry exists in base → treat as modification
+			s.modifications[key] = dataCopy
+			return nil
+		}
+		// Entry was inserted+deleted within this sandbox → re-insert
+		s.insertions[key] = dataCopy
+		return nil
+	}
+
 	s.insertions[key] = dataCopy
 	return nil
 }

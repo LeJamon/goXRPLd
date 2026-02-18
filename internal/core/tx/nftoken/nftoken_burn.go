@@ -128,7 +128,7 @@ func (b *NFTokenBurn) Apply(ctx *tx.ApplyContext) tx.Result {
 		if issuerID != accountID {
 			issuerKey := keylet.Account(issuerID)
 			issuerData, err := ctx.View.Read(issuerKey)
-			if err != nil {
+			if err != nil || issuerData == nil {
 				return tx.TecNO_PERMISSION
 			}
 			issuerAccount, err := sle.ParseAccountRoot(issuerData)
@@ -152,7 +152,7 @@ func (b *NFTokenBurn) Apply(ctx *tx.ApplyContext) tx.Result {
 	if ownerID != accountID {
 		ownerKey := keylet.Account(ownerID)
 		ownerData, err := ctx.View.Read(ownerKey)
-		if err != nil {
+		if err != nil || ownerData == nil {
 			return tx.TefINTERNAL
 		}
 		ownerAccount, err := sle.ParseAccountRoot(ownerData)

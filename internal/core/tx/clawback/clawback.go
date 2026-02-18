@@ -276,7 +276,7 @@ func (c *Clawback) applyIOU(ctx *tx.ApplyContext) tx.Result {
 	// Reference: rippled Clawback.cpp:206-208
 	holderAccountKey := keylet.Account(holderID)
 	holderAccountData, err := ctx.View.Read(holderAccountKey)
-	if err != nil {
+	if err != nil || holderAccountData == nil {
 		return tx.TerNO_ACCOUNT
 	}
 	holderAccount, err := sle.ParseAccountRoot(holderAccountData)
@@ -298,7 +298,7 @@ func (c *Clawback) applyIOU(ctx *tx.ApplyContext) tx.Result {
 	// Reference: rippled Clawback.cpp:125-128
 	trustKey := keylet.Line(holderID, ctx.AccountID, c.Amount.Currency)
 	trustData, err := ctx.View.Read(trustKey)
-	if err != nil {
+	if err != nil || trustData == nil {
 		return tx.TecNO_LINE
 	}
 	rs, err := sle.ParseRippleState(trustData)

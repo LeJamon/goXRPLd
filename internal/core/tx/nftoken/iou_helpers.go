@@ -20,7 +20,7 @@ func checkNFTTrustlineAuthorized(view tx.LedgerView, accountID [20]byte, currenc
 	// Read issuer account to check RequireAuth flag
 	issuerKey := keylet.Account(issuerID)
 	issuerData, err := view.Read(issuerKey)
-	if err != nil {
+	if err != nil || issuerData == nil {
 		return tx.TecNO_ISSUER
 	}
 	issuerAccount, err := sle.ParseAccountRoot(issuerData)
@@ -36,7 +36,7 @@ func checkNFTTrustlineAuthorized(view tx.LedgerView, accountID [20]byte, currenc
 	// Issuer requires auth — check if the trust line exists and is authorized
 	trustLineKey := keylet.Line(accountID, issuerID, currency)
 	trustLineData, err := view.Read(trustLineKey)
-	if err != nil {
+	if err != nil || trustLineData == nil {
 		return tx.TecNO_LINE
 	}
 
@@ -126,7 +126,7 @@ const qualityOne uint32 = 1_000_000_000
 func getTransferRate(view tx.LedgerView, issuerID [20]byte) uint32 {
 	acctKey := keylet.Account(issuerID)
 	acctData, err := view.Read(acctKey)
-	if err != nil {
+	if err != nil || acctData == nil {
 		return 0
 	}
 	acct, err := sle.ParseAccountRoot(acctData)
@@ -162,7 +162,7 @@ func rippleCreditIOU(view tx.LedgerView, sender, receiver [20]byte, amount tx.Am
 	trustLineKey := keylet.Line(acct1, acct2, amount.Currency)
 	trustLineData, err := view.Read(trustLineKey)
 
-	if err != nil {
+	if err != nil || trustLineData == nil {
 		// Trust line doesn't exist — auto-create it
 		// Reference: rippled rippleCredit creates trust lines on the fly
 		return createTrustLineWithBalance(view, sender, receiver, amount, trustLineKey)
@@ -255,7 +255,7 @@ func accountIOUBalanceSignum(view tx.LedgerView, accountID [20]byte, amount tx.A
 
 	trustLineKey := keylet.Line(accountID, issuerID, amount.Currency)
 	data, err := view.Read(trustLineKey)
-	if err != nil {
+	if err != nil || data == nil {
 		return 0
 	}
 
@@ -287,7 +287,7 @@ func accountHoldsIOU(view tx.LedgerView, accountID [20]byte, amount tx.Amount) t
 
 	trustLineKey := keylet.Line(accountID, issuerID, amount.Currency)
 	data, err := view.Read(trustLineKey)
-	if err != nil {
+	if err != nil || data == nil {
 		return tx.NewIssuedAmount(0, 0, amount.Currency, amount.Issuer)
 	}
 
@@ -365,7 +365,7 @@ func createTrustLineWithBalance(view tx.LedgerView, sender, receiver [20]byte, a
 	// Reference: rippled trustCreate lines 1415-1432
 	// If an account does NOT have DefaultRipple, set NoRipple on that side.
 	receiverAcctData, err := view.Read(keylet.Account(receiver))
-	if err != nil {
+	if err != nil || receiverAcctData == nil {
 		return tx.TefINTERNAL
 	}
 	receiverAcct, err := sle.ParseAccountRoot(receiverAcctData)
@@ -382,7 +382,7 @@ func createTrustLineWithBalance(view tx.LedgerView, sender, receiver [20]byte, a
 	}
 
 	senderAcctData, err := view.Read(keylet.Account(sender))
-	if err != nil {
+	if err != nil || senderAcctData == nil {
 		return tx.TefINTERNAL
 	}
 	senderAcct, err := sle.ParseAccountRoot(senderAcctData)
@@ -441,17 +441,11 @@ func createTrustLineWithBalance(view tx.LedgerView, sender, receiver [20]byte, a
 	return tx.TesSUCCESS
 }
 
-// checkIssuerTrustLine checks that the NFT issuer has a trust line for the IOU currency
-// when fixEnforceNFTokenTrustline is enabled and the NFT doesn't have tfTrustLine.
-// Reference: rippled NFTokenAcceptOffer doApply — trust line check before paying issuer cut
+// checkIssuerTrustLine checks that the NFT issuer has a trust line for the IOU currency.
+// Used by NFTokenCreateOffer preclaim path — NOT gated on fixEnforceNFTokenTrustline.
+// Reference: rippled NFTokenUtils.cpp tokenOfferCreatePreclaim lines 909-925
 func checkIssuerTrustLine(ctx *tx.ApplyContext, nftIssuerID [20]byte, amount tx.Amount, nftFlags uint16) tx.Result {
 	if nftFlags&nftFlagTrustLine != 0 {
-		// NFT has tfTrustLine — auto-creation is allowed, no check needed
-		return tx.TesSUCCESS
-	}
-
-	if !ctx.Rules().Enabled(amendment.FeatureFixEnforceNFTokenTrustline) {
-		// Without the fix, trust lines are auto-created silently
 		return tx.TesSUCCESS
 	}
 
@@ -460,14 +454,56 @@ func checkIssuerTrustLine(ctx *tx.ApplyContext, nftIssuerID [20]byte, amount tx.
 		return tx.TefINTERNAL
 	}
 
-	// If NFT issuer is the IOU issuer, no trust line needed (they cancel out)
+	issuerExists, _ := ctx.View.Exists(keylet.Account(nftIssuerID))
+	if !issuerExists {
+		return tx.TecNO_ISSUER
+	}
+
+	// With featureNFTokenMintOffer: skip trust line check when nftIssuer == iouIssuer.
+	// Without featureNFTokenMintOffer: always check trust line existence.
+	if ctx.Rules().Enabled(amendment.FeatureNFTokenMintOffer) {
+		if nftIssuerID != iouIssuerID {
+			trustLineKey := keylet.Line(nftIssuerID, iouIssuerID, amount.Currency)
+			trustLineData, err := ctx.View.Read(trustLineKey)
+			if err != nil || trustLineData == nil {
+				return tx.TecNO_LINE
+			}
+		}
+	} else {
+		trustLineKey := keylet.Line(nftIssuerID, iouIssuerID, amount.Currency)
+		exists, _ := ctx.View.Exists(trustLineKey)
+		if !exists {
+			return tx.TecNO_LINE
+		}
+	}
+
+	return tx.TesSUCCESS
+}
+
+// checkIssuerTrustLineForAccept checks that the NFT issuer has a trust line for the
+// IOU currency. Used by NFTokenAcceptOffer doApply path — gated on fixEnforceNFTokenTrustline.
+// Reference: rippled NFTokenAcceptOffer.cpp doApply lines 373-377
+func checkIssuerTrustLineForAccept(ctx *tx.ApplyContext, nftIssuerID [20]byte, amount tx.Amount, nftFlags uint16) tx.Result {
+	if !ctx.Rules().Enabled(amendment.FeatureFixEnforceNFTokenTrustline) {
+		return tx.TesSUCCESS
+	}
+	if nftFlags&nftFlagTrustLine != 0 {
+		return tx.TesSUCCESS
+	}
+
+	iouIssuerID, err := sle.DecodeAccountID(amount.Issuer)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	// NFT issuer == IOU issuer: issuer doesn't need trust line for own currency
 	if nftIssuerID == iouIssuerID {
 		return tx.TesSUCCESS
 	}
 
-	// Check that the NFT issuer has a trust line to the IOU issuer
 	trustLineKey := keylet.Line(nftIssuerID, iouIssuerID, amount.Currency)
-	if _, err := ctx.View.Read(trustLineKey); err != nil {
+	trustLineData, err := ctx.View.Read(trustLineKey)
+	if err != nil || trustLineData == nil {
 		return tx.TecNO_LINE
 	}
 
