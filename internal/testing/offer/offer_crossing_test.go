@@ -73,8 +73,8 @@ func testOfferCreateThenCross(t *testing.T, disabledFeatures []string) {
 			env.FundAmount(bob, uint64(jtx.XRP(10000)))
 			env.Close()
 
-			// rate(gw, 1.005) -> transfer rate = 1.005 * 1e9 = 1005000000
-			env.SetTransferRate(gw, 1005000000)
+			// rate(gw, 1.005) -> rippled JTX uses (uint32)(1.005 * 1e9) = 1004999999 (IEEE 754 float)
+			env.SetTransferRate(gw, 1004999999)
 
 			// trust(alice, USD(1000))
 			env.Trust(alice, USD(1000))
@@ -83,8 +83,8 @@ func testOfferCreateThenCross(t *testing.T, disabledFeatures []string) {
 			// trust(gw, alice["USD"](50)) - gateway trusts alice for 50 USD
 			env.Trust(gw, jtx.IssuedCurrency(alice, "USD", 50))
 
-			// pay(gw, bob, bob["USD"](1)) - gateway pays bob 1 USD
-			result := env.Submit(payment.PayIssued(gw, bob, USD(1)).Build())
+			// pay(gw, bob, bob["USD"](1)) - gateway pays bob 1 bob-issued USD
+			result := env.Submit(payment.PayIssued(gw, bob, jtx.IssuedCurrency(bob, "USD", 1)).Build())
 			jtx.RequireTxSuccess(t, result)
 
 			// pay(alice, gw, USD(50)) - alice pays gateway 50 USD
