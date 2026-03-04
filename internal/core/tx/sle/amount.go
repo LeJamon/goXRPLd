@@ -17,8 +17,15 @@ const (
 	MaxExponent = 80
 
 	// Mantissa range for normalized IOU amounts [10^15, 10^16 - 1]
+	// cMinValue / cMaxValue in rippled
 	MinMantissa int64 = 1_000_000_000_000_000
 	MaxMantissa int64 = 9_999_999_999_999_999
+
+	// cMaxValue in rippled (10^16). Note: MaxMantissa = cMaxValue - 1.
+	cMaxValue uint64 = 10_000_000_000_000_000
+
+	// tenTo14: scaling constant matching rippled's STAmount.cpp
+	tenTo14 uint64 = 100_000_000_000_000
 
 	// Maximum native XRP in drops that can exist on the network
 	MaxNativeDrops uint64 = 100_000_000_000_000_000
@@ -623,7 +630,8 @@ func addIOUValues(a, b IOUAmountValue) IOUAmountValue {
 		na := NewXRPLNumber(a.mantissa, a.exponent)
 		nb := NewXRPLNumber(b.mantissa, b.exponent)
 		result := na.Add(nb)
-		return result.ToIOUAmountValue()
+		r := result.ToIOUAmountValue()
+		return r
 	}
 
 	// Legacy path (without fixUniversalNumber)
@@ -650,7 +658,8 @@ func addIOUValues(a, b IOUAmountValue) IOUAmountValue {
 		return ZeroIOUValue()
 	}
 
-	return NewIOUAmountValue(result, aExp)
+	r := NewIOUAmountValue(result, aExp)
+	return r
 }
 
 // Compare compares two amounts
@@ -761,6 +770,7 @@ func (a Amount) MulRatio(num, den uint32, roundUp bool) Amount {
 
 	exponent := a.iou.Exponent()
 
+
 	// roomToGrow: scale up to capture fractional digits from rem/den
 	// Reference: IOUAmount.cpp lines 254-272
 	if rem.Sign() != 0 {
@@ -824,6 +834,7 @@ func (a Amount) MulRatio(num, den uint32, roundUp bool) Amount {
 			}
 			return NewIssuedAmountFromValue(iou.mantissa-1, iou.exponent, a.Currency, a.Issuer)
 		}
+	} else {
 	}
 
 	return result
@@ -914,35 +925,80 @@ func (a Amount) Mul(other Amount, roundUp bool) Amount {
 		m2 = -m2
 	}
 
-	// Use big.Int for multiplication to avoid overflow
-	bigM1 := new(big.Int).SetInt64(m1)
-	bigM2 := new(big.Int).SetInt64(m2)
-	bigProduct := new(big.Int).Mul(bigM1, bigM2)
-
-	resultExp := e1 + e2
-
-	// Normalize the result to mantissa in [10^15, 10^16)
-	minMantissa := new(big.Int).SetInt64(1000000000000000)  // 10^15
-	maxMantissa := new(big.Int).SetInt64(10000000000000000) // 10^16
-	ten := big.NewInt(10)
-	five := big.NewInt(5)
-
-	for bigProduct.Cmp(maxMantissa) >= 0 {
-		// Use DivMod to get remainder for rounding
-		remainder := new(big.Int)
-		bigProduct.DivMod(bigProduct, ten, remainder)
-		// Round up if remainder >= 5 (or if roundUp is true and remainder > 0)
-		if remainder.Cmp(five) >= 0 || (roundUp && remainder.Sign() > 0) {
-			bigProduct.Add(bigProduct, big.NewInt(1))
+	// Pre-normalize native (XRP) inputs to IOU range [cMinValue, cMaxValue)
+	// Reference: rippled multiply() lines 1382-1398
+	if a.IsNative() {
+		for m1 < MinMantissa {
+			m1 *= 10
+			e1--
 		}
+	}
+	if other.IsNative() {
+		for m2 < MinMantissa {
+			m2 *= 10
+			e2--
+		}
+	}
+
+	// Multiply mantissas (each in [10^15, 10^16) range, product in [10^30, 10^32) range)
+	// Then divide by 10^14 to bring result to [10^16, 10^18) range.
+	// Reference: rippled multiply() line 1406, mulRound() line 1590
+	bigM1 := new(big.Int).SetUint64(uint64(m1))
+	bigM2 := new(big.Int).SetUint64(uint64(m2))
+	bigProduct := new(big.Int).Mul(bigM1, bigM2)
+	bigTenTo14 := new(big.Int).SetUint64(tenTo14)
+
+	if roundUp {
+		// Match rippled's mulRound(): muldiv_round(v1, v2, tenTo14, tenTo14-1)
+		// For positive result with roundUp=true: add tenTo14-1 before dividing (ceiling division)
+		// Reference: rippled mulRound() lines 1590-1612
+		rounding := new(big.Int).SetUint64(tenTo14 - 1)
+		bigProduct.Add(bigProduct, rounding)
+	}
+
+	bigResult := new(big.Int).Div(bigProduct, bigTenTo14)
+
+	if !roundUp {
+		// Match rippled's multiply(): muldiv(v1, v2, tenTo14) + 7
+		// Reference: rippled multiply() line 1406
+		bigResult.Add(bigResult, big.NewInt(7))
+	}
+
+	resultExp := e1 + e2 + 14
+
+	if roundUp {
+		// Apply canonicalizeRound for mulRound()
+		// Reference: rippled canonicalizeRound() lines 1431-1464
+		bigCMaxValue := new(big.Int).SetUint64(cMaxValue)
+		tenCMaxValue := new(big.Int).Mul(big.NewInt(10), bigCMaxValue)
+		ten := big.NewInt(10)
+
+		if bigResult.Cmp(bigCMaxValue) > 0 {
+			for bigResult.Cmp(tenCMaxValue) > 0 {
+				bigResult.Div(bigResult, ten)
+				resultExp++
+			}
+			bigResult.Add(bigResult, big.NewInt(9))
+			bigResult.Div(bigResult, ten)
+			resultExp++
+		}
+	}
+
+	// Normalize the result to mantissa in [cMinValue, cMaxValue)
+	bigMinMantissa := new(big.Int).SetInt64(MinMantissa)
+	bigMaxMantissa := new(big.Int).SetUint64(cMaxValue)
+	ten := big.NewInt(10)
+
+	for bigResult.Cmp(bigMaxMantissa) >= 0 {
+		bigResult.Div(bigResult, ten)
 		resultExp++
 	}
-	for bigProduct.Cmp(minMantissa) < 0 && bigProduct.Sign() != 0 {
-		bigProduct.Mul(bigProduct, ten)
+	for bigResult.Cmp(bigMinMantissa) < 0 && bigResult.Sign() != 0 {
+		bigResult.Mul(bigResult, ten)
 		resultExp--
 	}
 
-	resultMant := bigProduct.Int64()
+	resultMant := bigResult.Int64()
 	if negative {
 		resultMant = -resultMant
 	}
@@ -993,30 +1049,15 @@ func (a Amount) Div(other Amount, roundUp bool) Amount {
 	}
 
 	// For IOU division, use precise big.Int arithmetic
+	// Reference: rippled STAmount.cpp divide() and divRound()
 	m1 := a.Mantissa()
 	e1 := a.Exponent()
 	m2 := other.Mantissa()
 	e2 := other.Exponent()
 
-	// When switchover is on, delegate to XRPLNumber for Guard-based rounding
-	if GetNumberSwitchover() && !a.IsNative() {
-		negative := (m1 < 0) != (m2 < 0)
-		if m1 < 0 {
-			m1 = -m1
-		}
-		if m2 < 0 {
-			m2 = -m2
-		}
-		na := NewXRPLNumber(m1, e1)
-		nb := NewXRPLNumber(m2, e2)
-		result := na.Div(nb)
-		iou := result.ToIOUAmountValue()
-		rm := iou.mantissa
-		if negative {
-			rm = -rm
-		}
-		return NewIssuedAmountFromValue(rm, iou.exponent, a.Currency, a.Issuer)
-	}
+	// rippled's divide() NEVER uses Number/switchover - it always uses
+	// muldiv(numVal, tenTo17, denVal) + 5 regardless of getSTNumberSwitchover().
+	// Reference: rippled STAmount.cpp divide() lines 1293-1336
 
 	// Handle sign
 	negative := (m1 < 0) != (m2 < 0)
@@ -1027,39 +1068,75 @@ func (a Amount) Div(other Amount, roundUp bool) Amount {
 		m2 = -m2
 	}
 
-	// Normalize numerator to have enough precision for division
-	// We need m1 to be large enough that m1/m2 stays in range [10^15, 10^16)
-	bigM1 := new(big.Int).SetInt64(m1)
-	bigM2 := new(big.Int).SetInt64(m2)
-
-	// Scale up m1 to get more precision in the division
-	// Multiply m1 by 10^16 to get enough precision
-	scale := big.NewInt(10000000000000000) // 10^16
-	bigM1.Mul(bigM1, scale)
-
-	resultExp := e1 - e2 - 16 // -16 because we scaled up by 10^16
-
-	// Perform division
-	bigResult := new(big.Int).Div(bigM1, bigM2)
-
-	// Handle rounding up
-	if roundUp {
-		remainder := new(big.Int).Mod(bigM1, bigM2)
-		if remainder.Sign() != 0 {
-			bigResult.Add(bigResult, big.NewInt(1))
+	// Pre-normalize native (XRP) inputs to IOU range [cMinValue, cMaxValue)
+	// Reference: rippled divide() lines 1307-1324
+	if a.IsNative() {
+		for m1 < MinMantissa {
+			m1 *= 10
+			e1--
+		}
+	}
+	if other.IsNative() {
+		for m2 < MinMantissa {
+			m2 *= 10
+			e2--
 		}
 	}
 
-	// Normalize the result to mantissa in [10^15, 10^16)
-	minMantissa := new(big.Int).SetInt64(1000000000000000)  // 10^15
-	maxMantissa := new(big.Int).SetInt64(10000000000000000) // 10^16
+
+	bigM1 := new(big.Int).SetUint64(uint64(m1))
+	bigM2 := new(big.Int).SetUint64(uint64(m2))
+
+	// Scale numerator by 10^17 for precision (matching rippled's tenTo17)
+	// Reference: rippled divide() line 1333, divRound() line 1712
+	bigM1.Mul(bigM1, new(big.Int).Set(tenTo17))
+
+	if roundUp {
+		// Match rippled's divRound(): muldiv_round(numVal, tenTo17, denVal, denVal-1)
+		// When rounding away from zero, add denVal-1 before dividing.
+		// Reference: rippled divRound() lines 1712-1713
+		rounding := new(big.Int).SetUint64(uint64(m2) - 1)
+		bigM1.Add(bigM1, rounding)
+	}
+
+	bigResult := new(big.Int).Div(bigM1, bigM2)
+
+	if !roundUp {
+		// Match rippled's divide(): result = muldiv(numVal, tenTo17, denVal) + 5
+		// Reference: rippled divide() line 1333
+		bigResult.Add(bigResult, big.NewInt(5))
+	}
+
+	resultExp := e1 - e2 - 17 // -17 because we scaled by 10^17
+
+	if roundUp {
+		// Apply canonicalizeRound for divRound()
+		// Reference: rippled canonicalizeRound() lines 1431-1464
+		bigCMaxValue := new(big.Int).SetUint64(cMaxValue)
+		tenCMaxValue := new(big.Int).Mul(big.NewInt(10), bigCMaxValue)
+		ten := big.NewInt(10)
+
+		if bigResult.Cmp(bigCMaxValue) > 0 {
+			for bigResult.Cmp(tenCMaxValue) > 0 {
+				bigResult.Div(bigResult, ten)
+				resultExp++
+			}
+			bigResult.Add(bigResult, big.NewInt(9))
+			bigResult.Div(bigResult, ten)
+			resultExp++
+		}
+	}
+
+	// Normalize the result to mantissa in [cMinValue, cMaxValue)
+	bigMinMantissa := new(big.Int).SetInt64(MinMantissa)
+	bigMaxMantissa := new(big.Int).SetUint64(cMaxValue)
 	ten := big.NewInt(10)
 
-	for bigResult.Cmp(maxMantissa) >= 0 {
+	for bigResult.Cmp(bigMaxMantissa) >= 0 {
 		bigResult.Div(bigResult, ten)
 		resultExp++
 	}
-	for bigResult.Cmp(minMantissa) < 0 && bigResult.Sign() != 0 {
+	for bigResult.Cmp(bigMinMantissa) < 0 && bigResult.Sign() != 0 {
 		bigResult.Mul(bigResult, ten)
 		resultExp--
 	}
@@ -1144,6 +1221,7 @@ func MulRoundStrict(v1, v2 Amount, currency, issuer string, roundUp bool) Amount
 	amount := product.Uint64()
 	offset := offset1 + offset2 + 14
 
+
 	// canonicalizeRoundStrict: only when resultNegative != roundUp
 	if resultNegative != roundUp {
 		if amount > uint64(MaxMantissa) {
@@ -1166,6 +1244,7 @@ func MulRoundStrict(v1, v2 Amount, currency, issuer string, roundUp bool) Amount
 	}
 	result := NewIssuedAmountFromValue(mantissa, offset, currency, issuer)
 	guard.Release()
+
 
 	// If roundUp and positive and result is zero, return minimum value
 	if roundUp && !resultNegative && result.IsZero() {

@@ -259,7 +259,8 @@ func QualityFromAmounts(in, out EitherAmount) Quality {
 	storedExponent := uint64(exponent + 100)
 	storedMantissa := uint64(mantissa)
 
-	return Quality{Value: (storedExponent << 56) | (storedMantissa & 0x00FFFFFFFFFFFFFF)}
+	q := Quality{Value: (storedExponent << 56) | (storedMantissa & 0x00FFFFFFFFFFFFFF)}
+	return q
 }
 
 // Compare compares two qualities
@@ -453,11 +454,13 @@ func (q Quality) CeilOutStrict(amtIn, amtOut EitherAmount, limit EitherAmount, r
 
 	resultIn := sle.MulRoundStrict(limitAmt, qRate, inCurrency, inIssuer, roundUp)
 
+
 	var resultInEither EitherAmount
 	if amtIn.IsNative {
 		// Convert IOU-style result back to XRP drops using canonicalizeRoundStrict logic.
 		// Reference: rippled STAmount.cpp canonicalizeRoundStrict
-		resultInEither = NewXRPEitherAmount(CanonicalizeDropsStrict(resultIn.Mantissa(), resultIn.Exponent(), roundUp))
+		drops := CanonicalizeDropsStrict(resultIn.Mantissa(), resultIn.Exponent(), roundUp)
+		resultInEither = NewXRPEitherAmount(drops)
 	} else {
 		resultInEither = NewIOUEitherAmount(tx.NewIssuedAmount(
 			resultIn.Mantissa(), resultIn.Exponent(), inCurrency, inIssuer))

@@ -1,6 +1,7 @@
 package payment
 
 import (
+
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	tx "github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
@@ -124,6 +125,7 @@ func (s *DirectStepI) Rev(
 	// Calculate srcToDst = out / dstQIn (round up)
 	srcToDst := mulRatioAmount(out.IOU, QualityOne, dstQIn, true)
 
+
 	if srcToDst.Compare(maxSrcToDst) <= 0 {
 		// Non-limiting case
 		in := mulRatioAmount(srcToDst, srcQOut, QualityOne, true)
@@ -133,6 +135,7 @@ func (s *DirectStepI) Rev(
 			out:        out.IOU,
 			srcDebtDir: srcDebtDir,
 		}
+
 
 		// Execute the credit
 		_ = s.rippleCredit(sb, srcToDst, issuer)
@@ -212,10 +215,12 @@ func (s *DirectStepI) Fwd(
 	// Calculate srcToDst = in / srcQOut (round down)
 	srcToDst := mulRatioAmount(in.IOU, QualityOne, srcQOut, false)
 
+
 	if srcToDst.Compare(maxSrcToDst) <= 0 {
 		// Non-limiting case
 		out := mulRatioAmount(srcToDst, dstQIn, QualityOne, false)
 		s.setCacheLimiting(in.IOU, srcToDst, out, srcDebtDir)
+
 
 		// Execute the credit
 		s.rippleCredit(sb, s.cache.srcToDst, issuer)

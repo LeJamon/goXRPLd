@@ -3,7 +3,6 @@ package payment
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"math/big"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
@@ -197,8 +196,6 @@ func (s *BookStep) Rev(
 		// Also handled at the OfferStream level in rippled.
 		// Reference: rippled OfferStream.cpp lines 343-404
 		if s.shouldRmSmallIncreasedQOffer(sb, offer, ownerFunds) {
-			fmt.Printf("[BOOKSTEP-REV-RMSMALL] removing small increased Q offer: TakerPays=%+v TakerGets=%+v funds=%+v\n",
-				offer.TakerPays, offer.TakerGets, ownerFunds)
 			ofrsToRm[offerKey] = true
 			s.offersUsed_++
 			continue
@@ -257,9 +254,6 @@ func (s *BookStep) Rev(
 		fundedCount++
 
 		// Quality check against quality limit
-		fmt.Printf("[BOOKSTEP-REV-QUALITY] offerQ=%d limitQ=%v worse=%v account=%s pays=%+v gets=%+v funds=%+v\n",
-			offerQuality.Value, s.qualityLimit, s.qualityLimit != nil && offerQuality.WorseThan(*s.qualityLimit),
-			offer.Account, offer.TakerPays, offer.TakerGets, ownerFunds)
 		if s.qualityLimit != nil && offerQuality.WorseThan(*s.qualityLimit) {
 			break
 		}
@@ -318,8 +312,6 @@ func (s *BookStep) Rev(
 			totalOut = totalOut.Add(stpOut)
 			remainingOut = out.Sub(totalOut)
 
-			fmt.Printf("[REV-FULLTAKE] stpIn=%v ofrIn=%v stpOut=%v ofrOut=%v ownerGives=%v offerPays=%v offerGets=%v\n",
-				stpIn.XRP, ofrIn.XRP, stpOut.IOU.Mantissa(), ofrOut.IOU.Mantissa(), ownerGives.IOU.Mantissa(), s.offerTakerPays(offer).XRP, s.offerTakerGets(offer).IOU.Mantissa())
 			if err := s.consumeOffer(sb, offer, stpIn, ofrIn, stpOut, ownerGives); err != nil {
 				break
 			}
@@ -342,6 +334,7 @@ func (s *BookStep) Rev(
 			}
 			stpAdjIn = MulRatio(ofrAdjIn, ofrTrIn, QualityOne, true)
 			ownerGivesAdj := MulRatio(stpAdjOut, ofrTrOut, QualityOne, false)
+
 
 			totalIn = totalIn.Add(stpAdjIn)
 			totalOut = out // result.out = out (force exact)
@@ -536,8 +529,6 @@ func (s *BookStep) Fwd(
 		// Reference: BookStep.cpp lines 1172-1252
 		if stpIn.Compare(remainingIn) <= 0 {
 			// Full take
-			fmt.Printf("[FWD-FULLTAKE] stpIn=%+v ofrIn=%+v stpOut=%+v ownerGives=%+v\n",
-				stpIn, ofrIn, stpOut, ownerGives)
 			totalIn = totalIn.Add(stpIn)
 			totalOut = totalOut.Add(stpOut)
 
@@ -570,8 +561,6 @@ func (s *BookStep) Fwd(
 			}
 		} else {
 			// Partial take: limitStepIn
-			fmt.Printf("[FWD-PARTIAL] stpIn=%+v remainingIn=%+v ofrIn=%+v stpOut=%+v\n",
-				stpIn, remainingIn, ofrIn, stpOut)
 			// Reference: BookStep.cpp limitStepIn lines 660-685
 			stpAdjIn := remainingIn
 			inLmt := MulRatio(stpAdjIn, QualityOne, ofrTrIn, false)
@@ -1942,8 +1931,6 @@ func (s *BookStep) consumeOffer(sb *PaymentSandbox, offer *sle.LedgerOffer, cons
 		offer.TakerGets = s.eitherAmountToTxAmount(newTakerGets, s.book.Out)
 
 		remainingFunded := s.getOfferFundedAmount(sb, offer)
-		fmt.Printf("[CONSUMEOFFER-DBG] newTakerPays=%+v newTakerGets=%+v remainingFunded=%+v isEffZero=%v\n",
-			newTakerPays, newTakerGets, remainingFunded, remainingFunded.IsEffectivelyZero())
 		if remainingFunded.IsEffectivelyZero() {
 			offerData, err := sle.SerializeLedgerOffer(offer)
 			if err != nil {

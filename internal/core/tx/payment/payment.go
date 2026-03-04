@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"math/big"
 	"sort"
 	"strconv"
@@ -1534,7 +1533,6 @@ func (p *Payment) applyIOUIssue(ctx *tx.ApplyContext, dest *sle.AccountRoot, sen
 	// Reference: rippled DirectStep.cpp:417-430
 	// Issuer (sender) may require auth - check if destination's trust line is authorized
 	if result := checkTrustLineAuthorization(ctx.View, senderID, destID, rippleState); result != tx.TesSUCCESS {
-		fmt.Println("passed check")
 		return result
 	}
 
