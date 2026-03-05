@@ -151,7 +151,7 @@ func TestPermissionedDomainSetValidation(t *testing.T) {
 			tx: func() *PermissionedDomainSet {
 				tx := NewPermissionedDomainSet("rOwner")
 				tx.AcceptedCredentials = []AcceptedCredential{
-					{AcceptedCredential: AcceptedCredentialData{Issuer: "", CredentialType: makeCredTypeHex(10)}},
+					{Credential: AcceptedCredentialData{Issuer: "", CredentialType: makeCredTypeHex(10)}},
 				}
 				return tx
 			}(),
@@ -163,7 +163,7 @@ func TestPermissionedDomainSetValidation(t *testing.T) {
 			tx: func() *PermissionedDomainSet {
 				tx := NewPermissionedDomainSet("rOwner")
 				tx.AcceptedCredentials = []AcceptedCredential{
-					{AcceptedCredential: AcceptedCredentialData{Issuer: "rIssuer1", CredentialType: ""}},
+					{Credential: AcceptedCredentialData{Issuer: "rIssuer1", CredentialType: ""}},
 				}
 				return tx
 			}(),
@@ -175,7 +175,7 @@ func TestPermissionedDomainSetValidation(t *testing.T) {
 			tx: func() *PermissionedDomainSet {
 				tx := NewPermissionedDomainSet("rOwner")
 				tx.AcceptedCredentials = []AcceptedCredential{
-					{AcceptedCredential: AcceptedCredentialData{Issuer: "rIssuer1", CredentialType: "not_hex!"}},
+					{Credential: AcceptedCredentialData{Issuer: "rIssuer1", CredentialType: "not_hex!"}},
 				}
 				return tx
 			}(),
@@ -193,11 +193,11 @@ func TestPermissionedDomainSetValidation(t *testing.T) {
 			errMsg:  "exceeds",
 		},
 		{
-			name: "invalid - universal flags set",
+			name: "invalid - non-universal flags set",
 			tx: func() *PermissionedDomainSet {
 				tx := NewPermissionedDomainSet("rOwner")
 				tx.AddAcceptedCredential("rIssuer1", makeCredTypeHex(10))
-				flags := uint32(tx2.TfUniversal)
+				flags := uint32(0x00010000) // Not a universal flag
 				tx.Common.Flags = &flags
 				return tx
 			}(),
@@ -269,10 +269,10 @@ func TestPermissionedDomainDeleteValidation(t *testing.T) {
 			errMsg:  "hash",
 		},
 		{
-			name: "invalid - universal flags set",
+			name: "invalid - non-universal flags set",
 			tx: func() *PermissionedDomainDelete {
 				tx := NewPermissionedDomainDelete("rOwner", makeValidDomainID())
-				flags := uint32(tx2.TfUniversal)
+				flags := uint32(0x00010000) // Not a universal flag
 				tx.Common.Flags = &flags
 				return tx
 			}(),
@@ -318,8 +318,9 @@ func TestPermissionedDomainSetFlatten(t *testing.T) {
 		_, hasDomainID := flat["DomainID"]
 		assert.False(t, hasDomainID) // Not set for creation
 
-		creds, ok := flat["AcceptedCredentials"].([]AcceptedCredential)
-		require.True(t, ok)
+		// ReflectFlatten converts struct slices to []map[string]any
+		creds, ok := flat["AcceptedCredentials"].([]map[string]any)
+		require.True(t, ok, "AcceptedCredentials should be []map[string]any")
 		assert.Len(t, creds, 2)
 	})
 
@@ -381,11 +382,11 @@ func TestPermissionedDomainSetAddAcceptedCredential(t *testing.T) {
 
 	require.Len(t, tx.AcceptedCredentials, 2)
 
-	assert.Equal(t, "rIssuer1", tx.AcceptedCredentials[0].AcceptedCredential.Issuer)
-	assert.Equal(t, "4142434445", tx.AcceptedCredentials[0].AcceptedCredential.CredentialType)
+	assert.Equal(t, "rIssuer1", tx.AcceptedCredentials[0].Credential.Issuer)
+	assert.Equal(t, "4142434445", tx.AcceptedCredentials[0].Credential.CredentialType)
 
-	assert.Equal(t, "rIssuer2", tx.AcceptedCredentials[1].AcceptedCredential.Issuer)
-	assert.Equal(t, "4647484950", tx.AcceptedCredentials[1].AcceptedCredential.CredentialType)
+	assert.Equal(t, "rIssuer2", tx.AcceptedCredentials[1].Credential.Issuer)
+	assert.Equal(t, "4647484950", tx.AcceptedCredentials[1].Credential.CredentialType)
 }
 
 // =============================================================================
