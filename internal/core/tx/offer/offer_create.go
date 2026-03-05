@@ -631,7 +631,6 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext, sb, sbCancel *payment.Paym
 		}
 
 		if isAmountZeroOrNegative(takerInBalance) {
-			// Account funds exhausted - offer fully consumed, no remaining offer to place
 			return tx.TesSUCCESS, true // Apply main sandbox with crossing results
 		}
 
@@ -737,7 +736,6 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext, sb, sbCancel *payment.Paym
 		}
 
 		if fullyCrossed {
-			// Offer fully crossed - FoK is satisfied
 			return tx.TesSUCCESS, true
 		}
 
