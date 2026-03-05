@@ -126,6 +126,14 @@ func (o *OfferCreate) Validate() error {
 	saTakerPays := o.TakerPays
 	saTakerGets := o.TakerGets
 
+	// Check required amounts are present (unset Amount has no type info)
+	if !saTakerPays.IsNative() && saTakerPays.Currency == "" {
+		return errors.New("temBAD_OFFER: TakerPays is required")
+	}
+	if !saTakerGets.IsNative() && saTakerGets.Currency == "" {
+		return errors.New("temBAD_OFFER: TakerGets is required")
+	}
+
 	// Check amounts are present and valid
 	// Reference: lines 97-101
 	if !isLegalNetAmount(saTakerPays) || !isLegalNetAmount(saTakerGets) {
