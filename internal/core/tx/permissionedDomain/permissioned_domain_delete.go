@@ -4,9 +4,10 @@ import (
 	"encoding/hex"
 	"errors"
 
+	"github.com/LeJamon/goXRPLd/internal/core/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/amendment"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 
 func init() {
@@ -46,7 +47,7 @@ func (p *PermissionedDomainDelete) Validate() error {
 
 	// Check for invalid flags (tfUniversalMask)
 	// Reference: rippled PermissionedDomainDelete.cpp:36-40
-	if p.Common.Flags != nil && *p.Common.Flags&tx.TfUniversal != 0 {
+	if p.Common.Flags != nil && *p.Common.Flags&tx.TfUniversalMask != 0 {
 		return tx.ErrInvalidFlags
 	}
 
@@ -62,7 +63,6 @@ func (p *PermissionedDomainDelete) Validate() error {
 		return errors.New("temMALFORMED: DomainID must be a valid 256-bit hash")
 	}
 
-	// Check if zero
 	isZero := true
 	for _, b := range domainBytes {
 		if b != 0 {
@@ -88,22 +88,49 @@ func (p *PermissionedDomainDelete) RequiredAmendments() [][32]byte {
 }
 
 // Apply applies the PermissionedDomainDelete transaction to the ledger.
+// Reference: rippled PermissionedDomainDelete.cpp preclaim() + doApply()
 func (p *PermissionedDomainDelete) Apply(ctx *tx.ApplyContext) tx.Result {
-	if p.DomainID == "" {
-		return tx.TemINVALID
-	}
 	domainBytes, err := hex.DecodeString(p.DomainID)
 	if err != nil || len(domainBytes) != 32 {
 		return tx.TemINVALID
 	}
-	var domainKey [32]byte
-	copy(domainKey[:], domainBytes)
-	domainKeylet := keylet.Keylet{Key: domainKey, Type: 0x0082}
-	if err := ctx.View.Erase(domainKeylet); err != nil {
+	var domainID [32]byte
+	copy(domainID[:], domainBytes)
+	domainKeylet := keylet.PermissionedDomainByID(domainID)
+
+	// Preclaim: verify domain exists
+	// Reference: rippled PermissionedDomainDelete.cpp preclaim() lines 50-55
+	existingData, err := ctx.View.Read(domainKeylet)
+	if err != nil || existingData == nil {
 		return tx.TecNO_ENTRY
 	}
+
+	existing, err := sle.ParsePermissionedDomain(existingData)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	// Preclaim: verify caller owns the domain
+	// Reference: rippled PermissionedDomainDelete.cpp preclaim() lines 57-61
+	if existing.Owner != ctx.AccountID {
+		return tx.TecNO_PERMISSION
+	}
+
+	// Remove from owner directory
+	// Reference: rippled PermissionedDomainDelete.cpp doApply()
+	ownerDirKey := keylet.OwnerDir(ctx.AccountID)
+	if _, err := sle.DirRemove(ctx.View, ownerDirKey, existing.OwnerNode, domainKeylet.Key, false); err != nil {
+		return tx.TefBAD_LEDGER
+	}
+
+	// Erase the domain from ledger
+	if err := ctx.View.Erase(domainKeylet); err != nil {
+		return tx.TefINTERNAL
+	}
+
 	if ctx.Account.OwnerCount > 0 {
 		ctx.Account.OwnerCount--
 	}
+
 	return tx.TesSUCCESS
 }
