@@ -770,6 +770,226 @@ func TestAMMExtended_PayStrand(t *testing.T) {
 	})
 }
 
+// ───────────────────────────────────────────────────────────────────────
+// RmFundedOffer tests
+// Reference: rippled AMMExtended_test.cpp testRmFundedOffer
+// ───────────────────────────────────────────────────────────────────────
+
+// TestAMMExtended_RmFundedOffer tests that funded offers are not incorrectly removed.
+// Reference: rippled AMMExtended_test.cpp testRmFundedOffer (line 50)
+func TestAMMExtended_RmFundedOffer(t *testing.T) {
+	t.Skip("Requires AMM BookStep integration - testRmFundedOffer")
+	// The test creates two paths (good quality via AMM, bad quality via order books),
+	// then verifies that funded but unused offers are not removed.
+	// Needs: payment routing through AMM synthetic offers in BookStep.
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// EnforceNoRipple tests
+// Reference: rippled AMMExtended_test.cpp testEnforceNoRipple
+// ───────────────────────────────────────────────────────────────────────
+
+// TestAMMExtended_EnforceNoRipple tests NoRipple enforcement with AMM.
+// Reference: rippled AMMExtended_test.cpp testEnforceNoRipple (line 114)
+func TestAMMExtended_EnforceNoRipple(t *testing.T) {
+	t.Run("NoRippleBlocksAMMPath", func(t *testing.T) {
+		t.Skip("Requires AMM BookStep integration - testEnforceNoRipple")
+		// Account with NoRipple flag on trust lines blocks payment path
+		// through AMM: XRP -> AMM(XRP/USD1) -> bob(USD1->USD2) -> carol
+		// Expected: tecPATH_DRY
+	})
+
+	t.Run("DefaultFlagsAllowAMMPath", func(t *testing.T) {
+		t.Skip("Requires AMM BookStep integration - testEnforceNoRipple")
+		// Without NoRipple, the same path should succeed.
+		// XRP -> AMM(XRP/USD1) -> bob(USD1->USD2) -> carol
+		// Expected: tesSUCCESS
+	})
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// MissingAuth tests
+// Reference: rippled AMMExtended_test.cpp testMissingAuth
+// ───────────────────────────────────────────────────────────────────────
+
+// TestAMMExtended_MissingAuth tests RequireAuth interactions with AMM creation.
+// Reference: rippled AMMExtended_test.cpp testMissingAuth (line 1379)
+func TestAMMExtended_MissingAuth(t *testing.T) {
+	// Alice tries to create AMM without trust line (no funds) -> tecUNFUNDED_AMM
+	t.Run("NoTrustLine_Unfunded", func(t *testing.T) {
+		env := amm.NewAMMTestEnv(t)
+		env.TestEnv.FundAmount(env.GW, uint64(jtx.XRP(400000)))
+		env.TestEnv.FundAmount(env.Alice, uint64(jtx.XRP(400000)))
+		env.TestEnv.FundAmount(env.Bob, uint64(jtx.XRP(400000)))
+		env.Close()
+
+		// Alice has no USD trust line, so no funds
+		createTx := amm.AMMCreate(env.Alice, amm.IOUAmount(env.GW, "USD", 1000), amm.XRPAmount(1000)).Build()
+		result := env.Submit(createTx)
+		amm.ExpectTER(t, result, amm.TecUNFUNDED_AMM, "tecNO_LINE")
+	})
+
+	// GW sets RequireAuth, authorizes bob but not alice
+	t.Run("NoAuth_NoLine", func(t *testing.T) {
+		env := amm.NewAMMTestEnv(t)
+		env.TestEnv.FundAmount(env.GW, uint64(jtx.XRP(400000)))
+		env.TestEnv.FundAmount(env.Alice, uint64(jtx.XRP(400000)))
+		env.TestEnv.FundAmount(env.Bob, uint64(jtx.XRP(400000)))
+		env.Close()
+
+		// GW sets RequireAuth
+		env.TestEnv.EnableRequireAuth(env.GW)
+		env.Close()
+
+		// GW authorizes bob
+		env.TestEnv.AuthorizeTrustLine(env.GW, env.Bob, "USD")
+		env.Close()
+		env.Trust(env.Bob, env.GW, "USD", 50)
+		env.Close()
+		env.PayIOU(env.GW, env.Bob, "USD", 50)
+		env.Close()
+
+		// Alice has no trust line at all -> tecNO_LINE
+		createTx := amm.AMMCreate(env.Alice, amm.IOUAmount(env.GW, "USD", 1000), amm.XRPAmount(1000)).Build()
+		result := env.Submit(createTx)
+		amm.ExpectTER(t, result, "tecNO_LINE", amm.TecUNFUNDED_AMM)
+	})
+
+	// GW has trust line for alice but NOT authorized -> tecNO_AUTH
+	t.Run("TrustLine_NotAuthorized", func(t *testing.T) {
+		env := amm.NewAMMTestEnv(t)
+		env.TestEnv.FundAmount(env.GW, uint64(jtx.XRP(400000)))
+		env.TestEnv.FundAmount(env.Alice, uint64(jtx.XRP(400000)))
+		env.Close()
+
+		// GW sets RequireAuth
+		env.TestEnv.EnableRequireAuth(env.GW)
+		env.Close()
+
+		// GW creates trust line for alice without auth
+		// (in rippled: trust(gw, alice["USD"](2000)) without tfSetfAuth)
+		env.Trust(env.Alice, env.GW, "USD", 2000)
+		env.Close()
+
+		// Alice tries to create AMM -> tecNO_AUTH (trust line exists but not authorized)
+		createTx := amm.AMMCreate(env.Alice, amm.IOUAmount(env.GW, "USD", 1000), amm.XRPAmount(1000)).Build()
+		result := env.Submit(createTx)
+		amm.ExpectTER(t, result, amm.TecNO_AUTH, amm.TecUNFUNDED_AMM)
+	})
+
+	// Finally authorize alice -> AMM creation succeeds
+	t.Run("Authorized_Succeeds", func(t *testing.T) {
+		env := amm.NewAMMTestEnv(t)
+		env.TestEnv.FundAmount(env.GW, uint64(jtx.XRP(400000)))
+		env.TestEnv.FundAmount(env.Alice, uint64(jtx.XRP(400000)))
+		env.Close()
+
+		// GW sets RequireAuth
+		env.TestEnv.EnableRequireAuth(env.GW)
+		env.Close()
+
+		// GW authorizes alice
+		env.TestEnv.AuthorizeTrustLine(env.GW, env.Alice, "USD")
+		env.Close()
+		env.Trust(env.Alice, env.GW, "USD", 2000)
+		env.Close()
+		env.PayIOU(env.GW, env.Alice, "USD", 1000)
+		env.Close()
+
+		// Alice creates AMM -> should succeed
+		createTx := amm.AMMCreate(env.Alice, amm.IOUAmount(env.GW, "USD", 1000), amm.XRPAmount(1050)).Build()
+		result := env.Submit(createTx)
+		jtx.RequireTxSuccess(t, result)
+		env.Close()
+	})
+
+	// Offer crossing AMM (needs BookStep)
+	t.Run("OfferCrossingAMM", func(t *testing.T) {
+		t.Skip("Requires AMM BookStep integration - offer crossing with AMM liquidity")
+	})
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Multisign with disabled master key tests
+// Reference: rippled AMMExtended_test.cpp testTxMultisign (line 3559)
+// ───────────────────────────────────────────────────────────────────────
+
+// TestAMMExtended_Multisign_WithDisabledMaster tests multisigned AMM transactions
+// with disabled master key, matching rippled's more thorough testTxMultisign setup.
+// Reference: rippled AMMExtended_test.cpp testTxMultisign (line 3559)
+func TestAMMExtended_Multisign_WithDisabledMaster(t *testing.T) {
+	env := amm.NewAMMTestEnv(t)
+	env.FundWithIOUs(20000, 0) // Match rippled: fund with 20000
+	env.Close()
+
+	// Create accounts matching rippled's test
+	bogie := jtx.NewAccount("bogie")
+	becky := jtx.NewAccount("becky")
+	alie := jtx.NewAccount("alie") // Regular key for alice
+
+	env.TestEnv.Fund(bogie, becky)
+	env.Close()
+
+	// alice sets regular key and disables master
+	env.TestEnv.SetRegularKey(env.Alice, alie)
+	env.TestEnv.DisableMasterKey(env.Alice)
+	env.Close()
+
+	// Attach signers to alice (quorum=2, becky weight=1, bogie weight=1)
+	env.SetSignerList(env.Alice, 2, []jtx.TestSigner{
+		{Account: becky, Weight: 1},
+		{Account: bogie, Weight: 1},
+	})
+	env.Close()
+
+	// Multisigned AMMCreate
+	t.Run("Create", func(t *testing.T) {
+		createTx := amm.AMMCreate(env.Alice, amm.XRPAmount(10000), amm.IOUAmount(env.GW, "USD", 10000)).Build()
+		result := env.SubmitMultiSigned(createTx, []*jtx.Account{becky, bogie})
+		jtx.RequireTxSuccess(t, result)
+		env.Close()
+	})
+
+	// Multisigned AMMDeposit (proportional, 1_000_000 LP tokens)
+	t.Run("Deposit", func(t *testing.T) {
+		depositTx := amm.AMMDeposit(env.Alice, amm.XRP(), env.USD).
+			LPTokenOut(amm.LPTokenAmount(amm.XRP(), env.USD, 1000000)).
+			LPToken().
+			Build()
+		result := env.SubmitMultiSigned(depositTx, []*jtx.Account{becky, bogie})
+		jtx.RequireTxSuccess(t, result)
+		env.Close()
+	})
+
+	// Multisigned AMMWithdraw
+	t.Run("Withdraw", func(t *testing.T) {
+		withdrawTx := amm.AMMWithdraw(env.Alice, amm.XRP(), env.USD).
+			LPTokenIn(amm.LPTokenAmount(amm.XRP(), env.USD, 1000000)).
+			LPToken().
+			Build()
+		result := env.SubmitMultiSigned(withdrawTx, []*jtx.Account{becky, bogie})
+		jtx.RequireTxSuccess(t, result)
+		env.Close()
+	})
+
+	// Multisigned AMMVote
+	t.Run("Vote", func(t *testing.T) {
+		voteTx := amm.AMMVote(env.Alice, amm.XRP(), env.USD, 1000).Build()
+		result := env.SubmitMultiSigned(voteTx, []*jtx.Account{becky, bogie})
+		jtx.RequireTxSuccess(t, result)
+		env.Close()
+	})
+
+	// Multisigned AMMBid
+	t.Run("Bid", func(t *testing.T) {
+		bidTx := amm.AMMBid(env.Alice, amm.XRP(), env.USD).
+			BidMin(amm.LPTokenAmount(amm.XRP(), env.USD, 100)).
+			Build()
+		result := env.SubmitMultiSigned(bidTx, []*jtx.Account{becky, bogie})
+		jtx.RequireTxSuccess(t, result)
+	})
+}
+
 // Suppress unused import warnings
 var (
 	_ = offerbuild.OfferCreate

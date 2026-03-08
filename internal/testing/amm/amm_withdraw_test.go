@@ -552,3 +552,175 @@ func TestWithdraw(t *testing.T) {
 		t.Log("Equal deposit then withdraw all passed")
 	})
 }
+
+// TestFixReserveCheckOnWithdrawal tests that the fixAMMv1_2 amendment properly
+// enforces reserve checks on AMM withdrawals.
+// Reference: rippled AMM_test.cpp testFixReserveCheckOnWithdrawal (line 7433)
+//
+// Setup: accounts are funded with the minimum XRP required (reserve(2) + 5*baseFee).
+// GW creates an EUR/USD AMM. Alice deposits USD(1). The withdrawal tests verify
+// that with fixAMMv1_2 enabled the withdrawal fails with tecINSUFFICIENT_RESERVE
+// (because alice's XRP is below reserve after the withdrawal creates trust lines),
+// and without fixAMMv1_2 the withdrawal succeeds.
+func TestFixReserveCheckOnWithdrawal(t *testing.T) {
+	// reserve(env, 2) = reserveBase + 2 * reserveIncrement = 200M + 2*50M = 300M drops.
+	// starting_xrp = reserve(2) + baseFee * 5 = 300_000_050 drops.
+	// This leaves accounts with barely enough to cover 2 owner objects + 5 fees.
+
+	// Helper: creates a fresh env, funds gw and alice with minimal XRP,
+	// creates EUR/USD AMM, deposits alice USD(1), then runs the callback.
+	setupMinimalAMM := func(t *testing.T, enableFixAMMv1_2 bool) *amm.AMMTestEnv {
+		t.Helper()
+
+		env := amm.NewAMMTestEnv(t)
+
+		if enableFixAMMv1_2 {
+			env.EnableFeature("fixAMMv1_2")
+		} else {
+			env.DisableFeature("fixAMMv1_2")
+		}
+
+		startingXRP := env.ReserveBase() + 2*env.ReserveIncrement() + env.BaseFee()*5
+
+		env.TestEnv.FundAmount(env.GW, startingXRP)
+		env.TestEnv.FundAmount(env.Alice, startingXRP)
+		env.Close()
+
+		// Alice trusts GW for USD.
+		env.Trust(env.Alice, env.GW, "USD", 2000)
+		env.Close()
+
+		// GW pays alice USD(2000).
+		env.PayIOU(env.GW, env.Alice, "USD", 2000)
+		env.Close()
+
+		// GW creates AMM with EUR(1000)/USD(1000).
+		createTx := amm.AMMCreate(env.GW,
+			amm.IOUAmount(env.GW, "EUR", 1000),
+			amm.IOUAmount(env.GW, "USD", 1000),
+		).Build()
+		result := env.Submit(createTx)
+		if !result.Success {
+			t.Fatalf("AMM creation should succeed: %s - %s", result.Code, result.Message)
+		}
+		env.Close()
+
+		// Alice deposits USD(1) into the EUR/USD AMM.
+		depositTx := amm.AMMDeposit(env.Alice, env.EUR, env.USD).
+			Amount(amm.IOUAmount(env.GW, "USD", 1)).
+			SingleAsset().
+			Build()
+		result = env.Submit(depositTx)
+		if !result.Success {
+			t.Fatalf("Alice deposit should succeed: %s - %s", result.Code, result.Message)
+		}
+		env.Close()
+
+		return env
+	}
+
+	// Test with fixAMMv1_2 enabled: withdrawals fail with tecINSUFFICIENT_RESERVE.
+	t.Run("WithFix_EqualWithdraw", func(t *testing.T) {
+		env := setupMinimalAMM(t, true)
+
+		// Equal withdraw all -> tecINSUFFICIENT_RESERVE
+		withdrawTx := amm.AMMWithdraw(env.Alice, env.EUR, env.USD).
+			WithdrawAll().
+			Build()
+		result := env.Submit(withdrawTx)
+		amm.ExpectTER(t, result, "tecINSUFFICIENT_RESERVE")
+	})
+
+	t.Run("WithFix_EqualWithdrawWithLimit", func(t *testing.T) {
+		env := setupMinimalAMM(t, true)
+
+		// Withdraw EUR(0.1)/USD(0.1) -> tecINSUFFICIENT_RESERVE
+		withdrawTx1 := amm.AMMWithdraw(env.Alice, env.EUR, env.USD).
+			Amount(amm.IOUAmount(env.GW, "EUR", 0.1)).
+			Amount2(amm.IOUAmount(env.GW, "USD", 0.1)).
+			TwoAsset().
+			Build()
+		result := env.Submit(withdrawTx1)
+		amm.ExpectTER(t, result, "tecINSUFFICIENT_RESERVE")
+
+		// Withdraw USD(0.1)/EUR(0.1) -> tecINSUFFICIENT_RESERVE
+		withdrawTx2 := amm.AMMWithdraw(env.Alice, env.EUR, env.USD).
+			Amount(amm.IOUAmount(env.GW, "USD", 0.1)).
+			Amount2(amm.IOUAmount(env.GW, "EUR", 0.1)).
+			TwoAsset().
+			Build()
+		result = env.Submit(withdrawTx2)
+		amm.ExpectTER(t, result, "tecINSUFFICIENT_RESERVE")
+	})
+
+	t.Run("WithFix_SingleWithdraw", func(t *testing.T) {
+		env := setupMinimalAMM(t, true)
+
+		// Single withdraw EUR(0.1) -> tecINSUFFICIENT_RESERVE
+		withdrawTx1 := amm.AMMWithdraw(env.Alice, env.EUR, env.USD).
+			Amount(amm.IOUAmount(env.GW, "EUR", 0.1)).
+			SingleAsset().
+			Build()
+		result := env.Submit(withdrawTx1)
+		amm.ExpectTER(t, result, "tecINSUFFICIENT_RESERVE")
+
+		// Single withdraw USD(0.1) -> tesSUCCESS
+		// Note: USD withdrawal does NOT create a new trust line (alice already has one),
+		// so it succeeds even with the fix enabled.
+		withdrawTx2 := amm.AMMWithdraw(env.Alice, env.EUR, env.USD).
+			Amount(amm.IOUAmount(env.GW, "USD", 0.1)).
+			SingleAsset().
+			Build()
+		result = env.Submit(withdrawTx2)
+		jtx.RequireTxSuccess(t, result)
+	})
+
+	// Test without fixAMMv1_2: same withdrawals succeed.
+	t.Run("WithoutFix_EqualWithdraw", func(t *testing.T) {
+		env := setupMinimalAMM(t, false)
+
+		withdrawTx := amm.AMMWithdraw(env.Alice, env.EUR, env.USD).
+			WithdrawAll().
+			Build()
+		result := env.Submit(withdrawTx)
+		jtx.RequireTxSuccess(t, result)
+	})
+
+	t.Run("WithoutFix_EqualWithdrawWithLimit", func(t *testing.T) {
+		env := setupMinimalAMM(t, false)
+
+		withdrawTx1 := amm.AMMWithdraw(env.Alice, env.EUR, env.USD).
+			Amount(amm.IOUAmount(env.GW, "EUR", 0.1)).
+			Amount2(amm.IOUAmount(env.GW, "USD", 0.1)).
+			TwoAsset().
+			Build()
+		result := env.Submit(withdrawTx1)
+		jtx.RequireTxSuccess(t, result)
+
+		withdrawTx2 := amm.AMMWithdraw(env.Alice, env.EUR, env.USD).
+			Amount(amm.IOUAmount(env.GW, "USD", 0.1)).
+			Amount2(amm.IOUAmount(env.GW, "EUR", 0.1)).
+			TwoAsset().
+			Build()
+		result = env.Submit(withdrawTx2)
+		jtx.RequireTxSuccess(t, result)
+	})
+
+	t.Run("WithoutFix_SingleWithdraw", func(t *testing.T) {
+		env := setupMinimalAMM(t, false)
+
+		withdrawTx1 := amm.AMMWithdraw(env.Alice, env.EUR, env.USD).
+			Amount(amm.IOUAmount(env.GW, "EUR", 0.1)).
+			SingleAsset().
+			Build()
+		result := env.Submit(withdrawTx1)
+		jtx.RequireTxSuccess(t, result)
+
+		withdrawTx2 := amm.AMMWithdraw(env.Alice, env.EUR, env.USD).
+			Amount(amm.IOUAmount(env.GW, "USD", 0.1)).
+			SingleAsset().
+			Build()
+		result = env.Submit(withdrawTx2)
+		jtx.RequireTxSuccess(t, result)
+	})
+}

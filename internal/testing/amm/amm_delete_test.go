@@ -5,7 +5,9 @@ package amm_test
 import (
 	"testing"
 
+	jtx "github.com/LeJamon/goXRPLd/internal/testing"
 	"github.com/LeJamon/goXRPLd/internal/testing/amm"
+	"github.com/LeJamon/goXRPLd/internal/testing/trustset"
 )
 
 // TestAMMDelete tests AMM deletion scenarios.
@@ -120,3 +122,45 @@ func TestAMMDeleteAfterWithdraw(t *testing.T) {
 		t.Log("AMM correctly deleted after full withdrawal")
 	})
 }
+
+// ----------------------------------------------------------------
+// testAutoDelete
+// Reference: rippled AMM_test.cpp testAutoDelete (line 5644)
+// ----------------------------------------------------------------
+
+// TestAutoDeleteAMM tests auto-deletion behavior with many trust lines.
+// In rippled, maxDeletableAMMTrustLines = 512. When an AMM has more trust
+// lines than this limit, withdrawAll puts the AMM in an empty state rather
+// than fully deleting it, because the trust lines cannot all be deleted in
+// one transaction. Operations on the empty AMM fail with tecAMM_EMPTY,
+// except deposit with tfTwoAssetIfEmpty which re-seeds the pool.
+// Reference: rippled AMM_test.cpp testAutoDelete (line 5644)
+func TestAutoDeleteAMM(t *testing.T) {
+	// First block: AMM with maxDeletableAMMTrustLines + 10 trust lines.
+	// After withdrawAll, AMM is in empty state (not fully deleted).
+	// Bid, Vote, Withdraw, Deposit (without tfTwoAssetIfEmpty), and
+	// TrustSet for LP tokens all fail with tecAMM_EMPTY.
+	// Deposit with tfTwoAssetIfEmpty succeeds and re-seeds the pool.
+	// Then withdrawAll again fully deletes the AMM because remaining
+	// trust lines are under the limit.
+	t.Run("EmptyState_OperationsFail", func(t *testing.T) {
+		t.Skip("Requires creating 522 LP token trust lines (maxDeletableAMMTrustLines+10) to trigger empty state — needs full setup code")
+	})
+
+	// Second block: AMM with maxDeletableAMMTrustLines*2 + 10 trust lines.
+	// After withdrawAll, AMMDelete must be called twice: first returns
+	// tecINCOMPLETE (partial cleanup), second returns tesSUCCESS.
+	t.Run("MultipleDeleteCalls", func(t *testing.T) {
+		t.Skip("Requires maxDeletableAMMTrustLines*2+10 (1034) LP token trust lines — too slow for CI")
+		// After withdrawAll with many trust lines, AMMDelete returns tecINCOMPLETE
+		// on the first call (partial trust line cleanup), then tesSUCCESS on the
+		// second call (finishes cleanup and deletes AMM). A third call returns
+		// terNO_AMM confirming the AMM is gone.
+	})
+}
+
+// Suppress unused import warnings
+var (
+	_ = jtx.XRP
+	_ = trustset.TrustSet
+)

@@ -5,9 +5,14 @@ package amm
 import (
 	"testing"
 
+	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
+	"github.com/LeJamon/goXRPLd/internal/core/ledger/entry"
+	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	coreAmm "github.com/LeJamon/goXRPLd/internal/core/tx/amm"
+	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 	jtx "github.com/LeJamon/goXRPLd/internal/testing"
+	offerbuild "github.com/LeJamon/goXRPLd/internal/testing/offer"
 	"github.com/LeJamon/goXRPLd/internal/testing/payment"
 	"github.com/LeJamon/goXRPLd/internal/testing/trustset"
 )
@@ -24,10 +29,13 @@ const (
 	TecNO_AUTH            = "tecNO_AUTH"
 	TecINSUF_RESERVE_LINE = "tecINSUF_RESERVE_LINE"
 	TecNO_PERMISSION      = "tecNO_PERMISSION"
+	TecAMM_EMPTY          = "tecAMM_EMPTY"
+	TecINCOMPLETE         = "tecINCOMPLETE"
 
-	TerNO_AMM     = "terNO_AMM"
-	TerNO_ACCOUNT = "terNO_ACCOUNT"
-	TerNO_RIPPLE  = "terNO_RIPPLE"
+	TerNO_AMM              = "terNO_AMM"
+	TerNO_ACCOUNT          = "terNO_ACCOUNT"
+	TerNO_RIPPLE           = "terNO_RIPPLE"
+	TerADDRESS_COLLISION   = "terADDRESS_COLLISION"
 
 	TemBAD_AMM_TOKENS = "temBAD_AMM_TOKENS"
 	TemBAD_AMOUNT     = "temBAD_AMOUNT"
@@ -134,6 +142,18 @@ func (e *AMMTestEnv) FundWithIOUs(usdAmount, btcAmount float64) {
 	}
 }
 
+// FundBob funds bob with XRP and optionally USD.
+func (e *AMMTestEnv) FundBob(xrp int64, usd float64) {
+	e.T.Helper()
+	e.TestEnv.FundAmount(e.Bob, uint64(jtx.XRP(xrp)))
+	if usd > 0 {
+		e.Trust(e.Bob, e.GW, "USD", usd*2)
+		e.Close()
+		e.PayIOU(e.GW, e.Bob, "USD", usd)
+	}
+	e.Close()
+}
+
 // Trust creates a trust line from holder to issuer for the specified currency.
 func (e *AMMTestEnv) Trust(holder, issuer *jtx.Account, currency string, limit float64) {
 	e.T.Helper()
@@ -181,10 +201,10 @@ func XRPAmount(xrp int64) tx.Amount {
 }
 
 // IOUAmount creates an IOU amount for use in transactions.
+// If issuer is nil, the amount is created with an empty issuer (use TestAMM helper to fix up).
 func IOUAmount(issuer *jtx.Account, currency string, amount float64) tx.Amount {
 	if issuer == nil {
-		// Create a zero amount with empty issuer
-		return tx.NewIssuedAmountFromFloat64(0, currency, "")
+		return tx.NewIssuedAmountFromFloat64(amount, currency, "")
 	}
 	return tx.NewIssuedAmountFromFloat64(amount, currency, issuer.Address)
 }
@@ -205,46 +225,271 @@ func LPTokenAmount(asset1, asset2 tx.Asset, amount float64) tx.Amount {
 
 // TestAMMCallback is the function signature for AMM test callbacks.
 // Reference: rippled's testAMM callback pattern
-type TestAMMCallback func(env *AMMTestEnv, ammAccount string)
+type TestAMMCallback func(env *AMMTestEnv, ammAcc *jtx.Account)
+
+// TestAMM sets up an environment and AMM matching rippled's testAMM helper.
+// It funds gw/alice/carol with 30,000 XRP and 30,000 of each IOU currency used,
+// creates the AMM with alice, and calls the callback.
+// The pool parameter defaults to XRP(10000)/USD(10000) if nil.
+// Reference: rippled/src/test/jtx/impl/AMMTest.cpp testAMM()
+func TestAMM(t *testing.T, pool *[2]tx.Amount, tradingFee uint16, callback TestAMMCallback) {
+	t.Helper()
+
+	var asset1, asset2 tx.Amount
+	if pool != nil {
+		asset1, asset2 = pool[0], pool[1]
+	} else {
+		// Default pool: XRP(10000)/USD(10000)
+		asset1 = tx.NewXRPAmount(10000 * 1_000_000)
+		asset2 = tx.NewIssuedAmountFromFloat64(10000, "USD", "")
+	}
+
+	env := NewAMMTestEnv(t)
+
+	// Determine funding amounts — at least 30,000 of each
+	xrpFund := int64(30000)
+	iouFund := float64(30000)
+
+	// Fund accounts
+	env.TestEnv.FundAmount(env.GW, uint64(jtx.XRP(30000)))
+	env.TestEnv.FundAmount(env.Alice, uint64(jtx.XRP(xrpFund)))
+	env.TestEnv.FundAmount(env.Carol, uint64(jtx.XRP(xrpFund)))
+	env.Close()
+
+	// Set up IOU trust lines and fund
+	// Gather all IOU currencies from the pool
+	for _, amt := range []tx.Amount{asset1, asset2} {
+		if !amt.IsNative() {
+			// Fix issuer to GW if empty
+			issuer := amt.Issuer
+			if issuer == "" {
+				issuer = env.GW.Address
+			}
+			env.Trust(env.Alice, env.GW, amt.Currency, iouFund*2)
+			env.Trust(env.Carol, env.GW, amt.Currency, iouFund*2)
+		}
+	}
+	env.Close()
+
+	for _, amt := range []tx.Amount{asset1, asset2} {
+		if !amt.IsNative() {
+			env.PayIOU(env.GW, env.Alice, amt.Currency, iouFund)
+			env.PayIOU(env.GW, env.Carol, amt.Currency, iouFund)
+		}
+	}
+	env.Close()
+
+	// Fix issuer for IOU amounts in pool
+	if !asset1.IsNative() && asset1.Issuer == "" {
+		asset1.Issuer = env.GW.Address
+	}
+	if !asset2.IsNative() && asset2.Issuer == "" {
+		asset2.Issuer = env.GW.Address
+	}
+
+	// Create AMM with alice
+	createTx := AMMCreate(env.Alice, asset1, asset2).TradingFee(tradingFee).Build()
+	result := env.Submit(createTx)
+	if !result.Success {
+		t.Fatalf("Failed to create AMM: %s - %s", result.Code, result.Message)
+	}
+	env.Close()
+
+	// Compute AMM account
+	a1 := tx.Asset{Currency: asset1.Currency, Issuer: asset1.Issuer}
+	a2 := tx.Asset{Currency: asset2.Currency, Issuer: asset2.Issuer}
+	ammAcc := AMMAccount(t, a1, a2)
+
+	callback(env, ammAcc)
+}
+
+// AMMAccount computes the AMM pseudo-account for the given asset pair.
+func AMMAccount(t *testing.T, asset1, asset2 tx.Asset) *jtx.Account {
+	t.Helper()
+
+	addr := coreAmm.ComputeAMMAccountAddress(asset1, asset2)
+	_, idBytes, err := addresscodec.DecodeClassicAddressToAccountID(addr)
+	if err != nil {
+		t.Fatalf("Failed to decode AMM account address %s: %v", addr, err)
+	}
+	var id20 [20]byte
+	copy(id20[:], idBytes)
+
+	return &jtx.Account{
+		Name:    "amm",
+		Address: addr,
+		ID:      id20,
+	}
+}
+
+// AMMPoolXRP returns the XRP balance of the AMM pool in drops.
+func (e *AMMTestEnv) AMMPoolXRP(ammAcc *jtx.Account) uint64 {
+	e.T.Helper()
+	return e.TestEnv.Balance(ammAcc)
+}
+
+// AMMPoolIOU returns the IOU balance of the AMM pool for the given currency.
+func (e *AMMTestEnv) AMMPoolIOU(ammAcc *jtx.Account, issuer *jtx.Account, currency string) float64 {
+	e.T.Helper()
+	return e.TestEnv.BalanceIOU(ammAcc, currency, issuer)
+}
+
+// ExpectAMMBalances checks that the AMM pool has the expected XRP and IOU balances.
+// xrpDrops is in drops, iouAmount is as float64.
+func (e *AMMTestEnv) ExpectAMMBalances(t *testing.T, ammAcc *jtx.Account, xrpDrops uint64, issuer *jtx.Account, currency string, iouAmount float64) {
+	t.Helper()
+
+	actualXRP := e.AMMPoolXRP(ammAcc)
+	if actualXRP != xrpDrops {
+		t.Errorf("AMM XRP balance: got %d drops, want %d drops", actualXRP, xrpDrops)
+	}
+
+	actualIOU := e.AMMPoolIOU(ammAcc, issuer, currency)
+	// Allow small float tolerance
+	diff := actualIOU - iouAmount
+	if diff < 0 {
+		diff = -diff
+	}
+	if diff > 0.0001 {
+		t.Errorf("AMM %s balance: got %f, want %f", currency, actualIOU, iouAmount)
+	}
+}
 
 // WithAMM sets up an AMM and calls the test callback.
 // This matches rippled's testAMM helper function.
 func WithAMM(t *testing.T, amount1, amount2 tx.Amount, tradingFee uint16, callback TestAMMCallback) {
 	t.Helper()
-
-	env := NewAMMTestEnv(t)
-	env.FundWithIOUs(30000, 1) // Fund with USD and BTC
-	env.Close()
-
-	// Create AMM with alice
-	createTx := AMMCreate(env.Alice, amount1, amount2).TradingFee(tradingFee).Build()
-	result := env.Submit(createTx)
-	if !result.Success {
-		t.Fatalf("Failed to create AMM: %s - %s", result.Code, result.Message)
-	}
-	env.Close()
-
-	// Get AMM account address (would need to compute from keylet in production)
-	ammAccount := "" // Placeholder - would be computed
-
-	callback(env, ammAccount)
+	pool := [2]tx.Amount{amount1, amount2}
+	TestAMM(t, &pool, tradingFee, callback)
 }
 
 // WithDefaultAMM sets up an AMM with XRP(10000)/USD(10000) and no trading fee.
 func WithDefaultAMM(t *testing.T, callback TestAMMCallback) {
 	t.Helper()
+	TestAMM(t, nil, 0, callback)
+}
 
-	env := NewAMMTestEnv(t)
-	env.FundWithIOUs(30000, 0)
-	env.Close()
+// AccountOffers returns all offers owned by an account by iterating its owner directory.
+// Returns a slice of parsed LedgerOffer structs.
+func (e *AMMTestEnv) AccountOffers(acc *jtx.Account) []*sle.LedgerOffer {
+	e.T.Helper()
 
-	// Create AMM with XRP(10000) and USD(10000)
-	createTx := AMMCreate(env.Alice, XRPAmount(10000), IOUAmount(env.GW, "USD", 10000)).Build()
-	result := env.Submit(createTx)
-	if !result.Success {
-		t.Fatalf("Failed to create AMM: %s - %s", result.Code, result.Message)
+	var offers []*sle.LedgerOffer
+	dirKey := keylet.OwnerDir(acc.ID)
+	_ = sle.DirForEach(e.Ledger(), dirKey, func(itemKey [32]byte) error {
+		// Read the raw entry (Read doesn't check type)
+		k := keylet.Keylet{Key: itemKey, Type: entry.TypeOffer}
+		data, err := e.Ledger().Read(k)
+		if err != nil || data == nil {
+			return nil
+		}
+		// Check if the first bytes indicate an offer SLE.
+		// Offer entries have LedgerEntryType = 0x006F.
+		// The binary codec prefix starts with type/field codes; check for offer signature.
+		offer, err := sle.ParseLedgerOfferFromBytes(data)
+		if err != nil {
+			return nil
+		}
+		// Only include if the offer has a valid account and non-zero amounts
+		if offer.Account == "" || (offer.TakerPays.IsZero() && offer.TakerGets.IsZero()) {
+			return nil // Not a valid offer entry
+		}
+		// Verify it belongs to the account we're querying
+		if offer.Account != acc.Address {
+			return nil
+		}
+		offers = append(offers, offer)
+		return nil
+	})
+
+	return offers
+}
+
+// OfferCount returns the number of offers owned by an account.
+func (e *AMMTestEnv) OfferCount(acc *jtx.Account) int {
+	e.T.Helper()
+	return len(e.AccountOffers(acc))
+}
+
+// NOffers creates n offers for the given account, closing the ledger after each.
+// Reference: rippled's n_offers() in TestHelpers.cpp
+func (e *AMMTestEnv) NOffers(n int, account *jtx.Account, takerPays, takerGets tx.Amount) {
+	e.T.Helper()
+	for i := 0; i < n; i++ {
+		offerTx := offerbuild.OfferCreate(account, takerPays, takerGets).Build()
+		result := e.Submit(offerTx)
+		if !result.Success {
+			e.T.Fatalf("NOffers: offer %d failed: %s - %s", i, result.Code, result.Message)
+		}
+		e.Close()
 	}
-	env.Close()
+}
 
-	callback(env, "")
+// Vote sets the trading fee on an AMM pool.
+// Reference: rippled's amm.vote(account, tradingFee)
+func (e *AMMTestEnv) Vote(account *jtx.Account, asset1, asset2 tx.Asset, tradingFee uint16) {
+	e.T.Helper()
+	voteTx := AMMVote(account, asset1, asset2, tradingFee).Build()
+	result := e.Submit(voteTx)
+	if !result.Success {
+		e.T.Fatalf("Vote failed: %s - %s", result.Code, result.Message)
+	}
+	e.Close()
+}
+
+// AMMTradingFee reads the current trading fee from the AMM SLE.
+func (e *AMMTestEnv) AMMTradingFee(asset1, asset2 tx.Asset) uint16 {
+	e.T.Helper()
+	ammAddr := coreAmm.ComputeAMMAccountAddress(asset1, asset2)
+	// Read via AMM keylet
+	ammData := e.ReadAMMData(asset1, asset2)
+	if ammData == nil {
+		e.T.Fatalf("AMMTradingFee: AMM not found for %s/%s (addr=%s)", asset1.Currency, asset2.Currency, ammAddr)
+	}
+	return ammData.TradingFee
+}
+
+// ReadAMMData reads and parses the AMM SLE for the given asset pair.
+func (e *AMMTestEnv) ReadAMMData(asset1, asset2 tx.Asset) *coreAmm.AMMData {
+	e.T.Helper()
+	// Build the keylet the same way the amm code does internally
+	issuer1 := decodeIssuer(asset1.Issuer)
+	currency1 := currencyToBytes(asset1.Currency)
+	issuer2 := decodeIssuer(asset2.Issuer)
+	currency2 := currencyToBytes(asset2.Currency)
+
+	ammKey := keylet.AMM(issuer1, currency1, issuer2, currency2)
+	data, err := e.Ledger().Read(ammKey)
+	if err != nil || data == nil {
+		return nil
+	}
+	ammData, err := coreAmm.ParseAMMData(data)
+	if err != nil {
+		e.T.Fatalf("ReadAMMData: parse error: %v", err)
+	}
+	return ammData
+}
+
+// decodeIssuer converts issuer address to [20]byte.
+func decodeIssuer(issuer string) [20]byte {
+	if issuer == "" {
+		return [20]byte{}
+	}
+	_, bytes, err := addresscodec.DecodeClassicAddressToAccountID(issuer)
+	if err != nil {
+		return [20]byte{}
+	}
+	var id [20]byte
+	copy(id[:], bytes)
+	return id
+}
+
+// currencyToBytes converts a 3-letter currency code to [20]byte (ISO at bytes 12-14).
+func currencyToBytes(currency string) [20]byte {
+	if currency == "XRP" || currency == "" {
+		return [20]byte{}
+	}
+	var b [20]byte
+	copy(b[12:15], []byte(currency))
+	return b
 }

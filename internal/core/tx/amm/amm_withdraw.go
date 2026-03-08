@@ -468,20 +468,18 @@ func (a *AMMWithdraw) Apply(ctx *tx.ApplyContext) tx.Result {
 		ctx.Account.Balance += drops
 	}
 
-	// For IOU transfers, update trust lines for BOTH withdrawer and AMM
-	// Reference: rippled AMMWithdraw.cpp - withdrawal handles token transfer via book::quality path
+	// For IOU transfers: check reserve if trust line creation is needed,
+	// then transfer tokens.
+	// Reference: rippled AMMWithdraw.cpp lines 581-647
+	enabledFixAMMv1_2 := ctx.Rules().Enabled(amendment.FeatureFixAMMv1_2)
+
 	if !isXRP1 && !withdrawAmount1.IsZero() {
 		issuerID, err := sle.DecodeAccountID(a.Asset.Issuer)
 		if err != nil {
 			return tx.TefINTERNAL
 		}
-		// Credit withdrawer's trust line (positive delta)
-		if err := updateTrustlineBalanceInView(accountID, issuerID, a.Asset.Currency, withdrawAmount1, ctx.View); err != nil {
-			return tx.TefINTERNAL
-		}
-		// Debit AMM's trust line (negative delta)
-		if err := createOrUpdateAMMTrustline(ammAccountID, a.Asset, withdrawAmount1.Negate(), ctx.View); err != nil {
-			return tx.TefINTERNAL
+		if result := withdrawIOUToAccount(ctx, accountID, issuerID, ammAccountID, a.Asset, withdrawAmount1, enabledFixAMMv1_2); result != tx.TesSUCCESS {
+			return result
 		}
 	}
 	if !isXRP2 && !withdrawAmount2.IsZero() {
@@ -489,13 +487,8 @@ func (a *AMMWithdraw) Apply(ctx *tx.ApplyContext) tx.Result {
 		if err != nil {
 			return tx.TefINTERNAL
 		}
-		// Credit withdrawer's trust line
-		if err := updateTrustlineBalanceInView(accountID, issuerID, a.Asset2.Currency, withdrawAmount2, ctx.View); err != nil {
-			return tx.TefINTERNAL
-		}
-		// Debit AMM's trust line
-		if err := createOrUpdateAMMTrustline(ammAccountID, a.Asset2, withdrawAmount2.Negate(), ctx.View); err != nil {
-			return tx.TefINTERNAL
+		if result := withdrawIOUToAccount(ctx, accountID, issuerID, ammAccountID, a.Asset2, withdrawAmount2, enabledFixAMMv1_2); result != tx.TesSUCCESS {
+			return result
 		}
 	}
 
@@ -549,6 +542,190 @@ func (a *AMMWithdraw) Apply(ctx *tx.ApplyContext) tx.Result {
 	if err := ctx.View.Update(accountKey, accountBytes); err != nil {
 		return tx.TefINTERNAL
 	}
+
+	return tx.TesSUCCESS
+}
+
+// withdrawIOUToAccount handles IOU transfer from AMM to withdrawer, including
+// reserve check and trust line creation when needed.
+// Reference: rippled AMMWithdraw.cpp sufficientReserve (lines 581-603) +
+// accountSend (lines 609-646)
+func withdrawIOUToAccount(
+	ctx *tx.ApplyContext,
+	accountID, issuerID, ammAccountID [20]byte,
+	asset tx.Asset,
+	amount tx.Amount,
+	enabledFixAMMv1_2 bool,
+) tx.Result {
+	// Check if withdrawer already has a trust line for this IOU.
+	trustLineKey := keylet.Line(accountID, issuerID, asset.Currency)
+	trustLineExists, err := ctx.View.Exists(trustLineKey)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	if !trustLineExists {
+		// Reserve check: with fixAMMv1_2, verify the withdrawer has enough
+		// reserve for the new trust line before creating it.
+		// Reference: rippled AMMWithdraw.cpp lines 583-601
+		if enabledFixAMMv1_2 {
+			ownerCount := ctx.Account.OwnerCount
+			// See also SetTrust::doApply(): ownerCount < 2 → no reserve needed
+			if ownerCount >= 2 {
+				reserve := ctx.AccountReserve(ownerCount + 1)
+				if ctx.Account.Balance < reserve {
+					return tx.TecINSUFFICIENT_RESERVE
+				}
+			}
+		}
+
+		// Create trust line for the withdrawer.
+		// Reference: rippled uses accountSend → rippleCredit → trustCreate
+		if result := createWithdrawTrustLine(ctx, accountID, issuerID, asset, amount, trustLineKey); result != tx.TesSUCCESS {
+			return result
+		}
+	} else {
+		// Trust line exists — just credit the withdrawer's balance.
+		if err := updateTrustlineBalanceInView(accountID, issuerID, asset.Currency, amount, ctx.View); err != nil {
+			return tx.TefINTERNAL
+		}
+	}
+
+	// Debit AMM's trust line (negative delta)
+	if err := createOrUpdateAMMTrustline(ammAccountID, asset, amount.Negate(), ctx.View); err != nil {
+		return tx.TefINTERNAL
+	}
+
+	return tx.TesSUCCESS
+}
+
+// createWithdrawTrustLine creates a new trust line between withdrawer and
+// issuer, setting the initial balance to the withdraw amount.
+// Reference: rippled trustCreate via accountSend path
+func createWithdrawTrustLine(
+	ctx *tx.ApplyContext,
+	accountID, issuerID [20]byte,
+	asset tx.Asset,
+	amount tx.Amount,
+	trustLineKey keylet.Keylet,
+) tx.Result {
+	// Determine low/high accounts
+	accountIsLow := keylet.IsLowAccount(accountID, issuerID)
+	var lowAccountID, highAccountID [20]byte
+	if accountIsLow {
+		lowAccountID = accountID
+		highAccountID = issuerID
+	} else {
+		lowAccountID = issuerID
+		highAccountID = accountID
+	}
+
+	lowAccountStr, err := sle.EncodeAccountID(lowAccountID)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+	highAccountStr, err := sle.EncodeAccountID(highAccountID)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+
+	// Set balance: the withdrawer (receiver) gets the tokens.
+	// Convention: positive balance = LOW account holds tokens.
+	// When receiver (account) is LOW → positive balance
+	// When receiver (account) is HIGH → negative balance
+	var balance tx.Amount
+	if accountIsLow {
+		balance = sle.NewIssuedAmountFromValue(
+			amount.Mantissa(), amount.Exponent(),
+			asset.Currency, sle.AccountOneAddress,
+		)
+	} else {
+		negated := amount.Negate()
+		balance = sle.NewIssuedAmountFromValue(
+			negated.Mantissa(), negated.Exponent(),
+			asset.Currency, sle.AccountOneAddress,
+		)
+	}
+
+	// Flags: receiver gets reserve flag + NoRipple per DefaultRipple setting
+	// Reference: rippled trustCreate
+	var flags uint32
+	if accountIsLow {
+		flags |= sle.LsfLowReserve
+	} else {
+		flags |= sle.LsfHighReserve
+	}
+
+	// Set NoRipple based on DefaultRipple for each side
+	acctData, err := ctx.View.Read(keylet.Account(accountID))
+	if err != nil || acctData == nil {
+		return tx.TefINTERNAL
+	}
+	acct, err := sle.ParseAccountRoot(acctData)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+	if (acct.Flags & sle.LsfDefaultRipple) == 0 {
+		if accountIsLow {
+			flags |= sle.LsfLowNoRipple
+		} else {
+			flags |= sle.LsfHighNoRipple
+		}
+	}
+
+	issuerAcctData, err := ctx.View.Read(keylet.Account(issuerID))
+	if err != nil || issuerAcctData == nil {
+		return tx.TefINTERNAL
+	}
+	issuerAcct, err := sle.ParseAccountRoot(issuerAcctData)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+	if (issuerAcct.Flags & sle.LsfDefaultRipple) == 0 {
+		if !accountIsLow {
+			flags |= sle.LsfLowNoRipple
+		} else {
+			flags |= sle.LsfHighNoRipple
+		}
+	}
+
+	rs := &sle.RippleState{
+		Balance:   balance,
+		LowLimit:  tx.NewIssuedAmount(0, -100, asset.Currency, lowAccountStr),
+		HighLimit: tx.NewIssuedAmount(0, -100, asset.Currency, highAccountStr),
+		Flags:     flags,
+	}
+
+	// Insert into both owner directories
+	lowDirKey := keylet.OwnerDir(lowAccountID)
+	lowDirResult, err := sle.DirInsert(ctx.View, lowDirKey, trustLineKey.Key, func(dir *sle.DirectoryNode) {
+		dir.Owner = lowAccountID
+	})
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+	rs.LowNode = lowDirResult.Page
+
+	highDirKey := keylet.OwnerDir(highAccountID)
+	highDirResult, err := sle.DirInsert(ctx.View, highDirKey, trustLineKey.Key, func(dir *sle.DirectoryNode) {
+		dir.Owner = highAccountID
+	})
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+	rs.HighNode = highDirResult.Page
+
+	// Serialize and insert
+	rsBytes, err := sle.SerializeRippleState(rs)
+	if err != nil {
+		return tx.TefINTERNAL
+	}
+	if err := ctx.View.Insert(trustLineKey, rsBytes); err != nil {
+		return tx.TefINTERNAL
+	}
+
+	// Increment withdrawer's owner count for the new trust line
+	ctx.Account.OwnerCount++
 
 	return tx.TesSUCCESS
 }

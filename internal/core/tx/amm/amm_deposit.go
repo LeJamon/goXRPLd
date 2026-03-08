@@ -275,9 +275,13 @@ func (a *AMMDeposit) Apply(ctx *tx.ApplyContext) tx.Result {
 		return result
 	}
 
-	// Check if assets are frozen
-	if isFrozen(ctx.View, accountID, a.Asset) || isFrozen(ctx.View, accountID, a.Asset2) {
-		return tx.TecFROZEN
+	// Check if assets are frozen — only when AMMClawback is enabled.
+	// Without AMMClawback, only the specific deposit amounts are checked below.
+	// Reference: rippled AMMDeposit.cpp lines 244-273
+	if ctx.Rules().Enabled(amendment.FeatureAMMClawback) {
+		if isFrozen(ctx.View, accountID, a.Asset) || isFrozen(ctx.View, accountID, a.Asset2) {
+			return tx.TecFROZEN
+		}
 	}
 
 	// Check amounts if provided (authorization and freeze)
@@ -312,7 +316,7 @@ func (a *AMMDeposit) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Check LP token trustline reserve
 	// Reference: rippled AMMDeposit.cpp lines 353-362
 	ammAccountAddr, _ := encodeAccountID(ammAccountID)
-	lptCurrency := generateAMMLPTCurrency(a.Asset.Currency, a.Asset2.Currency)
+	lptCurrency := GenerateAMMLPTCurrency(a.Asset.Currency, a.Asset2.Currency)
 	lptKey := keylet.Line(accountID, ammAccountID, lptCurrency)
 	lptExists, _ := ctx.View.Exists(lptKey)
 	if !lptExists {

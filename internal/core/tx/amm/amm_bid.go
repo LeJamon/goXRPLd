@@ -153,7 +153,7 @@ func (a *AMMBid) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Get LP token issue for validation
 	// Reference: rippled AMMBid.cpp preclaim lines 137-160
-	lptCurrency := generateAMMLPTCurrency(amm.Asset.Currency, amm.Asset2.Currency)
+	lptCurrency := GenerateAMMLPTCurrency(amm.Asset.Currency, amm.Asset2.Currency)
 	ammAccountAddr, _ := encodeAccountID(amm.Account)
 
 	// Get bid amounts from transaction

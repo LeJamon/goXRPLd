@@ -168,13 +168,9 @@ func calculateLPTokens(amount1, amount2 tx.Amount) tx.Amount {
 // GenerateAMMLPTCurrency generates the LP token currency code from two asset currencies.
 // The LP token currency is a hex-encoded 20-byte value derived from the asset pair.
 // Exported for use in test helpers.
-func GenerateAMMLPTCurrency(currency1, currency2 string) string {
-	return generateAMMLPTCurrency(currency1, currency2)
-}
-
-// generateAMMLPTCurrency generates the LP token currency code from two asset currencies.
+// GenerateAMMLPTCurrency generates the LP token currency code from two asset currencies.
 // The LP token currency is a hex-encoded 20-byte value derived from the asset pair.
-func generateAMMLPTCurrency(currency1, currency2 string) string {
+func GenerateAMMLPTCurrency(currency1, currency2 string) string {
 	c1 := sle.GetCurrencyBytes(currency1)
 	c2 := sle.GetCurrencyBytes(currency2)
 
@@ -529,6 +525,12 @@ func deserializeIssue(data []byte) (tx.Asset, int) {
 	}
 
 	return tx.Asset{Currency: currency, Issuer: issuer}, 40
+}
+
+// ParseAMMData deserializes an AMM ledger entry from binary data.
+// Exported for use by TrustSet to check LP token balance.
+func ParseAMMData(data []byte) (*AMMData, error) {
+	return parseAMMData(data)
 }
 
 // parseAMMData deserializes an AMM ledger entry from binary data.
@@ -1265,7 +1267,7 @@ func IsAMMEmpty(amm *AMMData) bool {
 // Reference: rippled AMMUtils.cpp ammLPHolds lines 113-160
 func ammLPHolds(view tx.LedgerView, amm *AMMData, lpAccountID [20]byte) tx.Amount {
 	// LP token currency is derived from the two asset currencies
-	lptCurrency := generateAMMLPTCurrency(amm.Asset.Currency, amm.Asset2.Currency)
+	lptCurrency := GenerateAMMLPTCurrency(amm.Asset.Currency, amm.Asset2.Currency)
 	ammAccountID := amm.Account
 
 	// Read the trustline between LP account and AMM account

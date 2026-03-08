@@ -130,9 +130,11 @@ func (a *AMMVote) Apply(ctx *tx.ApplyContext) tx.Result {
 	// voteWeightScaleFactor = 100000 = 1e5, represented as mantissa 1e15 with exponent -10
 	scaleFactorAmount := sle.NewIssuedAmountFromValue(1e15, -10, "", "")
 
-	// Running totals for weighted fee calculation (use int64 for simplicity with fee*tokens)
-	var numerator int64 = 0
-	var denominator int64 = 0
+	// Running totals for weighted fee calculation.
+	// Use tx.Amount (IOU-style) to avoid int64 overflow on feeVal * lpTokens.
+	// Reference: rippled uses Number (arbitrary precision) for num/den.
+	var num tx.Amount = sle.NewIssuedAmountFromFloat64(0, "", "")
+	var den tx.Amount = sle.NewIssuedAmountFromFloat64(0, "", "")
 
 	// Iterate over current vote entries
 	for i, slot := range amm.VoteSlots {
@@ -154,28 +156,17 @@ func (a *AMMVote) Apply(ctx *tx.ApplyContext) tx.Result {
 			foundAccount = true
 		}
 
-		// Calculate new vote weight: voteWeight = lpTokens * scaleFactory / lptAMMBalance
+		// Calculate new vote weight: voteWeight = lpTokens * scaleFactor / lptAMMBalance
 		voteWeightCalc := lpTokens.Mul(scaleFactorAmount, false).Div(lptAMMBalance, false)
 		voteWeight := uint32(voteWeightCalc.Mantissa() / 1e12) // Scale down mantissa for uint32 storage
 		if voteWeight == 0 && !lpTokens.IsZero() {
 			voteWeight = 1
 		}
 
-		// Get token value for fee calculation (use mantissa scaled)
-		lpTokenValue := lpTokens.Mantissa()
-		if lpTokens.Exponent() > -15 {
-			for e := lpTokens.Exponent(); e > -15; e-- {
-				lpTokenValue *= 10
-			}
-		} else if lpTokens.Exponent() < -15 {
-			for e := lpTokens.Exponent(); e < -15; e++ {
-				lpTokenValue /= 10
-			}
-		}
-
-		// Update running totals for weighted fee
-		numerator += int64(feeVal) * lpTokenValue
-		denominator += lpTokenValue
+		// Update running totals for weighted fee: num += feeVal * lpTokens, den += lpTokens
+		feeAmount := sle.NewIssuedAmountFromFloat64(float64(feeVal), "", "")
+		num, _ = num.Add(feeAmount.Mul(lpTokens, false))
+		den, _ = den.Add(lpTokens)
 
 		// Track minimum for potential replacement
 		if lpTokens.Compare(minTokens) < 0 ||
@@ -202,18 +193,6 @@ func (a *AMMVote) Apply(ctx *tx.ApplyContext) tx.Result {
 			voteWeight = 1
 		}
 
-		// Get token value for fee calculation
-		lpTokenValue := lpTokensNew.Mantissa()
-		if lpTokensNew.Exponent() > -15 {
-			for e := lpTokensNew.Exponent(); e > -15; e-- {
-				lpTokenValue *= 10
-			}
-		} else if lpTokensNew.Exponent() < -15 {
-			for e := lpTokensNew.Exponent(); e < -15; e++ {
-				lpTokenValue /= 10
-			}
-		}
-
 		if len(updatedVoteSlots) < voteMaxSlots {
 			// Add new entry if slots available
 			updatedVoteSlots = append(updatedVoteSlots, VoteSlotData{
@@ -221,26 +200,16 @@ func (a *AMMVote) Apply(ctx *tx.ApplyContext) tx.Result {
 				TradingFee: feeNew,
 				VoteWeight: voteWeight,
 			})
-			numerator += int64(feeNew) * lpTokenValue
-			denominator += lpTokenValue
+			feeAmount := sle.NewIssuedAmountFromFloat64(float64(feeNew), "", "")
+			num, _ = num.Add(feeAmount.Mul(lpTokensNew, false))
+			den, _ = den.Add(lpTokensNew)
 		} else if isGreater(lpTokensNew, minTokens) || (lpTokensNew.Compare(minTokens) == 0 && feeNew > minFee) {
 			// Replace minimum token holder if new account has more tokens
 			if minPos >= 0 && minPos < len(updatedVoteSlots) {
-				// Get min token value
-				minTokenValue := minTokens.Mantissa()
-				if minTokens.Exponent() > -15 {
-					for e := minTokens.Exponent(); e > -15; e-- {
-						minTokenValue *= 10
-					}
-				} else if minTokens.Exponent() < -15 {
-					for e := minTokens.Exponent(); e < -15; e++ {
-						minTokenValue /= 10
-					}
-				}
-
 				// Remove min holder's contribution from totals
-				numerator -= int64(minFee) * minTokenValue
-				denominator -= minTokenValue
+				minFeeAmt := sle.NewIssuedAmountFromFloat64(float64(minFee), "", "")
+				num, _ = num.Sub(minFeeAmt.Mul(minTokens, false))
+				den, _ = den.Sub(minTokens)
 
 				// Replace with new voter
 				updatedVoteSlots[minPos] = VoteSlotData{
@@ -250,16 +219,18 @@ func (a *AMMVote) Apply(ctx *tx.ApplyContext) tx.Result {
 				}
 
 				// Add new voter's contribution
-				numerator += int64(feeNew) * lpTokenValue
-				denominator += lpTokenValue
+				feeAmount := sle.NewIssuedAmountFromFloat64(float64(feeNew), "", "")
+				num, _ = num.Add(feeAmount.Mul(lpTokensNew, false))
+				den, _ = den.Add(lpTokensNew)
 			}
 		}
 	}
 
-	// Calculate weighted average trading fee
+	// Calculate weighted average trading fee: fee = num / den
 	var newTradingFee uint16 = 0
-	if denominator > 0 {
-		newTradingFee = uint16(numerator / denominator)
+	if !den.IsZero() {
+		feeResult := num.Div(den, false)
+		newTradingFee = uint16(feeResult.Float64())
 	}
 
 	// Update AMM data
