@@ -15,6 +15,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/service"
 	"github.com/LeJamon/goXRPLd/internal/rpc"
 	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_types"
+	kvpebble "github.com/LeJamon/goXRPLd/internal/storage/kvstore/pebble"
 	"github.com/LeJamon/goXRPLd/internal/storage/nodestore"
 	"github.com/LeJamon/goXRPLd/internal/storage/relationaldb"
 	"github.com/LeJamon/goXRPLd/internal/storage/relationaldb/postgres"
@@ -70,20 +71,14 @@ func runServer(cmd *cobra.Command, args []string) {
 	var db nodestore.Database
 	if dataDir != "" {
 		nodestorePath := filepath.Join(dataDir, "nodestore")
-		config := nodestore.DefaultConfig()
-		config.Path = nodestorePath
 
-		backend, err := nodestore.CreateBackend("pebble", config)
+		store, err := kvpebble.New(nodestorePath, 256<<20, 500, false)
 		if err != nil {
 			log.Fatal("Failed to create storage backend:", err)
 		}
 
-		if err := backend.Open(true); err != nil {
-			log.Fatal("Failed to open storage backend:", err)
-		}
-
 		// Create database with cache (10000 entries, 10 minute TTL)
-		db = nodestore.NewDatabase(backend, 10000, 10*time.Minute)
+		db = nodestore.NewKVDatabase(store, "pebble("+nodestorePath+")", 10000, 10*time.Minute)
 
 		if !quiet {
 			fmt.Printf("Storage: %s\n", nodestorePath)

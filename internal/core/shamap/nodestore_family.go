@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/LeJamon/goXRPLd/internal/storage/kvstore/memorydb"
+	kvpebble "github.com/LeJamon/goXRPLd/internal/storage/kvstore/pebble"
 	"github.com/LeJamon/goXRPLd/internal/storage/nodestore"
 )
 
@@ -15,7 +17,7 @@ import (
 // as Node.Data — the nodestore treats it as opaque bytes. This matches rippled's approach
 // where the hash prefix is stored alongside the node data in the NodeStore.
 //
-// For tests: use NewPebbleNodeStoreFamily() with t.TempDir() — disk-backed, RAM bounded.
+// For tests: use NewMemoryNodeStoreFamily() — in-memory, zero disk I/O.
 // For production: use NewPebbleNodeStoreFamily() with a persistent path.
 type NodeStoreFamily struct {
 	db nodestore.Database
@@ -27,35 +29,20 @@ func NewNodeStoreFamily(db nodestore.Database) *NodeStoreFamily {
 	return &NodeStoreFamily{db: db}
 }
 
-// NewMemoryNodeStoreFamily creates a Family backed by an in-memory nodestore.
-// Uses an unbounded MemoryBackend (matching geth's test pattern) wrapped with
-// a DatabaseImpl providing LRU positive cache and negative cache.
+// NewMemoryNodeStoreFamily creates a Family backed by an in-memory kvstore.
+// Uses a MemDatabase (matching geth's test pattern) wrapped with
+// a KVDatabaseImpl providing LRU positive cache and negative cache.
 func NewMemoryNodeStoreFamily() (*NodeStoreFamily, error) {
-	backend := nodestore.NewMemoryBackend()
-	if err := backend.Open(true); err != nil {
-		return nil, err
-	}
-
-	db := nodestore.NewDatabase(backend, 2000, time.Hour)
+	store := memorydb.New()
+	db := nodestore.NewKVDatabase(store, "memory", 2000, time.Hour)
 	return NewNodeStoreFamily(db), nil
 }
 
 // NewPebbleNodeStoreFamily creates a Family backed by PebbleDB on disk.
 // Data persists to disk; the LRU cache bounds RAM usage. For production.
 func NewPebbleNodeStoreFamily(path string, cacheSize int) (*NodeStoreFamily, error) {
-	config := &nodestore.Config{
-		Backend:         "pebble",
-		Path:            path,
-		CacheSize:       cacheSize,
-		Compressor:      "lz4",
-		CreateIfMissing: true,
-	}
-
-	backend, err := nodestore.NewPebbleBackend(config)
+	store, err := kvpebble.New(path, cacheSize*1024*1024, 500, false)
 	if err != nil {
-		return nil, err
-	}
-	if err := backend.Open(true); err != nil {
 		return nil, err
 	}
 
@@ -65,7 +52,7 @@ func NewPebbleNodeStoreFamily(path string, cacheSize int) (*NodeStoreFamily, err
 		NegativeCacheTTL:     5 * time.Minute,
 		NegativeCacheMaxSize: 100000,
 	}
-	db, err := nodestore.NewDatabaseWithConfig(backend, dbConfig)
+	db, err := nodestore.NewKVDatabaseWithConfig(store, "pebble("+path+")", dbConfig)
 	if err != nil {
 		return nil, err
 	}

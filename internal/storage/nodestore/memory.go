@@ -327,3 +327,27 @@ func (m *MemoryBackend) Clear() {
 func init() {
 	RegisterBackend("memory", NewMemoryBackendFromConfig)
 }
+
+// Verify implements the Verifier interface for MemoryBackend.
+func (m *MemoryBackend) Verify() error {
+	v := NewBackendVerifier(m)
+	return v.Verify()
+}
+
+// VerifyWithOptions performs verification with custom options for MemoryBackend.
+func (m *MemoryBackend) VerifyWithOptions(opts *VerifyOptions) error {
+	v := NewBackendVerifier(m)
+	return v.VerifyWithOptions(opts)
+}
+
+// VerifyAll performs full verification and returns detailed results for MemoryBackend.
+func (m *MemoryBackend) VerifyAll(opts *VerifyOptions) (*VerificationResult, error) {
+	v := NewBackendVerifier(m)
+	return v.VerifyAll(opts)
+}
+
+// VerifyNode implements the Verifier interface for MemoryBackend.
+func (m *MemoryBackend) VerifyNode(hash Hash256) error {
+	v := NewBackendVerifier(m)
+	return v.VerifyNode(hash)
+}

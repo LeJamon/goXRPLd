@@ -14,13 +14,13 @@ type DatabaseImpl struct {
 	negativeCache *NegativeCache
 	batchWriter   *BatchWriter
 	stats         struct {
-		reads            uint64
-		cacheHits        uint64
-		cacheMisses      uint64
+		reads             uint64
+		cacheHits         uint64
+		cacheMisses       uint64
 		negativeCacheHits uint64
-		writes           uint64
-		readBytes        uint64
-		writeBytes       uint64
+		writes            uint64
+		readBytes         uint64
+		writeBytes        uint64
 	}
 }
 
@@ -39,8 +39,7 @@ type DatabaseConfig struct {
 	// NegativeCacheMaxSize is the maximum number of entries in the negative cache.
 	NegativeCacheMaxSize int
 
-	// BatchWriteConfig is the configuration for the batch writer.
-	// Set to nil to disable batch writing.
+	// BatchWriteConfig is kept for backwards compatibility but is ignored.
 	BatchWriteConfig *BatchWriteConfig
 }
 
@@ -51,7 +50,7 @@ func DefaultDatabaseConfig() *DatabaseConfig {
 		CacheTTL:             time.Hour,
 		NegativeCacheTTL:     5 * time.Minute,
 		NegativeCacheMaxSize: 100000,
-		BatchWriteConfig:     nil, // Batch writing disabled by default
+		BatchWriteConfig:     nil,
 	}
 }
 
@@ -90,7 +89,7 @@ func NewDatabaseWithConfig(backend Backend, config *DatabaseConfig) (*DatabaseIm
 		})
 	}
 
-	// Initialize batch writer
+	// Initialize batch writer if configured
 	if config.BatchWriteConfig != nil {
 		bw, err := NewBatchWriter(backend, config.BatchWriteConfig)
 		if err != nil {
@@ -252,13 +251,13 @@ func (d *DatabaseImpl) Sweep() error {
 // Stats returns performance statistics.
 func (d *DatabaseImpl) Stats() Statistics {
 	stats := Statistics{
-		Reads:        atomic.LoadUint64(&d.stats.reads),
-		CacheHits:    atomic.LoadUint64(&d.stats.cacheHits),
-		CacheMisses:  atomic.LoadUint64(&d.stats.cacheMisses),
-		ReadBytes:    atomic.LoadUint64(&d.stats.readBytes),
-		Writes:       atomic.LoadUint64(&d.stats.writes),
-		WriteBytes:   atomic.LoadUint64(&d.stats.writeBytes),
-		BackendName:  d.backend.Name(),
+		Reads:       atomic.LoadUint64(&d.stats.reads),
+		CacheHits:   atomic.LoadUint64(&d.stats.cacheHits),
+		CacheMisses: atomic.LoadUint64(&d.stats.cacheMisses),
+		ReadBytes:   atomic.LoadUint64(&d.stats.readBytes),
+		Writes:      atomic.LoadUint64(&d.stats.writes),
+		WriteBytes:  atomic.LoadUint64(&d.stats.writeBytes),
+		BackendName: d.backend.Name(),
 	}
 
 	if d.cache != nil {
@@ -268,6 +267,20 @@ func (d *DatabaseImpl) Stats() Statistics {
 	}
 
 	return stats
+}
+
+// ExtendedStatistics holds extended performance metrics including negative cache stats.
+type ExtendedStatistics struct {
+	Statistics
+
+	// Negative cache metrics
+	NegativeCacheHits    uint64 // Number of negative cache hits
+	NegativeCacheSize    uint64 // Current size of negative cache
+	NegativeCacheMaxSize uint64 // Maximum size of negative cache
+
+	// Batch writer metrics (kept for backwards compatibility)
+	BatchWriterPending int    // Number of pending batch writes
+	BatchWriterFlushes uint64 // Number of batch flushes
 }
 
 // ExtendedStats returns extended statistics including negative cache stats.
@@ -292,25 +305,11 @@ func (d *DatabaseImpl) ExtendedStats() ExtendedStatistics {
 	return stats
 }
 
-// ExtendedStatistics holds extended performance metrics including negative cache stats.
-type ExtendedStatistics struct {
-	Statistics
-
-	// Negative cache metrics
-	NegativeCacheHits    uint64 // Number of negative cache hits
-	NegativeCacheSize    uint64 // Current size of negative cache
-	NegativeCacheMaxSize uint64 // Maximum size of negative cache
-
-	// Batch writer metrics
-	BatchWriterPending int    // Number of pending batch writes
-	BatchWriterFlushes uint64 // Number of batch flushes
-}
-
 // Close gracefully closes the database.
 func (d *DatabaseImpl) Close() error {
 	var lastErr error
 
-	// Close batch writer first to flush pending writes
+	// Close batch writer first
 	if d.batchWriter != nil {
 		if err := d.batchWriter.Close(); err != nil {
 			lastErr = err
@@ -332,9 +331,8 @@ func (d *DatabaseImpl) Close() error {
 	return lastErr
 }
 
-// StoreAsync stores a node asynchronously using the batch writer if available.
-// Returns a channel that will receive the error result when the write completes.
-// If batch writing is not enabled, it falls back to synchronous storage.
+// StoreAsync stores a node asynchronously.
+// Falls back to synchronous storage.
 func (d *DatabaseImpl) StoreAsync(ctx context.Context, node *Node) <-chan error {
 	result := make(chan error, 1)
 
@@ -345,22 +343,6 @@ func (d *DatabaseImpl) StoreAsync(ctx context.Context, node *Node) <-chan error 
 		close(result)
 		return result
 	default:
-	}
-
-	// Use batch writer if available
-	if d.batchWriter != nil {
-		// Update caches synchronously
-		if d.cache != nil {
-			d.cache.Put(node)
-		}
-		if d.negativeCache != nil {
-			d.negativeCache.Remove(node.Hash)
-		}
-
-		atomic.AddUint64(&d.stats.writes, 1)
-		atomic.AddUint64(&d.stats.writeBytes, uint64(len(node.Data)))
-
-		return d.batchWriter.WriteNode(node)
 	}
 
 	// Fall back to synchronous storage
@@ -378,7 +360,7 @@ func (d *DatabaseImpl) NegativeCache() *NegativeCache {
 	return d.negativeCache
 }
 
-// BatchWriter returns the batch writer (for advanced operations).
+// BatchWriter returns the batch writer (may be nil if not configured).
 func (d *DatabaseImpl) BatchWriter() *BatchWriter {
 	return d.batchWriter
 }

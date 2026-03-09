@@ -1,6 +1,6 @@
 // Package nodestore provides persistent key-value storage optimized for XRPL ledger objects.
 // It offers content-addressable storage using SHA-256 hashes as keys with features like
-// caching, compression, and asynchronous I/O.
+// caching and asynchronous I/O.
 package nodestore
 
 import (
@@ -191,28 +191,6 @@ func (s Statistics) String() string {
 		s.ReadBytes,
 		s.WriteBytes,
 		s.AsyncReads)
-}
-
-// FetchType specifies the type of fetch operation.
-type FetchType int
-
-const (
-	// Synchronous fetch blocks until completion
-	Synchronous FetchType = iota
-	// Asynchronous fetch returns immediately with a channel
-	Asynchronous
-)
-
-// String returns the string representation of FetchType.
-func (ft FetchType) String() string {
-	switch ft {
-	case Synchronous:
-		return "Synchronous"
-	case Asynchronous:
-		return "Asynchronous"
-	default:
-		return fmt.Sprintf("FetchType(%d)", int(ft))
-	}
 }
 
 // Status represents the status of a backend operation.
