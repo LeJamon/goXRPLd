@@ -6,8 +6,8 @@ import (
 	"time"
 
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
-	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
-	"github.com/LeJamon/goXRPLd/internal/core/amendment"
+	"github.com/LeJamon/goXRPLd/drops"
+	"github.com/LeJamon/goXRPLd/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/genesis"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
@@ -68,16 +68,16 @@ func NewTestEnv(t *testing.T) *TestEnv {
 	// Create genesis ledger with test configuration matching rippled's test env
 	// (200 XRP base reserve, 50 XRP increment — see rippled/src/test/jtx/impl/envconfig.cpp)
 	genesisConfig := genesis.DefaultConfig()
-	genesisConfig.Fees.ReserveBase = XRPAmount.DropsPerXRP * 200      // 200 XRP
-	genesisConfig.Fees.ReserveIncrement = XRPAmount.DropsPerXRP * 50  // 50 XRP
+	genesisConfig.Fees.ReserveBase = drops.DropsPerXRP * 200      // 200 XRP
+	genesisConfig.Fees.ReserveIncrement = drops.DropsPerXRP * 50  // 50 XRP
 	genesisResult, err := genesis.Create(genesisConfig)
 	if err != nil {
 		t.Fatalf("Failed to create genesis ledger: %v", err)
 	}
 
 	// Create the ledger from genesis
-	// Note: XRPAmount.Fees has unexported fields, so we use a zero value
-	var fees XRPAmount.Fees
+	// Note: drops.Fees has unexported fields, so we use a zero value
+	var fees drops.Fees
 	genesisLedger := ledger.FromGenesis(
 		genesisResult.Header,
 		genesisResult.StateMap,
@@ -161,8 +161,8 @@ func NewTestEnvWithConfig(t *testing.T, cfg genesis.Config) *TestEnv {
 		t.Fatalf("Failed to create genesis ledger: %v", err)
 	}
 
-	// Note: XRPAmount.Fees has unexported fields, so we use a zero value
-	var fees XRPAmount.Fees
+	// Note: drops.Fees has unexported fields, so we use a zero value
+	var fees drops.Fees
 	genesisLedger := ledger.FromGenesis(
 		genesisResult.Header,
 		genesisResult.StateMap,

@@ -6,8 +6,8 @@ import (
 	"errors"
 
 	"github.com/LeJamon/goXRPLd/internal/codec/address-codec/interfaces"
-	ed25519crypto "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/ed25519"
-	secp256k1crypto "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/secp256k1"
+	ed25519crypto "github.com/LeJamon/goXRPLd/crypto/algorithms/ed25519"
+	secp256k1crypto "github.com/LeJamon/goXRPLd/crypto/algorithms/secp256k1"
 )
 
 const (

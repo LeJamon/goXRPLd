@@ -4,10 +4,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/LeJamon/goXRPLd/internal/protocol"
+	"github.com/LeJamon/goXRPLd/protocol"
 	"strings"
 
-	"github.com/LeJamon/goXRPLd/internal/crypto/common"
+	"github.com/LeJamon/goXRPLd/crypto/common"
 )
 
 // NodeType defines the type of SHAMap node

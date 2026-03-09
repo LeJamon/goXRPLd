@@ -9,14 +9,14 @@ import (
 
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
-	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
+	"github.com/LeJamon/goXRPLd/drops"
 	ledgerentries "github.com/LeJamon/goXRPLd/internal/core/ledger/entry/entries"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/header"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
-	"github.com/LeJamon/goXRPLd/internal/core/protocol"
+	"github.com/LeJamon/goXRPLd/protocol"
 	"github.com/LeJamon/goXRPLd/internal/core/shamap"
-	secp256k1 "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/secp256k1"
-	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
+	secp256k1 "github.com/LeJamon/goXRPLd/crypto/algorithms/secp256k1"
+	crypto "github.com/LeJamon/goXRPLd/crypto/common"
 )
 
 const (
@@ -35,17 +35,17 @@ const (
 
 // DefaultFees defines the default fee configuration for genesis
 type DefaultFees struct {
-	BaseFee          XRPAmount.XRPAmount
-	ReserveBase      XRPAmount.XRPAmount
-	ReserveIncrement XRPAmount.XRPAmount
+	BaseFee          drops.XRPAmount
+	ReserveBase      drops.XRPAmount
+	ReserveIncrement drops.XRPAmount
 }
 
 // StandardFees returns the standard XRPL fee configuration
 func StandardFees() DefaultFees {
 	return DefaultFees{
-		BaseFee:          XRPAmount.NewXRPAmount(10), // 10 drops
-		ReserveBase:      XRPAmount.DropsPerXRP * 10, // 10 XRP
-		ReserveIncrement: XRPAmount.DropsPerXRP * 2,  // 2 XRP
+		BaseFee:          drops.NewXRPAmount(10), // 10 drops
+		ReserveBase:      drops.DropsPerXRP * 10, // 10 XRP
+		ReserveIncrement: drops.DropsPerXRP * 2,  // 2 XRP
 	}
 }
 

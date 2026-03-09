@@ -12,8 +12,8 @@ import (
 	"time"
 
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
-	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
-	"github.com/LeJamon/goXRPLd/internal/core/amendment"
+	"github.com/LeJamon/goXRPLd/drops"
+	"github.com/LeJamon/goXRPLd/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/header"
 	"github.com/LeJamon/goXRPLd/internal/core/shamap"
@@ -228,29 +228,29 @@ type BlockResult struct {
 	Errors                  []string
 }
 
-func loadInitialState(ctx context.Context, client *statecompare.Client, ledgerIndex uint32) (*shamap.SHAMap, *statecompare.LedgerSnapshot, XRPAmount.Fees, error) {
+func loadInitialState(ctx context.Context, client *statecompare.Client, ledgerIndex uint32) (*shamap.SHAMap, *statecompare.LedgerSnapshot, drops.Fees, error) {
 	// Get snapshot
 	snapshot, err := client.GetSnapshot(ctx, ledgerIndex)
 	if err != nil {
-		return nil, nil, XRPAmount.Fees{}, fmt.Errorf("getting snapshot: %w", err)
+		return nil, nil, drops.Fees{}, fmt.Errorf("getting snapshot: %w", err)
 	}
 
 	// Get state entries
 	entries, err := client.GetStateEntries(ctx, ledgerIndex)
 	if err != nil {
-		return nil, nil, XRPAmount.Fees{}, fmt.Errorf("getting state entries: %w", err)
+		return nil, nil, drops.Fees{}, fmt.Errorf("getting state entries: %w", err)
 	}
 
 	// Create state map
 	stateMap, err := shamap.New(shamap.TypeState)
 	if err != nil {
-		return nil, nil, XRPAmount.Fees{}, fmt.Errorf("creating state map: %w", err)
+		return nil, nil, drops.Fees{}, fmt.Errorf("creating state map: %w", err)
 	}
 
 	// Inject entries
 	for _, entry := range entries {
 		if err := stateMap.Put(entry.Index, entry.Data); err != nil {
-			return nil, nil, XRPAmount.Fees{}, fmt.Errorf("injecting entry: %w", err)
+			return nil, nil, drops.Fees{}, fmt.Errorf("injecting entry: %w", err)
 		}
 	}
 
@@ -260,7 +260,7 @@ func loadInitialState(ctx context.Context, client *statecompare.Client, ledgerIn
 	return stateMap, snapshot, fees, nil
 }
 
-func ExtractFeesFromState(entries []statecompare.StateEntry) XRPAmount.Fees {
+func ExtractFeesFromState(entries []statecompare.StateEntry) drops.Fees {
 	// FeeSettings keylet index
 	feeSettingsIndex := [32]byte{}
 	feeSettingsIndexBytes, _ := hex.DecodeString("4BC50C9B0D8515D3EAAE1E74B29A95804346C491EE1A95BF25E4AAB854A6A651")
@@ -274,18 +274,18 @@ func ExtractFeesFromState(entries []statecompare.StateEntry) XRPAmount.Fees {
 				break
 			}
 
-			fees := XRPAmount.Fees{}
+			fees := drops.Fees{}
 
 			if baseFee, ok := decoded["BaseFee"].(string); ok {
 				if val, err := parseHexOrDecimal(baseFee); err == nil {
-					fees.Base = XRPAmount.XRPAmount(val)
+					fees.Base = drops.XRPAmount(val)
 				}
 			}
 			if reserveBase, ok := decoded["ReserveBase"].(uint32); ok {
-				fees.Reserve = XRPAmount.XRPAmount(reserveBase)
+				fees.Reserve = drops.XRPAmount(reserveBase)
 			}
 			if reserveInc, ok := decoded["ReserveIncrement"].(uint32); ok {
-				fees.Increment = XRPAmount.XRPAmount(reserveInc)
+				fees.Increment = drops.XRPAmount(reserveInc)
 			}
 
 			return fees
@@ -293,7 +293,7 @@ func ExtractFeesFromState(entries []statecompare.StateEntry) XRPAmount.Fees {
 	}
 
 	// Return defaults
-	return XRPAmount.Fees{
+	return drops.Fees{
 		Base:      10,
 		Reserve:   10_000_000,
 		Increment: 2_000_000,
@@ -302,7 +302,7 @@ func ExtractFeesFromState(entries []statecompare.StateEntry) XRPAmount.Fees {
 
 // extractFeesFromSHAMap extracts fee settings from a state SHAMap.
 // Returns default fees if FeeSettings not found.
-func ExtractFeesFromSHAMap(stateMap *shamap.SHAMap) XRPAmount.Fees {
+func ExtractFeesFromSHAMap(stateMap *shamap.SHAMap) drops.Fees {
 	// FeeSettings keylet index (keylet::fees())
 	feeSettingsIndex := [32]byte{}
 	feeSettingsIndexBytes, _ := hex.DecodeString("4BC50C9B0D8515D3EAAE1E74B29A95804346C491EE1A95BF25E4AAB854A6A651")
@@ -312,7 +312,7 @@ func ExtractFeesFromSHAMap(stateMap *shamap.SHAMap) XRPAmount.Fees {
 	item, found, err := stateMap.Get(feeSettingsIndex)
 	if err != nil || !found || item == nil {
 		// Return defaults if not found
-		return XRPAmount.Fees{
+		return drops.Fees{
 			Base:      10,
 			Reserve:   10_000_000,
 			Increment: 2_000_000,
@@ -325,43 +325,43 @@ func ExtractFeesFromSHAMap(stateMap *shamap.SHAMap) XRPAmount.Fees {
 	// Decode the entry
 	decoded, err := binarycodec.Decode(hex.EncodeToString(data))
 	if err != nil {
-		return XRPAmount.Fees{
+		return drops.Fees{
 			Base:      10,
 			Reserve:   10_000_000,
 			Increment: 2_000_000,
 		}
 	}
 
-	fees := XRPAmount.Fees{}
+	fees := drops.Fees{}
 
 	// Modern format (XRPFees amendment)
 	if baseFeeDrops, ok := decoded["BaseFeeDrops"].(string); ok {
 		if val, err := parseHexOrDecimal(baseFeeDrops); err == nil {
-			fees.Base = XRPAmount.XRPAmount(val)
+			fees.Base = drops.XRPAmount(val)
 		}
 	}
 	if reserveBaseDrops, ok := decoded["ReserveBaseDrops"].(string); ok {
 		if val, err := parseHexOrDecimal(reserveBaseDrops); err == nil {
-			fees.Reserve = XRPAmount.XRPAmount(val)
+			fees.Reserve = drops.XRPAmount(val)
 		}
 	}
 	if reserveIncrementDrops, ok := decoded["ReserveIncrementDrops"].(string); ok {
 		if val, err := parseHexOrDecimal(reserveIncrementDrops); err == nil {
-			fees.Increment = XRPAmount.XRPAmount(val)
+			fees.Increment = drops.XRPAmount(val)
 		}
 	}
 
 	// Legacy format (pre-XRPFees)
 	if baseFee, ok := decoded["BaseFee"].(string); ok && fees.Base == 0 {
 		if val, err := parseHexOrDecimal(baseFee); err == nil {
-			fees.Base = XRPAmount.XRPAmount(val)
+			fees.Base = drops.XRPAmount(val)
 		}
 	}
 	if reserveBase, ok := decoded["ReserveBase"].(uint32); ok && fees.Reserve == 0 {
-		fees.Reserve = XRPAmount.XRPAmount(reserveBase)
+		fees.Reserve = drops.XRPAmount(reserveBase)
 	}
 	if reserveInc, ok := decoded["ReserveIncrement"].(uint32); ok && fees.Increment == 0 {
-		fees.Increment = XRPAmount.XRPAmount(reserveInc)
+		fees.Increment = drops.XRPAmount(reserveInc)
 	}
 
 	// Use defaults for any unset values
@@ -384,7 +384,7 @@ func processBlock(
 	preStateMap *shamap.SHAMap,
 	preSnapshot *statecompare.LedgerSnapshot,
 	targetLedger uint32,
-	fees XRPAmount.Fees,
+	fees drops.Fees,
 ) (*BlockResult, *shamap.SHAMap, error) {
 	result := &BlockResult{
 		PostState: make(map[string][]byte),

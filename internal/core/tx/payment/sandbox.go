@@ -3,7 +3,7 @@ package payment
 import (
 	"bytes"
 
-	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
+	"github.com/LeJamon/goXRPLd/drops"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	tx "github.com/LeJamon/goXRPLd/internal/core/tx"
 )
@@ -41,7 +41,7 @@ type PaymentSandbox struct {
 	tab *DeferredCredits
 
 	// dropsDestroyed tracks XRP destroyed during this sandbox's operations
-	dropsDestroyed XRPAmount.XRPAmount
+	dropsDestroyed drops.XRPAmount
 
 	// txHash is the current transaction hash (for PreviousTxnID updates)
 	txHash [32]byte
@@ -319,7 +319,7 @@ func (s *PaymentSandbox) getDeletedFinalState(key [32]byte) []byte {
 }
 
 // AdjustDropsDestroyed records XRP that has been destroyed
-func (s *PaymentSandbox) AdjustDropsDestroyed(drops XRPAmount.XRPAmount) {
+func (s *PaymentSandbox) AdjustDropsDestroyed(drops drops.XRPAmount) {
 	s.dropsDestroyed = s.dropsDestroyed.Add(drops)
 }
 
@@ -773,7 +773,7 @@ func (s *PaymentSandbox) Reset() {
 	s.deletions = make(map[[32]byte]bool)
 	s.deletedFinalStates = make(map[[32]byte][]byte)
 	s.tab = newDeferredCredits()
-	s.dropsDestroyed = XRPAmount.XRPAmount(0)
+	s.dropsDestroyed = drops.XRPAmount(0)
 }
 
 // GetView returns the underlying LedgerView for this sandbox chain

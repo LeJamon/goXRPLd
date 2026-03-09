@@ -8,7 +8,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
-	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
+	crypto "github.com/LeJamon/goXRPLd/crypto/common"
 )
 
 // Credential ledger entry flags

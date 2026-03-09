@@ -6,8 +6,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/LeJamon/goXRPLd/internal/crypto/common"
-	"github.com/LeJamon/goXRPLd/internal/protocol"
+	"github.com/LeJamon/goXRPLd/crypto/common"
+	"github.com/LeJamon/goXRPLd/protocol"
 )
 
 // LeafNode interface for all leaf node types

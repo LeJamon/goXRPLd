@@ -8,7 +8,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/service"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_types"
-	"github.com/LeJamon/goXRPLd/internal/storage/relationaldb"
+	"github.com/LeJamon/goXRPLd/storage/relationaldb"
 )
 
 // LedgerServiceAdapter adapts the ledger service to the RPC LedgerService interface

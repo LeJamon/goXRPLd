@@ -6,12 +6,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
+	"github.com/LeJamon/goXRPLd/drops"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/header"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
-	"github.com/LeJamon/goXRPLd/internal/core/protocol"
+	"github.com/LeJamon/goXRPLd/protocol"
 	"github.com/LeJamon/goXRPLd/internal/core/shamap"
-	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
+	crypto "github.com/LeJamon/goXRPLd/crypto/common"
 )
 
 // Common errors for ledger operations
@@ -75,7 +75,7 @@ type Reader interface {
 	Exists(k keylet.Keylet) (bool, error)
 
 	// GetFees returns the current fee settings
-	GetFees() XRPAmount.Fees
+	GetFees() drops.Fees
 }
 
 // Writer provides write access to ledger state
@@ -90,7 +90,7 @@ type Writer interface {
 	Erase(k keylet.Keylet) error
 
 	// AdjustDropsDestroyed records XRP that has been destroyed (fees)
-	AdjustDropsDestroyed(drops XRPAmount.XRPAmount)
+	AdjustDropsDestroyed(drops drops.XRPAmount)
 }
 
 // Ledger represents a single ledger in the chain
@@ -105,13 +105,13 @@ type Ledger struct {
 	header header.LedgerHeader
 
 	// Fee configuration
-	fees XRPAmount.Fees
+	fees drops.Fees
 
 	// Current state
 	state State
 
 	// Drops destroyed in this ledger (transaction fees)
-	dropsDestroyed XRPAmount.XRPAmount
+	dropsDestroyed drops.XRPAmount
 }
 
 // NewOpen creates a new open ledger based on a parent ledger
@@ -158,7 +158,7 @@ func FromGenesis(
 	hdr header.LedgerHeader,
 	stateMap *shamap.SHAMap,
 	txMap *shamap.SHAMap,
-	fees XRPAmount.Fees,
+	fees drops.Fees,
 ) *Ledger {
 	return &Ledger{
 		stateMap: stateMap,
@@ -175,7 +175,7 @@ func NewOpenWithHeader(
 	hdr header.LedgerHeader,
 	stateMap *shamap.SHAMap,
 	txMap *shamap.SHAMap,
-	fees XRPAmount.Fees,
+	fees drops.Fees,
 ) *Ledger {
 	return &Ledger{
 		stateMap: stateMap,
@@ -243,7 +243,7 @@ func (l *Ledger) Header() header.LedgerHeader {
 }
 
 // GetFees returns the current fee settings
-func (l *Ledger) GetFees() XRPAmount.Fees {
+func (l *Ledger) GetFees() drops.Fees {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	return l.fees
@@ -349,7 +349,7 @@ func (l *Ledger) Erase(k keylet.Keylet) error {
 }
 
 // AdjustDropsDestroyed records XRP that has been destroyed (fees)
-func (l *Ledger) AdjustDropsDestroyed(drops XRPAmount.XRPAmount) {
+func (l *Ledger) AdjustDropsDestroyed(drops drops.XRPAmount) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 

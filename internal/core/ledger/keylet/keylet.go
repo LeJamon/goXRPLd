@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/entry"
-	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
+	crypto "github.com/LeJamon/goXRPLd/crypto/common"
 )
 
 // Space identifiers for keylet generation

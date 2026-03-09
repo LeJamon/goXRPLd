@@ -15,10 +15,10 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/service"
 	"github.com/LeJamon/goXRPLd/internal/rpc"
 	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_types"
-	kvpebble "github.com/LeJamon/goXRPLd/internal/storage/kvstore/pebble"
-	"github.com/LeJamon/goXRPLd/internal/storage/nodestore"
-	"github.com/LeJamon/goXRPLd/internal/storage/relationaldb"
-	"github.com/LeJamon/goXRPLd/internal/storage/relationaldb/postgres"
+	kvpebble "github.com/LeJamon/goXRPLd/storage/kvstore/pebble"
+	"github.com/LeJamon/goXRPLd/storage/nodestore"
+	"github.com/LeJamon/goXRPLd/storage/relationaldb"
+	"github.com/LeJamon/goXRPLd/storage/relationaldb/postgres"
 	"github.com/spf13/cobra"
 )
 

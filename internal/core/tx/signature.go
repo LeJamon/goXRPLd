@@ -10,8 +10,8 @@ import (
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
-	ed25519algo "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/ed25519"
-	secp256k1algo "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/secp256k1"
+	ed25519algo "github.com/LeJamon/goXRPLd/crypto/algorithms/ed25519"
+	secp256k1algo "github.com/LeJamon/goXRPLd/crypto/algorithms/secp256k1"
 )
 
 // Signature verification errors

@@ -3,8 +3,8 @@ package shamap
 import (
 	"fmt"
 
-	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
-	"github.com/LeJamon/goXRPLd/internal/protocol"
+	crypto "github.com/LeJamon/goXRPLd/crypto/common"
+	"github.com/LeJamon/goXRPLd/protocol"
 )
 
 // FlushEntry holds a serialized node ready to be written to NodeStore.

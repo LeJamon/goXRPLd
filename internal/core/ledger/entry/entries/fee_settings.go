@@ -3,7 +3,7 @@ package entry
 import (
 	"encoding/binary"
 
-	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
+	"github.com/LeJamon/goXRPLd/drops"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/entry"
 )
 
@@ -13,9 +13,9 @@ type FeeSettings struct {
 	BaseEntry
 
 	// Modern fee fields (XRPFees amendment)
-	BaseFeeDrops         XRPAmount.XRPAmount
-	ReserveBaseDrops     XRPAmount.XRPAmount
-	ReserveIncrementDrops XRPAmount.XRPAmount
+	BaseFeeDrops         drops.XRPAmount
+	ReserveBaseDrops     drops.XRPAmount
+	ReserveIncrementDrops drops.XRPAmount
 
 	// Legacy fee fields (deprecated, for backward compatibility)
 	// These are used if XRPFees amendment is not enabled
@@ -26,7 +26,7 @@ type FeeSettings struct {
 }
 
 // NewFeeSettings creates a new FeeSettings entry with the specified fees.
-func NewFeeSettings(baseFee, reserveBase, reserveIncrement XRPAmount.XRPAmount) *FeeSettings {
+func NewFeeSettings(baseFee, reserveBase, reserveIncrement drops.XRPAmount) *FeeSettings {
 	return &FeeSettings{
 		BaseFeeDrops:          baseFee,
 		ReserveBaseDrops:      reserveBase,
@@ -81,36 +81,36 @@ func (f *FeeSettings) Hash() ([32]byte, error) {
 }
 
 // GetBaseFee returns the base transaction fee.
-func (f *FeeSettings) GetBaseFee() XRPAmount.XRPAmount {
+func (f *FeeSettings) GetBaseFee() drops.XRPAmount {
 	if f.BaseFeeDrops > 0 {
 		return f.BaseFeeDrops
 	}
 	if f.BaseFee != nil {
-		return XRPAmount.NewXRPAmount(int64(*f.BaseFee))
+		return drops.NewXRPAmount(int64(*f.BaseFee))
 	}
-	return XRPAmount.NewXRPAmount(10) // Default: 10 drops
+	return drops.NewXRPAmount(10) // Default: 10 drops
 }
 
 // GetReserveBase returns the account reserve base.
-func (f *FeeSettings) GetReserveBase() XRPAmount.XRPAmount {
+func (f *FeeSettings) GetReserveBase() drops.XRPAmount {
 	if f.ReserveBaseDrops > 0 {
 		return f.ReserveBaseDrops
 	}
 	if f.ReserveBase != nil {
-		return XRPAmount.NewXRPAmount(int64(*f.ReserveBase))
+		return drops.NewXRPAmount(int64(*f.ReserveBase))
 	}
-	return XRPAmount.DropsPerXRP * 10 // Default: 10 XRP
+	return drops.DropsPerXRP * 10 // Default: 10 XRP
 }
 
 // GetReserveIncrement returns the owner reserve increment.
-func (f *FeeSettings) GetReserveIncrement() XRPAmount.XRPAmount {
+func (f *FeeSettings) GetReserveIncrement() drops.XRPAmount {
 	if f.ReserveIncrementDrops > 0 {
 		return f.ReserveIncrementDrops
 	}
 	if f.ReserveIncrement != nil {
-		return XRPAmount.NewXRPAmount(int64(*f.ReserveIncrement))
+		return drops.NewXRPAmount(int64(*f.ReserveIncrement))
 	}
-	return XRPAmount.DropsPerXRP * 2 // Default: 2 XRP
+	return drops.DropsPerXRP * 2 // Default: 2 XRP
 }
 
 // IsUsingModernFees returns true if using XRPFees amendment fields.

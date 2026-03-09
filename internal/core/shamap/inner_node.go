@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/LeJamon/goXRPLd/internal/protocol"
+	"github.com/LeJamon/goXRPLd/protocol"
 )
 
 const BranchFactor = 16

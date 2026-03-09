@@ -3,7 +3,7 @@ package genesis
 import (
 	"testing"
 
-	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
+	"github.com/LeJamon/goXRPLd/drops"
 )
 
 func TestGenerateGenesisAccountID(t *testing.T) {
@@ -127,9 +127,9 @@ func TestCreateGenesisLedgerLegacyFees(t *testing.T) {
 func TestStandardFees(t *testing.T) {
 	fees := StandardFees()
 
-	expectedBaseFee := XRPAmount.NewXRPAmount(10)
-	expectedReserveBase := XRPAmount.DropsPerXRP * 10
-	expectedReserveIncrement := XRPAmount.DropsPerXRP * 2
+	expectedBaseFee := drops.NewXRPAmount(10)
+	expectedReserveBase := drops.DropsPerXRP * 10
+	expectedReserveIncrement := drops.DropsPerXRP * 2
 
 	if fees.BaseFee != expectedBaseFee {
 		t.Errorf("Base fee mismatch: got %d, expected %d", fees.BaseFee, expectedBaseFee)

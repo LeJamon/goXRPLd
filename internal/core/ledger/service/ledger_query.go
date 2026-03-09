@@ -8,7 +8,7 @@ import (
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
-	"github.com/LeJamon/goXRPLd/internal/storage/relationaldb"
+	"github.com/LeJamon/goXRPLd/storage/relationaldb"
 )
 
 // LedgerRangeResult contains ledger hashes for a range

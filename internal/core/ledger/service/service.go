@@ -6,12 +6,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
+	"github.com/LeJamon/goXRPLd/drops"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/genesis"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/header"
-	"github.com/LeJamon/goXRPLd/internal/storage/nodestore"
-	"github.com/LeJamon/goXRPLd/internal/storage/relationaldb"
+	"github.com/LeJamon/goXRPLd/storage/nodestore"
+	"github.com/LeJamon/goXRPLd/storage/relationaldb"
 )
 
 // Common errors
@@ -114,7 +114,7 @@ type Service struct {
 	txIndex map[[32]byte]uint32
 
 	// Current fee settings
-	fees XRPAmount.Fees
+	fees drops.Fees
 
 	// EventCallback is called when a ledger is accepted (optional)
 	eventCallback EventCallback
@@ -170,7 +170,7 @@ func (s *Service) Start() error {
 	}
 
 	// Convert genesis to Ledger
-	fees := XRPAmount.Fees{} // TODO: properly parse from genesis
+	fees := drops.Fees{} // TODO: properly parse from genesis
 	genesisLedger := ledger.FromGenesis(
 		genesisResult.Header,
 		genesisResult.StateMap,

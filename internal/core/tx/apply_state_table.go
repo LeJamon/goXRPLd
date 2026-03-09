@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
-	"github.com/LeJamon/goXRPLd/internal/core/amendment"
+	"github.com/LeJamon/goXRPLd/drops"
+	"github.com/LeJamon/goXRPLd/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
@@ -39,7 +39,7 @@ type TrackedEntry struct {
 type ApplyStateTable struct {
 	base   LedgerView
 	items  map[[32]byte]*TrackedEntry
-	drops  XRPAmount.XRPAmount
+	drops  drops.XRPAmount
 	txHash [32]byte
 	txSeq  uint32
 	rules  *amendment.Rules
@@ -204,7 +204,7 @@ func (t *ApplyStateTable) IsErased(k keylet.Keylet) bool {
 }
 
 // AdjustDropsDestroyed records destroyed XRP
-func (t *ApplyStateTable) AdjustDropsDestroyed(drops XRPAmount.XRPAmount) {
+func (t *ApplyStateTable) AdjustDropsDestroyed(drops drops.XRPAmount) {
 	t.drops = t.drops.Add(drops)
 }
 
@@ -473,7 +473,7 @@ func (t *ApplyStateTable) threadOwners(data []byte, entryType string, fixCheckTh
 }
 
 // DropsDestroyed returns the amount of XRP destroyed
-func (t *ApplyStateTable) DropsDestroyed() XRPAmount.XRPAmount {
+func (t *ApplyStateTable) DropsDestroyed() drops.XRPAmount {
 	return t.drops
 }
 

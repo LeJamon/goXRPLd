@@ -7,8 +7,8 @@ import (
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
-	ed25519 "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/ed25519"
-	secp256k1 "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/secp256k1"
+	ed25519 "github.com/LeJamon/goXRPLd/crypto/algorithms/ed25519"
+	secp256k1 "github.com/LeJamon/goXRPLd/crypto/algorithms/secp256k1"
 )
 
 // KeyType constants for account key derivation.

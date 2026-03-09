@@ -4,8 +4,8 @@ import (
 	"context"
 
 	"github.com/LeJamon/goXRPLd/internal/core/ledger"
-	"github.com/LeJamon/goXRPLd/internal/storage/nodestore"
-	"github.com/LeJamon/goXRPLd/internal/storage/relationaldb"
+	"github.com/LeJamon/goXRPLd/storage/nodestore"
+	"github.com/LeJamon/goXRPLd/storage/relationaldb"
 )
 
 // persistLedger writes the ledger state to storage backends

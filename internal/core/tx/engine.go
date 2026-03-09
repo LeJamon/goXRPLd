@@ -10,11 +10,11 @@ import (
 
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
-	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
-	"github.com/LeJamon/goXRPLd/internal/core/amendment"
+	"github.com/LeJamon/goXRPLd/drops"
+	"github.com/LeJamon/goXRPLd/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
-	crypto "github.com/LeJamon/goXRPLd/internal/crypto/common"
+	crypto "github.com/LeJamon/goXRPLd/crypto/common"
 )
 
 // Validation constants matching rippled
@@ -185,7 +185,7 @@ type LedgerView interface {
 	Erase(k keylet.Keylet) error
 
 	// AdjustDropsDestroyed records destroyed XRP
-	AdjustDropsDestroyed(drops XRPAmount.XRPAmount)
+	AdjustDropsDestroyed(drops drops.XRPAmount)
 
 	// ForEach iterates over all state entries
 	// If fn returns false, iteration stops early
@@ -447,7 +447,7 @@ func (e *Engine) Apply(tx Transaction) ApplyResult {
 
 	// Record fee as destroyed and assign TransactionIndex
 	if result.IsApplied() {
-		e.view.AdjustDropsDestroyed(XRPAmount.XRPAmount(fee))
+		e.view.AdjustDropsDestroyed(drops.XRPAmount(fee))
 		metadata.TransactionIndex = e.txCount
 		e.txCount++
 	}

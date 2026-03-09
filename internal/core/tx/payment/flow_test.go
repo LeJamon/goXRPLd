@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
+	"github.com/LeJamon/goXRPLd/drops"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	tx "github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
@@ -51,7 +51,7 @@ func (m *paymentMockLedgerView) Erase(key keylet.Keylet) error {
 	return nil
 }
 
-func (m *paymentMockLedgerView) AdjustDropsDestroyed(drops XRPAmount.XRPAmount) {
+func (m *paymentMockLedgerView) AdjustDropsDestroyed(drops drops.XRPAmount) {
 	// No-op for testing
 }
 

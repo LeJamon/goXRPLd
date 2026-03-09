@@ -1,7 +1,7 @@
 package tx
 
 import (
-	"github.com/LeJamon/goXRPLd/internal/core/amendment"
+	"github.com/LeJamon/goXRPLd/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 )
 

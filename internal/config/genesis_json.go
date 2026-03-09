@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
+	"github.com/LeJamon/goXRPLd/drops"
 )
 
 // GenesisJSON represents the JSON genesis file format
@@ -96,9 +96,9 @@ type GenesisConfig struct {
 	CloseTimeResolution uint32
 
 	// Fee settings
-	BaseFee          XRPAmount.XRPAmount
-	ReserveBase      XRPAmount.XRPAmount
-	ReserveIncrement XRPAmount.XRPAmount
+	BaseFee          drops.XRPAmount
+	ReserveBase      drops.XRPAmount
+	ReserveIncrement drops.XRPAmount
 	UseModernFees    bool
 
 	// Amendments to enable (32-byte hashes)
@@ -210,9 +210,9 @@ func (g *GenesisJSON) ToGenesisConfig() (*GenesisConfig, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid BaseFee: %w", err)
 		}
-		config.BaseFee = XRPAmount.NewXRPAmount(int64(baseFee))
-		config.ReserveBase = XRPAmount.NewXRPAmount(int64(state.FeeSettings.ReserveBase))
-		config.ReserveIncrement = XRPAmount.NewXRPAmount(int64(state.FeeSettings.ReserveIncrement))
+		config.BaseFee = drops.NewXRPAmount(int64(baseFee))
+		config.ReserveBase = drops.NewXRPAmount(int64(state.FeeSettings.ReserveBase))
+		config.ReserveIncrement = drops.NewXRPAmount(int64(state.FeeSettings.ReserveIncrement))
 
 		// Detect if using legacy fees (has ReferenceFeeUnits)
 		if state.FeeSettings.ReferenceFeeUnits > 0 {
@@ -366,9 +366,9 @@ func DefaultGenesisConfig() *GenesisConfig {
 	return &GenesisConfig{
 		TotalXRP:            100_000_000_000 * 1_000_000, // 100 billion XRP
 		CloseTimeResolution: 30,
-		BaseFee:             XRPAmount.NewXRPAmount(10),         // 10 drops
-		ReserveBase:         XRPAmount.DropsPerXRP * 10,         // 10 XRP
-		ReserveIncrement:    XRPAmount.DropsPerXRP * 2,          // 2 XRP
+		BaseFee:             drops.NewXRPAmount(10),         // 10 drops
+		ReserveBase:         drops.DropsPerXRP * 10,         // 10 XRP
+		ReserveIncrement:    drops.DropsPerXRP * 2,          // 2 XRP
 		UseModernFees:       true,
 		Amendments:          nil,
 		InitialAccounts:     nil, // Will use master passphrase account

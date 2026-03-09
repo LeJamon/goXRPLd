@@ -6,7 +6,7 @@ import (
 
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/storage/relationaldb"
+	"github.com/LeJamon/goXRPLd/storage/relationaldb"
 )
 
 // SubmitResult contains the result of submitting a transaction

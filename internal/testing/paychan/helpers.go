@@ -10,7 +10,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	accounttx "github.com/LeJamon/goXRPLd/internal/core/tx/account"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
-	secp256k1crypto "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/secp256k1"
+	secp256k1crypto "github.com/LeJamon/goXRPLd/crypto/algorithms/secp256k1"
 	jtx "github.com/LeJamon/goXRPLd/internal/testing"
 	"github.com/stretchr/testify/require"
 )
