@@ -4,11 +4,11 @@ import (
 	"crypto/sha512"
 	"encoding/hex"
 
-	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
-	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
-	ed25519 "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/ed25519"
-	secp256k1 "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/secp256k1"
+	addresscodec "github.com/LeJamon/goXRPLd/codec/addresscodec"
+	"github.com/LeJamon/goXRPLd/internal/tx"
+	"github.com/LeJamon/goXRPLd/internal/ledger/state"
+	ed25519 "github.com/LeJamon/goXRPLd/crypto/ed25519"
+	secp256k1 "github.com/LeJamon/goXRPLd/crypto/secp256k1"
 )
 
 // KeyType constants for account key derivation.
@@ -265,7 +265,7 @@ func (a *Account) String() string {
 // Usage: gw.IOU("USD", 100) returns an issued amount of 100 USD from gw.
 // Reference: rippled's Account::operator[]("USD")(100)
 func (a *Account) IOU(currency string, value float64) tx.Amount {
-	return sle.NewIssuedAmountFromFloat64(value, currency, a.Address)
+	return state.NewIssuedAmountFromFloat64(value, currency, a.Address)
 }
 
 // NewAccountFromSeed creates a test account from a base58-encoded seed string.

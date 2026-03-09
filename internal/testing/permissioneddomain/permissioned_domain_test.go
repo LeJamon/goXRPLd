@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"testing"
 
-	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
-	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
-	acctx "github.com/LeJamon/goXRPLd/internal/core/tx/account"
+	binarycodec "github.com/LeJamon/goXRPLd/codec/binarycodec"
+	"github.com/LeJamon/goXRPLd/keylet"
+	acctx "github.com/LeJamon/goXRPLd/internal/tx/account"
 	jtx "github.com/LeJamon/goXRPLd/internal/testing"
 	pd "github.com/LeJamon/goXRPLd/internal/testing/permissioneddomain"
 	"github.com/LeJamon/goXRPLd/internal/testing/payment"

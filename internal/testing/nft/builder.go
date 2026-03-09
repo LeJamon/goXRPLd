@@ -4,10 +4,10 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
-	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/ledgerstatefix"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/nftoken"
+	"github.com/LeJamon/goXRPLd/keylet"
+	"github.com/LeJamon/goXRPLd/internal/tx"
+	"github.com/LeJamon/goXRPLd/internal/tx/ledgerstatefix"
+	"github.com/LeJamon/goXRPLd/internal/tx/nftoken"
 	"github.com/LeJamon/goXRPLd/internal/testing"
 )
 

@@ -8,13 +8,13 @@ import (
 	"strings"
 	"testing"
 
-	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
-	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
-	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/clawback"
-	mpttx "github.com/LeJamon/goXRPLd/internal/core/tx/mpt"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/payment"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
+	addresscodec "github.com/LeJamon/goXRPLd/codec/addresscodec"
+	"github.com/LeJamon/goXRPLd/keylet"
+	"github.com/LeJamon/goXRPLd/internal/tx"
+	"github.com/LeJamon/goXRPLd/internal/tx/clawback"
+	mpttx "github.com/LeJamon/goXRPLd/internal/tx/mpt"
+	"github.com/LeJamon/goXRPLd/internal/tx/payment"
+	"github.com/LeJamon/goXRPLd/internal/ledger/state"
 	jtx "github.com/LeJamon/goXRPLd/internal/testing"
 	paybuilder "github.com/LeJamon/goXRPLd/internal/testing/payment"
 	"github.com/stretchr/testify/require"
@@ -526,7 +526,7 @@ func (m *MPTTester) Claw(issuer, holder *jtx.Account, amount int64, expectedErr 
 func (m *MPTTester) MPTAmount(amount int64) tx.Amount {
 	// MPT amounts are stored as raw int64 values (no IOU normalization)
 	// to preserve precision for large values like MaxMPTokenAmount.
-	return sle.NewMPTAmountDirect(amount, "MPT", m.issuer.Address)
+	return state.NewMPTAmountDirect(amount, "MPT", m.issuer.Address)
 }
 
 // CheckMPTokenAmount verifies the MPTAmount balance for a holder.

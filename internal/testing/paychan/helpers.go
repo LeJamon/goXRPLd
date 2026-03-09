@@ -6,11 +6,11 @@ import (
 	"strconv"
 	"testing"
 
-	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
-	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
-	accounttx "github.com/LeJamon/goXRPLd/internal/core/tx/account"
-	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
-	secp256k1crypto "github.com/LeJamon/goXRPLd/internal/crypto/algorithms/secp256k1"
+	binarycodec "github.com/LeJamon/goXRPLd/codec/binarycodec"
+	"github.com/LeJamon/goXRPLd/keylet"
+	accounttx "github.com/LeJamon/goXRPLd/internal/tx/account"
+	"github.com/LeJamon/goXRPLd/internal/ledger/state"
+	"github.com/LeJamon/goXRPLd/crypto/secp256k1"
 	jtx "github.com/LeJamon/goXRPLd/internal/testing"
 	"github.com/stretchr/testify/require"
 )
@@ -52,7 +52,7 @@ func signClaimAuth(acc *jtx.Account, channelIDHex string, authAmtDrops uint64) s
 	//   msg: raw bytes as a string (NOT hex)
 	//   privKey: hex string, 66 chars with "00" prefix
 	privKeyHex := "00" + hex.EncodeToString(acc.PrivateKey)
-	signature, err := secp256k1crypto.SECP256K1().Sign(string(messageBytes), privKeyHex)
+	signature, err := secp256k1.SECP256K1().Sign(string(messageBytes), privKeyHex)
 	if err != nil {
 		panic(fmt.Sprintf("signClaimAuth: failed to sign: %v", err))
 	}
@@ -77,7 +77,7 @@ func chanBalance(env *jtx.TestEnv, k keylet.Keylet) uint64 {
 	if err != nil {
 		panic(fmt.Sprintf("chanBalance: failed to read ledger entry: %v", err))
 	}
-	channel, err := sle.ParsePayChannel(data)
+	channel, err := state.ParsePayChannel(data)
 	if err != nil {
 		panic(fmt.Sprintf("chanBalance: failed to parse pay channel: %v", err))
 	}
@@ -91,7 +91,7 @@ func chanAmount(env *jtx.TestEnv, k keylet.Keylet) uint64 {
 	if err != nil {
 		panic(fmt.Sprintf("chanAmount: failed to read ledger entry: %v", err))
 	}
-	channel, err := sle.ParsePayChannel(data)
+	channel, err := state.ParsePayChannel(data)
 	if err != nil {
 		panic(fmt.Sprintf("chanAmount: failed to parse pay channel: %v", err))
 	}
@@ -105,7 +105,7 @@ func chanExpiration(env *jtx.TestEnv, k keylet.Keylet) (uint32, bool) {
 	if err != nil {
 		return 0, false
 	}
-	channel, err := sle.ParsePayChannel(data)
+	channel, err := state.ParsePayChannel(data)
 	if err != nil {
 		return 0, false
 	}
@@ -120,7 +120,7 @@ func ownerDirCount(env *jtx.TestEnv, acc *jtx.Account) int {
 	// This counts directory entries, NOT the OwnerCount field on AccountRoot.
 	dirKey := keylet.OwnerDir(acc.ID)
 	count := 0
-	_ = sle.DirForEach(env.Ledger(), dirKey, func(itemKey [32]byte) error {
+	_ = state.DirForEach(env.Ledger(), dirKey, func(itemKey [32]byte) error {
 		count++
 		return nil
 	})
@@ -132,7 +132,7 @@ func ownerDirCount(env *jtx.TestEnv, acc *jtx.Account) int {
 func inOwnerDir(env *jtx.TestEnv, acc *jtx.Account, targetKey [32]byte) bool {
 	dirKey := keylet.OwnerDir(acc.ID)
 	found := false
-	_ = sle.DirForEach(env.Ledger(), dirKey, func(itemKey [32]byte) error {
+	_ = state.DirForEach(env.Ledger(), dirKey, func(itemKey [32]byte) error {
 		if itemKey == targetKey {
 			found = true
 		}

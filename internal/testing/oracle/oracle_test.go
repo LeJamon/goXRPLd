@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"testing"
 
-	accounttx "github.com/LeJamon/goXRPLd/internal/core/tx/account"
-	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
+	accounttx "github.com/LeJamon/goXRPLd/internal/tx/account"
+	"github.com/LeJamon/goXRPLd/keylet"
 	jtx "github.com/LeJamon/goXRPLd/internal/testing"
 	"github.com/LeJamon/goXRPLd/internal/testing/accountset"
 	oracletest "github.com/LeJamon/goXRPLd/internal/testing/oracle"

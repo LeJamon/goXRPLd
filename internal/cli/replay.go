@@ -10,15 +10,15 @@ import (
 	"strings"
 	"time"
 
-	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
-	"github.com/LeJamon/goXRPLd/internal/core/XRPAmount"
-	"github.com/LeJamon/goXRPLd/internal/core/amendment"
-	"github.com/LeJamon/goXRPLd/internal/core/ledger"
-	"github.com/LeJamon/goXRPLd/internal/core/ledger/header"
-	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
-	"github.com/LeJamon/goXRPLd/internal/core/shamap"
-	"github.com/LeJamon/goXRPLd/internal/core/tx"
-	_ "github.com/LeJamon/goXRPLd/internal/core/tx/all"
+	binarycodec "github.com/LeJamon/goXRPLd/codec/binarycodec"
+	"github.com/LeJamon/goXRPLd/drops"
+	"github.com/LeJamon/goXRPLd/amendment"
+	"github.com/LeJamon/goXRPLd/internal/ledger"
+	"github.com/LeJamon/goXRPLd/internal/ledger/header"
+	"github.com/LeJamon/goXRPLd/keylet"
+	"github.com/LeJamon/goXRPLd/shamap"
+	"github.com/LeJamon/goXRPLd/internal/tx"
+	_ "github.com/LeJamon/goXRPLd/internal/tx/all"
 	"github.com/spf13/cobra"
 )
 
@@ -993,7 +993,7 @@ func createSkipListEntry(l *ledger.Ledger, k keylet.Keylet, parentHash [32]byte,
 
 // extractFeesFromState extracts fee settings from state entries.
 // Returns default fees if FeeSettings not found.
-func extractFeesFromState(entries []StateEntry) XRPAmount.Fees {
+func extractFeesFromState(entries []StateEntry) drops.Fees {
 	// FeeSettings keylet index (keylet::fees())
 	feeSettingsIndex := [32]byte{}
 	feeSettingsIndexBytes, _ := hex.DecodeString("4BC50C9B0D8515D3EAAE1E74B29A95804346C491EE1A95BF25E4AAB854A6A651")
@@ -1015,36 +1015,36 @@ func extractFeesFromState(entries []StateEntry) XRPAmount.Fees {
 				break
 			}
 
-			fees := XRPAmount.Fees{}
+			fees := drops.Fees{}
 
 			// Modern format (XRPFees amendment)
 			if baseFeeDrops, ok := decoded["BaseFeeDrops"].(string); ok {
 				if val, err := parseHexOrDecimal(baseFeeDrops); err == nil {
-					fees.Base = XRPAmount.XRPAmount(val)
+					fees.Base = drops.XRPAmount(val)
 				}
 			}
 			if reserveBaseDrops, ok := decoded["ReserveBaseDrops"].(string); ok {
 				if val, err := parseHexOrDecimal(reserveBaseDrops); err == nil {
-					fees.Reserve = XRPAmount.XRPAmount(val)
+					fees.Reserve = drops.XRPAmount(val)
 				}
 			}
 			if reserveIncrementDrops, ok := decoded["ReserveIncrementDrops"].(string); ok {
 				if val, err := parseHexOrDecimal(reserveIncrementDrops); err == nil {
-					fees.Increment = XRPAmount.XRPAmount(val)
+					fees.Increment = drops.XRPAmount(val)
 				}
 			}
 
 			// Legacy format (pre-XRPFees)
 			if baseFee, ok := decoded["BaseFee"].(string); ok && fees.Base == 0 {
 				if val, err := parseHexOrDecimal(baseFee); err == nil {
-					fees.Base = XRPAmount.XRPAmount(val)
+					fees.Base = drops.XRPAmount(val)
 				}
 			}
 			if reserveBase, ok := decoded["ReserveBase"].(uint32); ok && fees.Reserve == 0 {
-				fees.Reserve = XRPAmount.XRPAmount(reserveBase)
+				fees.Reserve = drops.XRPAmount(reserveBase)
 			}
 			if reserveInc, ok := decoded["ReserveIncrement"].(uint32); ok && fees.Increment == 0 {
-				fees.Increment = XRPAmount.XRPAmount(reserveInc)
+				fees.Increment = drops.XRPAmount(reserveInc)
 			}
 
 			// Use defaults for any unset values
@@ -1063,7 +1063,7 @@ func extractFeesFromState(entries []StateEntry) XRPAmount.Fees {
 	}
 
 	// Return defaults
-	return XRPAmount.Fees{
+	return drops.Fees{
 		Base:      10,
 		Reserve:   10_000_000,
 		Increment: 2_000_000,

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
-	escrowtx "github.com/LeJamon/goXRPLd/internal/core/tx/escrow"
+	"github.com/LeJamon/goXRPLd/keylet"
+	escrowtx "github.com/LeJamon/goXRPLd/internal/tx/escrow"
 	jtx "github.com/LeJamon/goXRPLd/internal/testing"
 	"github.com/LeJamon/goXRPLd/internal/testing/accountset"
 	"github.com/LeJamon/goXRPLd/internal/testing/credential"
