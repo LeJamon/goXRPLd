@@ -813,9 +813,13 @@ func TestAMMClawback_SameIssuerAssets(t *testing.T) {
 	jtx.RequireTxSuccess(t, result)
 	env.Close()
 
-	// Carol deposits USD(2000) + EUR(500)
+	// Carol deposits USD(2000.25) + EUR(500)
+	// With fixAMMv1_3 upward rounding, the exact USD(2000) amount causes the
+	// equalDepositLimit check to fail (rounding makes deposit exceed limit).
+	// rippled's test uses USD(2000.25) with fixAMMv1_3 enabled.
+	// Reference: rippled AMMClawback_test.cpp line 1375-1377
 	depositTx = amm.AMMDeposit(env.Carol, env.USD, env.EUR).
-		Amount(amm.IOUAmount(env.GW, "USD", 2000)).
+		Amount(amm.IOUAmount(env.GW, "USD", 2000.25)).
 		Amount2(amm.IOUAmount(env.GW, "EUR", 500)).
 		TwoAsset().
 		Build()
@@ -981,25 +985,17 @@ func TestAMMClawback_IssuesEachOther(t *testing.T) {
 	// Note: gw is the issuer of USD, so USD(1000) is issued directly.
 	// For EUR(2000), gw needs to have EUR from gw2 (which it does: 6000).
 	createTx := amm.AMMCreate(env.GW, amm.IOUAmount(env.GW, "USD", 1000), amm.IOUAmount(gw2, "EUR", 2000)).Build()
-	result = env.Submit(createTx)
-	if !result.Success {
-		t.Logf("gw creating AMM with own USD + gw2 EUR: %s (may fail due to issuer-as-creator)", result.Code)
-		t.Skip("AMM creation failed for issuer-as-creator with cross-issued tokens")
-	}
+	jtx.RequireTxSuccess(t, env.Submit(createTx))
 	env.Close()
 
 	// gw2 deposits USD(2000) + EUR(4000)
-	// Note: gw2 is the issuer of EUR — issuer-as-depositor may have implementation gaps.
+	// gw2 is the issuer of EUR — issuer deposits issue from thin air.
 	depositTx := amm.AMMDeposit(gw2, env.USD, EUR).
 		Amount(amm.IOUAmount(env.GW, "USD", 2000)).
 		Amount2(amm.IOUAmount(gw2, "EUR", 4000)).
 		TwoAsset().
 		Build()
-	result = env.Submit(depositTx)
-	if !result.Success {
-		t.Logf("gw2 deposit USD(2000)+EUR(4000): %s (issuer-as-depositor may have gaps)", result.Code)
-		t.Skip("Deposit failed for issuer-as-depositor with cross-issued tokens")
-	}
+	jtx.RequireTxSuccess(t, env.Submit(depositTx))
 	env.Close()
 
 	// alice deposits USD(3000) + EUR(6000)
@@ -1008,11 +1004,7 @@ func TestAMMClawback_IssuesEachOther(t *testing.T) {
 		Amount2(amm.IOUAmount(gw2, "EUR", 6000)).
 		TwoAsset().
 		Build()
-	result = env.Submit(depositTx)
-	if !result.Success {
-		t.Logf("alice deposit USD(3000)+EUR(6000): %s", result.Code)
-		t.Skip("Deposit failed — likely cascading from issuer-as-depositor gap")
-	}
+	jtx.RequireTxSuccess(t, env.Submit(depositTx))
 	env.Close()
 
 	// gw claws back 1000 USD from gw2
@@ -1278,8 +1270,10 @@ func TestAMMClawback_AssetFrozen(t *testing.T) {
 		jtx.RequireTxSuccess(t, result)
 		env.Close()
 
+		// With fixAMMv1_3, use USD(2000.25) — matching rippled's test
+		// Reference: rippled AMMClawback_test.cpp line 1975-1978
 		depositTx = amm.AMMDeposit(env.Carol, env.USD, env.EUR).
-			Amount(amm.IOUAmount(env.GW, "USD", 2000)).
+			Amount(amm.IOUAmount(env.GW, "USD", 2000.25)).
 			Amount2(amm.IOUAmount(env.GW, "EUR", 500)).
 			TwoAsset().Build()
 		result = env.Submit(depositTx)

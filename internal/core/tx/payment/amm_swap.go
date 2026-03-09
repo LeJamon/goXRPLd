@@ -69,6 +69,42 @@ func fromNumber(num tx.Amount, original tx.Amount) tx.Amount {
 	return sle.NewIssuedAmountFromValue(num.Mantissa(), num.Exponent(), original.Currency, original.Issuer)
 }
 
+// fromNumberRoundUp converts a Number back to the original amount type, rounding up.
+// For XRP: rounds drops upward (ceil) instead of truncating.
+// Reference: rippled toAmount() with Number::upward
+func fromNumberRoundUp(num tx.Amount, original tx.Amount) tx.Amount {
+	if original.IsNative() {
+		if num.IsNative() {
+			return num
+		}
+		mantissa := num.Mantissa()
+		exponent := num.Exponent()
+		if mantissa == 0 {
+			return sle.NewXRPAmountFromInt(0)
+		}
+		drops := mantissa
+		hasRemainder := false
+		if exponent > 0 {
+			for i := 0; i < exponent; i++ {
+				drops *= 10
+			}
+		} else if exponent < 0 {
+			for i := 0; i < -exponent; i++ {
+				if drops%10 != 0 {
+					hasRemainder = true
+				}
+				drops /= 10
+			}
+			// Round up if any division had a remainder
+			if hasRemainder {
+				drops++
+			}
+		}
+		return sle.NewXRPAmountFromInt(drops)
+	}
+	return fromNumber(num, original)
+}
+
 // ammAdd adds two amounts, ignoring errors (types always match in AMM math).
 func ammAdd(a, b tx.Amount) tx.Amount {
 	r, _ := a.Add(b)
@@ -318,7 +354,8 @@ func changeSpotPriceQualityPreFix(poolIn, poolOut tx.Amount, quality Quality, tf
 		nTakerPaysPropose = constraint
 	}
 
-	takerPays := fromNumber(nTakerPaysPropose, poolIn)
+	// Round takerPays UP — matches rippled's toAmount() with Number::upward
+	takerPays := fromNumberRoundUp(nTakerPaysPropose, poolIn)
 	takerGets := SwapAssetIn(poolIn, poolOut, takerPays, tfee, false)
 
 	offerQ := QualityFromAmounts(toEitherAmt(takerPays), toEitherAmt(takerGets))
@@ -486,6 +523,11 @@ func qualityToRate(q Quality) tx.Amount {
 	exponent := storedExp - 100
 
 	return sle.NewIssuedAmountFromValue(mantissa, exponent, "", "")
+}
+
+// ToEitherAmt converts a tx.Amount to an EitherAmount.
+func ToEitherAmt(amt tx.Amount) EitherAmount {
+	return toEitherAmt(amt)
 }
 
 // toEitherAmt converts a tx.Amount to an EitherAmount.

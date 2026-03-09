@@ -160,12 +160,21 @@ func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	// if result := clawbackDisabled(ctx.View, asset1); result != tx.TesSUCCESS { return result }
 	// if result := clawbackDisabled(ctx.View, asset2); result != tx.TesSUCCESS { return result }
 
+	// Check for pseudo-account collision with featureSingleAssetVault
+	// Reference: rippled AMMCreate.cpp preclaim lines 186-192
+	if ctx.Rules().Enabled(amendment.FeatureSingleAssetVault) {
+		testID := pseudoAccountAddress(ctx.View, ctx.Config.ParentHash, ammKey.Key)
+		if testID == ([20]byte{}) {
+			return tx.TerADDRESS_COLLISION
+		}
+	}
+
 	// =========================================================================
 	// APPLY - Reference: rippled AMMCreate.cpp applyCreate lines 217-356
 	// =========================================================================
 
 	// Compute the AMM account ID from keylet
-	ammAccountID := computeAMMAccountID(ammKey.Key)
+	ammAccountID := computeAMMAccountIDSimple(ammKey.Key)
 	ammAccountAddr, _ := encodeAccountID(ammAccountID)
 
 	// Check if AMM account already exists (should not happen)
@@ -194,7 +203,8 @@ func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Calculate initial LP token balance: sqrt(amount1 * amount2)
 	// Reference: rippled AMMCreate.cpp line 256
-	lpTokenBalance := calculateLPTokens(sortedAmount1, sortedAmount2)
+	fixV1_3 := ctx.Rules().Enabled(amendment.FeatureFixAMMv1_3)
+	lpTokenBalance := calculateLPTokens(sortedAmount1, sortedAmount2, fixV1_3)
 	if lpTokenBalance.IsZero() {
 		return tx.TecAMM_BALANCE
 	}

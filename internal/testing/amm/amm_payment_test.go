@@ -7,6 +7,7 @@
 package amm_test
 
 import (
+	"fmt"
 	"testing"
 
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
@@ -130,19 +131,126 @@ func TestInvalidAMMPayment(t *testing.T) {
 		amm.ExpectTER(t, result, amm.TecNO_PERMISSION)
 	})
 
-	// Reference: lines 3684-3723 -- pool consumption tests (require AMM BookStep).
+	// Reference: lines 3684-3723 -- pool consumption tests.
+	// testAMM with pool {{XRP(100), USD(100)}}
 	t.Run("PoolConsumption", func(t *testing.T) {
-		t.Skip("Requires AMM BookStep integration")
+		env := amm.NewAMMTestEnv(t)
+		env.FundWithIOUs(30000, 0)
+		env.Close()
+
+		// Create small AMM pool: XRP(100)/USD(100)
+		createTx := amm.AMMCreate(env.Alice,
+			amm.XRPAmount(100),
+			amm.IOUAmount(env.GW, "USD", 100)).Build()
+		jtx.RequireTxSuccess(t, env.Submit(createTx))
+		env.Close()
+
+		// Can't consume whole pool: pay USD(100) with sendmax XRP(1B)
+		payTx := payment.PayIssued(env.Alice, env.Carol,
+			amm.IOUAmount(env.GW, "USD", 100)).
+			SendMax(amm.XRPAmount(1_000_000_000)).
+			PathsCurrency("USD", env.GW).
+			NoDirectRipple().
+			Build()
+		result := env.Submit(payTx)
+		amm.ExpectTER(t, result, amm.TecPATH_PARTIAL)
+
+		// Can't consume whole pool: pay XRP(100) with sendmax USD(1B)
+		payTx2 := payment.Pay(env.Alice, env.Carol,
+			uint64(jtx.XRP(100))).
+			SendMax(amm.IOUAmount(env.GW, "USD", 1_000_000_000)).
+			PathsXRP().
+			NoDirectRipple().
+			Build()
+		result = env.Submit(payTx2)
+		amm.ExpectTER(t, result, amm.TecPATH_PARTIAL)
 	})
 
-	// Reference: lines 3725-3739 -- global freeze tests (require AMM BookStep).
+	// Reference: lines 3725-3739 -- global freeze tests.
 	t.Run("GlobalFreeze", func(t *testing.T) {
-		t.Skip("Requires AMM BookStep integration")
+		env := setupAMM(t)
+
+		// Gateway sets global freeze
+		env.TestEnv.EnableGlobalFreeze(env.GW)
+		env.Close()
+
+		// Pay USD(1) through AMM with path(~USD) -> tecPATH_DRY
+		payTx := payment.PayIssued(env.Alice, env.Carol,
+			amm.IOUAmount(env.GW, "USD", 1)).
+			SendMax(amm.XRPAmount(10)).
+			PathsCurrency("USD", env.GW).
+			PartialPayment().
+			NoDirectRipple().
+			Build()
+		result := env.Submit(payTx)
+		amm.ExpectTER(t, result, "tecPATH_DRY")
+
+		// Pay XRP(1) through AMM with path(~XRP) -> tecPATH_DRY
+		payTx2 := payment.Pay(env.Alice, env.Carol,
+			uint64(jtx.XRP(1))).
+			SendMax(amm.IOUAmount(env.GW, "USD", 10)).
+			PathsXRP().
+			PartialPayment().
+			NoDirectRipple().
+			Build()
+		result = env.Submit(payTx2)
+		amm.ExpectTER(t, result, "tecPATH_DRY")
 	})
 
-	// Reference: lines 3741-3770 -- individual freeze tests (require AMM BookStep).
+	// Reference: lines 3741-3770 -- individual freeze tests.
 	t.Run("IndividualFreeze", func(t *testing.T) {
-		t.Skip("Requires AMM BookStep integration")
+		// Freeze AMM's trust line
+		t.Run("FreezeAMMTrustLine", func(t *testing.T) {
+			env := setupAMM(t)
+			ammAcc := ammAccount(t, amm.XRP(), env.USD)
+
+			// gw freezes the USD trust line for the AMM account
+			env.TestEnv.FreezeTrustLine(env.GW, ammAcc, "USD")
+			env.Close()
+
+			// Pay USD(1) through AMM -> tecPATH_DRY
+			payTx := payment.PayIssued(env.Alice, env.Carol,
+				amm.IOUAmount(env.GW, "USD", 1)).
+				SendMax(amm.XRPAmount(10)).
+				PathsCurrency("USD", env.GW).
+				PartialPayment().
+				NoDirectRipple().
+				Build()
+			result := env.Submit(payTx)
+			amm.ExpectTER(t, result, "tecPATH_DRY")
+
+			// Pay XRP(1) through AMM -> tecPATH_DRY
+			payTx2 := payment.Pay(env.Alice, env.Carol,
+				uint64(jtx.XRP(1))).
+				SendMax(amm.IOUAmount(env.GW, "USD", 10)).
+				PathsXRP().
+				PartialPayment().
+				NoDirectRipple().
+				Build()
+			result = env.Submit(payTx2)
+			amm.ExpectTER(t, result, "tecPATH_DRY")
+		})
+
+		// Freeze individual accounts
+		t.Run("FreezeIndividualAccounts", func(t *testing.T) {
+			env := setupAMM(t)
+
+			// gw freezes carol's and alice's USD trust lines
+			env.TestEnv.FreezeTrustLine(env.GW, env.Carol, "USD")
+			env.TestEnv.FreezeTrustLine(env.GW, env.Alice, "USD")
+			env.Close()
+
+			// Pay XRP(1) with sendmax USD -> tecPATH_DRY
+			payTx := payment.Pay(env.Alice, env.Carol,
+				uint64(jtx.XRP(1))).
+				SendMax(amm.IOUAmount(env.GW, "USD", 10)).
+				PathsXRP().
+				NoDirectRipple().
+				PartialPayment().
+				Build()
+			result := env.Submit(payTx)
+			amm.ExpectTER(t, result, "tecPATH_DRY")
+		})
 	})
 }
 
@@ -313,19 +421,66 @@ func TestAMMID(t *testing.T) {
 // (with featureSingleAssetVault).
 // Reference: rippled AMM_test.cpp testFailedPseudoAccount (line 7482)
 func TestFailedPseudoAccount(t *testing.T) {
+	// tecDUPLICATE: Without featureSingleAssetVault, AMMCreate returns tecDUPLICATE
+	// when the AMM pseudo-account address is already occupied.
+	// Reference: rippled AMM_test.cpp testFailedPseudoAccount (line 7482)
 	t.Run("tecDUPLICATE", func(t *testing.T) {
-		t.Skip("Requires pseudoAccountAddress computation for 256 collision attempts — not exposed in goXRPL")
-		// Without featureSingleAssetVault: AMM creation returns tecDUPLICATE
-		// when the pseudo-account address is already occupied.
-		// rippled computes keylet::amm(XRP.issue(), USD.issue()), then
-		// calls pseudoAccountAddress(ledger, keylet.key) 256 times, funding
-		// each resulting address with XRP(1000). The AMM create then fails.
+		env := amm.NewAMMTestEnv(t)
+		env.FundWithIOUs(30000, 0)
+		env.Close()
+
+		// Compute the address that AMMCreate will try to use
+		xrpAsset := amm.XRP()
+		usdAsset := env.USD
+		ammAddr := coreAmm.ComputeAMMAccountAddress(xrpAsset, usdAsset)
+
+		// Fund that address so it's occupied (no DefaultRipple — pseudo-account has no keys)
+		pseudoAcct := jtx.NewAccountWithAddress("pseudo", ammAddr)
+		env.FundAmountNoRipple(pseudoAcct, uint64(jtx.XRP(1000)))
+		env.Close()
+
+		// Now AMMCreate should fail with tecDUPLICATE
+		createTx := amm.AMMCreate(env.Alice, amm.XRPAmount(10000), amm.IOUAmount(env.GW, "USD", 10000)).Build()
+		result := env.Submit(createTx)
+		amm.ExpectTER(t, result, amm.TecDUPLICATE)
 	})
 
+	// terADDRESS_COLLISION: With featureSingleAssetVault enabled, AMMCreate returns
+	// terADDRESS_COLLISION when all 256 pseudo-account candidate addresses are occupied.
+	// Reference: rippled AMM_test.cpp testFailedPseudoAccount (line 7482)
 	t.Run("terADDRESS_COLLISION", func(t *testing.T) {
-		t.Skip("Requires pseudoAccountAddress computation and featureSingleAssetVault — not exposed in goXRPL")
-		// With featureSingleAssetVault: AMM creation returns terADDRESS_COLLISION
-		// when the pseudo-account address is already occupied.
+		env := amm.NewAMMTestEnv(t)
+		env.EnableFeature("SingleAssetVault")
+		env.FundWithIOUs(30000, 0)
+		env.Close()
+
+		xrpAsset := amm.XRP()
+		usdAsset := env.USD
+		ammKeylet := coreAmm.ComputeAMMKeylet(xrpAsset, usdAsset)
+
+		// Fund all 256 pseudo-account candidate addresses on the same open ledger.
+		// Each iteration, pseudoAccountAddress returns the first available slot.
+		// After funding it, the next call skips that address and returns the next candidate.
+		// NOTE: No env.Close() in the loop — all 256 operations use the same parentHash.
+		// Reference: rippled AMM_test.cpp testFailedPseudoAccount (line 7504-7512)
+		parentHash := env.Ledger().ParentHash()
+		for i := 0; i < 256; i++ {
+			accountID := coreAmm.PseudoAccountAddress(env.Ledger(), parentHash, ammKeylet.Key)
+			if accountID == ([20]byte{}) {
+				t.Fatalf("PseudoAccountAddress returned zero at iteration %d", i)
+			}
+			addr, err := coreAmm.EncodeAccountID(accountID)
+			if err != nil {
+				t.Fatalf("Failed to encode account ID: %v", err)
+			}
+			pseudoAcct := jtx.NewAccountWithAddress(fmt.Sprintf("pseudo%d", i), addr)
+			env.FundAmountNoRipple(pseudoAcct, uint64(jtx.XRP(1000)))
+		}
+
+		// Now AMMCreate should fail with terADDRESS_COLLISION
+		createTx := amm.AMMCreate(env.Alice, amm.XRPAmount(10000), amm.IOUAmount(env.GW, "USD", 10000)).Build()
+		result := env.Submit(createTx)
+		amm.ExpectTER(t, result, amm.TerADDRESS_COLLISION)
 	})
 }
 

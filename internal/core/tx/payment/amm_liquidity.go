@@ -38,7 +38,8 @@ var ammFibSequence = [AMMMaxIterations]uint32{
 }
 
 // InitialFibSeqPct = 5 / 20000 = 0.00025
-var ammInitialFibSeqPct = sle.NewIssuedAmountFromValue(25e13, -17, "", "") // 0.00025
+// Reference: rippled AMMLiquidity.h: Number(5) / 20000
+var ammInitialFibSeqPct = sle.NewIssuedAmountFromValue(25e13, -18, "", "") // 0.00025
 
 // NewAMMLiquidity creates a new AMMLiquidity for an AMM pool.
 func NewAMMLiquidity(

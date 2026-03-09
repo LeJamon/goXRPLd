@@ -206,7 +206,7 @@ const (
 	TerQUEUED       Result = -89
 	TerPRE_TICKET   Result = -88
 	TerNO_AMM       Result = -87
-	TerSUBMITTED    Result = -86
+	TerADDRESS_COLLISION    Result = -86
 )
 
 // String returns the string representation of the result code
@@ -502,8 +502,8 @@ func (r Result) String() string {
 		return "terPRE_TICKET"
 	case TerNO_AMM:
 		return "terNO_AMM"
-	case TerSUBMITTED:
-		return "terSUBMITTED"
+	case TerADDRESS_COLLISION:
+		return "terADDRESS_COLLISION"
 	default:
 		return fmt.Sprintf("Unknown(%d)", r)
 	}

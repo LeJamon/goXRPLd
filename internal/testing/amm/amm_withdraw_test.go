@@ -319,6 +319,89 @@ func TestInvalidWithdraw(t *testing.T) {
 		}
 		amm.ExpectTER(t, result, amm.TecAMM_BALANCE)
 	})
+
+	// === testMalformed cases (rippled AMM_test.cpp line 6623) ===
+
+	// tfSingleAsset flag alone (no Amount) → temMALFORMED
+	t.Run("Malformed_SingleAssetFlagOnly", func(t *testing.T) {
+		env := setupAMM(t)
+
+		withdrawTx := amm.AMMWithdraw(env.Alice, amm.XRP(), env.USD).
+			Flags(amm.TfSingleAsset).
+			Build()
+		result := env.Submit(withdrawTx)
+
+		if result.Success {
+			t.Fatal("Should not allow tfSingleAsset without Amount")
+		}
+		amm.ExpectTER(t, result, amm.TemMALFORMED)
+	})
+
+	// tfOneAssetLPToken flag alone (no Amount, no LPTokenIn) → temMALFORMED
+	t.Run("Malformed_OneAssetLPTokenFlagOnly", func(t *testing.T) {
+		env := setupAMM(t)
+
+		withdrawTx := amm.AMMWithdraw(env.Alice, amm.XRP(), env.USD).
+			Flags(amm.TfOneAssetLPToken).
+			Build()
+		result := env.Submit(withdrawTx)
+
+		if result.Success {
+			t.Fatal("Should not allow tfOneAssetLPToken without Amount and LPTokenIn")
+		}
+		amm.ExpectTER(t, result, amm.TemMALFORMED)
+	})
+
+	// tfLimitLPToken flag alone (no Amount, no EPrice) → temMALFORMED
+	t.Run("Malformed_LimitLPTokenFlagOnly", func(t *testing.T) {
+		env := setupAMM(t)
+
+		withdrawTx := amm.AMMWithdraw(env.Alice, amm.XRP(), env.USD).
+			Flags(amm.TfLimitLPToken).
+			Build()
+		result := env.Submit(withdrawTx)
+
+		if result.Success {
+			t.Fatal("Should not allow tfLimitLPToken without Amount and EPrice")
+		}
+		amm.ExpectTER(t, result, amm.TemMALFORMED)
+	})
+
+	// Both assets are XRP → temBAD_AMM_TOKENS
+	// Reference: {.asset1Out = XRP(100), .asset2Out = XRP(100), .err = ter(temBAD_AMM_TOKENS)}
+	t.Run("Malformed_BothAssetsXRP", func(t *testing.T) {
+		env := setupAMM(t)
+
+		withdrawTx := amm.AMMWithdraw(env.Alice, amm.XRP(), env.USD).
+			Amount(amm.XRPAmount(100)).
+			Amount2(amm.XRPAmount(100)).
+			TwoAsset().
+			Build()
+		result := env.Submit(withdrawTx)
+
+		if result.Success {
+			t.Fatal("Should not allow both assets to be XRP")
+		}
+		amm.ExpectTER(t, result, amm.TemBAD_AMM_TOKENS)
+	})
+
+	// tfLimitLPToken with Amount=XRP(100) and EPrice=USD(100) → temBAD_AMM_TOKENS
+	// Reference: rippled AMM_test.cpp line 6669-6678
+	t.Run("Malformed_LimitLPTokenMismatchedEPrice", func(t *testing.T) {
+		env := setupAMM(t)
+
+		withdrawTx := amm.AMMWithdraw(env.Alice, amm.XRP(), env.USD).
+			Amount(amm.XRPAmount(100)).
+			EPrice(amm.IOUAmount(env.GW, "USD", 100)).
+			LimitLPToken().
+			Build()
+		result := env.Submit(withdrawTx)
+
+		if result.Success {
+			t.Fatal("Should not allow tfLimitLPToken with non-LP EPrice")
+		}
+		amm.ExpectTER(t, result, amm.TemBAD_AMM_TOKENS)
+	})
 }
 
 // TestWithdraw tests valid withdrawal scenarios.

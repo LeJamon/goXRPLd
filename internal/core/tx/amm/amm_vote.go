@@ -103,7 +103,7 @@ func (a *AMMVote) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	lptAMMBalance := amm.LPTokenBalance
 	if lptAMMBalance.IsZero() {
-		return tx.TecAMM_BALANCE // AMM empty
+		return tx.TecAMM_EMPTY
 	}
 
 	// Get voter's LP token balance from trustline
@@ -137,10 +137,11 @@ func (a *AMMVote) Apply(ctx *tx.ApplyContext) tx.Result {
 	var den tx.Amount = sle.NewIssuedAmountFromFloat64(0, "", "")
 
 	// Iterate over current vote entries
+	// Reference: rippled AMMVote.cpp:111-154 — reads actual LP balance via ammLPHolds
 	for i, slot := range amm.VoteSlots {
-		// lpTokens = voteWeight * lptAMMBalance / voteWeightScaleFactor
-		voteWeightAmount := sle.NewIssuedAmountFromValue(int64(slot.VoteWeight)*1e15, -15, "", "")
-		lpTokens := voteWeightAmount.Mul(lptAMMBalance, false).Div(scaleFactorAmount, false)
+		// Read actual LP token balance from trust line (NOT reconstructed from VoteWeight)
+		// Reference: rippled AMMVote.cpp:113 — ammLPHolds(view, ammSle, votedAccount)
+		lpTokens := ammLPHolds(ctx.View, amm, slot.Account)
 
 		if lpTokens.IsZero() {
 			// Skip entries with no tokens
@@ -157,8 +158,9 @@ func (a *AMMVote) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 
 		// Calculate new vote weight: voteWeight = lpTokens * scaleFactor / lptAMMBalance
-		voteWeightCalc := lpTokens.Mul(scaleFactorAmount, false).Div(lptAMMBalance, false)
-		voteWeight := uint32(voteWeightCalc.Mantissa() / 1e12) // Scale down mantissa for uint32 storage
+		// Reference: rippled AMMVote.cpp:137-139
+		voteWeightCalc := numberDiv(lpTokens.Mul(scaleFactorAmount, false), lptAMMBalance)
+		voteWeight := uint32(voteWeightCalc.Float64())
 		if voteWeight == 0 && !lpTokens.IsZero() {
 			voteWeight = 1
 		}
@@ -187,8 +189,8 @@ func (a *AMMVote) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// If account doesn't have a vote entry yet
 	if !foundAccount {
-		voteWeightCalc := lpTokensNew.Mul(scaleFactorAmount, false).Div(lptAMMBalance, false)
-		voteWeight := uint32(voteWeightCalc.Mantissa() / 1e12)
+		voteWeightCalc := numberDiv(lpTokensNew.Mul(scaleFactorAmount, false), lptAMMBalance)
+		voteWeight := uint32(voteWeightCalc.Float64())
 		if voteWeight == 0 && !lpTokensNew.IsZero() {
 			voteWeight = 1
 		}
@@ -229,7 +231,7 @@ func (a *AMMVote) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Calculate weighted average trading fee: fee = num / den
 	var newTradingFee uint16 = 0
 	if !den.IsZero() {
-		feeResult := num.Div(den, false)
+		feeResult := numberDiv(num, den)
 		newTradingFee = uint16(feeResult.Float64())
 	}
 

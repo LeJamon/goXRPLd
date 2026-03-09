@@ -1071,13 +1071,6 @@ func TestPermissionedDEX_RemoveUnfundedOffer(t *testing.T) {
 // TestPermissionedDEX_AmmNotUsed tests that domain payments cannot consume AMM liquidity.
 // Reference: rippled PermissionedDEX_test::testAmmNotUsed
 func TestPermissionedDEX_AmmNotUsed(t *testing.T) {
-	// The non-domain payment part of this test requires AMM liquidity to be
-	// consumed inside BookStep (rippled generates synthetic AMM offers via
-	// AMMLiquidity). The Go engine does not yet integrate AMM into BookStep,
-	// so the non-domain payment cannot find liquidity and fails with
-	// tecPATH_PARTIAL instead of tesSUCCESS.
-	// TODO: enable once AMM liquidity is wired into BookStep.
-	t.Skip("AMM liquidity not yet integrated into BookStep")
 
 	env := jtx.NewTestEnv(t)
 	dex := SetupPermissionedDEX(t, env)

@@ -31,6 +31,7 @@ const (
 	TecNO_PERMISSION      = "tecNO_PERMISSION"
 	TecAMM_EMPTY          = "tecAMM_EMPTY"
 	TecINCOMPLETE         = "tecINCOMPLETE"
+	TecPATH_PARTIAL       = "tecPATH_PARTIAL"
 
 	TerNO_AMM              = "terNO_AMM"
 	TerNO_ACCOUNT          = "terNO_ACCOUNT"
@@ -176,6 +177,23 @@ func (e *AMMTestEnv) PayIOU(sender, receiver *jtx.Account, currency string, amou
 	if !result.Success {
 		e.T.Fatalf("Failed to pay %f %s from %s to %s: %s", amount, currency, sender.Name, receiver.Name, result.Code)
 	}
+}
+
+// PayIOUAmount pays a precise IOU amount (with mantissa/exponent) from sender to receiver.
+func (e *AMMTestEnv) PayIOUAmount(sender, receiver *jtx.Account, amt tx.Amount) {
+	e.T.Helper()
+
+	payTx := payment.PayIssued(sender, receiver, amt).Build()
+	result := e.Submit(payTx)
+	if !result.Success {
+		e.T.Fatalf("Failed to pay %v from %s to %s: %s", amt, sender.Name, receiver.Name, result.Code)
+	}
+}
+
+// ToIOUForCalc converts an Amount to IOU representation for comparison.
+// Exported wrapper around the internal toIOUForCalc.
+func ToIOUForCalc(amt tx.Amount) tx.Amount {
+	return coreAmm.ToIOUForCalcExported(amt)
 }
 
 // ExpectTER checks if the result matches one of the expected TER codes.
@@ -332,6 +350,87 @@ func (e *AMMTestEnv) AMMPoolXRP(ammAcc *jtx.Account) uint64 {
 func (e *AMMTestEnv) AMMPoolIOU(ammAcc *jtx.Account, issuer *jtx.Account, currency string) float64 {
 	e.T.Helper()
 	return e.TestEnv.BalanceIOU(ammAcc, currency, issuer)
+}
+
+// AMMPoolIOUPrecise returns the precise IOU balance of the AMM pool (full mantissa/exponent).
+func (e *AMMTestEnv) AMMPoolIOUPrecise(ammAcc *jtx.Account, issuer *jtx.Account, currency string) tx.Amount {
+	e.T.Helper()
+	balance := e.TestEnv.IOUBalance(ammAcc, issuer, currency)
+	if balance == nil {
+		return tx.NewIssuedAmountFromFloat64(0, currency, issuer.Address)
+	}
+	return *balance
+}
+
+// accountFromAddress creates a jtx.Account with properly decoded ID from an address string.
+func accountFromAddress(t *testing.T, addr string) *jtx.Account {
+	t.Helper()
+	_, idBytes, err := addresscodec.DecodeClassicAddressToAccountID(addr)
+	if err != nil {
+		t.Fatalf("accountFromAddress: failed to decode %s: %v", addr, err)
+	}
+	var id20 [20]byte
+	copy(id20[:], idBytes)
+	return &jtx.Account{Address: addr, ID: id20}
+}
+
+// AMMBalances returns (asset1Balance, asset2Balance, lptBalance) for the given AMM.
+// This matches rippled's amm.balances(issue1, issue2) which returns the pool's IOU
+// balances and total LP token supply.
+func (e *AMMTestEnv) AMMBalances(asset1, asset2 tx.Asset) (tx.Amount, tx.Amount, tx.Amount) {
+	e.T.Helper()
+
+	ammAcc := AMMAccount(e.T, asset1, asset2)
+
+	// Get pool IOU balances — must decode issuer addresses to get proper account IDs
+	issuer1 := accountFromAddress(e.T, asset1.Issuer)
+	issuer2 := accountFromAddress(e.T, asset2.Issuer)
+	bal1 := e.AMMPoolIOUPrecise(ammAcc, issuer1, asset1.Currency)
+	bal2 := e.AMMPoolIOUPrecise(ammAcc, issuer2, asset2.Currency)
+
+	// Get LP token balance from AMM SLE
+	ammData := e.ReadAMMData(asset1, asset2)
+	if ammData == nil {
+		// AMM deleted (e.g., after WithdrawAll) — all balances are zero
+		zero := tx.NewIssuedAmountFromFloat64(0, "", "")
+		return zero, zero, zero
+	}
+	lptBalance := ammData.LPTokenBalance
+
+	return bal1, bal2, lptBalance
+}
+
+// CheckInvariant verifies the AMM invariant: sqrt(amount1 * amount2) >= lptBalance.
+// When fixAMMv1_3 is enabled, uses upward rounding mode for the sqrt calculation.
+// If shouldFail is true, expects the invariant to be violated (sqrt < lptBalance).
+// Reference: rippled AMM_test.cpp invariant() function (line 7578)
+func (e *AMMTestEnv) CheckInvariant(asset1, asset2 tx.Asset, fixAMMv1_3 bool, shouldFail bool, msg string) {
+	e.T.Helper()
+
+	bal1, bal2, lptBalance := e.AMMBalances(asset1, asset2)
+
+	// Set rounding mode for the invariant check
+	if fixAMMv1_3 {
+		guard := sle.NewNumberRoundModeGuard(sle.RoundUpward)
+		defer guard.Release()
+	}
+
+	// Compute sqrt(amount1 * amount2)
+	product := bal1.Mul(bal2, false)
+	result := product.Sqrt()
+
+	cmp := result.Compare(lptBalance)
+	if shouldFail {
+		if cmp >= 0 {
+			e.T.Errorf("invariant %s: expected violation (sqrt < lpt), but sqrt=%s >= lpt=%s",
+				msg, result.Value(), lptBalance.Value())
+		}
+	} else {
+		if cmp < 0 {
+			e.T.Errorf("invariant %s: violated! sqrt=%s < lpt=%s (bal1=%s, bal2=%s)",
+				msg, result.Value(), lptBalance.Value(), bal1.Value(), bal2.Value())
+		}
+	}
 }
 
 // ExpectAMMBalances checks that the AMM pool has the expected XRP and IOU balances.
@@ -492,4 +591,64 @@ func currencyToBytes(currency string) [20]byte {
 	var b [20]byte
 	copy(b[12:15], []byte(currency))
 	return b
+}
+
+// AMMAssetOut computes the asset amount received for burning LP tokens.
+// This is a test-exposed wrapper around the core ammAssetOut (Equation 8).
+// Reference: rippled AMMHelpers.cpp ammAssetOut()
+func AMMAssetOut(assetBalance, lptBalance, lpTokens tx.Amount, tfee uint16) tx.Amount {
+	return coreAmm.AMMAssetOutExported(assetBalance, lptBalance, lpTokens, tfee)
+}
+
+// ExpectLPTokens checks that an account holds the expected amount of LP tokens.
+// The LP token currency and issuer are derived from the asset pair.
+func (e *AMMTestEnv) ExpectLPTokens(account *jtx.Account, asset1, asset2 tx.Asset, expected float64) {
+	e.T.Helper()
+
+	ammAcc := AMMAccount(e.T, asset1, asset2)
+	lptCurrency := coreAmm.GenerateAMMLPTCurrency(asset1.Currency, asset2.Currency)
+
+	balance := e.TestEnv.IOUBalance(account, ammAcc, lptCurrency)
+	if balance == nil {
+		if expected != 0 {
+			e.T.Errorf("ExpectLPTokens(%s): no trust line, want %f", account.Name, expected)
+		}
+		return
+	}
+	actual := balance.Float64()
+
+	// Allow small relative tolerance for rounding
+	diff := actual - expected
+	if diff < 0 {
+		diff = -diff
+	}
+	tolerance := 0.01
+	if expected != 0 {
+		relTol := expected * 1e-10
+		if relTol > tolerance {
+			tolerance = relTol
+		}
+	}
+	if diff > tolerance {
+		e.T.Errorf("ExpectLPTokens(%s): got %f, want %f (diff=%f)", account.Name, actual, expected, diff)
+	}
+}
+
+// ExpectLPTokensPrecise checks LP token balance with precise Amount comparison.
+func (e *AMMTestEnv) ExpectLPTokensPrecise(account *jtx.Account, asset1, asset2 tx.Asset, expected tx.Amount) {
+	e.T.Helper()
+
+	ammAcc := AMMAccount(e.T, asset1, asset2)
+	lptCurrency := coreAmm.GenerateAMMLPTCurrency(asset1.Currency, asset2.Currency)
+
+	balance := e.TestEnv.IOUBalance(account, ammAcc, lptCurrency)
+	if balance == nil {
+		e.T.Errorf("ExpectLPTokensPrecise(%s): no trust line", account.Name)
+		return
+	}
+
+	if balance.Mantissa() != expected.Mantissa() || balance.Exponent() != expected.Exponent() {
+		e.T.Errorf("ExpectLPTokensPrecise(%s): got %de%d, want %de%d",
+			account.Name, balance.Mantissa(), balance.Exponent(), expected.Mantissa(), expected.Exponent())
+	}
 }
