@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"testing"
 
-	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
+	binarycodec "github.com/LeJamon/goXRPLd/codec/binary-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	acctx "github.com/LeJamon/goXRPLd/internal/core/tx/account"
 	jtx "github.com/LeJamon/goXRPLd/internal/testing"

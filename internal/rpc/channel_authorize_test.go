@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
+	binarycodec "github.com/LeJamon/goXRPLd/codec/binary-codec"
 	ed25519crypto "github.com/LeJamon/goXRPLd/crypto/algorithms/ed25519"
 	secp256k1crypto "github.com/LeJamon/goXRPLd/crypto/algorithms/secp256k1"
 	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_handlers"

@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/LeJamon/goXRPLd/internal/config"
+	"github.com/LeJamon/goXRPLd/config"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/genesis"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/service"
 	"github.com/LeJamon/goXRPLd/internal/rpc"

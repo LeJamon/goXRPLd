@@ -4,8 +4,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 
-	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
-	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
+	addresscodec "github.com/LeJamon/goXRPLd/codec/address-codec"
+	binarycodec "github.com/LeJamon/goXRPLd/codec/binary-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_types"
 )

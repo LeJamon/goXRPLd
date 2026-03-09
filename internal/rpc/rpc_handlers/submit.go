@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
+	binarycodec "github.com/LeJamon/goXRPLd/codec/binary-codec"
 	crypto "github.com/LeJamon/goXRPLd/crypto/common"
 	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_types"
 )

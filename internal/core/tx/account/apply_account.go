@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/signerlist"
 
-	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
-	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
+	addresscodec "github.com/LeJamon/goXRPLd/codec/address-codec"
+	binarycodec "github.com/LeJamon/goXRPLd/codec/binary-codec"
 )
 
 // serializeSignerList serializes a SignerList ledger entry from a SignerListSet transaction

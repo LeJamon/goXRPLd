@@ -5,8 +5,8 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
-	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
+	addresscodec "github.com/LeJamon/goXRPLd/codec/address-codec"
+	binarycodec "github.com/LeJamon/goXRPLd/codec/binary-codec"
 )
 
 // OracleData holds parsed fields of an Oracle ledger entry.

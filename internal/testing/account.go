@@ -4,7 +4,7 @@ import (
 	"crypto/sha512"
 	"encoding/hex"
 
-	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
+	addresscodec "github.com/LeJamon/goXRPLd/codec/address-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 	"github.com/LeJamon/goXRPLd/internal/core/tx/sle"
 	ed25519 "github.com/LeJamon/goXRPLd/crypto/algorithms/ed25519"

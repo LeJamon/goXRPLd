@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
+	binarycodec "github.com/LeJamon/goXRPLd/codec/binary-codec"
 )
 
 // RippleState represents a trust line between two accounts

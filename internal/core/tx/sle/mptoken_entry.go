@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
-	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
+	addresscodec "github.com/LeJamon/goXRPLd/codec/address-codec"
+	binarycodec "github.com/LeJamon/goXRPLd/codec/binary-codec"
 )
 
 // Field type code for UInt8 (not defined in account_root.go)

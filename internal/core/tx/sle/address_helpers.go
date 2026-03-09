@@ -1,6 +1,6 @@
 package sle
 
-import addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
+import addresscodec "github.com/LeJamon/goXRPLd/codec/address-codec"
 
 // EncodeAccountID encodes a 20-byte account ID to a classic address string
 func EncodeAccountID(accountID [20]byte) (string, error) {

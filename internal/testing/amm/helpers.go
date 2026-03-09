@@ -5,7 +5,7 @@ package amm
 import (
 	"testing"
 
-	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
+	addresscodec "github.com/LeJamon/goXRPLd/codec/address-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/entry"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"

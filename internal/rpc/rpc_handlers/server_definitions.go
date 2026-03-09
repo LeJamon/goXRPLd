@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"sort"
 
-	definitions "github.com/LeJamon/goXRPLd/internal/codec/binary-codec/definitions"
+	definitions "github.com/LeJamon/goXRPLd/codec/binary-codec/definitions"
 	"github.com/LeJamon/goXRPLd/internal/rpc/rpc_types"
 )
 

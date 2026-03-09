@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
-	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
+	addresscodec "github.com/LeJamon/goXRPLd/codec/address-codec"
+	binarycodec "github.com/LeJamon/goXRPLd/codec/binary-codec"
 	"github.com/LeJamon/goXRPLd/drops"
 	ledgerentries "github.com/LeJamon/goXRPLd/internal/core/ledger/entry/entries"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/header"

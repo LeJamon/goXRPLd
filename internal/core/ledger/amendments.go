@@ -8,8 +8,8 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/LeJamon/goXRPLd/internal/codec/binary-codec/definitions"
-	"github.com/LeJamon/goXRPLd/internal/codec/binary-codec/serdes"
+	"github.com/LeJamon/goXRPLd/codec/binary-codec/definitions"
+	"github.com/LeJamon/goXRPLd/codec/binary-codec/serdes"
 	"github.com/LeJamon/goXRPLd/amendment"
 	"github.com/LeJamon/goXRPLd/internal/core/ledger/keylet"
 )

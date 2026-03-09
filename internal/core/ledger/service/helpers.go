@@ -4,7 +4,7 @@ import (
 	"errors"
 	"strconv"
 
-	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
+	addresscodec "github.com/LeJamon/goXRPLd/codec/address-codec"
 	"github.com/LeJamon/goXRPLd/internal/core/tx"
 )
 

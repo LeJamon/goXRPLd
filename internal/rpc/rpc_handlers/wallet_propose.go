@@ -7,7 +7,7 @@ import (
 	"math"
 	"strings"
 
-	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
+	addresscodec "github.com/LeJamon/goXRPLd/codec/address-codec"
 	crypto "github.com/LeJamon/goXRPLd/crypto/common"
 	ed25519crypto "github.com/LeJamon/goXRPLd/crypto/algorithms/ed25519"
 	secp256k1crypto "github.com/LeJamon/goXRPLd/crypto/algorithms/secp256k1"

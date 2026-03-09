@@ -4,7 +4,7 @@ import (
 	"encoding/hex"
 	"strings"
 
-	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
+	binarycodec "github.com/LeJamon/goXRPLd/codec/binary-codec"
 )
 
 // Threading types conditional on fixPreviousTxnID amendment
