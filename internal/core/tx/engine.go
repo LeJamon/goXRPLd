@@ -4,9 +4,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	addresscodec "github.com/LeJamon/goXRPLd/internal/codec/address-codec"
 	binarycodec "github.com/LeJamon/goXRPLd/internal/codec/binary-codec"
@@ -217,6 +217,11 @@ type Metadata struct {
 
 	// DeliveredAmount is the actual amount delivered (for partial payments)
 	DeliveredAmount *Amount
+
+	// ParentBatchID is the hash of the parent batch transaction.
+	// Set only for inner transactions within a batch.
+	// Reference: rippled TxMeta.h mParentBatchId
+	ParentBatchID *[32]byte
 }
 
 // AffectedNode is an alias for sle.AffectedNode
@@ -255,6 +260,12 @@ func (m Metadata) MarshalJSON() ([]byte, error) {
 	// Use "unavailable" for legacy compatibility when not explicitly set
 	if m.DeliveredAmount != nil {
 		output["delivered_amount"] = m.DeliveredAmount
+	}
+
+	// ParentBatchID for inner batch transactions
+	// Reference: rippled TxMeta.cpp getAsObject() lines 257-258
+	if m.ParentBatchID != nil {
+		output["ParentBatchID"] = strings.ToUpper(hex.EncodeToString(m.ParentBatchID[:]))
 	}
 
 	return json.Marshal(output)
@@ -449,7 +460,7 @@ func (e *Engine) applyPseudoTransaction(tx Transaction) ApplyResult {
 	}
 
 	// Create ApplyStateTable to track changes
-	table := NewApplyStateTable(e.view, txHash, e.config.LedgerSequence)
+	table := NewApplyStateTable(e.view, txHash, e.config.LedgerSequence, e.rules())
 
 	// Create a minimal ApplyContext for pseudo-transactions
 	ctx := &ApplyContext{
@@ -988,7 +999,7 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 	account.PreviousTxnLgrSeq = e.config.LedgerSequence
 
 	// Create ApplyStateTable for transaction-specific changes
-	table := NewApplyStateTable(e.view, txHash, e.config.LedgerSequence)
+	table := NewApplyStateTable(e.view, txHash, e.config.LedgerSequence, e.rules())
 
 	// Write the fee-deducted, sequence-incremented account to the table BEFORE Apply().
 	// This matches rippled's Transactor::apply() which modifies the account SLE
@@ -1062,31 +1073,31 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 		result = TecOVERSIZE
 	}
 
-	// Consume ticket on success or tec results
+	// Consume ticket on success (tec ticket consumption is handled in the tec block below
+	// via a tracked ApplyStateTable so that proper metadata is generated).
 	// Reference: rippled Transactor::consumeSeqProxy + ticketDelete
-	if isTicket && (result == TesSUCCESS || result.IsTec()) {
+	if isTicket && result == TesSUCCESS {
 		ticketKey := keylet.Ticket(accountID, *common.TicketSequence)
 		ownerDirKey := keylet.OwnerDir(accountID)
-		if result == TesSUCCESS {
-			// Remove ticket from owner directory (page 0)
-			sle.DirRemove(table, ownerDirKey, 0, ticketKey.Key, true)
-			if err := table.Erase(ticketKey); err != nil {
-				return TefINTERNAL
-			}
-		} else {
-			// For tec, operate directly on view
-			sle.DirRemove(e.view, ownerDirKey, 0, ticketKey.Key, true)
-			if err := e.view.Erase(ticketKey); err != nil {
-				return TefINTERNAL
-			}
+		// Remove ticket from owner directory (page 0)
+		sle.DirRemove(table, ownerDirKey, 0, ticketKey.Key, true)
+		if err := table.Erase(ticketKey); err != nil {
+			return TefINTERNAL
 		}
 		if account.OwnerCount > 0 {
 			account.OwnerCount--
+		}
+		// Decrement TicketCount on the AccountRoot
+		// Reference: rippled Transactor::consumeSeqProxy() updates sfTicketCount
+		if account.TicketCount > 0 {
+			account.TicketCount--
 		}
 	}
 
 	// For tec results, only apply fee/sequence changes, not transaction effects.
 	// Reference: rippled — tec codes claim the fee but discard the apply sandbox.
+	// We use a fresh ApplyStateTable (tecTable) to track all tec-specific changes
+	// so that proper metadata (PreviousFields, FinalFields, DeletedNode) is generated.
 	if result.IsTec() {
 		// For tecOVERSIZE (and tecKILLED): collect deleted offers from the table
 		// BEFORE discarding, so we can re-remove them from the clean view.
@@ -1122,6 +1133,21 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 			}
 		}
 
+		// Create a fresh ApplyStateTable to track tec-specific changes
+		// (fee, sequence, ticket consumption) for proper metadata generation.
+		tecTable := NewApplyStateTable(e.view, txHash, e.config.LedgerSequence, e.rules())
+
+		// Consume ticket through tecTable for proper metadata (DeletedNode + directory changes)
+		// Reference: rippled Transactor.cpp — tec still consumes the ticket.
+		if isTicket {
+			ticketKey := keylet.Ticket(accountID, *common.TicketSequence)
+			ownerDirKey := keylet.OwnerDir(accountID)
+			sle.DirRemove(tecTable, ownerDirKey, 0, ticketKey.Key, true)
+			if err := tecTable.Erase(ticketKey); err != nil {
+				return TefINTERNAL
+			}
+		}
+
 		// Restore account to original state, then apply only fee/sequence.
 		// This discards any changes the transaction made to OwnerCount,
 		// MintedNFTokens, BurnedNFTokens, etc.
@@ -1134,15 +1160,14 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 		if !isTicket && common.Sequence != nil {
 			account.Sequence = *common.Sequence + 1
 		}
-		// Re-apply ticket consumption OwnerCount decrease.
-		// The ticket was erased above (on the base view), but restoring
-		// the original account data overwrote the OwnerCount-- we applied
-		// during ticket consumption. Re-apply it here.
-		// Reference: rippled Transactor.cpp — tec still consumes the ticket.
+		// Apply ticket consumption OwnerCount and TicketCount decreases.
 		if isTicket && account.OwnerCount > 0 {
 			account.OwnerCount--
 		}
-		// Re-apply PreviousTxnID/PreviousTxnLgrSeq threading
+		if isTicket && account.TicketCount > 0 {
+			account.TicketCount--
+		}
+		// Apply PreviousTxnID/PreviousTxnLgrSeq threading
 		account.PreviousTxnID = txHash
 		account.PreviousTxnLgrSeq = e.config.LedgerSequence
 
@@ -1151,15 +1176,14 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 			return TefINTERNAL
 		}
 
-		// Overwrite the account with the fee-only restored state.
-		// This undoes any account changes table.Apply() may have written.
-		if err := e.view.Update(accountKey, updatedData); err != nil {
+		// Update account through tecTable for proper metadata diff generation
+		if err := tecTable.Update(accountKey, updatedData); err != nil {
 			return TefINTERNAL
 		}
 
 		// Special case: tecOVERSIZE — remove unfunded offers that were found during
 		// processing. These are offers that were deleted in the (now discarded) sandbox.
-		// We re-delete them on the clean base view.
+		// We re-delete them through the tecTable for metadata tracking.
 		// Reference: rippled Transactor.cpp lines 1198-1201: removeUnfundedOffers()
 		if result == TecOVERSIZE && len(removedOfferKeys) > 0 {
 			for _, offerKey := range removedOfferKeys {
@@ -1178,14 +1202,14 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 				}
 				// Remove from owner directory
 				ownerDirKey := keylet.OwnerDir(ownerID)
-				sle.DirRemove(e.view, ownerDirKey, offerObj.OwnerNode, offerKey, false)
+				sle.DirRemove(tecTable, ownerDirKey, offerObj.OwnerNode, offerKey, false)
 				// Remove from book directory
 				bookDirKey := keylet.Keylet{Type: 100, Key: offerObj.BookDirectory}
-				sle.DirRemove(e.view, bookDirKey, offerObj.BookNode, offerKey, false)
+				sle.DirRemove(tecTable, bookDirKey, offerObj.BookNode, offerKey, false)
 				// Erase the offer
-				_ = e.view.Erase(offerKL)
+				_ = tecTable.Erase(offerKL)
 				// Decrement owner count
-				adjustOwnerCountOnView(e.view, ownerID, -1, txHash, e.config.LedgerSequence)
+				adjustOwnerCountOnView(tecTable, ownerID, -1, txHash, e.config.LedgerSequence)
 			}
 		}
 
@@ -1194,7 +1218,7 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 		if result == TecEXPIRED {
 			if tecApplier, ok := tx.(TecApplier); ok {
 				tecCtx := &ApplyContext{
-					View:      e.view,
+					View:      tecTable,
 					Account:   account,
 					AccountID: accountID,
 					Config:    e.config,
@@ -1203,27 +1227,15 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 					Engine:    e,
 				}
 				tecApplier.ApplyOnTec(tecCtx)
-				// Re-read the account from view after side-effects
-				// (ApplyOnTec may have modified owner count via credential deletion)
-				accountData, err := e.view.Read(accountKey)
-				if err != nil || accountData == nil {
-					return TefINTERNAL
-				}
-				account, err = sle.ParseAccountRoot(accountData)
-				if err != nil {
-					return TefINTERNAL
-				}
 			}
 		}
 
-		// Generate minimal metadata for fee-only application
-		metadata.AffectedNodes = []AffectedNode{
-			{
-				NodeType:        "ModifiedNode",
-				LedgerEntryType: "AccountRoot",
-				LedgerIndex:     fmt.Sprintf("%X", accountKey.Key),
-			},
+		// Apply all tracked changes and generate proper metadata
+		generatedMeta, applyErr := tecTable.Apply()
+		if applyErr != nil {
+			return TefINTERNAL
 		}
+		metadata.AffectedNodes = generatedMeta.AffectedNodes
 
 		return result
 	}

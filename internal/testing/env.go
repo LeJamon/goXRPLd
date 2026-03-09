@@ -637,7 +637,7 @@ func (e *TestEnv) Submit(transaction interface{}) TxResult {
 		Code:     applyResult.Result.String(),
 		Success:  applyResult.Result.IsSuccess(),
 		Message:  applyResult.Message,
-		Metadata: nil, // Could serialize metadata if needed
+		Metadata: applyResult.Metadata,
 	}
 }
 
