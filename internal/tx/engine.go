@@ -1411,6 +1411,19 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 		account.PreviousTxnID = txHash
 		account.PreviousTxnLgrSeq = e.config.LedgerSequence
 
+		// Update AccountTxnID if the account has tracking enabled (field is present/non-zero).
+		// On the success path, apply() sets this before doApply(). On the tec path,
+		// reset() discards all changes then re-applies fee/sequence. The AccountTxnID
+		// must also be updated here so the account tracks the last-applied transaction
+		// even when the result is a tec code.
+		// Reference: rippled Transactor::apply() lines 568-569.
+		{
+			var zeroHash [32]byte
+			if account.AccountTxnID != zeroHash {
+				account.AccountTxnID = txHash
+			}
+		}
+
 		updatedData, err := state.SerializeAccountRoot(account)
 		if err != nil {
 			return TefINTERNAL

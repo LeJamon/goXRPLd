@@ -75,11 +75,20 @@ func (a *AccountDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 	//   constexpr std::uint32_t seqDelta{255};
 	//   if ((*sleAccount)[sfSequence] + seqDelta > ctx.view.seq())
 	//       return tecTOO_SOON;
+	//
+	// Note: In rippled this check is in preclaim() before sequence consumption.
+	// In our engine, Apply() runs after the sequence has already been incremented,
+	// so we use the transaction's Sequence field (pre-increment value) for non-ticket
+	// transactions, and ctx.Account.Sequence (unchanged) for ticket transactions.
 	const seqDelta uint32 = 255
-	if a.Common.Sequence != nil {
-		if *a.Common.Sequence+seqDelta > ctx.Config.LedgerSequence {
-			return tx.TecTOO_SOON
-		}
+	acctSeq := ctx.Account.Sequence
+	if a.GetCommon().TicketSequence == nil && a.GetCommon().Sequence != nil {
+		// Non-ticket: the engine already incremented ctx.Account.Sequence by 1.
+		// Use the transaction's original sequence for the preclaim check.
+		acctSeq = *a.GetCommon().Sequence
+	}
+	if acctSeq+seqDelta > ctx.Config.LedgerSequence {
+		return tx.TecTOO_SOON
 	}
 
 	destID, err := state.DecodeAccountID(a.Destination)

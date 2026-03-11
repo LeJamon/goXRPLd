@@ -670,6 +670,14 @@ func GetNextNFTokenID(env *testing.TestEnv, issuer *testing.Account, taxon uint3
 	return hex.EncodeToString(tokenID[:])
 }
 
+// GetNextTokenSeq returns the effective token sequence that will be used for
+// the next NFTokenMint, accounting for the fixNFTokenRemint offset.
+// This is needed when computing ciphered taxons in tests.
+// Reference: rippled NFTokenMint.cpp doApply — tokenSeq computation.
+func GetNextTokenSeq(env *testing.TestEnv, issuer *testing.Account) uint32 {
+	return GetNFTokenSeq(env, issuer)
+}
+
 // GetOfferIndex predicts the offer index (keylet) that will be created.
 // Must be called BEFORE submitting the NFTokenCreateOffer transaction.
 // Reference: rippled's keylet::nftoffer(account, env.seq(account)).key.
