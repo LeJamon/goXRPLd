@@ -199,9 +199,17 @@ func TestPath_IndirectPath(t *testing.T) {
 
 // TestPath_AlternativePathsConsumeBestFirst tests that best quality path is used first.
 // From rippled: alternative_paths_consume_best_transfer_first
+//
+// Setup:
+//   - gw (no transfer rate) and gw2 (1.1 transfer rate)
+//   - alice holds 70 gw/USD and 70 gw2/USD
+//   - alice pays bob 77 bob/USD with sendmax 100 alice/USD
+//   - Path hint: alice's USD (to discover both gateway paths)
+//
+// Because gw has no transfer fee, the engine uses gw first (all 70),
+// then gw2 for the remaining 7 (which costs 7.7 at 1.1x rate).
+// Result: alice has 0 gw/USD, 62.3 gw2/USD; bob has 70 gw/USD, 7 gw2/USD
 func TestPath_AlternativePathsConsumeBestFirst(t *testing.T) {
-	t.Skip("TODO: Alternative paths require IOU payment support and transfer rate")
-
 	env := xrplgoTesting.NewTestEnv(t)
 
 	gw := xrplgoTesting.NewAccount("gateway")
@@ -215,7 +223,11 @@ func TestPath_AlternativePathsConsumeBestFirst(t *testing.T) {
 	env.FundAmount(bob, uint64(xrplgoTesting.XRP(10000)))
 	env.Close()
 
-	// alice has trust lines to both gateways
+	// Set transfer rate on gw2 (1.1x = 10% fee)
+	env.SetTransferRate(gw2, 1_100_000_000)
+	env.Close()
+
+	// Set up trust lines
 	result := env.Submit(trustset.TrustLine(alice, "USD", gw, "600").Build())
 	xrplgoTesting.RequireTxSuccess(t, result)
 	result = env.Submit(trustset.TrustLine(alice, "USD", gw2, "800").Build())
@@ -226,9 +238,6 @@ func TestPath_AlternativePathsConsumeBestFirst(t *testing.T) {
 	xrplgoTesting.RequireTxSuccess(t, result)
 	env.Close()
 
-	// gw2 has 1.1x transfer rate (10% fee)
-	// TODO: Set transfer rate on gw2
-
 	// Fund alice from both gateways
 	usd70 := tx.NewIssuedAmountFromFloat64(70, "USD", gw.Address)
 	result = env.Submit(PayIssued(gw, alice, usd70).Build())
@@ -238,8 +247,33 @@ func TestPath_AlternativePathsConsumeBestFirst(t *testing.T) {
 	xrplgoTesting.RequireTxSuccess(t, result)
 	env.Close()
 
-	// alice pays bob 70 USD - should use gw (no transfer fee) first
-	t.Log("Alternative paths test: requires transfer rate support")
+	// alice pays bob 77 bob/USD with sendmax 100 alice/USD
+	// Two explicit paths: through gw and through gw2.
+	// The engine should prefer gw (no transfer fee) over gw2 (10% fee).
+	usd77 := tx.NewIssuedAmountFromFloat64(77, "USD", bob.Address)
+	sendMax := tx.NewIssuedAmountFromFloat64(100, "USD", alice.Address)
+	paths := [][]payment.PathStep{
+		{accountPath(gw)},
+		{accountPath(gw2)},
+	}
+	payTx := PayIssued(alice, bob, usd77).
+		SendMax(sendMax).
+		Paths(paths).
+		Build()
+
+	result = env.Submit(payTx)
+	xrplgoTesting.RequireTxSuccess(t, result)
+	env.Close()
+
+	// Verify balances
+	// alice sent all 70 gw/USD (best path, no fee), then 7.7 gw2/USD for 7 bob/USD
+	xrplgoTesting.RequireIOUBalance(t, env, alice, gw, "USD", 0)
+	xrplgoTesting.RequireIOUBalanceApprox(t, env, alice, gw2, "USD", 62.3, 0.0001)
+	xrplgoTesting.RequireIOUBalance(t, env, bob, gw, "USD", 70)
+	xrplgoTesting.RequireIOUBalance(t, env, bob, gw2, "USD", 7)
+	// Verify gateway balances (negative = they issued)
+	xrplgoTesting.RequireIOUBalance(t, env, gw, alice, "USD", 0)
+	xrplgoTesting.RequireIOUBalanceApprox(t, env, gw2, alice, "USD", -62.3, 0.0001)
 }
 
 // TestPath_QualitySetAndTest tests quality settings on trust lines.
@@ -353,9 +387,6 @@ func TestPath_NoRippleCombinations(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			if !tc.expectSuccess {
-				t.Skip("TODO: NoRipple enforcement on both sides not yet blocking payments (payment engine bug)")
-			}
 			env := xrplgoTesting.NewTestEnv(t)
 
 			alice := xrplgoTesting.NewAccount("alice")
@@ -367,7 +398,7 @@ func TestPath_NoRippleCombinations(t *testing.T) {
 			env.FundAmount(george, uint64(xrplgoTesting.XRP(10000)))
 			env.Close()
 
-			// Set up trust lines with appropriate NoRipple flags
+			// Set up trust lines from alice and bob to george
 			aliceTrust := trustset.TrustLine(alice, "USD", george, "100")
 			if !tc.aliceRipple {
 				aliceTrust = aliceTrust.NoRipple()
@@ -380,6 +411,26 @@ func TestPath_NoRippleCombinations(t *testing.T) {
 				bobTrust = bobTrust.NoRipple()
 			}
 			result = env.Submit(bobTrust.Build())
+			xrplgoTesting.RequireTxSuccess(t, result)
+
+			// George also sets NoRipple on his side of each trust line
+			// (rippled sets NoRipple on BOTH sides for it to take effect)
+			georgeTrustAlice := trustset.TrustLine(george, "USD", alice, "100")
+			if !tc.aliceRipple {
+				georgeTrustAlice = georgeTrustAlice.NoRipple()
+			} else {
+				georgeTrustAlice = georgeTrustAlice.ClearNoRipple()
+			}
+			result = env.Submit(georgeTrustAlice.Build())
+			xrplgoTesting.RequireTxSuccess(t, result)
+
+			georgeTrustBob := trustset.TrustLine(george, "USD", bob, "100")
+			if !tc.bobRipple {
+				georgeTrustBob = georgeTrustBob.NoRipple()
+			} else {
+				georgeTrustBob = georgeTrustBob.ClearNoRipple()
+			}
+			result = env.Submit(georgeTrustBob.Build())
 			xrplgoTesting.RequireTxSuccess(t, result)
 			env.Close()
 
@@ -395,7 +446,6 @@ func TestPath_NoRippleCombinations(t *testing.T) {
 
 			result = env.Submit(payTx)
 
-			t.Logf("Payment result: %s", result.Code)
 			if tc.expectSuccess {
 				xrplgoTesting.RequireTxSuccess(t, result)
 			} else {
