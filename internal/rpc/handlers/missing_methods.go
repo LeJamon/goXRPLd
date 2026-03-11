@@ -186,7 +186,7 @@ func (m *LedgerHeaderMethod) RequiredRole() types.Role {
 }
 
 func (m *LedgerHeaderMethod) SupportedApiVersions() []int {
-	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
+	return []int{types.ApiVersion1}
 }
 
 // LedgerRequestMethod handles the ledger_request RPC method.

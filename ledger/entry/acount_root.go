@@ -15,7 +15,7 @@ type AccountRoot struct {
 
 	// Optional fields
 	Domain                *string
-	EmailHash             *[32]byte
+	EmailHash             *[16]byte
 	RegularKey            *[20]byte
 	TickSize              *uint8
 	TransferRate          *uint32

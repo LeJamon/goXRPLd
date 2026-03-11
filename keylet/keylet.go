@@ -28,7 +28,6 @@ const (
 	spaceDepPreauth     uint16 = 'p' // Deposit preauthorization
 	spaceDepPreauthCred uint16 = 'P' // Deposit preauthorization (credential-based)
 	spaceNFTokenOff  uint16 = 'q' // NFToken offer
-	spaceNFTokenPg   uint16 = 'P' // NFToken page
 	spaceNFTBuyOffers  uint16 = 'h' // NFToken buy offers directory
 	spaceNFTSellOffers uint16 = 'i' // NFToken sell offers directory
 	spaceAMM        uint16 = 'A' // AMM

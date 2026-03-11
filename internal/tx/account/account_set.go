@@ -332,6 +332,11 @@ func (a *AccountSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	// RequireAuth
 	// Reference: rippled SetAccount.cpp preclaim() lines 269-276
 	// dirIsEmpty() checks whether the owner directory has any entries.
+	//
+	// In rippled, this returns terOWNERS (retry) when tapRETRY is set (open ledger)
+	// and tecOWNERS (claim fee) otherwise. goXRPL has no open-ledger retry mechanism
+	// (tapRETRY), so we always return tecOWNERS — equivalent to the closed-ledger
+	// (consensus) path in rippled.
 	bSetRequireAuth := (a.GetFlags()&AccountSetTxFlagRequireAuth != 0) ||
 		uSetFlag == AccountSetFlagRequireAuth
 	if bSetRequireAuth && (uFlagsIn&state.LsfRequireAuth) == 0 {

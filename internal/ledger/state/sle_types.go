@@ -237,6 +237,8 @@ func NewSLEDirectoryNode(ledgerIndex [32]byte) *SLEDirectoryNode {
 	sle.SetFieldMeta("Indexes", FieldMetaNever)
 	sle.SetFieldMeta("IndexNext", FieldMetaDefault)
 	sle.SetFieldMeta("IndexPrevious", FieldMetaDefault)
+	sle.SetFieldMeta("NFTokenID", FieldMetaDefault)
+	sle.SetFieldMeta("DomainID", FieldMetaDefault)
 	sle.SetFieldMeta("PreviousTxnID", FieldMetaDeleteFinal)
 	sle.SetFieldMeta("PreviousTxnLgrSeq", FieldMetaDeleteFinal)
 	return sle
@@ -346,6 +348,18 @@ func (s *SLEDirectoryNode) LoadFromDirectoryNode(dir *DirectoryNode) {
 		idxPrev := formatUint64Hex(dir.IndexPrevious)
 		s.SetOriginal("IndexPrevious", idxPrev)
 		s.SetField("IndexPrevious", idxPrev)
+	}
+
+	var zeroHash [32]byte
+	if dir.NFTokenID != zeroHash {
+		nftID := strings.ToUpper(hex.EncodeToString(dir.NFTokenID[:]))
+		s.SetOriginal("NFTokenID", nftID)
+		s.SetField("NFTokenID", nftID)
+	}
+	if dir.DomainID != zeroHash {
+		domID := strings.ToUpper(hex.EncodeToString(dir.DomainID[:]))
+		s.SetOriginal("DomainID", domID)
+		s.SetField("DomainID", domID)
 	}
 }
 

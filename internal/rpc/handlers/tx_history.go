@@ -82,5 +82,5 @@ func (m *TxHistoryMethod) RequiredRole() types.Role {
 }
 
 func (m *TxHistoryMethod) SupportedApiVersions() []int {
-	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
+	return []int{types.ApiVersion1}
 }

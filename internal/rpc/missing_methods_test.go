@@ -201,11 +201,11 @@ func TestLedgerHeaderMethod(t *testing.T) {
 		assert.Equal(t, types.RoleGuest, method.RequiredRole())
 	})
 
-	t.Run("Supports all API versions", func(t *testing.T) {
+	t.Run("Supports only API version 1", func(t *testing.T) {
 		versions := method.SupportedApiVersions()
 		assert.Contains(t, versions, types.ApiVersion1)
-		assert.Contains(t, versions, types.ApiVersion2)
-		assert.Contains(t, versions, types.ApiVersion3)
+		assert.NotContains(t, versions, types.ApiVersion2)
+		assert.NotContains(t, versions, types.ApiVersion3)
 	})
 }
 
