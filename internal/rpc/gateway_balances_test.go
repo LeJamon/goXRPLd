@@ -154,6 +154,10 @@ func (m *mockGatewayBalancesLedgerService) GetNFTSellOffers(nftID [32]byte, ledg
 func (m *mockGatewayBalancesLedgerService) SimulateTransaction(txJSON []byte) (*types.SubmitResult, error) {
 	return nil, errors.New("not implemented")
 }
+func (m *mockGatewayBalancesLedgerService) IsAmendmentBlocked() bool { return false }
+func (m *mockGatewayBalancesLedgerService) GetClosedLedgerView() (types.LedgerStateView, error) {
+	return nil, errors.New("not implemented in mock")
+}
 
 // setupGatewayBalancesTestServices initializes the Services singleton with a mock for testing
 func setupGatewayBalancesTestServices(mock *mockGatewayBalancesLedgerService) func() {

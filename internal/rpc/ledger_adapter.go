@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"encoding/hex"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -802,6 +803,11 @@ func (a *LedgerServiceAdapter) SimulateTransaction(txJSON []byte) (*types.Submit
 	}, nil
 }
 
+// IsAmendmentBlocked returns true if the server is blocked by unsupported amendments
+func (a *LedgerServiceAdapter) IsAmendmentBlocked() bool {
+	return false
+}
+
 // GetNFTSellOffers retrieves sell offers for an NFToken
 func (a *LedgerServiceAdapter) GetNFTSellOffers(nftID [32]byte, ledgerIndex string, limit uint32, marker string) (*types.NFTOffersResult, error) {
 	result, err := a.svc.GetNFTSellOffers(nftID, ledgerIndex, limit, marker)
@@ -831,4 +837,14 @@ func (a *LedgerServiceAdapter) GetNFTSellOffers(nftID [32]byte, ledgerIndex stri
 		Limit:       result.Limit,
 		Marker:      result.Marker,
 	}, nil
+}
+
+// GetClosedLedgerView returns a read-only view of the last closed ledger
+// for use by pathfinding and other operations that need direct state access.
+func (a *LedgerServiceAdapter) GetClosedLedgerView() (types.LedgerStateView, error) {
+	l := a.svc.GetClosedLedger()
+	if l == nil {
+		return nil, fmt.Errorf("no closed ledger available")
+	}
+	return l, nil
 }

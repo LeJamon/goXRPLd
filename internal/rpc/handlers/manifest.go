@@ -45,9 +45,13 @@ func (m *ManifestMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (
 }
 
 func (m *ManifestMethod) RequiredRole() types.Role {
-	return types.RoleAdmin
+	return types.RoleUser // rippled: Role::USER (Handler.cpp line 136)
 }
 
 func (m *ManifestMethod) SupportedApiVersions() []int {
 	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
+}
+
+func (m *ManifestMethod) RequiredCondition() types.Condition {
+	return types.NoCondition
 }

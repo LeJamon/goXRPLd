@@ -34,8 +34,9 @@ const (
 	RpcCOMMAND_UNTRUSTED = 3
 	RpcNO_CURRENT        = 4
 	RpcNO_NETWORK        = 5
-	RpcTOO_BUSY          = 6
-	RpcSLOW_DOWN         = 7
+	RpcNO_PERMISSION     = 6 // rippled: rpcNO_PERMISSION = 6
+	RpcTOO_BUSY          = 9 // rippled: rpcTOO_BUSY = 9
+	RpcSLOW_DOWN         = 10 // rippled: rpcSLOW_DOWN = 10
 
 	// Networking
 	RpcNOT_STANDALONE = 10
@@ -98,7 +99,8 @@ const (
 	RpcINVALID_LGR_RANGE      = 45
 
 	// Path finding errors
-	RpcNO_PATH = 46
+	RpcNO_PATH       = 46
+	RpcNO_PF_REQUEST = 53 // No pathfinding request in progress (rippled: rpcNO_PF_REQUEST)
 
 	// Implementation status errors
 	RpcNOT_IMPL      = 47 // Feature not implemented
@@ -155,6 +157,11 @@ func RpcErrorInternal(message string) *RpcError {
 	return NewRpcError(RpcINTERNAL, "internal", "internal", message)
 }
 
+func RpcErrorNoPermission(method string) *RpcError {
+	return NewRpcError(RpcNO_PERMISSION, "noPermission", "noPermission",
+		"You don't have permission for this command.")
+}
+
 func RpcErrorTooBusy(message string) *RpcError {
 	return NewRpcError(RpcTOO_BUSY, "tooBusy", "tooBusy", message)
 }
@@ -179,8 +186,13 @@ func RpcErrorNotEnabled(feature string) *RpcError {
 	return NewRpcError(RpcNOT_ENABLED, "notEnabled", "notEnabled", "Feature not enabled: "+feature)
 }
 
-func RpcErrorAmendmentBlocked(amendment string) *RpcError {
-	return NewRpcError(RpcAMENDMENT_BLOCKED, "amendmentBlocked", "amendmentBlocked", "Amendment blocked: "+amendment)
+func RpcErrorAmendmentBlocked() *RpcError {
+	return NewRpcError(RpcAMENDMENT_BLOCKED, "amendmentBlocked", "amendmentBlocked", "Amendment blocked, need upgrade.")
+}
+
+// RpcErrorNoPathRequest returns an error when close/status is called without an active path_find session
+func RpcErrorNoPathRequest() *RpcError {
+	return NewRpcError(RpcNO_PF_REQUEST, "noPathRequest", "noPathRequest", "No pathfinding request in progress.")
 }
 
 // RpcErrorObjectNotFound returns an error for object not found (matches rippled rpcOBJECT_NOT_FOUND)

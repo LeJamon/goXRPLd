@@ -13,28 +13,28 @@ import (
 
 // AccountRoot represents an account in the ledger
 type AccountRoot struct {
-	Account           string
-	Balance           uint64
-	Sequence          uint32
-	OwnerCount        uint32
-	Flags             uint32
-	RegularKey        string
-	Domain            string
-	EmailHash         string
-	MessageKey        string
-	TransferRate      uint32
-	TickSize          uint8
+	Account              string
+	Balance              uint64
+	Sequence             uint32
+	OwnerCount           uint32
+	Flags                uint32
+	RegularKey           string
+	Domain               string
+	EmailHash            string
+	MessageKey           string
+	TransferRate         uint32
+	TickSize             uint8
 	NFTokenMinter        string // Account allowed to mint NFTokens on behalf of this account
 	MintedNFTokens       uint32 // Number of NFTokens minted by this account (issuer tracking)
 	BurnedNFTokens       uint32 // Number of NFTokens burned for this issuer
 	FirstNFTokenSequence uint32 // First NFToken sequence (set by fixNFTokenRemint)
 	HasFirstNFTSeq       bool   // Whether FirstNFTokenSequence is set (zero is a valid value)
-	AccountTxnID      [32]byte // Hash of the last transaction this account submitted (when enabled)
-	WalletLocator     string   // Arbitrary hex data (deprecated)
-	TicketCount       uint32   // Number of outstanding tickets owned by this account
-	AMMID             [32]byte // Links AMM pseudo-account to its AMM ledger entry (sfAMMID, fieldCode 14)
-	PreviousTxnID     [32]byte
-	PreviousTxnLgrSeq uint32
+	AccountTxnID         [32]byte // Hash of the last transaction this account submitted (when enabled)
+	WalletLocator        string   // Arbitrary hex data (deprecated)
+	TicketCount          uint32   // Number of outstanding tickets owned by this account
+	AMMID                [32]byte // Links AMM pseudo-account to its AMM ledger entry (sfAMMID, fieldCode 14)
+	PreviousTxnID        [32]byte
+	PreviousTxnLgrSeq    uint32
 }
 
 // Field type codes (exported for use by parent tx/ package)

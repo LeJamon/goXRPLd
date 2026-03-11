@@ -199,7 +199,6 @@ func deserializeLedgerEntry(data []byte) (interface{}, error) {
 	}
 
 	// Use the binary codec's Decode function to convert binary to JSON
-	println("HEX VALUE TO DECODE: ", hex.EncodeToString(data))
 	return binarycodec.Decode(hex.EncodeToString(data))
 }
 
@@ -209,4 +208,8 @@ func (m *LedgerDataMethod) RequiredRole() types.Role {
 
 func (m *LedgerDataMethod) SupportedApiVersions() []int {
 	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
+}
+
+func (m *LedgerDataMethod) RequiredCondition() types.Condition {
+	return types.NoCondition
 }

@@ -201,9 +201,13 @@ func estimateEntropy(input string) float64 {
 }
 
 func (m *WalletProposeMethod) RequiredRole() types.Role {
-	return types.RoleGuest // Wallet generation is publicly available
+	return types.RoleAdmin // rippled: Role::ADMIN (Handler.cpp line 192)
 }
 
 func (m *WalletProposeMethod) SupportedApiVersions() []int {
 	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
+}
+
+func (m *WalletProposeMethod) RequiredCondition() types.Condition {
+	return types.NoCondition
 }

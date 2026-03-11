@@ -153,6 +153,10 @@ func (m *mockAccountLinesLedgerService) GetNFTSellOffers(nftID [32]byte, ledgerI
 func (m *mockAccountLinesLedgerService) SimulateTransaction(txJSON []byte) (*types.SubmitResult, error) {
 	return nil, errors.New("not implemented")
 }
+func (m *mockAccountLinesLedgerService) IsAmendmentBlocked() bool { return false }
+func (m *mockAccountLinesLedgerService) GetClosedLedgerView() (types.LedgerStateView, error) {
+	return nil, errors.New("not implemented in mock")
+}
 
 // setupAccountLinesTestServices initializes the Services singleton with a mock for testing
 func setupAccountLinesTestServices(mock *mockAccountLinesLedgerService) func() {
