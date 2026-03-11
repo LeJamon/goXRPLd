@@ -4,8 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"strings"
-
-	binarycodec "github.com/LeJamon/goXRPLd/codec/binarycodec"
+	"github.com/LeJamon/goXRPLd/codec/binarycodec"
 	"github.com/LeJamon/goXRPLd/internal/rpc/types"
 )
 
@@ -64,29 +63,21 @@ func (m *AccountObjectsMethod) Handle(ctx *types.RpcContext, params json.RawMess
 		return nil, types.RpcErrorInternal("Failed to get account objects: " + err.Error())
 	}
 
-	// Build account_objects array with full deserialized JSON
-	objects := make([]interface{}, 0, len(result.AccountObjects))
+	// Build account_objects array with deserialized fields
+	objects := make([]map[string]interface{}, 0, len(result.AccountObjects))
 	for _, obj := range result.AccountObjects {
-		// Filter deletion blockers if requested
-		if request.DeletionBlockersOnly && !deletionBlockerTypes[obj.LedgerEntryType] {
-			continue
-		}
-
-		// Deserialize the binary SLE data to JSON
 		hexData := hex.EncodeToString(obj.Data)
 		decoded, err := binarycodec.Decode(hexData)
 		if err != nil {
-			// Fallback: return raw hex if decode fails
+			// Fallback to raw data if decode fails
 			objects = append(objects, map[string]interface{}{
-				"index":           strings.ToUpper(obj.Index),
+				"index":           obj.Index,
 				"LedgerEntryType": obj.LedgerEntryType,
 				"data":            hexData,
 			})
 			continue
 		}
-
-		// Add the index field
-		decoded["index"] = strings.ToUpper(obj.Index)
+		decoded["index"] = obj.Index
 		objects = append(objects, decoded)
 	}
 
