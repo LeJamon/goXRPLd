@@ -195,3 +195,7 @@ func (m *SubmitMethod) RequiredRole() types.Role {
 func (m *SubmitMethod) SupportedApiVersions() []int {
 	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
 }
+
+func (m *SubmitMethod) RequiredCondition() types.Condition {
+	return types.NeedsCurrentLedger
+}

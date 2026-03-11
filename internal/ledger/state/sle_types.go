@@ -62,8 +62,8 @@ func (s *SLEAccountRoot) LoadFromAccountRoot(account *AccountRoot) {
 	if account.RegularKey != "" {
 		s.SetOriginal("RegularKey", account.RegularKey)
 	}
-	if account.FirstNFTokenSequence != nil {
-		s.SetOriginal("FirstNFTokenSequence", *account.FirstNFTokenSequence)
+	if account.HasFirstNFTSeq {
+		s.SetOriginal("FirstNFTokenSequence", account.FirstNFTokenSequence)
 	}
 	var zeroHash [32]byte
 	if account.AccountTxnID != zeroHash {

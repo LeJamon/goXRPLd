@@ -92,7 +92,7 @@ func (m *TxMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (interf
 		}
 		if storedTx.Meta != nil {
 			// Inject DeliveredAmount for Payment transactions
-			injectDeliveredAmount(storedTx.TxJSON, storedTx.Meta)
+			InjectDeliveredAmount(storedTx.TxJSON, storedTx.Meta)
 			response["meta"] = storedTx.Meta
 		}
 	}
@@ -240,4 +240,8 @@ func (m *TxMethod) RequiredRole() types.Role {
 
 func (m *TxMethod) SupportedApiVersions() []int {
 	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
+}
+
+func (m *TxMethod) RequiredCondition() types.Condition {
+	return types.NeedsNetworkConnection
 }

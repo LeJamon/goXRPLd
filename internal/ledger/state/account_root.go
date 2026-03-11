@@ -13,27 +13,28 @@ import (
 
 // AccountRoot represents an account in the ledger
 type AccountRoot struct {
-	Account                string
-	Balance                uint64
-	Sequence               uint32
-	OwnerCount             uint32
-	Flags                  uint32
-	RegularKey             string
-	Domain                 string
-	EmailHash              string
-	MessageKey             string
-	TransferRate           uint32
-	TickSize               uint8
-	NFTokenMinter          string   // Account allowed to mint NFTokens on behalf of this account
-	MintedNFTokens         uint32   // Number of NFTokens minted by this account (issuer tracking)
-	BurnedNFTokens         uint32   // Number of NFTokens burned for this issuer
-	FirstNFTokenSequence   *uint32  // First NFToken sequence number (set with fixNFTokenRemint)
-	AccountTxnID           [32]byte // Hash of the last transaction this account submitted (when enabled)
-	WalletLocator          string   // Arbitrary hex data (deprecated)
-	TicketCount            uint32   // Number of outstanding tickets owned by this account
-	AMMID                  [32]byte // Links AMM pseudo-account to its AMM ledger entry (sfAMMID, fieldCode 14)
-	PreviousTxnID          [32]byte
-	PreviousTxnLgrSeq      uint32
+	Account              string
+	Balance              uint64
+	Sequence             uint32
+	OwnerCount           uint32
+	Flags                uint32
+	RegularKey           string
+	Domain               string
+	EmailHash            string
+	MessageKey           string
+	TransferRate         uint32
+	TickSize             uint8
+	NFTokenMinter        string // Account allowed to mint NFTokens on behalf of this account
+	MintedNFTokens       uint32 // Number of NFTokens minted by this account (issuer tracking)
+	BurnedNFTokens       uint32 // Number of NFTokens burned for this issuer
+	FirstNFTokenSequence uint32 // First NFToken sequence (set by fixNFTokenRemint)
+	HasFirstNFTSeq       bool   // Whether FirstNFTokenSequence is set (zero is a valid value)
+	AccountTxnID         [32]byte // Hash of the last transaction this account submitted (when enabled)
+	WalletLocator        string   // Arbitrary hex data (deprecated)
+	TicketCount          uint32   // Number of outstanding tickets owned by this account
+	AMMID                [32]byte // Links AMM pseudo-account to its AMM ledger entry (sfAMMID, fieldCode 14)
+	PreviousTxnID        [32]byte
+	PreviousTxnLgrSeq    uint32
 }
 
 // Field type codes (exported for use by parent tx/ package)
@@ -56,8 +57,9 @@ const (
 	fieldCodeSequence        = 4  // UInt32
 	fieldCodeOwnerCount      = 13 // UInt32 (per rippled sfields.macro)
 	fieldCodeTransferRate    = 11 // UInt32
-	fieldCodeMintedNFTokens  = 43 // UInt32 - number of NFTokens minted
-	fieldCodeBurnedNFTokens  = 44 // UInt32 - number of NFTokens burned
+	fieldCodeMintedNFTokens       = 43 // UInt32 - number of NFTokens minted
+	fieldCodeBurnedNFTokens       = 44 // UInt32 - number of NFTokens burned
+	fieldCodeFirstNFTokenSequence = 50 // UInt32 - first NFToken sequence (fixNFTokenRemint)
 	fieldCodeBalance         = 1  // Amount
 	fieldCodeRegularKey      = 8  // Account
 	fieldCodeAccount         = 1  // Account (different context)
@@ -65,9 +67,8 @@ const (
 	fieldCodeEmailHash       = 1  // Hash128
 	fieldCodeDomain          = 7  // Blob
 	fieldCodeTickSize        = 16 // UInt8 (type code 16)
-	fieldCodeTicketCount            = 40 // UInt32 - number of outstanding tickets
-	fieldCodeFirstNFTokenSequence  = 50 // UInt32 - first NFToken sequence (fixNFTokenRemint)
-	fieldCodeAccountTxnID          = 9  // Hash256 - last transaction ID
+	fieldCodeTicketCount     = 40 // UInt32 - number of outstanding tickets
+	fieldCodeAccountTxnID    = 9  // Hash256 - last transaction ID
 	fieldCodeWalletLocator   = 7  // Hash256 - wallet locator (deprecated)
 	fieldCodeAMMID           = 14 // Hash256 - links AMM pseudo-account to AMM entry (sfAMMID)
 )
@@ -216,11 +217,11 @@ func ParseAccountRoot(data []byte) (*AccountRoot, error) {
 				account.MintedNFTokens = value
 			case fieldCodeBurnedNFTokens:
 				account.BurnedNFTokens = value
+			case fieldCodeFirstNFTokenSequence:
+				account.FirstNFTokenSequence = value
+				account.HasFirstNFTSeq = true
 			case fieldCodeTicketCount:
 				account.TicketCount = value
-			case fieldCodeFirstNFTokenSequence:
-				v := value
-				account.FirstNFTokenSequence = &v
 			}
 
 		case FieldTypeAmount:
@@ -415,8 +416,8 @@ func SerializeAccountRoot(account *AccountRoot) ([]byte, error) {
 	}
 
 	// Add FirstNFTokenSequence if set (fixNFTokenRemint amendment)
-	if account.FirstNFTokenSequence != nil {
-		jsonObj["FirstNFTokenSequence"] = *account.FirstNFTokenSequence
+	if account.HasFirstNFTSeq {
+		jsonObj["FirstNFTokenSequence"] = account.FirstNFTokenSequence
 	}
 
 	// Add TicketCount if set (number of outstanding tickets)
