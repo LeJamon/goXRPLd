@@ -14,6 +14,7 @@ import (
 	"github.com/LeJamon/goXRPLd/amendment"
 	"github.com/LeJamon/goXRPLd/keylet"
 	"github.com/LeJamon/goXRPLd/internal/ledger/state"
+	"github.com/LeJamon/goXRPLd/internal/tx/invariants"
 	"github.com/LeJamon/goXRPLd/crypto/common"
 )
 
@@ -1722,7 +1723,7 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 	{
 		invEntries := table.CollectEntries()
 		txDeclaredFee := parseTxDeclaredFee(tx, fee)
-		if violation := CheckInvariants(tx, result, fee, txDeclaredFee, invEntries, table, e.rules()); violation != nil {
+		if violation := invariants.CheckInvariants(wrapTxForInvariants(tx), invariants.Result(result), fee, txDeclaredFee, invEntries, table, e.rules()); violation != nil {
 			// First violation: charge fee but revert all state changes (tecINVARIANT_FAILED).
 			// Reference: rippled — first pass returns tec, second would return tef.
 			_ = violation // logged in future via journal
@@ -1837,27 +1838,7 @@ func (e *Engine) CheckReserveIncrease(priorBalance uint64, currentOwnerCount uin
 // Used by the engine for tecOVERSIZE offer cleanup after the sandbox is discarded.
 // Reference: rippled removeUnfundedOffers() adjusts owner count on the base view.
 func adjustOwnerCountOnView(view LedgerView, account [20]byte, delta int, txHash [32]byte, ledgerSeq uint32) {
-	accountKey := keylet.Account(account)
-	accountData, err := view.Read(accountKey)
-	if err != nil || accountData == nil {
-		return
-	}
-	accountRoot, err := state.ParseAccountRoot(accountData)
-	if err != nil {
-		return
-	}
-	newCount := int(accountRoot.OwnerCount) + delta
-	if newCount < 0 {
-		newCount = 0
-	}
-	accountRoot.OwnerCount = uint32(newCount)
-	accountRoot.PreviousTxnID = txHash
-	accountRoot.PreviousTxnLgrSeq = ledgerSeq
-	newData, err := state.SerializeAccountRoot(accountRoot)
-	if err != nil {
-		return
-	}
-	_ = view.Update(accountKey, newData)
+	_ = AdjustOwnerCountWithTx(view, account, delta, txHash, ledgerSeq)
 }
 
 // deleteNFTokenOfferOnView deletes an NFTokenOffer from the ledger view,
