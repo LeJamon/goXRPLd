@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/LeJamon/goXRPLd/internal/rpc/subscription"
 	"github.com/LeJamon/goXRPLd/internal/rpc/types"
 	"github.com/gorilla/websocket"
 )
@@ -16,7 +17,7 @@ import (
 // WebSocketServer handles WebSocket connections for real-time subscriptions
 type WebSocketServer struct {
 	upgrader            websocket.Upgrader
-	subscriptionManager *types.SubscriptionManager
+	subscriptionManager *subscription.Manager
 	methodRegistry      *types.MethodRegistry
 	connections         map[string]*WebSocketConnection
 	connectionsMutex    sync.RWMutex
@@ -47,7 +48,7 @@ func NewWebSocketServer(timeout time.Duration) *WebSocketServer {
 			},
 			// Don't require specific subprotocol - xrpl.js doesn't use one
 		},
-		subscriptionManager: &types.SubscriptionManager{
+		subscriptionManager: &subscription.Manager{
 			Connections: make(map[string]*types.Connection),
 		},
 		methodRegistry: types.NewMethodRegistry(),
@@ -542,6 +543,6 @@ func (ws *WebSocketServer) RegisterAllMethods() {
 }
 
 // GetSubscriptionManager returns the subscription manager for event publishing
-func (ws *WebSocketServer) GetSubscriptionManager() *types.SubscriptionManager {
+func (ws *WebSocketServer) GetSubscriptionManager() *subscription.Manager {
 	return ws.subscriptionManager
 }
