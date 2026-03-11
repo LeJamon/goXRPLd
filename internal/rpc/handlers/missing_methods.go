@@ -291,7 +291,7 @@ func (m *TxReduceRelayMethod) Handle(ctx *types.RpcContext, params json.RawMessa
 }
 
 func (m *TxReduceRelayMethod) RequiredRole() types.Role {
-	return types.RoleAdmin
+	return types.RoleUser // rippled: Role::USER (Handler.cpp line 179)
 }
 
 func (m *TxReduceRelayMethod) SupportedApiVersions() []int {

@@ -372,6 +372,11 @@ func (a *AccountSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	// DisableMaster
 	// Reference: rippled SetAccount.cpp:402-418
 	if uSetFlag == AccountSetFlagDisableMaster && (uFlagsIn&state.LsfDisableMaster) == 0 {
+		// Must use master key to disable master key.
+		// Reference: rippled SetAccount.cpp:404-408
+		if !ctx.SignedWithMaster {
+			return tx.TecNEED_MASTER_KEY
+		}
 		// Account has no regular key or multi-signer signer list.
 		// Reference: rippled SetAccount.cpp:410-415
 		hasRegularKey := account.RegularKey != ""

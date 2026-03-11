@@ -393,8 +393,9 @@ func TestTxReduceRelayMethod(t *testing.T) {
 		}
 	})
 
-	t.Run("RequiredRole is Admin", func(t *testing.T) {
-		assert.Equal(t, types.RoleAdmin, method.RequiredRole())
+	t.Run("RequiredRole is User", func(t *testing.T) {
+		// rippled: Role::USER (Handler.cpp line 179)
+		assert.Equal(t, types.RoleUser, method.RequiredRole())
 	})
 }
 
