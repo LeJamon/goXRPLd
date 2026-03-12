@@ -22,7 +22,7 @@ func (m *NoRippleCheckMethod) Handle(ctx *types.RpcContext, params json.RawMessa
 		return nil, err
 	}
 
-	if err := RequireAccount(request.Account); err != nil {
+	if err := ValidateAccount(request.Account); err != nil {
 		return nil, err
 	}
 
@@ -60,11 +60,12 @@ func (m *NoRippleCheckMethod) Handle(ctx *types.RpcContext, params json.RawMessa
 	}
 
 	// Call the service
+	limit := ClampLimit(request.Limit, LimitNoRippleCheck, ctx.IsAdmin)
 	result, err := types.Services.Ledger.GetNoRippleCheck(
 		request.Account,
 		request.Role,
 		ledgerIndex,
-		request.Limit,
+		limit,
 		request.Transactions,
 	)
 	if err != nil {

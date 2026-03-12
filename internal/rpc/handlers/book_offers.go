@@ -49,7 +49,8 @@ func (m *BookOffersMethod) Handle(ctx *types.RpcContext, params json.RawMessage)
 	}
 
 	// Get book offers from the ledger service
-	result, err := types.Services.Ledger.GetBookOffers(takerGets, takerPays, ledgerIndex, request.Limit)
+	limit := ClampLimit(request.Limit, LimitBookOffers, ctx.IsAdmin)
+	result, err := types.Services.Ledger.GetBookOffers(takerGets, takerPays, ledgerIndex, limit)
 	if err != nil {
 		return nil, types.RpcErrorInternal("Failed to get book offers: " + err.Error())
 	}

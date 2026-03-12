@@ -224,6 +224,8 @@ func (a *LedgerServiceAdapter) GetAccountInfo(account string, ledgerIndex string
 		LedgerIndex:       result.LedgerIndex,
 		LedgerHash:        hex.EncodeToString(result.LedgerHash[:]),
 		Validated:         result.Validated,
+		RawData:           result.RawData,
+		Index:             strings.ToUpper(hex.EncodeToString(result.Index[:])),
 	}, nil
 }
 
@@ -386,6 +388,7 @@ func (a *LedgerServiceAdapter) GetAccountTransactions(account string, ledgerMin,
 		txs[i] = types.AccountTransaction{
 			Hash:        tx.Hash,
 			LedgerIndex: tx.LedgerIndex,
+			TxnSeq:      tx.TxnSeq,
 			TxBlob:      tx.TxBlob,
 			Meta:        tx.Meta,
 		}
@@ -723,8 +726,8 @@ func (a *LedgerServiceAdapter) GetGatewayBalances(account string, hotWallets []s
 }
 
 // GetDepositAuthorized checks if a source account is authorized to deposit to a destination account
-func (a *LedgerServiceAdapter) GetDepositAuthorized(sourceAccount string, destinationAccount string, ledgerIndex string) (*types.DepositAuthorizedResult, error) {
-	result, err := a.svc.GetDepositAuthorized(sourceAccount, destinationAccount, ledgerIndex)
+func (a *LedgerServiceAdapter) GetDepositAuthorized(sourceAccount string, destinationAccount string, ledgerIndex string, credentials []string) (*types.DepositAuthorizedResult, error) {
+	result, err := a.svc.GetDepositAuthorized(sourceAccount, destinationAccount, ledgerIndex, credentials)
 	if err != nil {
 		return nil, err
 	}

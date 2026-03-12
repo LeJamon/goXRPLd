@@ -58,7 +58,7 @@ const (
 	RpcACT_CHANNELS       = 21
 	RpcACT_OBJECTS        = 22
 	RpcACT_ROOT_NOT_FOUND = 23
-	RpcACT_MALFORMED      = 50
+	RpcACT_MALFORMED      = 35
 	RpcSRC_ACT_NOT_FOUND  = 51
 	RpcDST_ACT_NOT_FOUND  = 52
 
@@ -116,6 +116,9 @@ const (
 
 	// Object errors - must match rippled exactly
 	RpcOBJECT_NOT_FOUND = 92 // Object not found
+
+	// Credential errors - must match rippled exactly
+	RpcBAD_CREDENTIALS = 95 // Credentials do not exist, are not accepted, or have expired
 )
 
 // Standard error constructors
@@ -147,6 +150,10 @@ func RpcErrorLgrNotFound(message string) *RpcError {
 
 func RpcErrorActNotFound(message string) *RpcError {
 	return NewRpcError(RpcACT_NOT_FOUND, "actNotFound", "actNotFound", message)
+}
+
+func RpcErrorActMalformed(message string) *RpcError {
+	return NewRpcError(RpcACT_MALFORMED, "actMalformed", "actMalformed", message)
 }
 
 func RpcErrorTxnNotFound(message string) *RpcError {
@@ -198,6 +205,11 @@ func RpcErrorNoPathRequest() *RpcError {
 // RpcErrorObjectNotFound returns an error for object not found (matches rippled rpcOBJECT_NOT_FOUND)
 func RpcErrorObjectNotFound(message string) *RpcError {
 	return NewRpcError(RpcOBJECT_NOT_FOUND, "objectNotFound", "objectNotFound", message)
+}
+
+// RpcErrorBadCredentials returns an error for credential validation failures (matches rippled rpcBAD_CREDENTIALS).
+func RpcErrorBadCredentials(message string) *RpcError {
+	return NewRpcError(RpcBAD_CREDENTIALS, "badCredentials", "badCredentials", message)
 }
 
 // RpcErrorMissingField returns an error for missing required field (matches rippled missing_field_error)

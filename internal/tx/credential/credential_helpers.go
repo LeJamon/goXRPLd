@@ -226,9 +226,9 @@ func serializeCredentialEntry(cred *CredentialEntry) ([]byte, error) {
 	return hex.DecodeString(hexStr)
 }
 
-// checkCredentialExpired checks if a credential has expired
+// CheckCredentialExpired checks if a credential has expired
 // Reference: rippled CredentialHelpers.cpp checkExpired()
-func checkCredentialExpired(cred *CredentialEntry, closeTime uint32) bool {
+func CheckCredentialExpired(cred *CredentialEntry, closeTime uint32) bool {
 	if cred.Expiration == nil {
 		return false
 	}
