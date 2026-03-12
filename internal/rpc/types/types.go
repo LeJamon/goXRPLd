@@ -13,7 +13,7 @@ const (
 	ApiVersion1       = 1
 	ApiVersion2       = 2
 	ApiVersion3       = 3
-	DefaultApiVersion = ApiVersion1
+	DefaultApiVersion = ApiVersion2
 )
 
 // Role-based access control matching rippled

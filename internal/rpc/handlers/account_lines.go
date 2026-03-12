@@ -22,7 +22,7 @@ func (m *AccountLinesMethod) Handle(ctx *types.RpcContext, params json.RawMessag
 		return nil, err
 	}
 
-	if err := RequireAccount(request.Account); err != nil {
+	if err := ValidateAccount(request.Account); err != nil {
 		return nil, err
 	}
 
@@ -37,7 +37,8 @@ func (m *AccountLinesMethod) Handle(ctx *types.RpcContext, params json.RawMessag
 	}
 
 	// Get account lines from the ledger service
-	result, err := types.Services.Ledger.GetAccountLines(request.Account, ledgerIndex, request.Peer, request.Limit)
+	limit := ClampLimit(request.Limit, LimitAccountLines, ctx.IsAdmin)
+	result, err := types.Services.Ledger.GetAccountLines(request.Account, ledgerIndex, request.Peer, limit)
 	if err != nil {
 		if err.Error() == "account not found" {
 			return nil, &types.RpcError{

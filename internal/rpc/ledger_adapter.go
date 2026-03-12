@@ -725,8 +725,19 @@ func (a *LedgerServiceAdapter) GetGatewayBalances(account string, hotWallets []s
 }
 
 // GetDepositAuthorized checks if a source account is authorized to deposit to a destination account
-func (a *LedgerServiceAdapter) GetDepositAuthorized(sourceAccount string, destinationAccount string, ledgerIndex string) (*types.DepositAuthorizedResult, error) {
-	result, err := a.svc.GetDepositAuthorized(sourceAccount, destinationAccount, ledgerIndex)
+func (a *LedgerServiceAdapter) GetDepositAuthorized(sourceAccount string, destinationAccount string, ledgerIndex string, credentials []string) (*types.DepositAuthorizedResult, error) {
+	// Convert hex credential strings to [32]byte
+	var creds [][32]byte
+	for _, c := range credentials {
+		b, err := hex.DecodeString(c)
+		if err != nil || len(b) != 32 {
+			continue
+		}
+		var h [32]byte
+		copy(h[:], b)
+		creds = append(creds, h)
+	}
+	result, err := a.svc.GetDepositAuthorized(sourceAccount, destinationAccount, ledgerIndex, creds)
 	if err != nil {
 		return nil, err
 	}

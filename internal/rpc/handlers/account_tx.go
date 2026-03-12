@@ -28,7 +28,7 @@ func (m *AccountTxMethod) Handle(ctx *types.RpcContext, params json.RawMessage) 
 		return nil, err
 	}
 
-	if err := RequireAccount(request.Account); err != nil {
+	if err := ValidateAccount(request.Account); err != nil {
 		return nil, err
 	}
 

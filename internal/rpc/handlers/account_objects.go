@@ -37,7 +37,7 @@ func (m *AccountObjectsMethod) Handle(ctx *types.RpcContext, params json.RawMess
 		return nil, err
 	}
 
-	if err := RequireAccount(request.Account); err != nil {
+	if err := ValidateAccount(request.Account); err != nil {
 		return nil, err
 	}
 
@@ -50,7 +50,8 @@ func (m *AccountObjectsMethod) Handle(ctx *types.RpcContext, params json.RawMess
 		ledgerIndex = request.LedgerIndex.String()
 	}
 
-	result, err := types.Services.Ledger.GetAccountObjects(request.Account, ledgerIndex, request.Type, request.Limit)
+	limit := ClampLimit(request.Limit, LimitAccountObjects, ctx.IsAdmin)
+	result, err := types.Services.Ledger.GetAccountObjects(request.Account, ledgerIndex, request.Type, limit)
 	if err != nil {
 		if err.Error() == "account not found" {
 			return nil, &types.RpcError{

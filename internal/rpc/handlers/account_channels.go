@@ -21,7 +21,7 @@ func (m *AccountChannelsMethod) Handle(ctx *types.RpcContext, params json.RawMes
 		return nil, err
 	}
 
-	if err := RequireAccount(request.Account); err != nil {
+	if err := ValidateAccount(request.Account); err != nil {
 		return nil, err
 	}
 
@@ -36,11 +36,12 @@ func (m *AccountChannelsMethod) Handle(ctx *types.RpcContext, params json.RawMes
 	}
 
 	// Get account channels from the ledger service
+	limit := ClampLimit(request.Limit, LimitAccountChannels, ctx.IsAdmin)
 	result, err := types.Services.Ledger.GetAccountChannels(
 		request.Account,
 		request.DestinationAccount,
 		ledgerIndex,
-		request.Limit,
+		limit,
 	)
 	if err != nil {
 		if err.Error() == "account not found" {

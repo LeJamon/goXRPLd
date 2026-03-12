@@ -20,7 +20,7 @@ func (m *AccountNftsMethod) Handle(ctx *types.RpcContext, params json.RawMessage
 		return nil, err
 	}
 
-	if err := RequireAccount(request.Account); err != nil {
+	if err := ValidateAccount(request.Account); err != nil {
 		return nil, err
 	}
 
@@ -35,10 +35,11 @@ func (m *AccountNftsMethod) Handle(ctx *types.RpcContext, params json.RawMessage
 	}
 
 	// Get account NFTs from the ledger service
+	limit := ClampLimit(request.Limit, LimitAccountNFTokens, ctx.IsAdmin)
 	result, err := types.Services.Ledger.GetAccountNFTs(
 		request.Account,
 		ledgerIndex,
-		request.Limit,
+		limit,
 	)
 	if err != nil {
 		if err.Error() == "account not found" {

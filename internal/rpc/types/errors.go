@@ -58,7 +58,7 @@ const (
 	RpcACT_CHANNELS       = 21
 	RpcACT_OBJECTS        = 22
 	RpcACT_ROOT_NOT_FOUND = 23
-	RpcACT_MALFORMED      = 50
+	RpcACT_MALFORMED      = 35
 	RpcSRC_ACT_NOT_FOUND  = 51
 	RpcDST_ACT_NOT_FOUND  = 52
 
@@ -150,6 +150,10 @@ func RpcErrorLgrNotFound(message string) *RpcError {
 
 func RpcErrorActNotFound(message string) *RpcError {
 	return NewRpcError(RpcACT_NOT_FOUND, "actNotFound", "actNotFound", message)
+}
+
+func RpcErrorActMalformed(message string) *RpcError {
+	return NewRpcError(RpcACT_MALFORMED, "actMalformed", "actMalformed", message)
 }
 
 func RpcErrorTxnNotFound(message string) *RpcError {

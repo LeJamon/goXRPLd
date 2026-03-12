@@ -44,6 +44,7 @@ func (m *DepositAuthorizedMethod) Handle(ctx *types.RpcContext, params json.RawM
 		request.SourceAccount,
 		request.DestinationAccount,
 		ledgerIndex,
+		request.Credentials,
 	)
 	if err != nil {
 		// Handle specific errors
