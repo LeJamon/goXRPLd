@@ -253,6 +253,7 @@ type AccountTxResult struct {
 type AccountTransaction struct {
 	Hash        [32]byte `json:"hash"`
 	LedgerIndex uint32   `json:"ledger_index"`
+	TxnSeq      uint32   `json:"txn_seq"`
 	TxBlob      []byte   `json:"tx_blob,omitempty"`
 	Meta        []byte   `json:"meta,omitempty"`
 }
@@ -280,15 +281,24 @@ func (s *Service) GetAccountTransactions(account string, ledgerMin, ledgerMax in
 		limit = 200
 	}
 
-	// Determine ledger range
+	// Determine ledger range.
+	// When ledgerMin <= 0, use 1 (earliest possible ledger).
+	// When ledgerMax <= 0, use the validated ledger sequence.
 	minLedger := relationaldb.LedgerIndex(1)
-	maxLedger := relationaldb.LedgerIndex(0xFFFFFFFF)
-	if ledgerMin >= 0 {
+	if ledgerMin > 0 {
 		minLedger = relationaldb.LedgerIndex(ledgerMin)
 	}
-	if ledgerMax >= 0 {
+
+	var maxLedger relationaldb.LedgerIndex
+	if ledgerMax > 0 {
 		maxLedger = relationaldb.LedgerIndex(ledgerMax)
+	} else if s.validatedLedger != nil {
+		maxLedger = relationaldb.LedgerIndex(s.validatedLedger.Sequence())
+	} else {
+		maxLedger = relationaldb.LedgerIndex(0xFFFFFFFF)
 	}
+
+	// Clamp max to validated ledger
 	if s.validatedLedger != nil && maxLedger > relationaldb.LedgerIndex(s.validatedLedger.Sequence()) {
 		maxLedger = relationaldb.LedgerIndex(s.validatedLedger.Sequence())
 	}
@@ -327,6 +337,7 @@ func (s *Service) GetAccountTransactions(account string, ledgerMin, ledgerMax in
 		result.Transactions = append(result.Transactions, AccountTransaction{
 			Hash:        [32]byte(txInfo.Hash),
 			LedgerIndex: uint32(txInfo.LedgerSeq),
+			TxnSeq:      txInfo.TxnSeq,
 			TxBlob:      txInfo.RawTxn,
 			Meta:        txInfo.TxnMeta,
 		})

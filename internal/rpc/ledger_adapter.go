@@ -388,6 +388,7 @@ func (a *LedgerServiceAdapter) GetAccountTransactions(account string, ledgerMin,
 		txs[i] = types.AccountTransaction{
 			Hash:        tx.Hash,
 			LedgerIndex: tx.LedgerIndex,
+			TxnSeq:      tx.TxnSeq,
 			TxBlob:      tx.TxBlob,
 			Meta:        tx.Meta,
 		}

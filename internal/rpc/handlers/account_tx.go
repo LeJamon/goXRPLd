@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"strings"
+	"time"
 
 	binarycodec "github.com/LeJamon/goXRPLd/codec/binarycodec"
 	"github.com/LeJamon/goXRPLd/internal/rpc/types"
@@ -30,6 +31,11 @@ func (m *AccountTxMethod) Handle(ctx *types.RpcContext, params json.RawMessage) 
 
 	if err := ValidateAccount(request.Account); err != nil {
 		return nil, err
+	}
+
+	// Validate the account address format
+	if !types.IsValidXRPLAddress(request.Account) {
+		return nil, &types.RpcError{Code: 35, Message: "Account malformed."}
 	}
 
 	if err := RequireLedgerService(); err != nil {
@@ -74,6 +80,30 @@ func (m *AccountTxMethod) Handle(ctx *types.RpcContext, params json.RawMessage) 
 		return nil, types.RpcErrorInternal("Failed to get account transactions: " + err.Error())
 	}
 
+	// Cache for ledger lookups by sequence, to avoid repeated lookups
+	// for transactions in the same ledger.
+	type ledgerCacheEntry struct {
+		hash         [32]byte
+		closeTimeSec int64
+		found        bool
+	}
+	ledgerCache := make(map[uint32]*ledgerCacheEntry)
+
+	lookupLedger := func(seq uint32) *ledgerCacheEntry {
+		if entry, ok := ledgerCache[seq]; ok {
+			return entry
+		}
+		entry := &ledgerCacheEntry{}
+		ledger, lookupErr := types.Services.Ledger.GetLedgerBySequence(seq)
+		if lookupErr == nil && ledger != nil {
+			entry.hash = ledger.Hash()
+			entry.closeTimeSec = ledger.CloseTime()
+			entry.found = true
+		}
+		ledgerCache[seq] = entry
+		return entry
+	}
+
 	// Build transactions array
 	transactions := make([]map[string]interface{}, len(result.Transactions))
 	for i, tx := range result.Transactions {
@@ -81,43 +111,67 @@ func (m *AccountTxMethod) Handle(ctx *types.RpcContext, params json.RawMessage) 
 			"validated": true,
 		}
 
-		// Add transaction hash
-		txEntry["hash"] = strings.ToUpper(hex.EncodeToString(tx.Hash[:]))
+		txHashHex := strings.ToUpper(hex.EncodeToString(tx.Hash[:]))
 
 		if request.Binary {
-			// Binary mode: return hex blobs
+			// Binary mode (API v2): tx_blob, meta_blob, ledger_index, validated
 			txEntry["tx_blob"] = strings.ToUpper(hex.EncodeToString(tx.TxBlob))
-			txEntry["meta"] = strings.ToUpper(hex.EncodeToString(tx.Meta))
+			txEntry["meta_blob"] = strings.ToUpper(hex.EncodeToString(tx.Meta))
 			txEntry["ledger_index"] = tx.LedgerIndex
 		} else {
-			// JSON mode: decode tx_blob and meta to JSON objects
+			// JSON mode (API v2): tx_json, hash, ledger_index, ledger_hash, close_time_iso, meta
+
+			// Decode tx_blob into JSON
 			txBlobHex := hex.EncodeToString(tx.TxBlob)
-			txJSON, err := binarycodec.Decode(txBlobHex)
-			if err != nil {
+			txJSON, decErr := binarycodec.Decode(txBlobHex)
+			if decErr != nil {
 				// Fallback to hex if decode fails
 				txEntry["tx_blob"] = strings.ToUpper(txBlobHex)
 			} else {
-				// Add ledger_index and hash to tx_json
+				// Add fields inside tx_json
 				txJSON["ledger_index"] = tx.LedgerIndex
-				txJSON["hash"] = strings.ToUpper(hex.EncodeToString(tx.Hash[:]))
+				txJSON["hash"] = txHashHex
+
+				// Look up containing ledger for date and CTID
+				ledgerInfo := lookupLedger(tx.LedgerIndex)
+				if ledgerInfo.found && ledgerInfo.closeTimeSec > 0 {
+					txJSON["date"] = ledgerInfo.closeTimeSec
+				}
+
+				// Add CTID inside tx_json
+				txJSON["ctid"] = encodeCTID(tx.LedgerIndex, uint16(tx.TxnSeq))
 
 				// Inject DeliveredAmount for Payment transactions
 				InjectDeliveredAmount(txJSON, nil)
 
-				txEntry["tx"] = txJSON
+				txEntry["tx_json"] = txJSON
 			}
 
 			// Decode metadata
 			metaHex := hex.EncodeToString(tx.Meta)
-			metaJSON, err := binarycodec.Decode(metaHex)
-			if err != nil {
+			metaJSON, metaErr := binarycodec.Decode(metaHex)
+			if metaErr != nil {
 				txEntry["meta"] = strings.ToUpper(metaHex)
 			} else {
 				// Inject DeliveredAmount into metadata if this is a Payment
-				if txJSON != nil {
+				if txJSON, ok := txEntry["tx_json"].(map[string]interface{}); ok {
 					InjectDeliveredAmount(txJSON, metaJSON)
 				}
 				txEntry["meta"] = metaJSON
+			}
+
+			// Add entry-level fields (API v2)
+			txEntry["hash"] = txHashHex
+			txEntry["ledger_index"] = tx.LedgerIndex
+
+			// Look up containing ledger for ledger_hash and close_time_iso
+			ledgerInfo := lookupLedger(tx.LedgerIndex)
+			if ledgerInfo.found {
+				txEntry["ledger_hash"] = strings.ToUpper(hex.EncodeToString(ledgerInfo.hash[:]))
+				if ledgerInfo.closeTimeSec > 0 {
+					closeTime := rippleEpochTime.Add(time.Duration(ledgerInfo.closeTimeSec) * time.Second)
+					txEntry["close_time_iso"] = closeTime.UTC().Format("2006-01-02T15:04:05Z")
+				}
 			}
 		}
 

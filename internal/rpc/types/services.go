@@ -305,6 +305,7 @@ type AccountTxMarker struct {
 type AccountTransaction struct {
 	Hash        [32]byte `json:"hash"`
 	LedgerIndex uint32   `json:"ledger_index"`
+	TxnSeq      uint32   `json:"txn_seq"`
 	TxBlob      []byte   `json:"tx_blob,omitempty"`
 	Meta        []byte   `json:"meta,omitempty"`
 }
