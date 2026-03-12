@@ -8,7 +8,7 @@ import (
 )
 
 // LedgerRangeMethod handles the ledger_range RPC method
-type LedgerRangeMethod struct{}
+type LedgerRangeMethod struct{ AdminHandler }
 
 func (m *LedgerRangeMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (interface{}, *types.RpcError) {
 	// Parse parameters
@@ -63,14 +63,3 @@ func (m *LedgerRangeMethod) Handle(ctx *types.RpcContext, params json.RawMessage
 	return response, nil
 }
 
-func (m *LedgerRangeMethod) RequiredRole() types.Role {
-	return types.RoleAdmin // This method requires admin privileges
-}
-
-func (m *LedgerRangeMethod) SupportedApiVersions() []int {
-	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
-}
-
-func (m *LedgerRangeMethod) RequiredCondition() types.Condition {
-	return types.NoCondition
-}

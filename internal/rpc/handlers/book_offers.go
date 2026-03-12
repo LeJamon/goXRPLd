@@ -7,7 +7,7 @@ import (
 )
 
 // BookOffersMethod handles the book_offers RPC method
-type BookOffersMethod struct{}
+type BookOffersMethod struct{ BaseHandler }
 
 func (m *BookOffersMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (interface{}, *types.RpcError) {
 	var request struct {
@@ -95,14 +95,3 @@ func ParseAmountFromJSON(data json.RawMessage) (types.Amount, error) {
 	}, nil
 }
 
-func (m *BookOffersMethod) RequiredRole() types.Role {
-	return types.RoleGuest
-}
-
-func (m *BookOffersMethod) SupportedApiVersions() []int {
-	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
-}
-
-func (m *BookOffersMethod) RequiredCondition() types.Condition {
-	return types.NoCondition
-}

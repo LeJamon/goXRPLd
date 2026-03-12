@@ -412,12 +412,8 @@ func (c *Clawback) applyIOU(ctx *tx.ApplyContext) tx.Result {
 		}
 
 		// Write holder account back to ledger
-		holderUpdatedData, serErr := state.SerializeAccountRoot(holderAccount)
-		if serErr != nil {
-			return tx.TefINTERNAL
-		}
-		if err := ctx.View.Update(holderAccountKey, holderUpdatedData); err != nil {
-			return tx.TefINTERNAL
+		if result := ctx.UpdateAccountRoot(holderID, holderAccount); result != tx.TesSUCCESS {
+			return result
 		}
 	} else {
 		// Update reserve flags

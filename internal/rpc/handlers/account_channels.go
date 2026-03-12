@@ -7,7 +7,7 @@ import (
 )
 
 // AccountChannelsMethod handles the account_channels RPC method
-type AccountChannelsMethod struct{}
+type AccountChannelsMethod struct{ BaseHandler }
 
 func (m *AccountChannelsMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (interface{}, *types.RpcError) {
 	var request struct {
@@ -107,14 +107,3 @@ func (m *AccountChannelsMethod) Handle(ctx *types.RpcContext, params json.RawMes
 	return response, nil
 }
 
-func (m *AccountChannelsMethod) RequiredRole() types.Role {
-	return types.RoleGuest
-}
-
-func (m *AccountChannelsMethod) SupportedApiVersions() []int {
-	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
-}
-
-func (m *AccountChannelsMethod) RequiredCondition() types.Condition {
-	return types.NoCondition
-}

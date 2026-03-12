@@ -14,7 +14,7 @@ import (
 // Unlike the 'tx' method which searches across the ledger range,
 // this method requires a specific ledger to search in.
 // Reference: rippled TransactionEntry.cpp
-type TransactionEntryMethod struct{}
+type TransactionEntryMethod struct{ BaseHandler }
 
 func (m *TransactionEntryMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (interface{}, *types.RpcError) {
 	var request struct {
@@ -149,14 +149,3 @@ func (m *TransactionEntryMethod) resolveTargetLedger(ledgerHash string, ledgerIn
 	return types.Services.Ledger.GetValidatedLedgerIndex(), nil
 }
 
-func (m *TransactionEntryMethod) RequiredRole() types.Role {
-	return types.RoleGuest
-}
-
-func (m *TransactionEntryMethod) SupportedApiVersions() []int {
-	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
-}
-
-func (m *TransactionEntryMethod) RequiredCondition() types.Condition {
-	return types.NoCondition
-}

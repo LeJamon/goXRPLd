@@ -7,7 +7,7 @@ import (
 )
 
 // NoRippleCheckMethod handles the noripple_check RPC method
-type NoRippleCheckMethod struct{}
+type NoRippleCheckMethod struct{ BaseHandler }
 
 func (m *NoRippleCheckMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (interface{}, *types.RpcError) {
 	var request struct {
@@ -126,14 +126,3 @@ func (m *NoRippleCheckMethod) Handle(ctx *types.RpcContext, params json.RawMessa
 	return response, nil
 }
 
-func (m *NoRippleCheckMethod) RequiredRole() types.Role {
-	return types.RoleGuest
-}
-
-func (m *NoRippleCheckMethod) SupportedApiVersions() []int {
-	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
-}
-
-func (m *NoRippleCheckMethod) RequiredCondition() types.Condition {
-	return types.NoCondition
-}

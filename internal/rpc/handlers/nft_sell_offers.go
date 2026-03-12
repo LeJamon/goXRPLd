@@ -10,7 +10,7 @@ import (
 
 // NftSellOffersMethod handles the nft_sell_offers RPC method
 // Reference: rippled NFTOffers.cpp doNFTSellOffers
-type NftSellOffersMethod struct{}
+type NftSellOffersMethod struct{ BaseHandler }
 
 func (m *NftSellOffersMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (interface{}, *types.RpcError) {
 	var request struct {
@@ -132,14 +132,3 @@ func (m *NftSellOffersMethod) Handle(ctx *types.RpcContext, params json.RawMessa
 	return response, nil
 }
 
-func (m *NftSellOffersMethod) RequiredRole() types.Role {
-	return types.RoleGuest
-}
-
-func (m *NftSellOffersMethod) SupportedApiVersions() []int {
-	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
-}
-
-func (m *NftSellOffersMethod) RequiredCondition() types.Condition {
-	return types.NoCondition
-}

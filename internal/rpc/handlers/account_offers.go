@@ -7,7 +7,7 @@ import (
 )
 
 // AccountOffersMethod handles the account_offers RPC method
-type AccountOffersMethod struct{}
+type AccountOffersMethod struct{ BaseHandler }
 
 func (m *AccountOffersMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (interface{}, *types.RpcError) {
 	var request struct {
@@ -63,14 +63,3 @@ func (m *AccountOffersMethod) Handle(ctx *types.RpcContext, params json.RawMessa
 	return response, nil
 }
 
-func (m *AccountOffersMethod) RequiredRole() types.Role {
-	return types.RoleGuest
-}
-
-func (m *AccountOffersMethod) SupportedApiVersions() []int {
-	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
-}
-
-func (m *AccountOffersMethod) RequiredCondition() types.Condition {
-	return types.NoCondition
-}

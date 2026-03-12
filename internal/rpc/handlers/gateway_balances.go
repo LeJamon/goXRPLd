@@ -7,7 +7,7 @@ import (
 )
 
 // GatewayBalancesMethod handles the gateway_balances RPC method
-type GatewayBalancesMethod struct{}
+type GatewayBalancesMethod struct{ BaseHandler }
 
 func (m *GatewayBalancesMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (interface{}, *types.RpcError) {
 	var request struct {
@@ -160,14 +160,3 @@ func (m *GatewayBalancesMethod) Handle(ctx *types.RpcContext, params json.RawMes
 	return response, nil
 }
 
-func (m *GatewayBalancesMethod) RequiredRole() types.Role {
-	return types.RoleGuest
-}
-
-func (m *GatewayBalancesMethod) SupportedApiVersions() []int {
-	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
-}
-
-func (m *GatewayBalancesMethod) RequiredCondition() types.Condition {
-	return types.NoCondition
-}

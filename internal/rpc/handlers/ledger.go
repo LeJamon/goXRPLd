@@ -16,7 +16,7 @@ import (
 var rippleEpochTime = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // LedgerMethod handles the ledger RPC method.
-type LedgerMethod struct{}
+type LedgerMethod struct{ BaseHandler }
 
 func (m *LedgerMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (interface{}, *types.RpcError) {
 	var request struct {
@@ -190,14 +190,3 @@ func (m *LedgerMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (in
 	return response, nil
 }
 
-func (m *LedgerMethod) RequiredRole() types.Role {
-	return types.RoleGuest
-}
-
-func (m *LedgerMethod) SupportedApiVersions() []int {
-	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
-}
-
-func (m *LedgerMethod) RequiredCondition() types.Condition {
-	return types.NoCondition
-}

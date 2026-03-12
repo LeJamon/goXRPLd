@@ -132,13 +132,8 @@ func (ec *EscrowCancel) Apply(ctx *tx.ApplyContext) tx.Result {
 			ownerAccount.OwnerCount--
 		}
 
-		ownerUpdatedData, err := state.SerializeAccountRoot(ownerAccount)
-		if err != nil {
-			return tx.TefINTERNAL
-		}
-
-		if err := ctx.View.Update(ownerKey, ownerUpdatedData); err != nil {
-			return tx.TefINTERNAL
+		if result := ctx.UpdateAccountRoot(ownerID, ownerAccount); result != tx.TesSUCCESS {
+			return result
 		}
 	}
 

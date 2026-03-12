@@ -11,7 +11,7 @@ import (
 )
 
 // VaultInfoMethod handles the vault_info RPC method
-type VaultInfoMethod struct{}
+type VaultInfoMethod struct{ BaseHandler }
 
 func (m *VaultInfoMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (interface{}, *types.RpcError) {
 	var request struct {
@@ -118,14 +118,3 @@ func (m *VaultInfoMethod) Handle(ctx *types.RpcContext, params json.RawMessage) 
 	return response, nil
 }
 
-func (m *VaultInfoMethod) RequiredRole() types.Role {
-	return types.RoleGuest
-}
-
-func (m *VaultInfoMethod) SupportedApiVersions() []int {
-	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
-}
-
-func (m *VaultInfoMethod) RequiredCondition() types.Condition {
-	return types.NoCondition
-}

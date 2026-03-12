@@ -229,12 +229,8 @@ func (ef *EscrowFinish) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Write destination back (only if it's a separate account from the finisher)
 	if !destIsSelf {
-		destUpdatedData, err := state.SerializeAccountRoot(destAccount)
-		if err != nil {
-			return tx.TefINTERNAL
-		}
-		if err := ctx.View.Update(destKey, destUpdatedData); err != nil {
-			return tx.TefINTERNAL
+		if result := ctx.UpdateAccountRoot(escrowEntry.DestinationID, destAccount); result != tx.TesSUCCESS {
+			return result
 		}
 	}
 

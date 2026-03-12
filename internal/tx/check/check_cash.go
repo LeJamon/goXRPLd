@@ -241,12 +241,8 @@ func (c *CheckCash) applyCashXRPAmount(ctx *tx.ApplyContext, check *state.CheckD
 	}
 
 	// Update creator account
-	creatorUpdatedData, err := state.SerializeAccountRoot(creatorAccount)
-	if err != nil {
-		return tx.TefINTERNAL
-	}
-	if err := ctx.View.Update(creatorKey, creatorUpdatedData); err != nil {
-		return tx.TefINTERNAL
+	if result := ctx.UpdateAccountRoot(check.Account, creatorAccount); result != tx.TesSUCCESS {
+		return result
 	}
 
 	// Delete the check
@@ -302,12 +298,8 @@ func (c *CheckCash) applyCashXRPDeliverMin(ctx *tx.ApplyContext, check *state.Ch
 	}
 
 	// Update creator account
-	creatorUpdatedData, err := state.SerializeAccountRoot(creatorAccount)
-	if err != nil {
-		return tx.TefINTERNAL
-	}
-	if err := ctx.View.Update(creatorKey, creatorUpdatedData); err != nil {
-		return tx.TefINTERNAL
+	if result := ctx.UpdateAccountRoot(check.Account, creatorAccount); result != tx.TesSUCCESS {
+		return result
 	}
 
 	// Delete the check
@@ -583,12 +575,8 @@ func (c *CheckCash) applyCashIOUAmount(ctx *tx.ApplyContext, check *state.CheckD
 		creatorAccount.OwnerCount--
 	}
 
-	creatorUpdatedData, err := state.SerializeAccountRoot(creatorAccount)
-	if err != nil {
-		return tx.TefINTERNAL
-	}
-	if err := ctx.View.Update(creatorKey, creatorUpdatedData); err != nil {
-		return tx.TefINTERNAL
+	if result := ctx.UpdateAccountRoot(srcID, creatorAccount); result != tx.TesSUCCESS {
+		return result
 	}
 
 	// Delete the check

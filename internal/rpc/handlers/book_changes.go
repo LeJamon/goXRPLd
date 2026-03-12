@@ -15,7 +15,7 @@ import (
 // BookChangesMethod handles the book_changes RPC method.
 // Computes OHLCV data for all currency pairs that had offer changes in a ledger.
 // Reference: rippled BookChanges.h (computeBookChanges)
-type BookChangesMethod struct{}
+type BookChangesMethod struct{ BaseHandler }
 
 // bookChange tracks OHLCV data for a single currency pair
 type bookChange struct {
@@ -304,14 +304,3 @@ func formatBigFloat(f *big.Float) string {
 	return f.Text('f', 6)
 }
 
-func (m *BookChangesMethod) RequiredRole() types.Role {
-	return types.RoleGuest
-}
-
-func (m *BookChangesMethod) SupportedApiVersions() []int {
-	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
-}
-
-func (m *BookChangesMethod) RequiredCondition() types.Condition {
-	return types.NoCondition
-}

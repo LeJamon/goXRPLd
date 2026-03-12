@@ -7,7 +7,7 @@ import (
 )
 
 // AccountNftsMethod handles the account_nfts RPC method
-type AccountNftsMethod struct{}
+type AccountNftsMethod struct{ BaseHandler }
 
 func (m *AccountNftsMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (interface{}, *types.RpcError) {
 	var request struct {
@@ -95,14 +95,3 @@ func (m *AccountNftsMethod) Handle(ctx *types.RpcContext, params json.RawMessage
 	return response, nil
 }
 
-func (m *AccountNftsMethod) RequiredRole() types.Role {
-	return types.RoleGuest
-}
-
-func (m *AccountNftsMethod) SupportedApiVersions() []int {
-	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
-}
-
-func (m *AccountNftsMethod) RequiredCondition() types.Condition {
-	return types.NoCondition
-}

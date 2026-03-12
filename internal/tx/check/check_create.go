@@ -101,28 +101,11 @@ func (c *CheckCreate) RequiredAmendments() [][32]byte {
 func (c *CheckCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	// --- Preclaim checks ---
 
-	// Verify destination exists
-	// Reference: CreateCheck.cpp L85-90
-	destID, err := state.DecodeAccountID(c.Destination)
-	if err != nil {
-		return tx.TemINVALID
-	}
-
-	destKey := keylet.Account(destID)
-	destData, err := ctx.View.Read(destKey)
-	if err != nil || destData == nil {
-		return tx.TecNO_DST
-	}
-
-	destAccount, err := state.ParseAccountRoot(destData)
-	if err != nil {
-		return tx.TefINTERNAL
-	}
-
-	// Pseudo-accounts cannot cash checks.
-	// Reference: rippled CreateCheck.cpp:100-105
-	if (destAccount.Flags & state.LsfAMM) != 0 {
-		return tx.TecNO_PERMISSION
+	// Verify destination exists and is not a pseudo-account
+	// Reference: CreateCheck.cpp L85-90, L100-105
+	destAccount, destID, result := ctx.LookupDestination(c.Destination)
+	if result != tx.TesSUCCESS {
+		return result
 	}
 
 	// Check DisallowIncoming flag on destination
@@ -228,12 +211,8 @@ func (c *CheckCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Reserve check: account must afford owner count + 1
 	// Reference: CreateCheck.cpp L181-186
-	// Use prior balance (before fee deduction) as rippled uses mPriorBalance
-	feeDrops := parseFee(c.Fee)
-	priorBalance := ctx.Account.Balance + feeDrops
-	reserve := ctx.AccountReserve(ctx.Account.OwnerCount + 1)
-	if priorBalance < reserve {
-		return tx.TecINSUFFICIENT_RESERVE
+	if result := ctx.CheckReserveWithFee(ctx.Account.OwnerCount+1, c.Fee); result != tx.TesSUCCESS {
+		return result
 	}
 
 	// Create the check entry

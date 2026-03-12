@@ -162,28 +162,11 @@ func (ec *EscrowCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TemINVALID
 	}
 
-	// Verify destination exists
-	// Reference: rippled Escrow.cpp:511-512
-	destID, err := state.DecodeAccountID(ec.Destination)
-	if err != nil {
-		return tx.TemINVALID
-	}
-
-	destKey := keylet.Account(destID)
-	destData, err := ctx.View.Read(destKey)
-	if err != nil || destData == nil {
-		return tx.TecNO_DST
-	}
-
-	destAccount, err := state.ParseAccountRoot(destData)
-	if err != nil {
-		return tx.TefINTERNAL
-	}
-
-	// Pseudo-accounts cannot receive escrow.
-	// Reference: rippled Escrow.cpp:373-378
-	if (destAccount.Flags & state.LsfAMM) != 0 {
-		return tx.TecNO_PERMISSION
+	// Verify destination exists and is not a pseudo-account
+	// Reference: rippled Escrow.cpp:511-512, 373-378
+	destAccount, destID, result := ctx.LookupDestination(ec.Destination)
+	if result != tx.TesSUCCESS {
+		return result
 	}
 
 	// Destination tag check
@@ -254,12 +237,8 @@ func (ec *EscrowCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 
 		// Increment destination's OwnerCount
 		destAccount.OwnerCount++
-		destUpdatedData2, err := state.SerializeAccountRoot(destAccount)
-		if err != nil {
-			return tx.TefINTERNAL
-		}
-		if err := ctx.View.Update(destKey, destUpdatedData2); err != nil {
-			return tx.TefINTERNAL
+		if result := ctx.UpdateAccountRoot(destID, destAccount); result != tx.TesSUCCESS {
+			return result
 		}
 	}
 

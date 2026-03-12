@@ -29,7 +29,7 @@ const (
 )
 
 // AccountInfoMethod handles the account_info RPC method.
-type AccountInfoMethod struct{}
+type AccountInfoMethod struct{ BaseHandler }
 
 func (m *AccountInfoMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (interface{}, *types.RpcError) {
 	var request struct {
@@ -178,14 +178,3 @@ func (m *AccountInfoMethod) loadSignerLists(account string, ledgerIndex string) 
 	return signerLists
 }
 
-func (m *AccountInfoMethod) RequiredRole() types.Role {
-	return types.RoleGuest
-}
-
-func (m *AccountInfoMethod) SupportedApiVersions() []int {
-	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
-}
-
-func (m *AccountInfoMethod) RequiredCondition() types.Condition {
-	return types.NoCondition
-}

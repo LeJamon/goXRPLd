@@ -245,13 +245,8 @@ func (c *CredentialAccept) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 
 	// Serialize and update issuer account
-	updatedIssuerData, err := state.SerializeAccountRoot(issuerAccount)
-	if err != nil {
-		return tx.TefINTERNAL
-	}
-
-	if err := ctx.View.Update(issuerAccountKeylet, updatedIssuerData); err != nil {
-		return tx.TefINTERNAL
+	if result := ctx.UpdateAccountRoot(issuerID, issuerAccount); result != tx.TesSUCCESS {
+		return result
 	}
 
 	// Increase subject's owner count

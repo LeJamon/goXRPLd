@@ -10,7 +10,7 @@ import (
 )
 
 // AccountTxMethod handles the account_tx RPC method
-type AccountTxMethod struct{}
+type AccountTxMethod struct{ BaseHandler }
 
 func (m *AccountTxMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (interface{}, *types.RpcError) {
 	var request struct {
@@ -143,15 +143,3 @@ func (m *AccountTxMethod) Handle(ctx *types.RpcContext, params json.RawMessage) 
 	return response, nil
 }
 
-
-func (m *AccountTxMethod) RequiredRole() types.Role {
-	return types.RoleGuest
-}
-
-func (m *AccountTxMethod) SupportedApiVersions() []int {
-	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
-}
-
-func (m *AccountTxMethod) RequiredCondition() types.Condition {
-	return types.NoCondition
-}

@@ -7,7 +7,7 @@ import (
 )
 
 // AccountCurrenciesMethod handles the account_currencies RPC method
-type AccountCurrenciesMethod struct{}
+type AccountCurrenciesMethod struct{ BaseHandler }
 
 func (m *AccountCurrenciesMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (interface{}, *types.RpcError) {
 	var request struct {
@@ -68,14 +68,3 @@ func (m *AccountCurrenciesMethod) Handle(ctx *types.RpcContext, params json.RawM
 	return response, nil
 }
 
-func (m *AccountCurrenciesMethod) RequiredRole() types.Role {
-	return types.RoleGuest
-}
-
-func (m *AccountCurrenciesMethod) SupportedApiVersions() []int {
-	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
-}
-
-func (m *AccountCurrenciesMethod) RequiredCondition() types.Condition {
-	return types.NoCondition
-}

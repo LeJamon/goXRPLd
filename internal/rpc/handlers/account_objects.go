@@ -9,7 +9,7 @@ import (
 )
 
 // AccountObjectsMethod handles the account_objects RPC method
-type AccountObjectsMethod struct{}
+type AccountObjectsMethod struct{ BaseHandler }
 
 // deletionBlockerTypes lists SLE types that block account deletion
 var deletionBlockerTypes = map[string]bool{
@@ -94,14 +94,3 @@ func (m *AccountObjectsMethod) Handle(ctx *types.RpcContext, params json.RawMess
 	return response, nil
 }
 
-func (m *AccountObjectsMethod) RequiredRole() types.Role {
-	return types.RoleGuest
-}
-
-func (m *AccountObjectsMethod) SupportedApiVersions() []int {
-	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
-}
-
-func (m *AccountObjectsMethod) RequiredCondition() types.Condition {
-	return types.NoCondition
-}

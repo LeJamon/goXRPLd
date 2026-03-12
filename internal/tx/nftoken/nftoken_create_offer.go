@@ -202,18 +202,9 @@ func (c *NFTokenCreateOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Check destination exists and doesn't disallow incoming NFT offers
 	// Reference: rippled tokenOfferCreatePreclaim
 	if c.Destination != "" {
-		destID, err := state.DecodeAccountID(c.Destination)
-		if err != nil {
-			return tx.TemINVALID
-		}
-		destKey := keylet.Account(destID)
-		destData, err := ctx.View.Read(destKey)
-		if err != nil || destData == nil {
-			return tx.TecNO_DST
-		}
-		destAccount, err := state.ParseAccountRoot(destData)
-		if err != nil {
-			return tx.TefINTERNAL
+		destAccount, _, result := ctx.LookupAccount(c.Destination)
+		if result != tx.TesSUCCESS {
+			return result
 		}
 		if destAccount.Flags&state.LsfDisallowIncomingNFTokenOffer != 0 {
 			return tx.TecNO_PERMISSION

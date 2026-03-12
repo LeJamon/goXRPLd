@@ -7,7 +7,7 @@ import (
 )
 
 // AccountLinesMethod handles the account_lines RPC method
-type AccountLinesMethod struct{}
+type AccountLinesMethod struct{ BaseHandler }
 
 func (m *AccountLinesMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (interface{}, *types.RpcError) {
 	var request struct {
@@ -100,14 +100,3 @@ func isDefaultTrustLine(line types.TrustLine) bool {
 	return true
 }
 
-func (m *AccountLinesMethod) RequiredRole() types.Role {
-	return types.RoleGuest
-}
-
-func (m *AccountLinesMethod) SupportedApiVersions() []int {
-	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
-}
-
-func (m *AccountLinesMethod) RequiredCondition() types.Condition {
-	return types.NoCondition
-}

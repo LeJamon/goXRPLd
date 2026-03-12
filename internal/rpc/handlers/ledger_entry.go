@@ -12,7 +12,7 @@ import (
 )
 
 // LedgerEntryMethod handles the ledger_entry RPC method
-type LedgerEntryMethod struct{}
+type LedgerEntryMethod struct{ BaseHandler }
 
 func (m *LedgerEntryMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (interface{}, *types.RpcError) {
 	// We need to parse into a generic map first because the fields are polymorphic
@@ -585,14 +585,3 @@ func parseCurrencyIssuer(raw json.RawMessage) (currency [20]byte, issuer [20]byt
 	return currency, issuer, nil
 }
 
-func (m *LedgerEntryMethod) RequiredRole() types.Role {
-	return types.RoleGuest
-}
-
-func (m *LedgerEntryMethod) SupportedApiVersions() []int {
-	return []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
-}
-
-func (m *LedgerEntryMethod) RequiredCondition() types.Condition {
-	return types.NoCondition
-}
