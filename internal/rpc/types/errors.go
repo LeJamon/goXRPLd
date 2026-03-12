@@ -107,12 +107,16 @@ const (
 	RpcNOT_VALIDATOR = 48 // Server is not configured as a validator
 	RpcNOT_SYNCED    = 49 // Not synced to network
 
+	// Fee errors - must match rippled exactly
+	RpcHIGH_FEE = 11 // Current transaction fee exceeds your limit
+
 	// Signing/Key errors - must match rippled exactly
-	RpcBAD_SEED             = 44 // Disallowed seed
-	RpcCHANNEL_MALFORMED    = 45 // Payment channel is malformed
+	RpcBAD_SEED              = 44 // Disallowed seed
+	RpcCHANNEL_MALFORMED     = 45 // Payment channel is malformed
 	RpcCHANNEL_AMT_MALFORMED = 46 // Payment channel amount is malformed
-	RpcPUBLIC_MALFORMED     = 62 // Public key is malformed
-	RpcBAD_KEY_TYPE         = 76 // Bad key type
+	RpcPUBLIC_MALFORMED      = 62 // Public key is malformed
+	RpcSIGNING_MALFORMED     = 63 // Signing of transaction is malformed
+	RpcBAD_KEY_TYPE          = 76 // Bad key type
 
 	// Object errors - must match rippled exactly
 	RpcOBJECT_NOT_FOUND = 92 // Object not found
@@ -210,6 +214,31 @@ func RpcErrorObjectNotFound(message string) *RpcError {
 // RpcErrorBadCredentials returns an error for credential validation failures (matches rippled rpcBAD_CREDENTIALS).
 func RpcErrorBadCredentials(message string) *RpcError {
 	return NewRpcError(RpcBAD_CREDENTIALS, "badCredentials", "badCredentials", message)
+}
+
+// RpcErrorHighFee returns an error when the auto-filled fee exceeds the requested limit (matches rippled rpcHIGH_FEE).
+func RpcErrorHighFee(message string) *RpcError {
+	return NewRpcError(RpcHIGH_FEE, "highFee", "highFee", message)
+}
+
+// RpcErrorExpectedField returns an error for a field that is not of the expected type
+// (matches rippled's expected_field_message: "Invalid field '<name>', not <type>.")
+func RpcErrorExpectedField(field, expectedType string) *RpcError {
+	return NewRpcError(RpcINVALID_PARAMS, "invalidParams", "invalidParams",
+		"Invalid field '"+field+"', not "+expectedType+".")
+}
+
+// RpcErrorExpectedFieldHighFee returns a highFee error for a field that is not of the expected type.
+// rippled returns rpcHIGH_FEE (not rpcINVALID_PARAMS) when fee_mult_max or fee_div_max is not an integer.
+func RpcErrorExpectedFieldHighFee(field, expectedType string) *RpcError {
+	return NewRpcError(RpcHIGH_FEE, "highFee", "highFee",
+		"Invalid field '"+field+"', not "+expectedType+".")
+}
+
+// RpcErrorSigningMalformed returns an error when a transaction's signing is malformed
+// (matches rippled rpcSIGNING_MALFORMED, code 63, token "signingMalformed").
+func RpcErrorSigningMalformed() *RpcError {
+	return NewRpcError(RpcSIGNING_MALFORMED, "signingMalformed", "signingMalformed", "Signing of transaction is malformed.")
 }
 
 // RpcErrorMissingField returns an error for missing required field (matches rippled missing_field_error)
