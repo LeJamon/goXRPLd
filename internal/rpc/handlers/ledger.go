@@ -141,6 +141,19 @@ func (m *LedgerMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (in
 			hashStr := strings.ToUpper(hex.EncodeToString(txHashKey[:]))
 			if request.Expand {
 				txEntry := expandTransaction(txData, hashStr, request.Binary, apiVersion)
+				// Add per-entry context fields for v2+
+				if apiVersion > 1 && !request.Binary {
+					if targetLedger.IsClosed() {
+						txEntry["ledger_hash"] = ledgerHash
+					}
+					txEntry["validated"] = validated
+					if validated {
+						txEntry["ledger_index"] = targetLedger.Sequence()
+						if closeTimeSec > 0 {
+							txEntry["close_time_iso"] = closeTimeISO
+						}
+					}
+				}
 				txList = append(txList, txEntry)
 			} else {
 				// Return just transaction hashes
