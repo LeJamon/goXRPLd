@@ -136,6 +136,7 @@ func (m *TxMethod) buildResponseV1(
 	if closeTimeSec > 0 {
 		closeTime := rippleEpochTime.Add(secondsToDuration(closeTimeSec))
 		response["close_time_iso"] = closeTime.UTC().Format("2006-01-02T15:04:05Z")
+		response["date"] = closeTimeSec
 	}
 
 	return response
@@ -164,11 +165,12 @@ func (m *TxMethod) buildResponseV2(
 		}
 	} else {
 		// Wrap transaction fields in tx_json
-		txJSON := make(map[string]interface{}, len(storedTx.TxJSON)+2)
+		txJSON := make(map[string]interface{}, len(storedTx.TxJSON)+3)
 		for k, v := range storedTx.TxJSON {
 			txJSON[k] = v
 		}
-		// Add date inside tx_json (ripple epoch seconds of ledger close time)
+		// date and ledger_index go inside tx_json for v2
+		txJSON["ledger_index"] = txInfo.LedgerIndex
 		if closeTimeSec > 0 {
 			txJSON["date"] = closeTimeSec
 		}
@@ -186,13 +188,18 @@ func (m *TxMethod) buildResponseV2(
 
 	// Root-level fields
 	response["hash"] = hashStr
-	response["ledger_index"] = txInfo.LedgerIndex
-	response["ledger_hash"] = txInfo.LedgerHash
 	response["validated"] = txInfo.Validated
 
-	if closeTimeSec > 0 {
-		closeTime := rippleEpochTime.Add(secondsToDuration(closeTimeSec))
-		response["close_time_iso"] = closeTime.UTC().Format("2006-01-02T15:04:05Z")
+	if txInfo.LedgerHash != "" {
+		response["ledger_hash"] = txInfo.LedgerHash
+	}
+	// ledger_index and close_time_iso only at root for validated txs
+	if txInfo.Validated {
+		response["ledger_index"] = txInfo.LedgerIndex
+		if closeTimeSec > 0 {
+			closeTime := rippleEpochTime.Add(secondsToDuration(closeTimeSec))
+			response["close_time_iso"] = closeTime.UTC().Format("2006-01-02T15:04:05Z")
+		}
 	}
 
 	return response
@@ -244,14 +251,6 @@ func (m *TxMethod) lookupByCTID(ctx *types.RpcContext, ledgerSeq uint32, txIndex
 	closeTimeSec := ledger.CloseTime()
 	ledgerHash := ledger.Hash()
 	ledgerHashStr := strings.ToUpper(fmt.Sprintf("%x", ledgerHash))
-
-	// Build a TransactionInfo to reuse the shared response builder
-	txInfo := &types.TransactionInfo{
-		LedgerIndex: ledgerSeq,
-		LedgerHash:  ledgerHashStr,
-		Validated:   validated,
-		TxIndex:     uint32(txIndex),
-	}
 
 	if binary {
 		response := map[string]interface{}{}
@@ -313,11 +312,10 @@ func (m *TxMethod) lookupByCTID(ctx *types.RpcContext, ledgerSeq uint32, txIndex
 	if closeTimeSec > 0 {
 		closeTime := rippleEpochTime.Add(secondsToDuration(closeTimeSec))
 		response["close_time_iso"] = closeTime.UTC().Format("2006-01-02T15:04:05Z")
+		response["date"] = closeTimeSec
 	}
 	// Add CTID to v1 response at root level
 	response["ctid"] = encodeCTID(ledgerSeq, txIndex)
-
-	_ = txInfo // used only for documentation; v1 CTID path builds response directly
 
 	return response, nil
 }
