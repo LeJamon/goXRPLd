@@ -224,6 +224,8 @@ func (a *LedgerServiceAdapter) GetAccountInfo(account string, ledgerIndex string
 		LedgerIndex:       result.LedgerIndex,
 		LedgerHash:        hex.EncodeToString(result.LedgerHash[:]),
 		Validated:         result.Validated,
+		RawData:           result.RawData,
+		Index:             strings.ToUpper(hex.EncodeToString(result.Index[:])),
 	}, nil
 }
 

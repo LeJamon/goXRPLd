@@ -79,11 +79,15 @@ func (m *BookChangesMethod) Handle(ctx *types.RpcContext, params json.RawMessage
 			return true
 		}
 
-		// Get TransactionType to detect OfferCancel
+		// Get TransactionType to detect explicit offer cancels.
+		// Both OfferCancel and OfferCreate can cancel a prior offer via OfferSequence.
 		txType, _ := storedTx.TxJSON["TransactionType"].(string)
-		txSequence := uint32(0)
-		if seq, ok := storedTx.TxJSON["Sequence"].(float64); ok {
-			txSequence = uint32(seq)
+		var offerCancel *uint32
+		if txType == "OfferCancel" || txType == "OfferCreate" {
+			if seq, ok := storedTx.TxJSON["OfferSequence"].(float64); ok {
+				v := uint32(seq)
+				offerCancel = &v
+			}
 		}
 
 		// Get AffectedNodes from metadata
@@ -124,10 +128,10 @@ func (m *BookChangesMethod) Handle(ctx *types.RpcContext, params json.RawMessage
 				continue
 			}
 
-			// Skip explicitly cancelled offers (OfferCancel matching this offer's Sequence)
-			if txType == "OfferCancel" && nodeType == "DeletedNode" {
+			// Skip explicitly cancelled offers (OfferCancel/OfferCreate with OfferSequence matching this offer's Sequence)
+			if offerCancel != nil && nodeType == "DeletedNode" {
 				if offerSeq, ok := finalFields["Sequence"].(float64); ok {
-					if uint32(offerSeq) == txSequence {
+					if uint32(offerSeq) == *offerCancel {
 						continue
 					}
 				}
@@ -143,34 +147,49 @@ func (m *BookChangesMethod) Handle(ctx *types.RpcContext, params json.RawMessage
 				continue
 			}
 
-			deltaGets := new(big.Float).Sub(prevGets.value, finalGets.value)
-			deltaPays := new(big.Float).Sub(prevPays.value, finalPays.value)
+			deltaGets := new(big.Float).Sub(finalGets.value, prevGets.value)
+			deltaPays := new(big.Float).Sub(finalPays.value, prevPays.value)
 
-			// Skip if no actual change
-			if deltaGets.Sign() == 0 || deltaPays.Sign() == 0 {
-				continue
+			// Determine currency pair ordering to match rippled:
+			// XRP always goes first (noswap if gets is XRP, swap if pays is XRP),
+			// otherwise alphabetical by issue string.
+			getsKey := formatCurrencyKey(finalGets)
+			paysKey := formatCurrencyKey(finalPays)
+
+			noswap := true
+			if finalGets.isXRP {
+				noswap = true
+			} else if finalPays.isXRP {
+				noswap = false
+			} else {
+				noswap = getsKey < paysKey
 			}
 
-			// Determine currency pair (canonical ordering)
-			currA := formatCurrencyKey(finalGets)
-			currB := formatCurrencyKey(finalPays)
-
-			// Ensure canonical ordering: XRP first, then alphabetical
-			swapped := false
-			if currB < currA {
-				currA, currB = currB, currA
-				deltaGets, deltaPays = deltaPays, deltaGets
-				swapped = true
+			var first, second *big.Float
+			var currA, currB string
+			if noswap {
+				first = deltaGets
+				second = deltaPays
+				currA = getsKey
+				currB = paysKey
+			} else {
+				first = deltaPays
+				second = deltaGets
+				currA = paysKey
+				currB = getsKey
 			}
-			_ = swapped
 
 			pairKey := currA + "|" + currB
 
-			// Compute exchange rate
-			rate := new(big.Float).Quo(
-				new(big.Float).Abs(deltaPays),
-				new(big.Float).Abs(deltaGets),
-			)
+			// Compute exchange rate: rate = first / second (matching rippled's divide)
+			if second.Sign() == 0 {
+				continue
+			}
+			rate := new(big.Float).Quo(first, second)
+
+			// Take absolute values for volume accumulation
+			first = new(big.Float).Abs(first)
+			second = new(big.Float).Abs(second)
 
 			// Update or create change entry
 			bc, exists := changes[pairKey]
@@ -197,9 +216,9 @@ func (m *BookChangesMethod) Handle(ctx *types.RpcContext, params json.RawMessage
 				bc.Close.Set(rate)
 			}
 
-			// Accumulate volumes (absolute values)
-			bc.VolumeA.Add(bc.VolumeA, new(big.Float).Abs(deltaGets))
-			bc.VolumeB.Add(bc.VolumeB, new(big.Float).Abs(deltaPays))
+			// Accumulate volumes (already absolute values)
+			bc.VolumeA.Add(bc.VolumeA, first)
+			bc.VolumeB.Add(bc.VolumeB, second)
 		}
 
 		return true

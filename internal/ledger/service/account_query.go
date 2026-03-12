@@ -6,9 +6,10 @@ import (
 
 	addresscodec "github.com/LeJamon/goXRPLd/codec/addresscodec"
 	"github.com/LeJamon/goXRPLd/internal/ledger"
-	"github.com/LeJamon/goXRPLd/keylet"
-	"github.com/LeJamon/goXRPLd/internal/tx"
 	"github.com/LeJamon/goXRPLd/internal/ledger/state"
+	"github.com/LeJamon/goXRPLd/internal/tx"
+	"github.com/LeJamon/goXRPLd/internal/tx/credential"
+	"github.com/LeJamon/goXRPLd/keylet"
 )
 
 // AccountInfoResult contains account information from the ledger
@@ -28,6 +29,8 @@ type AccountInfoResult struct {
 	LedgerIndex       uint32
 	LedgerHash        [32]byte
 	Validated         bool
+	RawData           []byte   // Raw SLE binary for full deserialization
+	Index             [32]byte // SLE key (keylet hash)
 }
 
 // GetAccountInfo retrieves account information from the ledger
@@ -115,7 +118,9 @@ func (s *Service) GetAccountInfo(account string, ledgerIndex string) (*AccountIn
 		PreviousTxnLgrSeq: accountRoot.PreviousTxnLgrSeq,
 		LedgerIndex:       targetLedger.Sequence(),
 		LedgerHash:        targetLedger.Hash(),
-		Validated:          validated,
+		Validated:         validated,
+		RawData:           data,
+		Index:             accountKey.Key,
 	}, nil
 }
 
@@ -1418,8 +1423,10 @@ type DepositAuthorizedResult struct {
 	Validated          bool
 }
 
-// GetDepositAuthorized checks if a source account is authorized to deposit to a destination account
-func (s *Service) GetDepositAuthorized(sourceAccount string, destinationAccount string, ledgerIndex string) (*DepositAuthorizedResult, error) {
+// GetDepositAuthorized checks if a source account is authorized to deposit to a destination account.
+// credentials is an optional list of credential ledger entry IDs (32-byte hashes) to validate.
+// Reference: rippled DepositAuthorized.cpp doDepositAuthorized()
+func (s *Service) GetDepositAuthorized(sourceAccount string, destinationAccount string, ledgerIndex string, credentials [][32]byte) (*DepositAuthorizedResult, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -1481,17 +1488,85 @@ func (s *Service) GetDepositAuthorized(sourceAccount string, destinationAccount 
 
 	// If source == destination, deposit is always authorized (self-deposit)
 	sameAccount := srcID == dstID
+	reqAuth := depositAuthRequired && !sameAccount
+
+	// Validate credentials against ledger state if provided
+	// Reference: rippled DepositAuthorized.cpp credential validation loop
+	credentialsPresent := len(credentials) > 0
+	type credKey struct {
+		issuer         [20]byte
+		credentialType string
+	}
+	var sortedCreds []keylet.CredentialPair
+	if credentialsPresent {
+		seen := make(map[credKey]struct{})
+		parentCloseTime := uint32(targetLedger.ParentCloseTime().Unix())
+
+		for _, credID := range credentials {
+			// Look up credential by its hash ID
+			credKeylet := keylet.CredentialByID(credID)
+			credData, err := targetLedger.Read(credKeylet)
+			if err != nil || credData == nil {
+				return nil, errors.New("bad_credentials: credentials don't exist")
+			}
+
+			cred, err := credential.ParseCredentialEntry(credData)
+			if err != nil {
+				return nil, errors.New("bad_credentials: credentials don't exist")
+			}
+
+			// Check acceptance
+			if !cred.IsAccepted() {
+				return nil, errors.New("bad_credentials: credentials aren't accepted")
+			}
+
+			// Check expiry
+			if credential.CheckCredentialExpired(cred, parentCloseTime) {
+				return nil, errors.New("bad_credentials: credentials are expired")
+			}
+
+			// Check ownership - subject must be the source account
+			if cred.Subject != srcID {
+				return nil, errors.New("bad_credentials: credentials doesn't belong to the root account")
+			}
+
+			// Check for duplicates (same issuer + credentialType)
+			ck := credKey{
+				issuer:         cred.Issuer,
+				credentialType: string(cred.CredentialType),
+			}
+			if _, dup := seen[ck]; dup {
+				return nil, errors.New("bad_credentials: duplicates in credentials")
+			}
+			seen[ck] = struct{}{}
+
+			sortedCreds = append(sortedCreds, keylet.CredentialPair{
+				Issuer:         cred.Issuer,
+				CredentialType: cred.CredentialType,
+			})
+		}
+	}
 
 	// Determine authorization status
 	depositAuthorized := true
-	if depositAuthRequired && !sameAccount {
-		// Need to check for DepositPreauth
+	if reqAuth {
+		// Check simple deposit preauth first
 		depositPreauthKey := keylet.DepositPreauth(dstID, srcID)
 		exists, err := targetLedger.Exists(depositPreauthKey)
 		if err != nil {
 			return nil, errors.New("failed to check deposit preauthorization: " + err.Error())
 		}
 		depositAuthorized = exists
+
+		// If not authorized by simple preauth, check credential-based preauth
+		if !depositAuthorized && credentialsPresent {
+			credPreauthKey := keylet.DepositPreauthCredentials(dstID, sortedCreds)
+			exists, err := targetLedger.Exists(credPreauthKey)
+			if err != nil {
+				return nil, errors.New("failed to check credential deposit preauthorization: " + err.Error())
+			}
+			depositAuthorized = exists
+		}
 	}
 
 	return &DepositAuthorizedResult{

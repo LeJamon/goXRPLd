@@ -86,7 +86,7 @@ type LedgerService interface {
 	// Gateway operations
 	GetGatewayBalances(account string, hotWallets []string, ledgerIndex string) (*GatewayBalancesResult, error)
 	GetNoRippleCheck(account string, role string, ledgerIndex string, limit uint32, transactions bool) (*NoRippleCheckResult, error)
-	GetDepositAuthorized(sourceAccount string, destinationAccount string, ledgerIndex string) (*DepositAuthorizedResult, error)
+	GetDepositAuthorized(sourceAccount string, destinationAccount string, ledgerIndex string, credentials []string) (*DepositAuthorizedResult, error)
 
 	// NFT operations
 	GetNFTBuyOffers(nftID [32]byte, ledgerIndex string, limit uint32, marker string) (*NFTOffersResult, error)
@@ -135,6 +135,8 @@ type AccountInfo struct {
 	LedgerIndex       uint32
 	LedgerHash        string
 	Validated         bool
+	RawData           []byte // Raw SLE binary for full deserialization via binarycodec
+	Index             string // SLE key/hash (hex string)
 }
 
 // LedgerReader provides read access to a ledger

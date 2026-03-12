@@ -7,7 +7,8 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/rpc/types"
 )
 
-// FeeMethod handles the fee RPC method
+// FeeMethod handles the fee RPC method.
+// See rippled: src/xrpld/rpc/handlers/Fee1.cpp -> TxQ::doRPC()
 type FeeMethod struct{}
 
 func (m *FeeMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (interface{}, *types.RpcError) {
@@ -16,15 +17,15 @@ func (m *FeeMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (inter
 	}
 
 	// Get fee settings from ledger service
-	baseFee, reserveBase, reserveInc := types.Services.Ledger.GetCurrentFees()
+	baseFee, _, _ := types.Services.Ledger.GetCurrentFees()
 
 	// Get current ledger index
 	currentLedgerIndex := types.Services.Ledger.GetCurrentLedgerIndex()
 
 	baseFeeStr := fmt.Sprintf("%d", baseFee)
 
-	// Reference fee level is 256 (1 unit in fee level = 256)
-	// In standalone mode, all fee levels are at reference
+	// Reference fee level is 256 (baseLevel in rippled).
+	// Without a real TxQ implementation, all fee levels stay at the reference level.
 	referenceFeeLevel := "256"
 
 	response := map[string]interface{}{
@@ -45,19 +46,6 @@ func (m *FeeMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (inter
 			"reference_level":   referenceFeeLevel,
 		},
 		"max_queue_size": "480",
-	}
-
-	// Support counters parameter
-	var request struct {
-		Counters bool `json:"counters,omitempty"`
-	}
-	if params != nil {
-		json.Unmarshal(params, &request)
-	}
-
-	if request.Counters {
-		response["reserve_base_drops"] = fmt.Sprintf("%d", reserveBase)
-		response["reserve_inc_drops"] = fmt.Sprintf("%d", reserveInc)
 	}
 
 	return response, nil
