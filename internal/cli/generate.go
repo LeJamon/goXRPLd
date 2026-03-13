@@ -108,10 +108,10 @@ ledger_replay = 0
 ssl_verify = 1
 
 # Database path
-database_path = "/var/lib/xrpld/db"
+database_path = "./data/db"
 
 # Diagnostics
-debug_logfile = "/var/log/xrpld/debug.log"
+debug_logfile = "./data/log/debug.log"
 
 # Misc
 node_size = "medium"
@@ -159,8 +159,8 @@ send_queue_limit = 500
 # =============================================================================
 
 [node_db]
-type = "NuDB"
-path = "/var/lib/xrpld/db/nudb"
+type = "pebble"
+path = "./data/db/pebble"
 online_delete = 512
 advisory_delete = 0
 cache_size = 16384
