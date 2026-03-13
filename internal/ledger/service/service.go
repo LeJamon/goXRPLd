@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"sync"
 	"time"
@@ -402,6 +403,12 @@ func (s *Service) AcceptLedger() (uint32, error) {
 		callback := s.eventCallback
 		go callback(event)
 	}
+
+	s.logger.Info("Ledger accepted",
+		"sequence", closedSeq,
+		"hash", fmt.Sprintf("%x", closedLedgerHash[:8]),
+		"txs", len(txResults),
+	)
 
 	return closedSeq, nil
 }

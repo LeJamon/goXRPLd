@@ -2,9 +2,9 @@ package rpc
 
 import (
 	"encoding/json"
-	"log"
 	"sync"
 
+	xrpllog "github.com/LeJamon/goXRPLd/log"
 	"github.com/LeJamon/goXRPLd/internal/rpc/subscription"
 	"github.com/LeJamon/goXRPLd/internal/rpc/types"
 )
@@ -68,7 +68,7 @@ func (p *Publisher) PublishLedgerClosed(event *LedgerCloseEvent) {
 
 	data, err := json.Marshal(event)
 	if err != nil {
-		log.Printf("Failed to marshal LedgerCloseEvent: %v", err)
+		xrpllog.Named(xrpllog.PartitionRPC).Error("Failed to marshal LedgerCloseEvent", "err", err)
 		return
 	}
 
@@ -83,7 +83,7 @@ func (p *Publisher) PublishTransaction(event *TransactionEvent, affectedAccounts
 
 	data, err := json.Marshal(event)
 	if err != nil {
-		log.Printf("Failed to marshal TransactionEvent: %v", err)
+		xrpllog.Named(xrpllog.PartitionRPC).Error("Failed to marshal TransactionEvent", "err", err)
 		return
 	}
 
@@ -104,7 +104,7 @@ func (p *Publisher) PublishValidation(event *ValidationEvent) {
 
 	data, err := json.Marshal(event)
 	if err != nil {
-		log.Printf("Failed to marshal ValidationEvent: %v", err)
+		xrpllog.Named(xrpllog.PartitionRPC).Error("Failed to marshal ValidationEvent", "err", err)
 		return
 	}
 
@@ -119,7 +119,7 @@ func (p *Publisher) PublishServerStatus(event *ServerStatusEvent) {
 
 	data, err := json.Marshal(event)
 	if err != nil {
-		log.Printf("Failed to marshal ServerStatusEvent: %v", err)
+		xrpllog.Named(xrpllog.PartitionRPC).Error("Failed to marshal ServerStatusEvent", "err", err)
 		return
 	}
 
@@ -135,7 +135,7 @@ func (p *Publisher) PublishConsensusPhase(phase string) {
 	event := NewConsensusEvent(phase)
 	data, err := json.Marshal(event)
 	if err != nil {
-		log.Printf("Failed to marshal ConsensusEvent: %v", err)
+		xrpllog.Named(xrpllog.PartitionRPC).Error("Failed to marshal ConsensusEvent", "err", err)
 		return
 	}
 
@@ -150,7 +150,7 @@ func (p *Publisher) PublishManifest(event *ManifestEvent) {
 
 	data, err := json.Marshal(event)
 	if err != nil {
-		log.Printf("Failed to marshal ManifestEvent: %v", err)
+		xrpllog.Named(xrpllog.PartitionRPC).Error("Failed to marshal ManifestEvent", "err", err)
 		return
 	}
 
@@ -165,7 +165,7 @@ func (p *Publisher) PublishPeerStatus(event *PeerStatusEvent) {
 
 	data, err := json.Marshal(event)
 	if err != nil {
-		log.Printf("Failed to marshal PeerStatusEvent: %v", err)
+		xrpllog.Named(xrpllog.PartitionRPC).Error("Failed to marshal PeerStatusEvent", "err", err)
 		return
 	}
 
@@ -180,7 +180,7 @@ func (p *Publisher) PublishProposedTransaction(event *ProposedTransactionEvent, 
 
 	data, err := json.Marshal(event)
 	if err != nil {
-		log.Printf("Failed to marshal ProposedTransactionEvent: %v", err)
+		xrpllog.Named(xrpllog.PartitionRPC).Error("Failed to marshal ProposedTransactionEvent", "err", err)
 		return
 	}
 
@@ -200,7 +200,7 @@ func (p *Publisher) PublishOrderBookChange(event *OrderBookChangeEvent, takerGet
 
 	data, err := json.Marshal(event)
 	if err != nil {
-		log.Printf("Failed to marshal OrderBookChangeEvent: %v", err)
+		xrpllog.Named(xrpllog.PartitionRPC).Error("Failed to marshal OrderBookChangeEvent", "err", err)
 		return
 	}
 
