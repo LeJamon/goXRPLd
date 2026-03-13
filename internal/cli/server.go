@@ -170,9 +170,16 @@ func runServer(cmd *cobra.Command, args []string) {
 		serverLog.Info("Genesis config using built-in defaults")
 	}
 
+	// Get network ID from config
+	networkID, err := globalConfig.GetNetworkID()
+	if err != nil {
+		serverLog.Fatal("Failed to get network ID", "err", err)
+	}
+
 	// Initialize ledger service
 	cfg := service.Config{
 		Standalone:   standalone,
+		NetworkID:    uint32(networkID),
 		NodeStore:    db,
 		RelationalDB: repoManager,
 		Logger:       rootLogger,

@@ -29,6 +29,11 @@ type Config struct {
 	// Standalone indicates whether the node is running in standalone mode
 	Standalone bool
 
+	// NetworkID is the network identifier for this node.
+	// Legacy networks (ID <= 1024) reject transactions that include NetworkID.
+	// New networks (ID > 1024) require NetworkID in transactions.
+	NetworkID uint32
+
 	// GenesisConfig is the configuration for creating the genesis ledger
 	GenesisConfig genesis.Config
 
@@ -190,8 +195,6 @@ func (s *Service) Start() error {
 	)
 
 	s.genesisLedger = genesisLedger
-	s.closedLedger = genesisLedger
-	s.validatedLedger = genesisLedger
 	s.ledgerHistory[genesisLedger.Sequence()] = genesisLedger
 
 	hash := genesisLedger.Hash()
@@ -200,8 +203,25 @@ func (s *Service) Start() error {
 		"hash", strconv.FormatUint(uint64(hash[0])<<24|uint64(hash[1])<<16|uint64(hash[2])<<8|uint64(hash[3]), 16)+"...",
 	)
 
-	// Create the first open ledger (ledger 2)
-	openLedger, err := ledger.NewOpen(genesisLedger, time.Now())
+	// Match rippled's startGenesisLedger: create ledger 2 from genesis,
+	// immediately close it, and use it as the LCL. The open ledger is then 3.
+	// Reference: rippled Application.cpp startGenesisLedger()
+	nextLedger, err := ledger.NewOpen(genesisLedger, time.Now())
+	if err != nil {
+		return errors.New("failed to create next ledger: " + err.Error())
+	}
+	if err := nextLedger.Close(time.Now(), 0); err != nil {
+		return errors.New("failed to close initial ledger: " + err.Error())
+	}
+	if err := nextLedger.SetValidated(); err != nil {
+		return errors.New("failed to validate initial ledger: " + err.Error())
+	}
+	s.closedLedger = nextLedger
+	s.validatedLedger = nextLedger
+	s.ledgerHistory[nextLedger.Sequence()] = nextLedger
+
+	// Create the open ledger (ledger 3)
+	openLedger, err := ledger.NewOpen(nextLedger, time.Now())
 	if err != nil {
 		return errors.New("failed to create open ledger: " + err.Error())
 	}

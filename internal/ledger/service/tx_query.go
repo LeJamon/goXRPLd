@@ -55,6 +55,7 @@ func (s *Service) SubmitTransaction(transaction tx.Transaction) (*SubmitResult, 
 		ReserveIncrement:          reserveIncrement,
 		LedgerSequence:            s.openLedger.Sequence(),
 		SkipSignatureVerification: s.config.Standalone, // Skip signatures in standalone mode
+		NetworkID:                 s.config.NetworkID,
 		Logger:                    s.config.Logger,
 	}
 
@@ -214,6 +215,7 @@ func (s *Service) SimulateTransaction(transaction tx.Transaction) (*SubmitResult
 		ReserveIncrement:          simReserveIncrement,
 		LedgerSequence:            s.openLedger.Sequence(),
 		SkipSignatureVerification: true, // Skip signatures for simulation
+		NetworkID:                 s.config.NetworkID,
 		Logger:                    s.config.Logger,
 	}
 
