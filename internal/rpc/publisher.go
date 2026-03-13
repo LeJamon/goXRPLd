@@ -3,7 +3,6 @@ package rpc
 import (
 	"encoding/json"
 	"log"
-	"sync"
 
 	"github.com/LeJamon/goXRPLd/internal/rpc/subscription"
 	"github.com/LeJamon/goXRPLd/internal/rpc/types"
@@ -50,7 +49,6 @@ type EventPublisher interface {
 // Publisher implements EventPublisher using subscription.Manager
 type Publisher struct {
 	manager *subscription.Manager
-	mu      sync.RWMutex
 }
 
 // NewPublisher creates a new Publisher with the given subscription manager
