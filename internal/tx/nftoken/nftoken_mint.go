@@ -134,10 +134,9 @@ func (n *NFTokenMint) Validate() error {
 	// tokenOfferCreatePreflight in rippled. Mint always creates a sell offer.
 	// Reference: rippled NFTokenMint.cpp preflight → tokenOfferCreatePreflight
 	if n.Amount != nil {
-		// Negative amount check (fixNFTokenNegOffer is VoteObsolete, always enabled)
-		if n.Amount.IsNegative() {
-			return tx.Errorf(tx.TemBAD_AMOUNT, "offer amount cannot be negative")
-		}
+		// Negative amount check — only when fixNFTokenNegOffer is enabled
+		// Reference: rippled NFTokenUtils.cpp tokenOfferCreatePreflight line 847
+		// Note: checked at runtime in Apply() since Validate() doesn't have amendment context
 
 		// IOU-specific checks
 		if !n.Amount.IsNative() {
@@ -270,6 +269,12 @@ func (m *NFTokenMint) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Preclaim checks for the combined mint+offer path.
 	// Reference: rippled NFTokenMint.cpp preclaim → tokenOfferCreatePreclaim
 	if m.Amount != nil {
+		// Negative amount check — gated by fixNFTokenNegOffer amendment
+		// Reference: rippled NFTokenUtils.cpp tokenOfferCreatePreflight line 847
+		if m.Amount.IsNegative() && ctx.Rules().Enabled(amendment.FeatureFixNFTokenNegOffer) {
+			return tx.TemBAD_AMOUNT
+		}
+
 		// Check expiration
 		if m.Expiration != nil && *m.Expiration <= ctx.Config.ParentCloseTime {
 			return tx.TecEXPIRED
@@ -461,7 +466,7 @@ func (m *NFTokenMint) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Reference: rippled NFTokenMint.cpp doApply — tokenOfferCreateApply
 	if m.Amount != nil {
 		seqProxy := m.GetCommon().SeqProxy()
-		result := tokenOfferCreateApply(ctx, accountID, tokenID, m.Amount, m.Destination, m.Expiration, seqProxy)
+		result := tokenOfferCreateApply(ctx, accountID, tokenID, m.Amount, m.Destination, m.Expiration, seqProxy, mPriorBalance)
 		if result != tx.TesSUCCESS {
 			return result
 		}

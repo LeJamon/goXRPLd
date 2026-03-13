@@ -49,10 +49,10 @@ func (n *NFTokenModify) Validate() error {
 		return err
 	}
 
-	// Check for invalid flags (no flags are valid for NFTokenModify)
+	// Check for invalid flags
 	// Reference: rippled NFTokenModify.cpp:38 - if (ctx.tx.getFlags() & tfUniversalMask)
-	if n.GetFlags() != 0 {
-		return tx.Errorf(tx.TemINVALID_FLAG, "NFTokenModify does not accept any flags")
+	if err := tx.CheckFlags(n.GetFlags(), tx.TfUniversalMask); err != nil {
+		return err
 	}
 
 	if n.NFTokenID == "" {
@@ -66,8 +66,8 @@ func (n *NFTokenModify) Validate() error {
 	}
 
 	// URI validation: if present, must not be empty and not exceed maxTokenURILength
-	// Reference: rippled NFTokenModify.cpp:44-47
-	if n.URI != "" {
+	// Reference: rippled NFTokenModify.cpp:44-47 - if (auto uri = ctx.tx[~sfURI])
+	if n.URI != "" || n.HasField("URI") {
 		// URI in transactions is hex-encoded, so actual byte length is len/2
 		uriBytes := len(n.URI) / 2
 		if uriBytes == 0 {
