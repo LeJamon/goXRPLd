@@ -41,9 +41,9 @@ func (n *NodeDBConfig) Validate() error {
 	if n.Type == "" {
 		return fmt.Errorf("node_db type is required")
 	}
-	validTypes := []string{"NuDB", "RocksDB", "nudb", "rocksdb"}
+	validTypes := []string{"pebble", "Pebble"}
 	if !contains_slice(validTypes, n.Type) {
-		return fmt.Errorf("invalid node_db type: %s (valid options: NuDB, RocksDB)", n.Type)
+		return fmt.Errorf("invalid node_db type: %s (valid options: pebble)", n.Type)
 	}
 
 	// Validate path
@@ -150,10 +150,8 @@ func (s *SQLiteConfig) Validate() error {
 // GetType returns the normalized database type
 func (n *NodeDBConfig) GetType() string {
 	switch n.Type {
-	case "nudb", "NuDB":
-		return "NuDB"
-	case "rocksdb", "RocksDB":
-		return "RocksDB"
+	case "pebble", "Pebble":
+		return "pebble"
 	default:
 		return n.Type
 	}

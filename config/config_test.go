@@ -43,7 +43,7 @@ ip = "127.0.0.1"
 protocol = "http"
 
 [node_db]
-type = "NuDB"
+type = "pebble"
 path = "/tmp/test/db"
 cache_size = 16384
 cache_age = 5
@@ -100,7 +100,7 @@ func TestLoadConfig(t *testing.T) {
 	require.NotNil(t, config)
 
 	assert.Equal(t, []string{"port_test"}, config.Server.Ports)
-	assert.Equal(t, "NuDB", config.NodeDB.Type)
+	assert.Equal(t, "pebble", config.NodeDB.Type)
 	assert.Equal(t, "/tmp/test/db", config.NodeDB.Path)
 
 	portConfig, exists := config.GetPort("port_test")
@@ -147,7 +147,7 @@ ip = "127.0.0.1"
 protocol = "http"
 
 [node_db]
-type = "NuDB"
+type = "pebble"
 path = "/tmp/test/db"
 cache_size = 16384
 cache_age = 5
@@ -259,7 +259,7 @@ ip = "127.0.0.1"
 protocol = "http"
 
 [node_db]
-type = "NuDB"
+type = "pebble"
 path = "/tmp/test/db"
 
 [overlay]
@@ -341,7 +341,7 @@ func TestConfigValidation_CompleteConfig(t *testing.T) {
 			},
 		},
 		NodeDB: NodeDBConfig{
-			Type: "NuDB",
+			Type: "pebble",
 			Path: "/tmp/test",
 		},
 		DatabasePath:     "/tmp/test",
@@ -397,7 +397,7 @@ func TestConfigValidation_InvalidPort(t *testing.T) {
 			},
 		},
 		NodeDB: NodeDBConfig{
-			Type: "NuDB",
+			Type: "pebble",
 			Path: "/tmp/test",
 		},
 		DatabasePath:     "/tmp/test",
