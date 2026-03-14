@@ -540,7 +540,8 @@ func RippleCalculate(
 	sandbox.SetTransactionContext(txHash, ledgerSeq)
 
 	// Convert paths to strands
-	strands, strandResult := ToStrands(sandbox, srcAccount, dstAccount, dstAmount, srcAmount, paths, addDefaultPath)
+	// opts: [0]=offerCrossing (false for payments), [1]=fix1781
+	strands, strandResult := ToStrands(sandbox, srcAccount, dstAccount, dstAmount, srcAmount, paths, addDefaultPath, false, rcOpts.fix1781)
 	if strandResult != tx.TesSUCCESS || len(strands) == 0 {
 		if strandResult == tx.TesSUCCESS {
 			strandResult = tx.TecPATH_DRY
@@ -612,6 +613,9 @@ type rippleCalculateOpts struct {
 	fixAMMv1_1          bool
 	fixAMMv1_2          bool
 	fixAMMOverflowOffer bool
+	// fix1781 gates XRP endpoint loop detection in strand building.
+	// Reference: rippled XRPEndpointStep.cpp check(): ctx.view.rules().enabled(fix1781)
+	fix1781 bool
 }
 
 // WithAmendments passes amendment flags and ledger timing to RippleCalculate,
@@ -635,6 +639,15 @@ func WithAMMAmendments(fixAMMv1_1, fixAMMv1_2, fixAMMOverflowOffer bool) RippleC
 		o.fixAMMv1_1 = fixAMMv1_1
 		o.fixAMMv1_2 = fixAMMv1_2
 		o.fixAMMOverflowOffer = fixAMMOverflowOffer
+	}
+}
+
+// WithFix1781 enables the fix1781 amendment behavior in strand building.
+// When enabled, XRP endpoint steps are included in circular payment loop detection.
+// Reference: rippled XRPEndpointStep.cpp check(): ctx.view.rules().enabled(fix1781)
+func WithFix1781(enabled bool) RippleCalculateOption {
+	return func(o *rippleCalculateOpts) {
+		o.fix1781 = enabled
 	}
 }
 

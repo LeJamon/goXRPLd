@@ -573,6 +573,7 @@ func (o *OfferCreate) applyGuts(ctx *tx.ApplyContext, sb, sbCancel *payment.Paym
 			rules.Enabled(amendment.FeatureFixAMMv1_1),
 			rules.Enabled(amendment.FeatureFixAMMv1_2),
 			rules.Enabled(amendment.FeatureFixAMMOverflowOffer),
+			rules.Enabled(amendment.FeatureFix1781),
 			o.DomainID, // Domain ID for permissioned DEX offer crossing
 		)
 
