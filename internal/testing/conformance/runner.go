@@ -188,6 +188,14 @@ func (r *runner) setupEnv(cfg EnvConfig) {
 	r.env.Close()
 	r.env.SetTime(rippleEpoch)
 
+	// Disable open-ledger fee adequacy checks for conformance replay.
+	// In rippled's test framework, transactions route through the TxQ which
+	// queues under-priced transactions and applies them to the closed ledger
+	// where fee adequacy is not checked. The engine still rejects zero-fee
+	// transactions (matching TxQ's absolute minimum), but allows non-zero
+	// fees below the open-ledger threshold.
+	r.env.SetOpenLedger(false)
+
 	// Register master account
 	master := jtx.MasterAccount()
 	r.accounts["master"] = master

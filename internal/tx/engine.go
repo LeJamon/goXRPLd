@@ -1073,51 +1073,50 @@ func (e *Engine) preclaim(tx Transaction, txHash [32]byte) Result {
 	// When a delegate is present, the fee is checked against the delegate's balance.
 	fee := e.calculateFee(tx)
 
-	// Only check fee is sufficient when the ledger is open.
+	// Calculate the minimum base fee for this transaction type.
+	// This is used both for open-ledger fee adequacy (full check) and
+	// closed-ledger zero-fee rejection (TxQ minimum).
+	// Reference: rippled applySteps.cpp — calculateBaseFee() dispatches to the
+	// tx-type-specific override; checkFee() uses that result directly.
+	var baseFeeForTx uint64
+	if feeCalc, ok := tx.(CustomBaseFeeCalculator); ok {
+		baseFeeForTx = feeCalc.CalculateBaseFee(e.view, e.config)
+	} else {
+		baseFeeForTx = e.config.BaseFee
+		if IsMultiSigned(tx) {
+			baseFeeForTx = CalculateMultiSigFee(e.config.BaseFee, len(common.Signers))
+		}
+	}
+	// SetRegularKey special case: free password change when lsfPasswordSpent not set.
+	// Reference: rippled SetRegularKey.cpp calculateBaseFee
+	if tx.TxType() == TypeRegularKeySet {
+		signedWithMaster := false
+		if spk := common.SigningPubKey; spk != "" {
+			sigAddr, sigErr := addresscodec.EncodeClassicAddressFromPublicKeyHex(spk)
+			if sigErr == nil && sigAddr == common.Account {
+				signedWithMaster = true
+			}
+		} else if e.config.SkipSignatureVerification && !IsMultiSigned(tx) {
+			signedWithMaster = true
+		}
+		if signedWithMaster && account.Flags&state.LsfPasswordSpent == 0 {
+			baseFeeForTx = 0
+		}
+	}
+
+	// Zero-fee rejection: always reject fee=0 when baseFee > 0, regardless of
+	// open/closed ledger. In rippled, the TxQ rejects zero-fee transactions
+	// because feeLevelPaid=0 is below the minimum queue threshold.
+	// This ensures password-spent and similar checks work in conformance mode.
+	if fee == 0 && baseFeeForTx > 0 {
+		return TelINSUF_FEE_P
+	}
+
+	// Full fee adequacy check: only when the ledger is open.
 	// Reference: rippled Transactor::checkFee — "Only check fee is
 	// sufficient when the ledger is open."
 	if e.config.OpenLedger {
-		// Calculate the minimum fee using rippled's virtual calculateBaseFee() pattern.
-		// Transaction types that implement CustomBaseFeeCalculator REPLACE the standard
-		// base fee calculation entirely (including signer multiplication).
-		// Reference: rippled applySteps.cpp — calculateBaseFee() dispatches to the
-		// tx-type-specific override; checkFee() uses that result directly.
-		//
-		// Special case: SetRegularKey with lsfPasswordSpent not set gets baseFee=0,
-		// so fee=0 is valid (one-time free password change).
-		// Reference: rippled SetRegularKey.cpp calculateBaseFee
-		var minFee uint64
-		if feeCalc, ok := tx.(CustomBaseFeeCalculator); ok {
-			// Transaction overrides calculateBaseFee() — use its result directly,
-			// WITHOUT additional signer multiplication.
-			// Reference: rippled DeleteAccount::calculateBaseFee returns view.fees().increment
-			// (no signer multiplication), LedgerStateFix::calculateBaseFee similarly.
-			minFee = feeCalc.CalculateBaseFee(e.view, e.config)
-		} else {
-			// Standard base fee calculation: baseFee * (1 + numSigners) for multi-signed.
-			// Reference: rippled Transactor::calculateBaseFee — baseFee + (signerCount * baseFee)
-			minFee = e.calculateFee(tx)
-		}
-		if tx.TxType() == TypeRegularKeySet {
-			// Free password change: baseFee=0 when signed with master key and
-			// lsfPasswordSpent is not set.
-			// Reference: rippled SetRegularKey.cpp calculateBaseFee
-			signedWithMaster := false
-			if spk := common.SigningPubKey; spk != "" {
-				sigAddr, sigErr := addresscodec.EncodeClassicAddressFromPublicKeyHex(spk)
-				if sigErr == nil && sigAddr == common.Account {
-					signedWithMaster = true
-				}
-			} else if e.config.SkipSignatureVerification && !IsMultiSigned(tx) {
-				// In test mode without signatures, assume master key (single-signed only).
-				// Multi-signed transactions have SigningPubKey="" but are NOT master-signed.
-				signedWithMaster = true
-			}
-			if signedWithMaster && account.Flags&state.LsfPasswordSpent == 0 {
-				minFee = 0
-			}
-		}
-		if fee < minFee {
+		if fee < baseFeeForTx {
 			return TelINSUF_FEE_P
 		}
 	}

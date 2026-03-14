@@ -266,3 +266,9 @@ func NewTestEnvWithConfig(t *testing.T, cfg genesis.Config) *TestEnv {
 
 	return env
 }
+
+// SetOpenLedger controls whether the engine checks fee adequacy.
+// When false, fee adequacy checks are skipped (matching rippled's closed-ledger behavior).
+func (e *TestEnv) SetOpenLedger(open bool) {
+	e.openLedger = open
+}
