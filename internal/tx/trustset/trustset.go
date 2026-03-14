@@ -221,6 +221,20 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Get the account ID
 	accountID, _ := state.DecodeAccountID(ctx.Account.Account)
 
+	// Capture the initial owner count and compute the reserve once,
+	// matching rippled's SetTrust.cpp:385-407 which reads uOwnerCount
+	// and computes reserveCreate before any modifications.
+	uOwnerCount := ctx.Account.OwnerCount
+	var reserveCreate uint64
+	if uOwnerCount < 2 {
+		reserveCreate = 0
+	} else {
+		reserveCreate = ctx.AccountReserve(uOwnerCount + 1)
+	}
+	// mPriorBalance is the balance BEFORE fee deduction, matching rippled's
+	// Transactor::mPriorBalance (set before doApply is called).
+	mPriorBalance := ctx.PriorBalance(t.Fee)
+
 	// Determine low/high accounts (for consistent trust line ordering)
 	bHigh := state.CompareAccountIDsForLine(accountID, issuerAccountID) > 0
 
@@ -385,9 +399,8 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 
 		// Check account has reserve for new trust line
-		// Reference: rippled SetTrust.cpp line 710: tecNO_LINE_INSUF_RESERVE for new lines
-		reserveCreate := ctx.ReserveForNewObject(ctx.Account.OwnerCount)
-		if ctx.Account.Balance < reserveCreate {
+		// Reference: rippled SetTrust.cpp line 710: mPriorBalance < reserveCreate
+		if mPriorBalance < reserveCreate {
 			return tx.TecNO_LINE_INSUF_RESERVE
 		}
 
@@ -803,12 +816,9 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 			}
 
 			// Check reserve increase affordability
-			// Reference: rippled SetTrust.cpp lines 681-688
-			if bReserveIncrease {
-				reserveCreate := ctx.ReserveForNewObject(ctx.Account.OwnerCount)
-				if ctx.Account.Balance < reserveCreate {
-					return tx.TecINSUF_RESERVE_LINE
-				}
+			// Reference: rippled SetTrust.cpp line 681: mPriorBalance < reserveCreate
+			if bReserveIncrease && mPriorBalance < reserveCreate {
+				return tx.TecINSUF_RESERVE_LINE
 			}
 
 			// Write issuer account back if its OwnerCount changed
