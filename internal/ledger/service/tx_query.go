@@ -93,7 +93,10 @@ func (s *Service) SubmitTransaction(transaction tx.Transaction, rawBlob []byte) 
 			copy(accountID[:], accountBytes)
 		}
 
-		// Compute transaction hash
+		// Compute transaction hash from the original signed blob.
+		// We set raw bytes so ComputeTransactionHash uses the exact signed bytes
+		// rather than re-serializing (which can produce a different blob/hash).
+		transaction.SetRawBytes(rawBlob)
 		txHash, hashErr := tx.ComputeTransactionHash(transaction)
 		if hashErr == nil {
 			s.pendingTxs = append(s.pendingTxs, pendingTx{
