@@ -355,7 +355,6 @@ func (n *NFTokenMint) Apply(ctx *tx.ApplyContext) tx.Result {
 				}
 			}
 		}
-
 	}
 
 	// Get the token sequence from MintedNFTokens.

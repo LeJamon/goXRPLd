@@ -513,7 +513,6 @@ func redeemIOUWithCleanup(view tx.LedgerView, holderID, ammAccountID [20]byte, a
 		holderLimitIsZero &&
 		holderQInIsZero &&
 		holderQOutIsZero {
-
 		// Decrement holder's owner count
 		if holderAccount != nil && holderAccount.OwnerCount > 0 {
 			holderAccount.OwnerCount--

@@ -1036,22 +1036,6 @@ func calcLPTokensIn(assetBalance, amountOut, lptBalance tx.Amount, tfee uint16, 
 	return multiplyWithRounding(lptBalanceIOU, halfResult, state.RoundUpward)
 }
 
-// proportionalAmount calculates balance * (numerator / denominator) using Amount arithmetic.
-// This replaces float64 fraction calculations like: balance * (tokens / totalTokens)
-func proportionalAmount(balance, numerator, denominator tx.Amount) tx.Amount {
-	if denominator.IsZero() {
-		return zeroAmount(tx.Asset{Currency: balance.Currency, Issuer: balance.Issuer})
-	}
-	// fraction = numerator / denominator
-	balIOU := toIOUForCalc(balance)
-	numIOU := toIOUForCalc(numerator)
-	denIOU := toIOUForCalc(denominator)
-	fraction := numberDiv(numIOU, denIOU)
-	// result = balance * fraction
-	result := balIOU.Mul(fraction, false)
-	return toSTAmountIssue(balance, result)
-}
-
 // toIOUForCalc converts an Amount to IOU representation for precise calculations.
 // This is necessary because XRP/XRP division uses integer arithmetic and loses precision.
 // For example, 1000 XRP / 10000 XRP = 0 with integer division, but should be 0.1 as a fraction.

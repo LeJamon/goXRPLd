@@ -90,7 +90,6 @@ func syncCtxOwnerCount(ctx *tx.ApplyContext) {
 func (n *NFTokenAcceptOffer) executeBrokeredMode(ctx *tx.ApplyContext, accountID [20]byte,
 	buyOffer, sellOffer *state.NFTokenOfferData, buyOfferKey, sellOfferKey keylet.Keylet,
 	buyOfferNegative, sellOfferNegative bool) tx.Result {
-
 	sellerID := sellOffer.Owner
 	buyerID := buyOffer.Owner
 
