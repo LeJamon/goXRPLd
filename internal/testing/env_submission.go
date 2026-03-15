@@ -88,6 +88,7 @@ func (e *TestEnv) Close() {
 	e.currentSeq++
 
 	// Reset the open-ledger transaction counters for the new ledger.
+	e.openLedgerTxns = nil
 	e.txInLedger = 0
 	e.closingTxTotal = 0
 
