@@ -212,6 +212,7 @@ func deleteDelegate(ctx *tx.ApplyContext, delegateKey keylet.Keylet, account [20
 
 	// Erase the delegate entry
 	if err := ctx.View.Erase(delegateKey); err != nil {
+		ctx.Log.Error("delegate set: unable to delete delegate from owner")
 		return tx.TefINTERNAL
 	}
 

@@ -77,6 +77,7 @@ func (d *DIDDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Delete the DID entry
 	if err := ctx.View.Erase(didKey); err != nil {
+		ctx.Log.Error("did delete: unable to delete DID from owner")
 		return tx.TefINTERNAL
 	}
 
