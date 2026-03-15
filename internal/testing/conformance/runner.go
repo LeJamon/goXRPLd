@@ -24,6 +24,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/tx/amm"
 	_ "github.com/LeJamon/goXRPLd/internal/tx/all"
 	"github.com/LeJamon/goXRPLd/internal/tx/trustset"
+	"github.com/LeJamon/goXRPLd/internal/txq"
 )
 
 // Fixture represents a single xrpl-fixtures test vector file.
@@ -117,6 +118,10 @@ type runner struct {
 	env      *jtx.TestEnv
 	accounts map[string]*jtx.Account // name -> account
 
+	// enableTxQ enables TxQ routing for fee escalation and queuing.
+	// Set to true for TxQ test suites (TxQPosNegFlows, TxQMetaInfo).
+	enableTxQ bool
+
 	// ammAddrMap maps fixture AMM account ID hex → our AMM account ID hex.
 	// Populated after AMMCreate succeeds, used to substitute addresses in
 	// subsequent tx_blobs and trust steps. This is needed because the AMM
@@ -139,9 +144,13 @@ func RunFixture(t *testing.T, fixturePath string) {
 		t.Fatalf("Failed to parse fixture %s: %v", fixturePath, err)
 	}
 
+	// Detect TxQ suites by fixture path
+	isTxQSuite := strings.Contains(fixturePath, "/TxQ")
+
 	r := &runner{
-		t:        t,
-		accounts: make(map[string]*jtx.Account),
+		t:         t,
+		accounts:  make(map[string]*jtx.Account),
+		enableTxQ: isTxQSuite,
 	}
 
 	// Detect continuation fixtures: fixtures without fund steps or env config
@@ -511,7 +520,17 @@ func (r *runner) setupEnv(cfg EnvConfig) {
 	genCfg.Fees.ReserveBase = drops.XRPAmount(cfg.ReserveBase)
 	genCfg.Fees.ReserveIncrement = drops.XRPAmount(cfg.ReserveIncrement)
 
-	r.env = jtx.NewTestEnvWithConfig(r.t, genCfg)
+	// Enable TxQ if this is a TxQ test suite. TxQ must be created with the
+	// test env so Submit() routes through fee escalation and queuing.
+	// Use MinimumTxnInLedgerStandalone=2 to match the most common rippled
+	// test config (testPosNegFlows uses minimum_txn_in_ledger_standalone=2).
+	if r.enableTxQ {
+		txqCfg := txq.StandaloneConfig()
+		txqCfg.MinimumTxnInLedgerStandalone = 2
+		r.env = jtx.NewTestEnvWithTxQAndConfig(r.t, txqCfg, genCfg)
+	} else {
+		r.env = jtx.NewTestEnvWithConfig(r.t, genCfg)
+	}
 	r.env.SetAmendments(cfg.AmendmentsEnabled)
 
 	// Match rippled's startup sequence. rippled's startGenesisLedger()
@@ -530,13 +549,11 @@ func (r *runner) setupEnv(cfg EnvConfig) {
 	r.env.Close()
 	r.env.SetTime(rippleEpoch)
 
-	// Disable open-ledger fee adequacy checks for conformance replay.
-	// In rippled's test framework, transactions route through the TxQ which
-	// queues under-priced transactions and applies them to the closed ledger
-	// where fee adequacy is not checked. The engine still rejects zero-fee
-	// transactions (matching TxQ's absolute minimum), but allows non-zero
-	// fees below the open-ledger threshold.
-	r.env.SetOpenLedger(false)
+	// For non-TxQ suites, disable open-ledger fee adequacy checks.
+	// TxQ suites need open-ledger mode so fee escalation triggers queuing.
+	if !r.enableTxQ {
+		r.env.SetOpenLedger(false)
+	}
 
 	// Register master account
 	master := jtx.MasterAccount()
