@@ -165,6 +165,7 @@ func (c *CredentialAccept) Apply(ctx *tx.ApplyContext) tx.Result {
 	issuerAccountKeylet := keylet.Account(issuerID)
 	issuerExists, err := ctx.View.Exists(issuerAccountKeylet)
 	if err != nil || !issuerExists {
+		ctx.Log.Warn("credential accept: no issuer", "issuer", c.Issuer)
 		return tx.TecNO_ISSUER
 	}
 
@@ -175,6 +176,8 @@ func (c *CredentialAccept) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Read the credential
 	credData, err := ctx.View.Read(credKeylet)
 	if err != nil || credData == nil {
+		ctx.Log.Warn("credential accept: no credential",
+			"subject", c.Account, "issuer", c.Issuer, "credentialType", c.CredentialType)
 		return tx.TecNO_ENTRY
 	}
 
@@ -186,6 +189,8 @@ func (c *CredentialAccept) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Check if already accepted
 	if cred.IsAccepted() {
+		ctx.Log.Warn("credential accept: credential already accepted",
+			"subject", c.Account, "issuer", c.Issuer, "credentialType", c.CredentialType)
 		return tx.TecDUPLICATE
 	}
 

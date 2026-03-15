@@ -173,6 +173,7 @@ func (c *CredentialDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 	isIssuer := issuerID == ctx.AccountID
 
 	if !isSubject && !isIssuer && !isExpired {
+		ctx.Log.Trace("credential delete: can't delete non-expired credential")
 		return tx.TecNO_PERMISSION
 	}
 
