@@ -23,8 +23,9 @@ const (
 	// InitialXRP is the total XRP in existence (100 billion XRP in drops)
 	InitialXRP = 100_000_000_000 * 1_000_000
 
-	// GenesisTimeResolution is the close time resolution for the genesis ledger
-	GenesisTimeResolution = 30
+	// GenesisTimeResolution is the close time resolution for the genesis ledger.
+	// Reference: rippled LedgerTiming.h ledgerGenesisTimeResolution = ledgerPossibleTimeResolutions[0] = 10s
+	GenesisTimeResolution = 10
 
 	// GenesisLedgerSequence is the sequence number of the genesis ledger
 	GenesisLedgerSequence = 1
