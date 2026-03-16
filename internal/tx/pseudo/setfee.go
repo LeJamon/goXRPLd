@@ -105,6 +105,15 @@ func (s *SetFee) IsPseudoTransaction() bool {
 // This creates or updates the FeeSettings singleton entry.
 // Reference: rippled Change.cpp applyFee()
 func (s *SetFee) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Info("set fee apply",
+		"baseFeeDrops", s.BaseFeeDrops,
+		"reserveBaseDrops", s.ReserveBaseDrops,
+		"reserveIncrementDrops", s.ReserveIncrementDrops,
+		"baseFee", s.BaseFee,
+		"reserveBase", s.ReserveBase,
+		"reserveIncrement", s.ReserveIncrement,
+	)
+
 	// Get the fees keylet
 	feesKey := keylet.Fees()
 
@@ -185,16 +194,19 @@ func (s *SetFee) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Serialize the updated FeeSettings
 	data, err := state.SerializeFeeSettings(feeSettings)
 	if err != nil {
+		ctx.Log.Error("set fee: failed to serialize fee settings", "error", err)
 		return tx.TefINTERNAL
 	}
 
 	// Insert or update the FeeSettings entry
 	if exists {
 		if err := ctx.View.Update(feesKey, data); err != nil {
+			ctx.Log.Error("set fee: failed to update fee settings", "error", err)
 			return tx.TefINTERNAL
 		}
 	} else {
 		if err := ctx.View.Insert(feesKey, data); err != nil {
+			ctx.Log.Error("set fee: failed to insert fee settings", "error", err)
 			return tx.TefINTERNAL
 		}
 	}
