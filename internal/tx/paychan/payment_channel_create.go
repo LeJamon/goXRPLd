@@ -135,11 +135,22 @@ func (p *PaymentChannelCreate) RequiredAmendments() [][32]byte {
 // Apply applies a PaymentChannelCreate transaction
 // Reference: rippled PayChan.cpp PayChanCreate::doApply()
 func (p *PaymentChannelCreate) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("payment channel create apply",
+		"account", p.Account,
+		"destination", p.Destination,
+		"amount", p.Amount,
+		"settleDelay", p.SettleDelay,
+	)
+
 	amount := uint64(p.Amount.Drops())
 
 	// Verify destination exists and is not a pseudo-account (AMM)
 	destAccount, destID, result := ctx.LookupDestination(p.Destination)
 	if result != tx.TesSUCCESS {
+		ctx.Log.Warn("payment channel create: destination lookup failed",
+			"destination", p.Destination,
+			"result", result,
+		)
 		return result
 	}
 
@@ -147,6 +158,9 @@ func (p *PaymentChannelCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Reference: rippled PayChan.cpp preclaim() featureDisallowIncoming
 	if ctx.Rules().Enabled(amendment.FeatureDisallowIncoming) {
 		if destAccount.Flags&state.LsfDisallowIncomingPayChan != 0 {
+			ctx.Log.Warn("payment channel create: destination disallows incoming pay channels",
+				"destination", p.Destination,
+			)
 			return tx.TecNO_PERMISSION
 		}
 	}
@@ -154,6 +168,9 @@ func (p *PaymentChannelCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	// RequireDestTag check
 	// Reference: rippled PayChan.cpp preclaim() lsfRequireDestTag
 	if (destAccount.Flags&state.LsfRequireDestTag) != 0 && p.DestinationTag == nil {
+		ctx.Log.Warn("payment channel create: destination tag required",
+			"destination", p.Destination,
+		)
 		return tx.TecDST_TAG_NEEDED
 	}
 
@@ -169,9 +186,17 @@ func (p *PaymentChannelCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Reference: rippled PayChan.cpp preclaim() balance < reserve, balance - reserve < amount
 	reserve := ctx.AccountReserve(ctx.Account.OwnerCount + 1)
 	if ctx.Account.Balance < reserve {
+		ctx.Log.Warn("payment channel create: insufficient reserve",
+			"balance", ctx.Account.Balance,
+			"reserve", reserve,
+		)
 		return tx.TecINSUFFICIENT_RESERVE
 	}
 	if ctx.Account.Balance-reserve < amount {
+		ctx.Log.Warn("payment channel create: unfunded",
+			"balance", ctx.Account.Balance,
+			"needed", reserve+amount,
+		)
 		return tx.TecUNFUNDED
 	}
 
@@ -194,11 +219,13 @@ func (p *PaymentChannelCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Serialize pay channel SLE
 	channelData, err := serializePayChannel(p, accountID, destID, amount)
 	if err != nil {
+		ctx.Log.Error("payment channel create: failed to serialize channel", "error", err)
 		return tx.TefINTERNAL
 	}
 
 	// Insert channel
 	if err := ctx.View.Insert(channelKey, channelData); err != nil {
+		ctx.Log.Error("payment channel create: failed to insert channel", "error", err)
 		return tx.TefINTERNAL
 	}
 
@@ -209,6 +236,7 @@ func (p *PaymentChannelCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		dir.Owner = accountID
 	})
 	if err != nil {
+		ctx.Log.Error("payment channel create: owner directory full", "error", err)
 		return tx.TecDIR_FULL
 	}
 

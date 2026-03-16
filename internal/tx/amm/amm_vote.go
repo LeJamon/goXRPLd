@@ -83,6 +83,13 @@ func (a *AMMVote) RequiredAmendments() [][32]byte {
 // Apply applies the AMMVote transaction to ledger state.
 // Reference: rippled AMMVote.cpp applyVote
 func (a *AMMVote) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("amm vote apply",
+		"account", a.Account,
+		"asset", a.Asset,
+		"asset2", a.Asset2,
+		"tradingFee", a.TradingFee,
+	)
+
 	accountID := ctx.AccountID
 
 	// Find the AMM
@@ -108,7 +115,7 @@ func (a *AMMVote) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Reference: rippled AMMVote.cpp preclaim line 73-79
 	lpTokensNew := ammLPHolds(ctx.View, amm, accountID)
 	if lpTokensNew.IsZero() {
-		// Account is not a liquidity provider
+		ctx.Log.Debug("amm vote: account is not LP", "account", a.Account)
 		return tx.TecAMM_INVALID_TOKENS
 	}
 

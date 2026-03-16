@@ -127,6 +127,12 @@ func (c *CredentialCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 	}
 
+	ctx.Log.Trace("credential create apply",
+		"issuer", c.Account,
+		"subject", c.Subject,
+		"credentialType", c.CredentialType,
+	)
+
 	if c.Subject == "" || c.CredentialType == "" {
 		return tx.TemINVALID
 	}

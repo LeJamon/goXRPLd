@@ -215,6 +215,15 @@ func (a *AMMDeposit) RequiredAmendments() [][32]byte {
 // Apply applies the AMMDeposit transaction to ledger state.
 // Reference: rippled AMMDeposit.cpp preclaim + applyGuts
 func (a *AMMDeposit) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("amm deposit apply",
+		"account", a.Account,
+		"asset", a.Asset,
+		"asset2", a.Asset2,
+		"amount", a.Amount,
+		"amount2", a.Amount2,
+		"flags", a.GetFlags(),
+	)
+
 	accountID := ctx.AccountID
 
 	// =========================================================================
@@ -695,6 +704,7 @@ func (a *AMMDeposit) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 
 	default:
+		ctx.Log.Error("amm deposit: invalid options")
 		return tx.TemMALFORMED
 	}
 

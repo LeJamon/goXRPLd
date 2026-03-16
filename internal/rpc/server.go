@@ -3,17 +3,20 @@ package rpc
 import (
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/LeJamon/goXRPLd/config"
 	"github.com/LeJamon/goXRPLd/internal/rpc/types"
 	xrpllog "github.com/LeJamon/goXRPLd/log"
 )
 
-// rpcLog is the logger for the HTTP JSON-RPC server.
-var rpcLog = xrpllog.Named(xrpllog.PartitionRPC)
+// rpcLog returns the logger for the HTTP JSON-RPC server.
+// Resolved lazily so it picks up the root logger set during CLI bootstrap.
+func rpcLog() xrpllog.Logger { return xrpllog.Named(xrpllog.PartitionRPC) }
 
 // Server handles HTTP JSON-RPC requests using XRPL format
 type Server struct {
@@ -91,7 +94,8 @@ func (s *Server) handleGetRequest(w http.ResponseWriter, r *http.Request) {
 
 	// Create RPC context
 	clientIP := getClientIP(r)
-	role := roleForRequest(clientIP)
+	portCtx := GetPortContext(r.Context())
+	role := roleForRequest(clientIP, portCtx)
 	ctx := &types.RpcContext{
 		Context:    r.Context(),
 		Role:       role,
@@ -138,7 +142,8 @@ func (s *Server) handlePostRequest(w http.ResponseWriter, r *http.Request) {
 
 	// Create RPC context
 	clientIP := getClientIP(r)
-	role := roleForRequest(clientIP)
+	portCtx := GetPortContext(r.Context())
+	role := roleForRequest(clientIP, portCtx)
 	ctx := &types.RpcContext{
 		Context:    r.Context(),
 		Role:       role,
@@ -183,7 +188,7 @@ func (s *Server) handlePostRequest(w http.ResponseWriter, r *http.Request) {
 
 // executeMethod executes an RPC method with the given parameters
 func (s *Server) executeMethod(method string, params json.RawMessage, ctx *types.RpcContext) (interface{}, *types.RpcError) {
-	rpcLog.Debug("rpc", "method", method, "client", ctx.ClientIP)
+	rpcLog().Debug("rpc", "method", method, "client", ctx.ClientIP)
 
 	// Get method handler
 	handler, exists := s.registry.Get(method)
@@ -284,7 +289,7 @@ func (s *Server) writeXrplResponseWithOptions(w http.ResponseWriter, method stri
 
 	responseData, err := json.Marshal(response)
 	if err != nil {
-		rpcLog.Error("Failed to marshal response", "err", err)
+		rpcLog().Error("Failed to marshal response", "err", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -310,7 +315,7 @@ func (s *Server) writeXrplError(w http.ResponseWriter, method string, request in
 
 	responseData, err := json.Marshal(response)
 	if err != nil {
-		rpcLog.Error("Failed to marshal error response", "err", err)
+		rpcLog().Error("Failed to marshal error response", "err", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -338,10 +343,20 @@ func isLocalhost(ip string) bool {
 	return ip == "127.0.0.1" || ip == "::1"
 }
 
-// roleForRequest determines the Role for an incoming request.
-// In standalone mode (the only mode currently supported), localhost
-// connections are Admin; everything else is Guest.
-func roleForRequest(clientIP string) types.Role {
+// roleForRequest determines the Role for an incoming request based on the
+// client IP and the port's admin network list. When a PortContext with
+// AdminNets is available, it checks the client IP against those networks
+// (matching rippled's requestRole in Role.cpp). Otherwise it falls back to
+// the legacy localhost-only check for backward compatibility.
+func roleForRequest(clientIP string, portCtx *PortContext) types.Role {
+	if portCtx != nil && len(portCtx.AdminNets) > 0 {
+		ip := net.ParseIP(clientIP)
+		if ip != nil && config.IPInNets(ip, portCtx.AdminNets) {
+			return types.RoleAdmin
+		}
+		return types.RoleGuest
+	}
+	// Fallback: no port context or no admin nets configured — use localhost check
 	if isLocalhost(clientIP) {
 		return types.RoleAdmin
 	}

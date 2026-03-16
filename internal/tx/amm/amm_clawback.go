@@ -140,6 +140,13 @@ func (a *AMMClawback) RequiredAmendments() [][32]byte {
 //
 // Reference: rippled AMMClawback.cpp preclaim + applyGuts
 func (a *AMMClawback) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("amm clawback apply",
+		"account", a.Account,
+		"holder", a.Holder,
+		"asset", a.Asset,
+		"amount", a.Amount,
+	)
+
 	issuerID := ctx.AccountID
 
 	// Find the holder

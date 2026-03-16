@@ -544,11 +544,10 @@ func (s *Service) AcceptLedger() (uint32, error) {
 		return 0, errors.New("failed to validate ledger: " + err.Error())
 	}
 
-	// Persist the closed ledger to nodestore if available
-	if s.nodeStore != nil {
-		if err := s.persistLedger(s.openLedger); err != nil {
-			return 0, errors.New("failed to persist ledger: " + err.Error())
-		}
+	// Persist the closed ledger to storage backends (nodestore and/or relational DB).
+	// persistLedger has internal nil guards for each backend.
+	if err := s.persistLedger(s.openLedger); err != nil {
+		return 0, errors.New("failed to persist ledger: " + err.Error())
 	}
 
 	// Store the closed ledger in memory cache

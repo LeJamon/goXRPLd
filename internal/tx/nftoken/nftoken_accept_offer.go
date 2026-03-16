@@ -111,6 +111,13 @@ func (n *NFTokenAcceptOffer) RequiredAmendments() [][32]byte {
 //  4. Sell offer checks (type, own offer, ownership, fund, auth)
 //  5. Transfer fee issuer checks
 func (n *NFTokenAcceptOffer) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("nftoken accept offer apply",
+		"account", n.Account,
+		"buyOffer", n.NFTokenBuyOffer,
+		"sellOffer", n.NFTokenSellOffer,
+		"brokerFee", n.NFTokenBrokerFee,
+	)
+
 	accountID := ctx.AccountID
 
 	// --- Step 1: Load offers (checkOffer equivalent) ---
@@ -140,15 +147,20 @@ func (n *NFTokenAcceptOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 
 		buyOfferData, err := ctx.View.Read(buyOfferKey)
 		if err != nil || buyOfferData == nil {
+			ctx.Log.Warn("nftoken accept offer: buy offer not found",
+				"buyOffer", n.NFTokenBuyOffer,
+			)
 			return tx.TecOBJECT_NOT_FOUND
 		}
 		buyOffer, err = state.ParseNFTokenOffer(buyOfferData)
 		if err != nil {
+			ctx.Log.Error("nftoken accept offer: failed to parse buy offer", "error", err)
 			return tx.TefINTERNAL
 		}
 
 		// Check expiration
 		if buyOffer.Expiration != 0 && buyOffer.Expiration <= ctx.Config.ParentCloseTime {
+			ctx.Log.Warn("nftoken accept offer: buy offer expired")
 			return tx.TecEXPIRED
 		}
 
@@ -181,15 +193,20 @@ func (n *NFTokenAcceptOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 
 		sellOfferData, err := ctx.View.Read(sellOfferKey)
 		if err != nil || sellOfferData == nil {
+			ctx.Log.Warn("nftoken accept offer: sell offer not found",
+				"sellOffer", n.NFTokenSellOffer,
+			)
 			return tx.TecOBJECT_NOT_FOUND
 		}
 		sellOffer, err = state.ParseNFTokenOffer(sellOfferData)
 		if err != nil {
+			ctx.Log.Error("nftoken accept offer: failed to parse sell offer", "error", err)
 			return tx.TefINTERNAL
 		}
 
 		// Check expiration
 		if sellOffer.Expiration != 0 && sellOffer.Expiration <= ctx.Config.ParentCloseTime {
+			ctx.Log.Warn("nftoken accept offer: sell offer expired")
 			return tx.TecEXPIRED
 		}
 
@@ -384,11 +401,13 @@ func (n *NFTokenAcceptOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 	if sellOffer != nil {
 		// Type check
 		if sellOffer.Flags&lsfSellNFToken == 0 {
+			ctx.Log.Warn("nftoken accept offer: sell offer is actually a buy offer")
 			return tx.TecNFTOKEN_OFFER_TYPE_MISMATCH
 		}
 
 		// Cannot accept your own offer
 		if sellOffer.Owner == accountID {
+			ctx.Log.Warn("nftoken accept offer: cannot accept own sell offer")
 			return tx.TecCANT_ACCEPT_OWN_NFTOKEN_OFFER
 		}
 

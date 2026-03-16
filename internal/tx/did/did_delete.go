@@ -59,6 +59,10 @@ func (d *DIDDelete) RequiredAmendments() [][32]byte {
 // Apply applies a DIDDelete transaction to the ledger state.
 // Reference: rippled DID.cpp DIDDelete::doApply
 func (d *DIDDelete) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("did delete apply",
+		"account", d.Account,
+	)
+
 	didKey := keylet.DID(ctx.AccountID)
 
 	existingData, err := ctx.View.Read(didKey)
@@ -73,6 +77,7 @@ func (d *DIDDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Delete the DID entry
 	if err := ctx.View.Erase(didKey); err != nil {
+		ctx.Log.Error("did delete: unable to delete DID from owner")
 		return tx.TefINTERNAL
 	}
 

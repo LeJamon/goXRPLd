@@ -58,6 +58,9 @@ func (u *UNLModify) Apply(ctx *tx.ApplyContext) tx.Result {
 	// 1. Validate flag ledger
 	// Reference: rippled lines 390-395
 	if !isFlagLedger(ctx.Config.LedgerSequence) {
+		ctx.Log.Warn("unl modify: not a flag ledger",
+			"ledgerSequence", ctx.Config.LedgerSequence,
+		)
 		return tx.TefFAILURE
 	}
 
@@ -72,6 +75,11 @@ func (u *UNLModify) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	disabling := *u.UNLModifyDisabling == 1
 	seq := *u.LedgerSequence
+
+	ctx.Log.Info("unl modify apply",
+		"validator", u.UNLModifyValidator,
+		"disabling", disabling,
+	)
 
 	// 3. Verify LedgerSequence matches current ledger
 	// Reference: rippled lines 407-412

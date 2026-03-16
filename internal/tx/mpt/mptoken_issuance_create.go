@@ -184,9 +184,20 @@ func (m *MPTokenIssuanceCreate) RequiredAmendments() [][32]byte {
 // Apply applies the MPTokenIssuanceCreate transaction to ledger state.
 // Reference: rippled MPTokenIssuanceCreate.cpp doApply() / create()
 func (m *MPTokenIssuanceCreate) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("mptoken issuance create apply",
+		"account", m.Account,
+		"assetScale", m.AssetScale,
+		"transferFee", m.TransferFee,
+		"maxAmount", m.MaximumAmount,
+	)
+
 	// Reserve check
 	reserve := ctx.AccountReserve(ctx.Account.OwnerCount + 1)
 	if ctx.Account.Balance < reserve {
+		ctx.Log.Warn("mptoken issuance create: insufficient reserve",
+			"balance", ctx.Account.Balance,
+			"reserve", reserve,
+		)
 		return tx.TecINSUFFICIENT_RESERVE
 	}
 
@@ -222,9 +233,11 @@ func (m *MPTokenIssuanceCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Serialize and insert into ledger
 	data, err := state.SerializeMPTokenIssuance(issuanceData)
 	if err != nil {
+		ctx.Log.Error("mptoken issuance create: failed to serialize issuance", "error", err)
 		return tx.TefINTERNAL
 	}
 	if err := ctx.View.Insert(issuanceKey, data); err != nil {
+		ctx.Log.Error("mptoken issuance create: failed to insert issuance", "error", err)
 		return tx.TefINTERNAL
 	}
 
@@ -234,6 +247,7 @@ func (m *MPTokenIssuanceCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		dir.Owner = ctx.AccountID
 	})
 	if err != nil {
+		ctx.Log.Error("mptoken issuance create: directory full", "error", err)
 		return tx.TecDIR_FULL
 	}
 

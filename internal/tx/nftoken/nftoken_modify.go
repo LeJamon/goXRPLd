@@ -95,6 +95,11 @@ func (n *NFTokenModify) RequiredAmendments() [][32]byte {
 // Apply applies the NFTokenModify transaction to the ledger.
 // Reference: rippled NFTokenModify.cpp preclaim + doApply
 func (n *NFTokenModify) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("nftoken modify apply",
+		"account", n.Account,
+		"tokenID", n.NFTokenID,
+	)
+
 	accountID := ctx.AccountID
 
 	// Parse the token ID

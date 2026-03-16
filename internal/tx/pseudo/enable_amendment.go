@@ -73,6 +73,7 @@ func (e *EnableAmendment) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Reference: rippled line 251: uint256 amendment(ctx_.tx.getFieldH256(sfAmendment))
 	amendmentHash, err := parseAmendmentHash(e.Amendment)
 	if err != nil {
+		ctx.Log.Error("enable amendment: failed to parse amendment hash", "amendment", e.Amendment)
 		return tx.TefINTERNAL
 	}
 
@@ -139,9 +140,18 @@ func (e *EnableAmendment) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TefALREADY
 	}
 
+	if found && lostMajority {
+		ctx.Log.Debug("enable amendment: lost majority",
+			"amendment", e.Amendment,
+		)
+	}
+
 	// Handle gotMajority: add new majority entry
 	// Reference: rippled lines 303-317
 	if gotMajority {
+		ctx.Log.Debug("enable amendment: got majority",
+			"amendment", e.Amendment,
+		)
 		newMajorities = append(newMajorities, MajorityEntry{
 			Amendment: amendmentHash,
 			CloseTime: ctx.Config.ParentCloseTime,
@@ -149,6 +159,9 @@ func (e *EnableAmendment) Apply(ctx *tx.ApplyContext) tx.Result {
 	} else if !lostMajority {
 		// No flags = enable the amendment
 		// Reference: rippled lines 318-335
+		ctx.Log.Info("enable amendment: amendment enabled",
+			"amendment", e.Amendment,
+		)
 		sle.Amendments = append(sle.Amendments, amendmentHash)
 
 		// Note: activateTrustLinesToSelfFix() and AmendmentTable.enable() are

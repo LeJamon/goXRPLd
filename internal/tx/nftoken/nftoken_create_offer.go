@@ -161,6 +161,13 @@ func (n *NFTokenCreateOffer) RequiredAmendments() [][32]byte {
 // Apply applies the NFTokenCreateOffer transaction to the ledger.
 // Reference: rippled NFTokenCreateOffer.cpp doApply
 func (n *NFTokenCreateOffer) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("nftoken create offer apply",
+		"account", n.Account,
+		"tokenID", n.NFTokenID,
+		"amount", n.Amount,
+		"destination", n.Destination,
+	)
+
 	accountID := ctx.AccountID
 
 	// Parse token ID
@@ -188,6 +195,7 @@ func (n *NFTokenCreateOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Check expiration
 	if n.Expiration != nil && *n.Expiration <= ctx.Config.ParentCloseTime {
+		ctx.Log.Warn("nftoken create offer: offer expired")
 		return tx.TecEXPIRED
 	}
 

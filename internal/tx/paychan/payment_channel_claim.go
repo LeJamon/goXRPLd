@@ -200,6 +200,14 @@ func (p *PaymentChannelClaim) IsRenew() bool {
 // Apply applies a PaymentChannelClaim transaction
 // Reference: rippled PayChan.cpp PayChanClaim::preclaim() + doApply()
 func (p *PaymentChannelClaim) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("payment channel claim apply",
+		"account", p.Account,
+		"channel", p.Channel,
+		"amount", p.Amount,
+		"balance", p.Balance,
+		"flags", p.GetFlags(),
+	)
+
 	rules := ctx.Rules()
 
 	// --- Preclaim: credential checks ---
@@ -228,12 +236,16 @@ func (p *PaymentChannelClaim) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Read channel
 	channelData, err := ctx.View.Read(channelKey)
 	if err != nil || channelData == nil {
+		ctx.Log.Warn("payment channel claim: channel not found",
+			"channel", p.Channel,
+		)
 		return tx.TecNO_TARGET
 	}
 
 	// Parse channel
 	channel, err := state.ParsePayChannel(channelData)
 	if err != nil {
+		ctx.Log.Error("payment channel claim: failed to parse channel", "error", err)
 		return tx.TefINTERNAL
 	}
 
@@ -251,6 +263,7 @@ func (p *PaymentChannelClaim) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Permission check: must be owner or destination
 	if !isOwner && !isDest {
+		ctx.Log.Warn("payment channel claim: no permission, not owner or destination")
 		return tx.TecNO_PERMISSION
 	}
 
@@ -294,12 +307,20 @@ func (p *PaymentChannelClaim) Apply(ctx *tx.ApplyContext) tx.Result {
 		// Claim must not exceed channel funds
 		// Reference: rippled PayChan.cpp doApply() lines 503-504
 		if claimBalance > channel.Amount {
+			ctx.Log.Warn("payment channel claim: claim exceeds channel funds",
+				"claimBalance", claimBalance,
+				"channelAmount", channel.Amount,
+			)
 			return tx.TecUNFUNDED_PAYMENT
 		}
 
 		// Must make progress (claim must be > current balance)
 		// Reference: rippled PayChan.cpp doApply() lines 506-507
 		if claimBalance <= channel.Balance {
+			ctx.Log.Warn("payment channel claim: no progress",
+				"claimBalance", claimBalance,
+				"channelBalance", channel.Balance,
+			)
 			return tx.TecUNFUNDED_PAYMENT
 		}
 

@@ -15,8 +15,13 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// wsLog is the logger for the WebSocket server.
-var wsLog = xrpllog.Named(xrpllog.PartitionRPC)
+// wsLog returns the logger for the WebSocket server.
+// Resolved lazily so it picks up the root logger set during CLI bootstrap.
+func wsLog() xrpllog.Logger { return xrpllog.Named(xrpllog.PartitionRPC) }
+
+// DefaultSendQueueLimit is the default WebSocket send channel buffer size,
+// matching rippled's default ws_queue_limit of 100 (Port.cpp).
+const DefaultSendQueueLimit = 100
 
 // WebSocketServer handles WebSocket connections for real-time subscriptions
 type WebSocketServer struct {
@@ -27,6 +32,7 @@ type WebSocketServer struct {
 	connectionsMutex    sync.RWMutex
 	timeout             time.Duration
 	ledgerInfoProvider  types.LedgerInfoProvider
+	connLimiter         *ConnLimiter
 }
 
 // WebSocketConnection represents a single WebSocket connection
@@ -40,6 +46,7 @@ type WebSocketConnection struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
 	pathFindSession *PathFindSession // At most one active path_find session per connection
+	portCtx         *PortContext     // per-port config for role determination
 }
 
 // NewWebSocketServer creates a new WebSocket server
@@ -68,13 +75,28 @@ func (ws *WebSocketServer) SetLedgerInfoProvider(provider types.LedgerInfoProvid
 	ws.ledgerInfoProvider = provider
 }
 
+// SetConnLimiter sets the connection limiter used to release per-port slots
+// when WebSocket connections close.
+func (ws *WebSocketServer) SetConnLimiter(limiter *ConnLimiter) {
+	ws.connLimiter = limiter
+}
+
 // ServeHTTP handles WebSocket upgrade requests
 func (ws *WebSocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Extract per-port context injected by PortMiddleware
+	portCtx := GetPortContext(r.Context())
+
 	// Upgrade HTTP connection to WebSocket
 	conn, err := ws.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		wsLog.Error("WebSocket upgrade failed", "err", err)
+		wsLog().Error("WebSocket upgrade failed", "err", err)
 		return
+	}
+
+	// Determine send queue size from port config, default to 100 (rippled default)
+	sendQueueLimit := DefaultSendQueueLimit
+	if portCtx != nil && portCtx.SendQueue > 0 {
+		sendQueueLimit = portCtx.SendQueue
 	}
 
 	// Create connection context - use Background() not r.Context()
@@ -86,10 +108,11 @@ func (ws *WebSocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ID:            generateConnectionID(),
 		conn:          conn,
 		subscriptions: make(map[types.SubscriptionType]types.SubscriptionConfig),
-		sendChannel:   make(chan []byte, 256),
+		sendChannel:   make(chan []byte, sendQueueLimit),
 		closeChannel:  make(chan struct{}),
 		ctx:           ctx,
 		cancel:        cancel,
+		portCtx:       portCtx,
 	}
 
 	// Register connection
@@ -136,7 +159,7 @@ func (ws *WebSocketServer) handleConnection(wsConn *WebSocketConnection) {
 		_, message, err := wsConn.conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure, websocket.CloseNormalClosure, websocket.CloseNoStatusReceived) {
-				wsLog.Debug("WebSocket read error", "err", err)
+				wsLog().Debug("WebSocket read error", "err", err)
 			}
 			return
 		}
@@ -165,7 +188,7 @@ func (ws *WebSocketServer) pingLoop(wsConn *WebSocketConnection) {
 		case <-ticker.C:
 			wsConn.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := wsConn.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				wsLog.Debug("WebSocket ping failed", "err", err)
+				wsLog().Debug("WebSocket ping failed", "err", err)
 				return
 			}
 		}
@@ -183,7 +206,7 @@ func (ws *WebSocketServer) handleSend(wsConn *WebSocketConnection) {
 		case message := <-wsConn.sendChannel:
 			wsConn.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := wsConn.conn.WriteMessage(websocket.TextMessage, message); err != nil {
-				wsLog.Debug("WebSocket send failed", "err", err)
+				wsLog().Debug("WebSocket send failed", "err", err)
 				return
 			}
 		}
@@ -239,8 +262,8 @@ func (ws *WebSocketServer) handleMessage(wsConn *WebSocketConnection, message []
 
 	// Create RPC context
 	clientIP := getWebSocketClientIP(wsConn.conn)
-	role := roleForRequest(clientIP)
-	wsLog.Debug("ws request", "cmd", cmd.Command, "remoteAddr", wsConn.conn.RemoteAddr().String(), "clientIP", clientIP, "role", role, "isAdmin", role == types.RoleAdmin)
+	role := roleForRequest(clientIP, wsConn.portCtx)
+	wsLog().Debug("ws request", "cmd", cmd.Command, "remoteAddr", wsConn.conn.RemoteAddr().String(), "clientIP", clientIP, "role", role, "isAdmin", role == types.RoleAdmin)
 	rpcCtx := &types.RpcContext{
 		Context:    wsConn.ctx,
 		Role:       role,
@@ -485,7 +508,7 @@ func (ws *WebSocketServer) UpdatePathFindSessions(getView func() (types.LedgerSt
 	// Get ledger view once for all sessions
 	view, err := getView()
 	if err != nil {
-		wsLog.Error("Failed to get ledger view for path_find updates", "err", err)
+		wsLog().Error("Failed to get ledger view for path_find updates", "err", err)
 		return
 	}
 
@@ -570,7 +593,7 @@ func (ws *WebSocketServer) sendResponseWithOptions(wsConn *WebSocketConnection, 
 
 	data, err := json.Marshal(response)
 	if err != nil {
-		wsLog.Error("Failed to marshal WebSocket response", "err", err)
+		wsLog().Error("Failed to marshal WebSocket response", "err", err)
 		return
 	}
 
@@ -581,7 +604,7 @@ func (ws *WebSocketServer) sendResponseWithOptions(wsConn *WebSocketConnection, 
 		// Connection closed
 	default:
 		// Channel full, close connection
-		wsLog.Warn("WebSocket send channel full", "connID", wsConn.ID)
+		wsLog().Warn("WebSocket send channel full", "connID", wsConn.ID)
 		ws.closeConnection(wsConn)
 	}
 }
@@ -612,7 +635,7 @@ func (ws *WebSocketServer) sendErrorWithOptions(wsConn *WebSocketConnection, rpc
 
 	data, err := json.Marshal(response)
 	if err != nil {
-		wsLog.Error("Failed to marshal WebSocket error response", "err", err)
+		wsLog().Error("Failed to marshal WebSocket error response", "err", err)
 		return
 	}
 
@@ -623,7 +646,7 @@ func (ws *WebSocketServer) sendErrorWithOptions(wsConn *WebSocketConnection, rpc
 		// Connection closed
 	default:
 		// Channel full, close connection
-		wsLog.Warn("WebSocket send channel full", "connID", wsConn.ID)
+		wsLog().Warn("WebSocket send channel full", "connID", wsConn.ID)
 		ws.closeConnection(wsConn)
 	}
 }
@@ -646,17 +669,22 @@ func (ws *WebSocketServer) closeConnection(wsConn *WebSocketConnection) {
 	// Remove from subscription manager
 	ws.subscriptionManager.RemoveConnection(wsConn.ID)
 
+	// Release per-port connection limiter slot
+	if ws.connLimiter != nil && wsConn.portCtx != nil {
+		ws.connLimiter.Release(wsConn.portCtx.PortName)
+	}
+
 	// Close WebSocket connection
 	wsConn.conn.Close()
 
-	wsLog.Debug("WebSocket connection closed", "connID", wsConn.ID)
+	wsLog().Debug("WebSocket connection closed", "connID", wsConn.ID)
 }
 
 // BroadcastToSubscribers sends a message to all connections subscribed to a specific stream
 func (ws *WebSocketServer) BroadcastToSubscribers(msgType types.SubscriptionType, message interface{}) {
 	data, err := json.Marshal(message)
 	if err != nil {
-		wsLog.Error("Failed to marshal broadcast message", "err", err)
+		wsLog().Error("Failed to marshal broadcast message", "err", err)
 		return
 	}
 
@@ -671,7 +699,7 @@ func (ws *WebSocketServer) BroadcastToSubscribers(msgType types.SubscriptionType
 				// Message sent
 			default:
 				// Channel full, skip this connection
-				wsLog.Debug("Skipping slow WebSocket connection", "connID", conn.ID)
+				wsLog().Debug("Skipping slow WebSocket connection", "connID", conn.ID)
 			}
 		}
 		conn.mutex.RUnlock()

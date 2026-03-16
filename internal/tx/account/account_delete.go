@@ -80,6 +80,22 @@ func (a *AccountDelete) CalculateBaseFee(view tx.LedgerView, config tx.EngineCon
 func (a *AccountDelete) Flatten() (map[string]any, error) { return tx.ReflectFlatten(a) }
 
 func (a *AccountDelete) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("account delete apply",
+		"account", a.Account,
+		"destination", a.Destination,
+	)
+
+	// Check minimum ledger gap: account sequence must be far enough behind the ledger.
+	// Uses addition (seq + 255 > ledgerSeq) instead of subtraction to avoid uint32 underflow.
+	// Reference: rippled DeleteAccount.cpp preclaim():
+	//   constexpr std::uint32_t seqDelta{255};
+	//   if ((*sleAccount)[sfSequence] + seqDelta > ctx.view.seq())
+	//       return tecTOO_SOON;
+	//
+	// Note: In rippled this check is in preclaim() before sequence consumption.
+	// In our engine, Apply() runs after the sequence has already been incremented,
+	// so we use the transaction's Sequence field (pre-increment value) for non-ticket
+	// transactions, and ctx.Account.Sequence (unchanged) for ticket transactions.
 	const seqDelta uint32 = 255
 	acctSeq := ctx.Account.Sequence
 	if a.GetCommon().TicketSequence == nil && a.GetCommon().Sequence != nil {
@@ -275,6 +291,9 @@ func (a *AccountDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 				ctx.Account.OwnerCount--
 			}
 		default:
+			ctx.Log.Error("account delete: undeletable item in owner directory",
+				"entryType", et,
+			)
 			return tx.TecHAS_OBLIGATIONS
 		}
 	}
@@ -288,10 +307,12 @@ func (a *AccountDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 	destData, err := ctx.View.Read(destKey)
 	if err != nil {
+		ctx.Log.Error("account delete: failed to re-read destination account")
 		return tx.TefINTERNAL
 	}
 	destAccount, err = state.ParseAccountRoot(destData)
 	if err != nil {
+		ctx.Log.Error("account delete: failed to parse destination account")
 		return tx.TefINTERNAL
 	}
 	sourceBalance := ctx.Account.Balance

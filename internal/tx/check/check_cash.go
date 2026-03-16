@@ -115,6 +115,13 @@ func (c *CheckCash) RequiredAmendments() [][32]byte {
 
 // Apply implements preclaim + doApply matching rippled's CashCheck.
 func (c *CheckCash) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("check cash apply",
+		"account", c.Account,
+		"checkID", c.CheckID,
+		"amount", c.Amount,
+		"deliverMin", c.DeliverMin,
+	)
+
 	// Parse check ID
 	checkIDBytes, err := hex.DecodeString(c.CheckID)
 	if err != nil || len(checkIDBytes) != 32 {
@@ -516,6 +523,7 @@ func (c *CheckCash) applyCashIOUAmount(ctx *tx.ApplyContext, check *state.CheckD
 	)
 
 	if flowResult != tx.TesSUCCESS && flowResult != tx.TecPATH_PARTIAL {
+		ctx.Log.Warn("check cash: flow failed", "result", flowResult)
 		// Restore the trust line limit before returning
 		if savedLimit != nil {
 			restoreTrustLineLimit(ctx, accountID, issuerID, sendMax.Currency, destLow, *savedLimit)
@@ -528,6 +536,7 @@ func (c *CheckCash) applyCashIOUAmount(ctx *tx.ApplyContext, check *state.CheckD
 	if isDeliverMin {
 		actualOutAmount := payment.FromEitherAmount(actualOut)
 		if actualOutAmount.Compare(requestedAmount) < 0 {
+			ctx.Log.Warn("check cash: flow did not produce DeliverMin", "actual", actualOutAmount, "deliverMin", requestedAmount)
 			// Restore the trust line limit before returning
 			if savedLimit != nil {
 				restoreTrustLineLimit(ctx, accountID, issuerID, sendMax.Currency, destLow, *savedLimit)
