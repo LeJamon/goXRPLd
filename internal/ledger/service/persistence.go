@@ -2,8 +2,12 @@ package service
 
 import (
 	"context"
+	"encoding/hex"
 
+	addresscodec "github.com/LeJamon/goXRPLd/codec/addresscodec"
+	binarycodec "github.com/LeJamon/goXRPLd/codec/binarycodec"
 	"github.com/LeJamon/goXRPLd/internal/ledger"
+	"github.com/LeJamon/goXRPLd/internal/tx"
 	"github.com/LeJamon/goXRPLd/storage/nodestore"
 	"github.com/LeJamon/goXRPLd/storage/relationaldb"
 )
@@ -73,7 +77,7 @@ func (s *Service) persistToNodeStore(ctx context.Context, l *ledger.Ledger, seq 
 	return s.nodeStore.Sync()
 }
 
-// persistToRelationalDB writes ledger metadata to the relational database
+// persistToRelationalDB writes ledger metadata and transactions to the relational database
 func (s *Service) persistToRelationalDB(ctx context.Context, l *ledger.Ledger) error {
 	h := l.Header()
 
@@ -99,6 +103,79 @@ func (s *Service) persistToRelationalDB(ctx context.Context, l *ledger.Ledger) e
 	if err := s.relationalDB.Ledger().SaveValidatedLedger(ctx, ledgerInfo, true); err != nil {
 		return err
 	}
+
+	// Persist transactions to the relational DB for account_tx / tx_history queries
+	seq := relationaldb.LedgerIndex(l.Sequence())
+
+	l.ForEachTransaction(func(txHashBytes [32]byte, txData []byte) bool {
+		txBlob, metaBlob, err := tx.SplitTxWithMetaBlob(txData)
+		if err != nil {
+			s.logger.Warn("failed to split tx+meta blob", "tx", hex.EncodeToString(txHashBytes[:8]), "error", err)
+			return true // skip this tx, continue
+		}
+
+		// Extract Account (sender) and optional Destination from the tx blob
+		var accountID relationaldb.AccountID
+		var destinationID relationaldb.AccountID
+
+		txBlobHex := hex.EncodeToString(txBlob)
+		txJSON, decErr := binarycodec.Decode(txBlobHex)
+		if decErr == nil {
+			if accountStr, ok := txJSON["Account"].(string); ok {
+				if _, accountBytes, err := addresscodec.DecodeClassicAddressToAccountID(accountStr); err == nil && len(accountBytes) == 20 {
+					copy(accountID[:], accountBytes)
+				}
+			}
+			if destStr, ok := txJSON["Destination"].(string); ok {
+				if _, destBytes, err := addresscodec.DecodeClassicAddressToAccountID(destStr); err == nil && len(destBytes) == 20 {
+					copy(destinationID[:], destBytes)
+				}
+			}
+		}
+
+		// Extract TransactionIndex from metadata
+		var txnSeq uint32
+		if len(metaBlob) > 0 {
+			metaHex := hex.EncodeToString(metaBlob)
+			if metaJSON, err := binarycodec.Decode(metaHex); err == nil {
+				if v, ok := metaJSON["TransactionIndex"].(float64); ok {
+					txnSeq = uint32(v)
+				}
+			}
+		}
+
+		txInfo := &relationaldb.TransactionInfo{
+			Hash:      relationaldb.Hash(txHashBytes),
+			LedgerSeq: seq,
+			TxnSeq:    txnSeq,
+			Status:    "validated",
+			RawTxn:    txBlob,
+			TxnMeta:   metaBlob,
+			Account:   accountID,
+		}
+
+		// Save to transactions table
+		if err := s.relationalDB.Transaction().SaveTransaction(ctx, txInfo); err != nil {
+			s.logger.Warn("failed to save transaction", "tx", hex.EncodeToString(txHashBytes[:8]), "error", err)
+			return true
+		}
+
+		// Index for the sender account
+		if !accountID.IsZero() {
+			if err := s.relationalDB.AccountTransaction().SaveAccountTransaction(ctx, accountID, txInfo); err != nil {
+				s.logger.Warn("failed to save account tx index", "tx", hex.EncodeToString(txHashBytes[:8]), "error", err)
+			}
+		}
+
+		// Index for the destination account (if present and different from sender)
+		if !destinationID.IsZero() && destinationID != accountID {
+			if err := s.relationalDB.AccountTransaction().SaveAccountTransaction(ctx, destinationID, txInfo); err != nil {
+				s.logger.Warn("failed to save destination tx index", "tx", hex.EncodeToString(txHashBytes[:8]), "error", err)
+			}
+		}
+
+		return true // continue
+	})
 
 	return nil
 }
