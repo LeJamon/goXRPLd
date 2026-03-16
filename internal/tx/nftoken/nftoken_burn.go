@@ -79,6 +79,11 @@ func (n *NFTokenBurn) RequiredAmendments() [][32]byte {
 // Apply applies the NFTokenBurn transaction to the ledger.
 // Reference: rippled NFTokenBurn.cpp doApply
 func (n *NFTokenBurn) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("nftoken burn apply",
+		"account", n.Account,
+		"tokenID", n.NFTokenID,
+	)
+
 	accountID := ctx.AccountID
 
 	// Parse the token ID
@@ -103,6 +108,9 @@ func (n *NFTokenBurn) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Find the NFToken using proper page traversal
 	if _, _, _, found := findToken(ctx.View, ownerID, tokenID); !found {
+		ctx.Log.Warn("nftoken burn: token not found",
+			"tokenID", n.NFTokenID,
+		)
 		return tx.TecNO_ENTRY
 	}
 

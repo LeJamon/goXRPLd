@@ -84,6 +84,11 @@ func (n *NFTokenCancelOffer) RequiredAmendments() [][32]byte {
 // Apply applies the NFTokenCancelOffer transaction to the ledger.
 // Reference: rippled NFTokenCancelOffer.cpp doApply and preclaim
 func (n *NFTokenCancelOffer) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("nftoken cancel offer apply",
+		"account", n.Account,
+		"offerCount", len(n.NFTokenOffers),
+	)
+
 	accountID := ctx.AccountID
 
 	for _, offerIDHex := range n.NFTokenOffers {
@@ -112,6 +117,9 @@ func (n *NFTokenCancelOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 		isDestination := offer.HasDestination && offer.Destination == accountID
 
 		if !isOwner && !isDestination && !isExpired {
+			ctx.Log.Warn("nftoken cancel offer: no permission to cancel",
+				"offerID", offerIDHex,
+			)
 			return tx.TecNO_PERMISSION
 		}
 

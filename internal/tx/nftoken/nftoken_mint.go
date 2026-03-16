@@ -159,6 +159,13 @@ func (n *NFTokenMint) RequiredAmendments() [][32]byte {
 // Apply applies the NFTokenMint transaction to the ledger.
 // Reference: rippled NFTokenMint.cpp doApply
 func (n *NFTokenMint) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("nftoken mint apply",
+		"account", n.Account,
+		"taxon", n.NFTokenTaxon,
+		"transferFee", n.TransferFee,
+		"flags", n.GetFlags(),
+	)
+
 	// Amendment-dependent flag check.
 	// Reference: rippled NFTokenMint.cpp preflight — mask depends on amendments
 	dynamicNFT := ctx.Rules().NFTsWithDynamicEnabled()
@@ -209,6 +216,9 @@ func (n *NFTokenMint) Apply(ctx *tx.ApplyContext) tx.Result {
 		// Verify that Account is authorized to mint for this issuer
 		// The issuer must have set Account as their NFTokenMinter
 		if issuerAccount.NFTokenMinter != n.Account {
+			ctx.Log.Warn("nftoken mint: account not authorized to mint for issuer",
+				"issuer", n.Issuer,
+			)
 			return tx.TecNO_PERMISSION
 		}
 	} else {
@@ -298,6 +308,7 @@ func (n *NFTokenMint) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	insertResult := insertNFToken(accountID, newToken, ctx.View)
 	if insertResult.Result != tx.TesSUCCESS {
+		ctx.Log.Error("nftoken mint: failed to insert token", "result", insertResult.Result)
 		return insertResult.Result
 	}
 
@@ -330,6 +341,10 @@ func (n *NFTokenMint) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Check reserve for all new objects (pages + possible offer)
 	reserve := ctx.AccountReserve(ctx.Account.OwnerCount)
 	if ctx.Account.Balance < reserve {
+		ctx.Log.Warn("nftoken mint: insufficient reserve",
+			"balance", ctx.Account.Balance,
+			"reserve", reserve,
+		)
 		return tx.TecINSUFFICIENT_RESERVE
 	}
 
