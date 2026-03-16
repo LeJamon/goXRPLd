@@ -70,6 +70,11 @@ func (t *TicketCreate) Flatten() (map[string]any, error) {
 // Apply applies the TicketCreate transaction to ledger state.
 // Reference: rippled CreateTicket.cpp preclaim() + doApply()
 func (t *TicketCreate) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("ticket create apply",
+		"account", t.Account,
+		"ticketCount", t.TicketCount,
+	)
+
 	ownerDirKey := keylet.OwnerDir(ctx.AccountID)
 
 	// --- Preclaim checks (done inside Apply since Go has no separate Preclaim) ---
@@ -104,6 +109,10 @@ func (t *TicketCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	// maxTicketThreshold = 250
 	// Reference: rippled CreateTicket.cpp:75 — if (curTicketCount + addedTickets - consumed > 250)
 	if currentTicketCount+t.TicketCount-consumed > 250 {
+		ctx.Log.Warn("ticket create: would exceed 250 ticket limit",
+			"currentCount", currentTicketCount,
+			"requestedCount", t.TicketCount,
+		)
 		return tx.TecDIR_FULL
 	}
 
@@ -115,6 +124,10 @@ func (t *TicketCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	priorBalance := ctx.Account.Balance + ctx.Config.BaseFee
 	reserve := ctx.AccountReserve(ctx.Account.OwnerCount + t.TicketCount)
 	if priorBalance < reserve {
+		ctx.Log.Warn("ticket create: insufficient reserve",
+			"balance", priorBalance,
+			"reserve", reserve,
+		)
 		return tx.TecINSUFFICIENT_RESERVE
 	}
 
@@ -141,6 +154,13 @@ func (t *TicketCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 			return tx.TecDIR_FULL
 		}
 	}
+
+	firstSeq := ctx.Account.Sequence
+	lastSeq := ctx.Account.Sequence + t.TicketCount - 1
+	ctx.Log.Debug("ticket create: sequences reserved",
+		"firstSequence", firstSeq,
+		"lastSequence", lastSeq,
+	)
 
 	ctx.Account.OwnerCount += t.TicketCount
 	ctx.Account.Sequence += t.TicketCount
