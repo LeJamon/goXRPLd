@@ -1,5 +1,7 @@
 # go-xrpl
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/LeJamon/goXRPLd)](https://goreportcard.com/report/github.com/LeJamon/goXRPLd)
+
 An idiomatic Go implementation of an [XRP Ledger](https://xrpl.org/) node.
 
 go-xrpl is not a line-by-line port of [rippled](https://github.com/XRPLF/rippled) (the C++ reference implementation). It is a native Go implementation that follows Go conventions and concurrency patterns while maintaining full protocol compatibility with the XRP Ledger network. rippled serves as the de facto specification — there is no formal XRPL spec — so behavioral parity with rippled is the correctness bar.
