@@ -85,6 +85,11 @@ func (m *MPTokenIssuanceDestroy) RequiredAmendments() [][32]byte {
 // Apply applies the MPTokenIssuanceDestroy transaction to ledger state.
 // Reference: rippled MPTokenIssuanceDestroy.cpp preclaim() + doApply()
 func (m *MPTokenIssuanceDestroy) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("mptoken issuance destroy apply",
+		"account", m.Account,
+		"issuanceID", m.MPTokenIssuanceID,
+	)
+
 	// Parse MPTokenIssuanceID
 	var mptID [24]byte
 	issuanceIDBytes, err := hex.DecodeString(m.MPTokenIssuanceID)
@@ -97,25 +102,36 @@ func (m *MPTokenIssuanceDestroy) Apply(ctx *tx.ApplyContext) tx.Result {
 	issuanceKey := keylet.MPTIssuance(mptID)
 	issuanceRaw, err := ctx.View.Read(issuanceKey)
 	if err != nil || issuanceRaw == nil {
+		ctx.Log.Warn("mptoken issuance destroy: issuance not found",
+			"issuanceID", m.MPTokenIssuanceID,
+		)
 		return tx.TecOBJECT_NOT_FOUND
 	}
 
 	// Parse issuance entry
 	issuance, err := state.ParseMPTokenIssuance(issuanceRaw)
 	if err != nil {
+		ctx.Log.Error("mptoken issuance destroy: failed to parse issuance", "error", err)
 		return tx.TefINTERNAL
 	}
 
 	// Caller must be the issuer
 	if issuance.Issuer != ctx.AccountID {
+		ctx.Log.Warn("mptoken issuance destroy: caller is not issuer")
 		return tx.TecNO_PERMISSION
 	}
 
 	// Cannot destroy with outstanding balances
 	if issuance.OutstandingAmount != 0 {
+		ctx.Log.Warn("mptoken issuance destroy: has outstanding obligations",
+			"outstandingAmount", issuance.OutstandingAmount,
+		)
 		return tx.TecHAS_OBLIGATIONS
 	}
 	if issuance.LockedAmount != nil && *issuance.LockedAmount != 0 {
+		ctx.Log.Warn("mptoken issuance destroy: has locked obligations",
+			"lockedAmount", *issuance.LockedAmount,
+		)
 		return tx.TecHAS_OBLIGATIONS
 	}
 
@@ -125,6 +141,7 @@ func (m *MPTokenIssuanceDestroy) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Erase the issuance
 	if err := ctx.View.Erase(issuanceKey); err != nil {
+		ctx.Log.Error("mptoken issuance destroy: failed to erase issuance", "error", err)
 		return tx.TefINTERNAL
 	}
 
