@@ -14,8 +14,9 @@ import (
 	xrpllog "github.com/LeJamon/goXRPLd/log"
 )
 
-// rpcLog is the logger for the HTTP JSON-RPC server.
-var rpcLog = xrpllog.Named(xrpllog.PartitionRPC)
+// rpcLog returns the logger for the HTTP JSON-RPC server.
+// Resolved lazily so it picks up the root logger set during CLI bootstrap.
+func rpcLog() xrpllog.Logger { return xrpllog.Named(xrpllog.PartitionRPC) }
 
 // Server handles HTTP JSON-RPC requests using XRPL format
 type Server struct {
@@ -187,7 +188,7 @@ func (s *Server) handlePostRequest(w http.ResponseWriter, r *http.Request) {
 
 // executeMethod executes an RPC method with the given parameters
 func (s *Server) executeMethod(method string, params json.RawMessage, ctx *types.RpcContext) (interface{}, *types.RpcError) {
-	rpcLog.Debug("rpc", "method", method, "client", ctx.ClientIP)
+	rpcLog().Debug("rpc", "method", method, "client", ctx.ClientIP)
 
 	// Get method handler
 	handler, exists := s.registry.Get(method)
@@ -288,7 +289,7 @@ func (s *Server) writeXrplResponseWithOptions(w http.ResponseWriter, method stri
 
 	responseData, err := json.Marshal(response)
 	if err != nil {
-		rpcLog.Error("Failed to marshal response", "err", err)
+		rpcLog().Error("Failed to marshal response", "err", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -314,7 +315,7 @@ func (s *Server) writeXrplError(w http.ResponseWriter, method string, request in
 
 	responseData, err := json.Marshal(response)
 	if err != nil {
-		rpcLog.Error("Failed to marshal error response", "err", err)
+		rpcLog().Error("Failed to marshal error response", "err", err)
 		http.Error(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
