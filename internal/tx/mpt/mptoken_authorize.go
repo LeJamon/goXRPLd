@@ -96,6 +96,12 @@ func (m *MPTokenAuthorize) RequiredAmendments() [][32]byte {
 // Apply applies the MPTokenAuthorize transaction to ledger state.
 // Reference: rippled MPTokenAuthorize.cpp preclaim() + doApply() + View.cpp::authorizeMPToken()
 func (m *MPTokenAuthorize) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("mptoken authorize apply",
+		"account", m.Account,
+		"issuanceID", m.MPTokenIssuanceID,
+		"holder", m.Holder,
+	)
+
 	// Parse MPTokenIssuanceID
 	var mptID [24]byte
 	issuanceIDBytes, err := hex.DecodeString(m.MPTokenIssuanceID)
@@ -132,19 +138,27 @@ func (m *MPTokenAuthorize) holderUnauthorize(ctx *tx.ApplyContext, issuanceKey, 
 	// MPToken must exist
 	tokenRaw, err := ctx.View.Read(tokenKey)
 	if err != nil || tokenRaw == nil {
+		ctx.Log.Warn("mptoken authorize: token not found for holder unauthorize")
 		return tx.TecOBJECT_NOT_FOUND
 	}
 
 	token, err := state.ParseMPToken(tokenRaw)
 	if err != nil {
+		ctx.Log.Error("mptoken authorize: failed to parse token", "error", err)
 		return tx.TefINTERNAL
 	}
 
 	// Cannot delete with non-zero balance
 	if token.MPTAmount != 0 {
+		ctx.Log.Warn("mptoken authorize: cannot delete token with balance",
+			"amount", token.MPTAmount,
+		)
 		return tx.TecHAS_OBLIGATIONS
 	}
 	if token.LockedAmount != nil && *token.LockedAmount != 0 {
+		ctx.Log.Warn("mptoken authorize: cannot delete token with locked amount",
+			"lockedAmount", *token.LockedAmount,
+		)
 		return tx.TecHAS_OBLIGATIONS
 	}
 
@@ -154,6 +168,7 @@ func (m *MPTokenAuthorize) holderUnauthorize(ctx *tx.ApplyContext, issuanceKey, 
 
 	// Erase the MPToken
 	if err := ctx.View.Erase(tokenKey); err != nil {
+		ctx.Log.Error("mptoken authorize: failed to erase token", "error", err)
 		return tx.TefINTERNAL
 	}
 
@@ -169,22 +184,28 @@ func (m *MPTokenAuthorize) holderAuthorize(ctx *tx.ApplyContext, issuanceKey, to
 	// Issuance must exist
 	issuanceRaw, err := ctx.View.Read(issuanceKey)
 	if err != nil || issuanceRaw == nil {
+		ctx.Log.Warn("mptoken authorize: issuance not found",
+			"issuanceID", m.MPTokenIssuanceID,
+		)
 		return tx.TecOBJECT_NOT_FOUND
 	}
 
 	issuance, err := state.ParseMPTokenIssuance(issuanceRaw)
 	if err != nil {
+		ctx.Log.Error("mptoken authorize: failed to parse issuance", "error", err)
 		return tx.TefINTERNAL
 	}
 
 	// Issuer cannot hold own token
 	if issuance.Issuer == ctx.AccountID {
+		ctx.Log.Warn("mptoken authorize: issuer cannot hold own token")
 		return tx.TecNO_PERMISSION
 	}
 
 	// MPToken must not already exist
 	exists, _ := ctx.View.Exists(tokenKey)
 	if exists {
+		ctx.Log.Warn("mptoken authorize: token already exists")
 		return tx.TecDUPLICATE
 	}
 
@@ -192,6 +213,10 @@ func (m *MPTokenAuthorize) holderAuthorize(ctx *tx.ApplyContext, issuanceKey, to
 	// Reference: rippled View.cpp authorizeMPToken() reserve logic
 	reserveNeeded := ctx.ReserveForNewObject(ctx.Account.OwnerCount)
 	if reserveNeeded > 0 && ctx.Account.Balance < reserveNeeded {
+		ctx.Log.Warn("mptoken authorize: insufficient reserve",
+			"balance", ctx.Account.Balance,
+			"reserve", reserveNeeded,
+		)
 		return tx.TecINSUFFICIENT_RESERVE
 	}
 
@@ -206,9 +231,11 @@ func (m *MPTokenAuthorize) holderAuthorize(ctx *tx.ApplyContext, issuanceKey, to
 	// Serialize and insert
 	data, err := state.SerializeMPToken(tokenData)
 	if err != nil {
+		ctx.Log.Error("mptoken authorize: failed to serialize token", "error", err)
 		return tx.TefINTERNAL
 	}
 	if err := ctx.View.Insert(tokenKey, data); err != nil {
+		ctx.Log.Error("mptoken authorize: failed to insert token", "error", err)
 		return tx.TefINTERNAL
 	}
 
@@ -218,6 +245,7 @@ func (m *MPTokenAuthorize) holderAuthorize(ctx *tx.ApplyContext, issuanceKey, to
 		dir.Owner = ctx.AccountID
 	})
 	if err != nil {
+		ctx.Log.Error("mptoken authorize: directory full", "error", err)
 		return tx.TecDIR_FULL
 	}
 
@@ -238,27 +266,36 @@ func (m *MPTokenAuthorize) applyIssuerPath(ctx *tx.ApplyContext, issuanceKey key
 	holderAcctKey := keylet.Account(holderID)
 	holderExists, err := ctx.View.Exists(holderAcctKey)
 	if err != nil || !holderExists {
+		ctx.Log.Warn("mptoken authorize: holder account does not exist",
+			"holder", m.Holder,
+		)
 		return tx.TecNO_DST
 	}
 
 	// Issuance must exist
 	issuanceRaw, err := ctx.View.Read(issuanceKey)
 	if err != nil || issuanceRaw == nil {
+		ctx.Log.Warn("mptoken authorize: issuance not found",
+			"issuanceID", m.MPTokenIssuanceID,
+		)
 		return tx.TecOBJECT_NOT_FOUND
 	}
 
 	issuance, err := state.ParseMPTokenIssuance(issuanceRaw)
 	if err != nil {
+		ctx.Log.Error("mptoken authorize: failed to parse issuance", "error", err)
 		return tx.TefINTERNAL
 	}
 
 	// Caller must be the issuer
 	if issuance.Issuer != ctx.AccountID {
+		ctx.Log.Warn("mptoken authorize: caller is not issuer")
 		return tx.TecNO_PERMISSION
 	}
 
 	// Issuance must have RequireAuth flag
 	if issuance.Flags&entry.LsfMPTRequireAuth == 0 {
+		ctx.Log.Warn("mptoken authorize: issuance does not require auth")
 		return tx.TecNO_AUTH
 	}
 
@@ -266,11 +303,15 @@ func (m *MPTokenAuthorize) applyIssuerPath(ctx *tx.ApplyContext, issuanceKey key
 	tokenKey := keylet.MPToken(issuanceKey.Key, holderID)
 	tokenRaw, err := ctx.View.Read(tokenKey)
 	if err != nil || tokenRaw == nil {
+		ctx.Log.Warn("mptoken authorize: holder token not found",
+			"holder", m.Holder,
+		)
 		return tx.TecOBJECT_NOT_FOUND
 	}
 
 	token, err := state.ParseMPToken(tokenRaw)
 	if err != nil {
+		ctx.Log.Error("mptoken authorize: failed to parse holder token", "error", err)
 		return tx.TefINTERNAL
 	}
 
@@ -284,9 +325,11 @@ func (m *MPTokenAuthorize) applyIssuerPath(ctx *tx.ApplyContext, issuanceKey key
 	// Serialize and update
 	updatedData, err := state.SerializeMPToken(token)
 	if err != nil {
+		ctx.Log.Error("mptoken authorize: failed to serialize token", "error", err)
 		return tx.TefINTERNAL
 	}
 	if err := ctx.View.Update(tokenKey, updatedData); err != nil {
+		ctx.Log.Error("mptoken authorize: failed to update token", "error", err)
 		return tx.TefINTERNAL
 	}
 

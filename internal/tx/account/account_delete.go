@@ -68,6 +68,11 @@ func (a *AccountDelete) Flatten() (map[string]any, error) {
 // Apply applies the AccountDelete transaction to ledger state.
 // Reference: rippled DeleteAccount.cpp DeleteAccount::preclaim() + doApply()
 func (a *AccountDelete) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("account delete apply",
+		"account", a.Account,
+		"destination", a.Destination,
+	)
+
 	// Check minimum ledger gap: account sequence must be far enough behind the ledger.
 	// Uses addition (seq + 255 > ledgerSeq) instead of subtraction to avoid uint32 underflow.
 	// Reference: rippled DeleteAccount.cpp preclaim():
@@ -325,6 +330,9 @@ func (a *AccountDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 			}
 
 		default:
+			ctx.Log.Error("account delete: undeletable item in owner directory",
+				"entryType", entryType,
+			)
 			return tx.TecHAS_OBLIGATIONS
 		}
 	}
@@ -337,10 +345,12 @@ func (a *AccountDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Re-read destination in case it was modified during cascade deletions
 	destData, err := ctx.View.Read(destKey)
 	if err != nil {
+		ctx.Log.Error("account delete: failed to re-read destination account")
 		return tx.TefINTERNAL
 	}
 	destAccount, err = state.ParseAccountRoot(destData)
 	if err != nil {
+		ctx.Log.Error("account delete: failed to parse destination account")
 		return tx.TefINTERNAL
 	}
 

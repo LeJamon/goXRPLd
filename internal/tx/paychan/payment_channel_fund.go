@@ -98,6 +98,12 @@ func (p *PaymentChannelFund) RequiredAmendments() [][32]byte {
 // Apply applies a PaymentChannelFund transaction
 // Reference: rippled PayChan.cpp PayChanFund::doApply()
 func (p *PaymentChannelFund) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("payment channel fund apply",
+		"account", p.Account,
+		"channel", p.Channel,
+		"amount", p.Amount,
+	)
+
 	// Parse channel ID
 	channelID, err := hex.DecodeString(p.Channel)
 	if err != nil || len(channelID) != 32 {
@@ -111,12 +117,16 @@ func (p *PaymentChannelFund) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Read channel
 	channelData, err := ctx.View.Read(channelKey)
 	if err != nil || channelData == nil {
+		ctx.Log.Warn("payment channel fund: channel not found",
+			"channel", p.Channel,
+		)
 		return tx.TecNO_ENTRY
 	}
 
 	// Parse channel
 	channel, err := state.ParsePayChannel(channelData)
 	if err != nil {
+		ctx.Log.Error("payment channel fund: failed to parse channel", "error", err)
 		return tx.TefINTERNAL
 	}
 
@@ -131,6 +141,7 @@ func (p *PaymentChannelFund) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Verify sender is the channel owner
 	accountID, _ := state.DecodeAccountID(p.Account)
 	if channel.Account != accountID {
+		ctx.Log.Warn("payment channel fund: sender is not channel owner")
 		return tx.TecNO_PERMISSION
 	}
 
@@ -158,9 +169,17 @@ func (p *PaymentChannelFund) Apply(ctx *tx.ApplyContext) tx.Result {
 	amount := uint64(p.Amount.Drops())
 	reserve := ctx.AccountReserve(ctx.Account.OwnerCount)
 	if ctx.Account.Balance < reserve {
+		ctx.Log.Warn("payment channel fund: insufficient reserve",
+			"balance", ctx.Account.Balance,
+			"reserve", reserve,
+		)
 		return tx.TecINSUFFICIENT_RESERVE
 	}
 	if ctx.Account.Balance-reserve < amount {
+		ctx.Log.Warn("payment channel fund: unfunded",
+			"balance", ctx.Account.Balance,
+			"needed", reserve+amount,
+		)
 		return tx.TecUNFUNDED
 	}
 
@@ -178,10 +197,12 @@ func (p *PaymentChannelFund) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Serialize updated channel
 	updatedChannelData, err := state.SerializePayChannelFromData(channel)
 	if err != nil {
+		ctx.Log.Error("payment channel fund: failed to serialize channel", "error", err)
 		return tx.TefINTERNAL
 	}
 
 	if err := ctx.View.Update(channelKey, updatedChannelData); err != nil {
+		ctx.Log.Error("payment channel fund: failed to update channel", "error", err)
 		return tx.TefINTERNAL
 	}
 

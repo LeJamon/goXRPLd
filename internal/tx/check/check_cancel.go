@@ -68,6 +68,11 @@ func (c *CheckCancel) RequiredAmendments() [][32]byte {
 
 // Apply implements preclaim + doApply matching rippled's CancelCheck.
 func (c *CheckCancel) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("check cancel apply",
+		"account", c.Account,
+		"checkID", c.CheckID,
+	)
+
 	// Parse check ID
 	checkID, err := hex.DecodeString(c.CheckID)
 	if err != nil || len(checkID) != 32 {
@@ -82,6 +87,7 @@ func (c *CheckCancel) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Reference: CancelCheck.cpp L55-60
 	checkData, err := ctx.View.Read(checkKey)
 	if err != nil || checkData == nil {
+		ctx.Log.Warn("check cancel: check does not exist", "checkID", c.CheckID)
 		return tx.TecNO_ENTRY
 	}
 
@@ -117,6 +123,7 @@ func (c *CheckCancel) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Delete the check
 	if err := ctx.View.Erase(checkKey); err != nil {
+		ctx.Log.Error("check cancel: unable to delete check", "checkID", c.CheckID)
 		return tx.TefINTERNAL
 	}
 

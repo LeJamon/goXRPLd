@@ -160,6 +160,16 @@ func (t *TrustSet) SetFreeze() {
 // Apply applies a TrustSet transaction to the ledger state.
 // Reference: rippled SetTrust.cpp doApply
 func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("trust set apply",
+		"account", t.Account,
+		"currency", t.LimitAmount.Currency,
+		"issuer", t.LimitAmount.Issuer,
+		"value", t.LimitAmount.Value,
+		"qualityIn", t.QualityIn,
+		"qualityOut", t.QualityOut,
+		"flags", t.GetFlags(),
+	)
+
 	// Cannot create trust line to self
 	if t.LimitAmount.Issuer == ctx.Account.Account {
 		return tx.TemDST_IS_SRC
@@ -176,6 +186,9 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Per rippled SetTrust.cpp: returns tecNO_DST when destination (issuer) doesn't exist
 	issuerData, err := ctx.View.Read(issuerKey)
 	if err != nil || issuerData == nil {
+		ctx.Log.Warn("trust set: issuer account does not exist",
+			"issuer", t.LimitAmount.Issuer,
+		)
 		return tx.TecNO_DST
 	}
 	issuerAccount, err := state.ParseAccountRoot(issuerData)
@@ -302,6 +315,10 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 		// Reference: rippled SetTrust.cpp line 710: tecNO_LINE_INSUF_RESERVE for new lines
 		reserveCreate := ctx.ReserveForNewObject(ctx.Account.OwnerCount)
 		if ctx.Account.Balance < reserveCreate {
+			ctx.Log.Warn("trust set: insufficient reserve for new trust line",
+				"balance", ctx.Account.Balance,
+				"reserve", reserveCreate,
+			)
 			return tx.TecNO_LINE_INSUF_RESERVE
 		}
 

@@ -94,6 +94,12 @@ func (d *DelegateSet) RequiredAmendments() [][32]byte {
 // Apply applies the DelegateSet transaction to the ledger.
 // Reference: rippled DelegateSet.cpp doApply()
 func (d *DelegateSet) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("delegate set apply",
+		"account", d.Account,
+		"authorize", d.Authorize,
+		"permissions", d.Permissions,
+	)
+
 	// Preclaim: verify authorize target exists
 	authorizeID, err := state.DecodeAccountID(d.Authorize)
 	if err != nil {
@@ -206,6 +212,7 @@ func deleteDelegate(ctx *tx.ApplyContext, delegateKey keylet.Keylet, account [20
 
 	// Erase the delegate entry
 	if err := ctx.View.Erase(delegateKey); err != nil {
+		ctx.Log.Error("delegate set: unable to delete delegate from owner")
 		return tx.TefINTERNAL
 	}
 

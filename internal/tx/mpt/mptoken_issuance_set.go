@@ -94,6 +94,12 @@ func (m *MPTokenIssuanceSet) RequiredAmendments() [][32]byte {
 // Apply applies the MPTokenIssuanceSet transaction to ledger state.
 // Reference: rippled MPTokenIssuanceSet.cpp preclaim() + doApply()
 func (m *MPTokenIssuanceSet) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("mptoken issuance set apply",
+		"account", m.Account,
+		"issuanceID", m.MPTokenIssuanceID,
+		"flags", m.GetFlags(),
+	)
+
 	// Parse MPTokenIssuanceID
 	var mptID [24]byte
 	issuanceIDBytes, err := hex.DecodeString(m.MPTokenIssuanceID)
@@ -106,11 +112,15 @@ func (m *MPTokenIssuanceSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	issuanceKey := keylet.MPTIssuance(mptID)
 	issuanceRaw, err := ctx.View.Read(issuanceKey)
 	if err != nil || issuanceRaw == nil {
+		ctx.Log.Warn("mptoken issuance set: issuance not found",
+			"issuanceID", m.MPTokenIssuanceID,
+		)
 		return tx.TecOBJECT_NOT_FOUND
 	}
 
 	issuance, err := state.ParseMPTokenIssuance(issuanceRaw)
 	if err != nil {
+		ctx.Log.Error("mptoken issuance set: failed to parse issuance", "error", err)
 		return tx.TefINTERNAL
 	}
 
@@ -120,11 +130,13 @@ func (m *MPTokenIssuanceSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Reference: rippled MPTokenIssuanceSet.cpp preclaim() - without featureSingleAssetVault,
 	// if issuance doesn't have lsfMPTCanLock, any Set returns tecNO_PERMISSION
 	if issuance.Flags&entry.LsfMPTCanLock == 0 {
+		ctx.Log.Warn("mptoken issuance set: issuance does not have CanLock capability")
 		return tx.TecNO_PERMISSION
 	}
 
 	// Caller must be the issuer
 	if issuance.Issuer != ctx.AccountID {
+		ctx.Log.Warn("mptoken issuance set: caller is not issuer")
 		return tx.TecNO_PERMISSION
 	}
 
@@ -148,6 +160,9 @@ func (m *MPTokenIssuanceSet) setHolderToken(ctx *tx.ApplyContext, issuanceKey ke
 	holderAcctKey := keylet.Account(holderID)
 	holderExists, err := ctx.View.Exists(holderAcctKey)
 	if err != nil || !holderExists {
+		ctx.Log.Warn("mptoken issuance set: holder account does not exist",
+			"holder", m.Holder,
+		)
 		return tx.TecNO_DST
 	}
 
@@ -155,11 +170,15 @@ func (m *MPTokenIssuanceSet) setHolderToken(ctx *tx.ApplyContext, issuanceKey ke
 	tokenKey := keylet.MPToken(issuanceKey.Key, holderID)
 	tokenRaw, err := ctx.View.Read(tokenKey)
 	if err != nil || tokenRaw == nil {
+		ctx.Log.Warn("mptoken issuance set: holder token not found",
+			"holder", m.Holder,
+		)
 		return tx.TecOBJECT_NOT_FOUND
 	}
 
 	token, err := state.ParseMPToken(tokenRaw)
 	if err != nil {
+		ctx.Log.Error("mptoken issuance set: failed to parse holder token", "error", err)
 		return tx.TefINTERNAL
 	}
 
@@ -173,9 +192,11 @@ func (m *MPTokenIssuanceSet) setHolderToken(ctx *tx.ApplyContext, issuanceKey ke
 	// Serialize and update
 	updatedData, err := state.SerializeMPToken(token)
 	if err != nil {
+		ctx.Log.Error("mptoken issuance set: failed to serialize holder token", "error", err)
 		return tx.TefINTERNAL
 	}
 	if err := ctx.View.Update(tokenKey, updatedData); err != nil {
+		ctx.Log.Error("mptoken issuance set: failed to update holder token", "error", err)
 		return tx.TefINTERNAL
 	}
 
@@ -194,9 +215,11 @@ func (m *MPTokenIssuanceSet) setIssuance(ctx *tx.ApplyContext, issuanceKey keyle
 	// Serialize and update
 	updatedData, err := state.SerializeMPTokenIssuance(issuance)
 	if err != nil {
+		ctx.Log.Error("mptoken issuance set: failed to serialize issuance", "error", err)
 		return tx.TefINTERNAL
 	}
 	if err := ctx.View.Update(issuanceKey, updatedData); err != nil {
+		ctx.Log.Error("mptoken issuance set: failed to update issuance", "error", err)
 		return tx.TefINTERNAL
 	}
 
