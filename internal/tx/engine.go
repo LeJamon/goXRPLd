@@ -222,6 +222,10 @@ type LedgerView interface {
 	// transaction detection.
 	// Reference: rippled ReadView::txExists()
 	TxExists(txID [32]byte) bool
+
+	// Rules returns the amendment rules for this view.
+	// Returns nil if rules are not available.
+	Rules() *amendment.Rules
 }
 
 // ApplyResult contains the result of applying a transaction

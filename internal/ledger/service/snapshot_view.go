@@ -1,6 +1,7 @@
 package service
 
 import (
+	"github.com/LeJamon/goXRPLd/amendment"
 	"github.com/LeJamon/goXRPLd/drops"
 	"github.com/LeJamon/goXRPLd/internal/ledger"
 	"github.com/LeJamon/goXRPLd/keylet"
@@ -73,4 +74,8 @@ func (v *snapshotView) Succ(key [32]byte) ([32]byte, []byte, bool, error) {
 
 func (v *snapshotView) TxExists(txID [32]byte) bool {
 	return v.ledger.TxExists(txID)
+}
+
+func (v *snapshotView) Rules() *amendment.Rules {
+	return nil
 }

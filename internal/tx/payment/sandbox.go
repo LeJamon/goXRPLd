@@ -3,6 +3,7 @@ package payment
 import (
 	"bytes"
 
+	"github.com/LeJamon/goXRPLd/amendment"
 	"github.com/LeJamon/goXRPLd/drops"
 	tx "github.com/LeJamon/goXRPLd/internal/tx"
 	"github.com/LeJamon/goXRPLd/keylet"
@@ -333,6 +334,17 @@ func (s *PaymentSandbox) TxExists(txID [32]byte) bool {
 		return s.view.TxExists(txID)
 	}
 	return false
+}
+
+// Rules returns the amendment rules, delegating to parent or view.
+func (s *PaymentSandbox) Rules() *amendment.Rules {
+	if s.parent != nil {
+		return s.parent.Rules()
+	}
+	if s.view != nil {
+		return s.view.Rules()
+	}
+	return nil
 }
 
 // ForEach iterates over all state entries visible from this sandbox

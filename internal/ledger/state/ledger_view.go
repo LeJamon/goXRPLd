@@ -1,6 +1,9 @@
 package state
 
-import "github.com/LeJamon/goXRPLd/keylet"
+import (
+	"github.com/LeJamon/goXRPLd/amendment"
+	"github.com/LeJamon/goXRPLd/keylet"
+)
 
 // LedgerView provides read/write access to ledger state
 type LedgerView interface {
@@ -18,4 +21,8 @@ type LedgerView interface {
 
 	// Erase removes an entry
 	Erase(k keylet.Keylet) error
+
+	// Rules returns the amendment rules for this view.
+	// Returns nil if rules are not available (defaults to all amendments enabled).
+	Rules() *amendment.Rules
 }

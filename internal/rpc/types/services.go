@@ -1,6 +1,7 @@
 package types
 
 import (
+	"github.com/LeJamon/goXRPLd/amendment"
 	"github.com/LeJamon/goXRPLd/drops"
 	"github.com/LeJamon/goXRPLd/keylet"
 )
@@ -106,6 +107,7 @@ type LedgerStateView interface {
 	Succ(key [32]byte) ([32]byte, []byte, bool, error)
 	AdjustDropsDestroyed(d drops.XRPAmount)
 	TxExists(txID [32]byte) bool
+	Rules() *amendment.Rules
 }
 
 // DepositAuthorizedResult contains the result of deposit_authorized RPC

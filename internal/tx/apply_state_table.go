@@ -490,6 +490,11 @@ func (t *ApplyStateTable) TxExists(txID [32]byte) bool {
 	return t.base.TxExists(txID)
 }
 
+// Rules returns the amendment rules for this view.
+func (t *ApplyStateTable) Rules() *amendment.Rules {
+	return t.rules
+}
+
 // DropsDestroyed returns the amount of XRP destroyed
 func (t *ApplyStateTable) DropsDestroyed() drops.XRPAmount {
 	return t.drops

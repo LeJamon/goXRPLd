@@ -349,7 +349,7 @@ const dirNodeMaxEntries = 32
 // dirInsert adds an item to a directory, creating the directory if needed.
 // Returns the page number where the item was inserted.
 // Follows rippled's dirAdd algorithm for multi-page directory support.
-func DirInsert(view LedgerView, dirKey keylet.Keylet, itemKey [32]byte, setupFunc func(*DirectoryNode), rules ...*amendment.Rules) (*DirInsertResult, error) {
+func DirInsert(view LedgerView, dirKey keylet.Keylet, itemKey [32]byte, setupFunc func(*DirectoryNode)) (*DirInsertResult, error) {
 	result := &DirInsertResult{
 		DirKey: dirKey.Key,
 	}
@@ -454,7 +454,7 @@ func DirInsert(view LedgerView, dirKey keylet.Keylet, itemKey [32]byte, setupFun
 		return nil, ErrDirFull
 	}
 	// Without fixDirectoryLimit, enforce old page limit.
-	if len(rules) > 0 && rules[0] != nil && !rules[0].Enabled(amendment.FeatureFixDirectoryLimit) && newPage >= DirNodeMaxPages {
+	if r := view.Rules(); r != nil && !r.Enabled(amendment.FeatureFixDirectoryLimit) && newPage >= DirNodeMaxPages {
 		return nil, ErrDirFull
 	}
 

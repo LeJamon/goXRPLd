@@ -208,7 +208,7 @@ func (c *CredentialCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	issuerDirKey := keylet.OwnerDir(ctx.AccountID)
 	issuerDirResult, err := state.DirInsert(ctx.View, issuerDirKey, credKeylet.Key, func(dir *state.DirectoryNode) {
 		dir.Owner = ctx.AccountID
-	}, ctx.Rules())
+	})
 	if err != nil {
 		if errors.Is(err, state.ErrDirFull) {
 			return tx.TecDIR_FULL
@@ -222,7 +222,7 @@ func (c *CredentialCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		subjectDirKey := keylet.OwnerDir(subjectID)
 		subjectDirResult, err := state.DirInsert(ctx.View, subjectDirKey, credKeylet.Key, func(dir *state.DirectoryNode) {
 			dir.Owner = subjectID
-		}, ctx.Rules())
+		})
 		if err != nil {
 			if errors.Is(err, state.ErrDirFull) {
 				return tx.TecDIR_FULL

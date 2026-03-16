@@ -4,6 +4,7 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/LeJamon/goXRPLd/amendment"
 	"github.com/LeJamon/goXRPLd/drops"
 	"github.com/LeJamon/goXRPLd/internal/ledger/state"
 	tx "github.com/LeJamon/goXRPLd/internal/tx"
@@ -82,6 +83,8 @@ func (m *mockLedgerView) Succ(key [32]byte) ([32]byte, []byte, bool, error) {
 }
 
 func (m *mockLedgerView) TxExists(_ [32]byte) bool { return false }
+
+func (m *mockLedgerView) Rules() *amendment.Rules { return nil }
 
 func compareKeys(a, b [32]byte) int {
 	for i := 0; i < 32; i++ {
