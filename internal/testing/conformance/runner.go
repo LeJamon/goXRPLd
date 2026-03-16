@@ -68,9 +68,20 @@ type Step struct {
 // that cannot be reached through regular transactions (e.g., setting
 // MintedNFTokens to 0xFFFFFFFE to test overflow detection).
 type ModifyState struct {
-	Account              string  `json:"account"`
-	MintedNFTokens       *uint32 `json:"minted_nftokens,omitempty"`
-	FirstNFTokenSequence *uint32 `json:"first_nftoken_sequence,omitempty"`
+	Account              string         `json:"account"`
+	MintedNFTokens       *uint32        `json:"minted_nftokens,omitempty"`
+	FirstNFTokenSequence *uint32        `json:"first_nftoken_sequence,omitempty"`
+	BumpLastPage         *BumpLastPage  `json:"bump_last_page,omitempty"`
+}
+
+// BumpLastPage describes a directory page bump operation.
+// This mirrors rippled's test::jtx::directory::bumpLastPage() which moves
+// the last page of a directory to a target page number near the limit,
+// allowing tests to exercise the directory page limit check.
+type BumpLastPage struct {
+	Directory   string `json:"directory"`    // "owner" for owner directory
+	TargetPage  uint64 `json:"target_page"`  // New page number for the last page
+	AdjustField string `json:"adjust_field"` // SLE field to update on moved entries (e.g. "IssuerNode")
 }
 
 // LimitAmount is an IOU amount for trust line setup.
@@ -1226,6 +1237,11 @@ func (r *runner) execModifyState(stepIdx int, step Step) {
 	}
 	if ms.FirstNFTokenSequence != nil {
 		r.env.SetFirstNFTokenSequenceDirect(acc, *ms.FirstNFTokenSequence)
+	}
+	if ms.BumpLastPage != nil {
+		if err := r.env.BumpDirectoryLastPage(acc, ms.BumpLastPage.TargetPage, ms.BumpLastPage.AdjustField); err != nil {
+			r.t.Fatalf("Step %d (modify_state): bump_last_page failed: %v", stepIdx, err)
+		}
 	}
 }
 
