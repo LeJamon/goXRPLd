@@ -42,6 +42,7 @@ type EnvConfig struct {
 	BaseFee           uint64   `json:"base_fee"`
 	ReserveBase       uint64   `json:"reserve_base"`
 	ReserveIncrement  uint64   `json:"reserve_increment"`
+	NetworkID         *uint32  `json:"network_id,omitempty"`
 }
 
 // Step represents a single operation in a fixture.
@@ -587,6 +588,9 @@ func (r *runner) setupEnv(cfg EnvConfig) {
 		r.env = jtx.NewTestEnvWithConfig(r.t, genCfg)
 	}
 	r.env.SetAmendments(cfg.AmendmentsEnabled)
+	if cfg.NetworkID != nil {
+		r.env.SetNetworkID(*cfg.NetworkID)
+	}
 
 	// Match rippled's startup sequence. rippled's startGenesisLedger()
 	// creates: genesis(seq=1) → closed(seq=2, closeTime=0) → open(seq=3).
@@ -1267,7 +1271,10 @@ func (r *runner) assertPostState(stepIdx int, ps *PostState) {
 // steps exist but only AFTER the first applied tx, we still need auto-funding
 // for accounts that send those early transactions.
 func (r *runner) shouldAutoFund(steps []Step) bool {
-	// Collect addresses funded by explicit fund steps and their positions.
+	masterAddr := "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"
+
+	// Collect addresses funded by explicit fund steps OR by inline Payment
+	// transactions from master (which create the destination account).
 	fundedAt := make(map[string]int) // address -> step index
 	for i, s := range steps {
 		if s.Op == "fund" && s.Address != "" {
@@ -1275,10 +1282,26 @@ func (r *runner) shouldAutoFund(steps []Step) bool {
 				fundedAt[s.Address] = i
 			}
 		}
+		// Also treat Payment from master to an address as implicit funding.
+		// In rippled test helpers like runTx(), accounts are created by
+		// Payments from master rather than explicit fund() calls.
+		if s.Op == "tx" && s.TxJSON != nil {
+			var txj map[string]interface{}
+			if json.Unmarshal(s.TxJSON, &txj) == nil {
+				if txj["TransactionType"] == "Payment" &&
+					txj["Account"] == masterAddr {
+					if dest, ok := txj["Destination"].(string); ok && dest != "" {
+						if _, exists := fundedAt[dest]; !exists {
+							fundedAt[dest] = i
+						}
+					}
+				}
+			}
+		}
 	}
 
 	// Check if any tx step expects an applied result from an account that
-	// isn't funded by a preceding fund step.
+	// isn't funded by a preceding fund step or inline Payment.
 	for i, s := range steps {
 		if s.Op != "tx" || s.TxJSON == nil {
 			continue
@@ -1292,7 +1315,7 @@ func (r *runner) shouldAutoFund(steps []Step) bool {
 			continue
 		}
 		addr, ok := txj["Account"].(string)
-		if !ok || addr == "" || addr == "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh" {
+		if !ok || addr == "" || addr == masterAddr {
 			continue
 		}
 

@@ -1,0 +1,28 @@
+# Suites not yet in scope for conformance.
+# One suite path per line. Lines starting with # are comments.
+# These are shown dimmed in the summary and excluded from the "in-scope" totals.
+#
+# To bring a suite into scope, remove or comment out the line.
+
+# Not implemented yet
+app/Vault
+app/Batch
+app/EscrowToken
+app/XChain
+app/XChainSim
+app/Delegate
+app/Credentials
+
+# Partially implemented / known gaps
+app/NFTokenAuth
+app/NFTokenBurnAllFeatures
+app/NFTokenBurnBaseUtil
+app/NFTokenBurnWOfixFungTokens
+app/NFTokenBurnWOFixNFTPageLinks
+app/NFTokenBurnWOFixTokenRemint
+app/NFTokenDir
+app/Regression
+app/SetAuth
+app/ThinBook
+app/Transaction_ordering
+ledger/BookDirs
