@@ -797,3 +797,300 @@ type LedgerInfo struct {
 	Closed     bool
 	Header     header.LedgerHeader
 }
+
+// AcceptConsensusResult closes the current open ledger using a consensus-agreed
+// transaction set and close time. Unlike AcceptLedger (standalone), this method:
+//   - Takes the already-agreed tx set and close time as parameters
+//   - Does NOT require standalone mode
+//   - Does NOT automatically validate (validation comes from the validation tracker)
+//
+// The multi-pass retry logic is the same as AcceptLedger to match rippled's
+// BuildLedger behavior.
+func (s *Service) AcceptConsensusResult(txBlobs [][]byte, closeTime time.Time) (uint32, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.openLedger == nil {
+		return 0, ErrNoOpenLedger
+	}
+	if s.closedLedger == nil {
+		return 0, ErrNoClosedLedger
+	}
+
+	if len(txBlobs) > 0 {
+		// Convert raw blobs to pendingTx structs for canonical sorting
+		pending := make([]pendingTx, 0, len(txBlobs))
+		for _, blob := range txBlobs {
+			ptx, err := parsePendingTx(blob)
+			if err != nil {
+				continue // skip unparseable transactions
+			}
+			pending = append(pending, ptx)
+		}
+
+		// Sort in canonical order
+		canonicalSort(pending)
+
+		// Multi-pass application (same as AcceptLedger)
+		freshLedger, err := ledger.NewOpen(s.closedLedger, closeTime)
+		if err != nil {
+			return 0, errors.New("failed to create fresh ledger for consensus: " + err.Error())
+		}
+
+		baseFee, reserveBase, reserveIncrement := readFeesFromLedger(s.closedLedger)
+		engineConfig := tx.EngineConfig{
+			BaseFee:                   baseFee,
+			ReserveBase:               reserveBase,
+			ReserveIncrement:          reserveIncrement,
+			LedgerSequence:            freshLedger.Sequence(),
+			SkipSignatureVerification: false,
+			NetworkID:                 s.config.NetworkID,
+			Logger:                    s.config.Logger,
+		}
+
+		const (
+			totalPasses = 3
+			retryPasses = 1
+		)
+
+		type txStatus int
+		const (
+			txPending txStatus = iota
+			txSucceeded
+			txRetry
+			txFailed
+		)
+		statuses := make(map[[32]byte]txStatus, len(pending))
+
+		certainRetry := true
+		for pass := 0; pass < totalPasses; pass++ {
+			freshLedger, err = ledger.NewOpen(s.closedLedger, closeTime)
+			if err != nil {
+				return 0, errors.New("failed to create fresh ledger: " + err.Error())
+			}
+			engineConfig.LedgerSequence = freshLedger.Sequence()
+			engine := tx.NewEngine(freshLedger, engineConfig)
+			blockProcessor := tx.NewBlockProcessor(engine)
+
+			changes := 0
+			hasRetry := false
+
+			for _, ptx := range pending {
+				st := statuses[ptx.hash]
+				if st == txFailed {
+					continue
+				}
+				if pass > 0 && st == txRetry {
+					continue
+				}
+
+				transaction, parseErr := tx.ParseFromBinary(ptx.txBlob)
+				if parseErr != nil {
+					statuses[ptx.hash] = txFailed
+					continue
+				}
+				transaction.SetRawBytes(ptx.txBlob)
+
+				result, applyErr := blockProcessor.ApplyTransaction(transaction, ptx.txBlob)
+				if applyErr != nil {
+					statuses[ptx.hash] = txFailed
+					continue
+				}
+
+				engineResult := result.ApplyResult.Result
+				switch {
+				case engineResult.IsSuccess():
+					freshLedger.AddTransactionWithMeta(result.Hash, result.TxWithMetaBlob)
+					s.txIndex[result.Hash] = freshLedger.Sequence()
+					if st != txSucceeded {
+						changes++
+					}
+					statuses[ptx.hash] = txSucceeded
+				case engineResult.IsTec():
+					if certainRetry {
+						statuses[ptx.hash] = txRetry
+						hasRetry = true
+					} else {
+						freshLedger.AddTransactionWithMeta(result.Hash, result.TxWithMetaBlob)
+						s.txIndex[result.Hash] = freshLedger.Sequence()
+						statuses[ptx.hash] = txSucceeded
+					}
+				case engineResult.ShouldRetry():
+					statuses[ptx.hash] = txRetry
+					hasRetry = true
+				default:
+					statuses[ptx.hash] = txFailed
+				}
+			}
+
+			// Retry tec*/ter* transactions
+			if pass > 0 {
+				for _, ptx := range pending {
+					if statuses[ptx.hash] != txRetry {
+						continue
+					}
+					transaction, parseErr := tx.ParseFromBinary(ptx.txBlob)
+					if parseErr != nil {
+						statuses[ptx.hash] = txFailed
+						continue
+					}
+					transaction.SetRawBytes(ptx.txBlob)
+
+					result, applyErr := blockProcessor.ApplyTransaction(transaction, ptx.txBlob)
+					if applyErr != nil {
+						statuses[ptx.hash] = txFailed
+						continue
+					}
+
+					engineResult := result.ApplyResult.Result
+					switch {
+					case engineResult.IsSuccess():
+						freshLedger.AddTransactionWithMeta(result.Hash, result.TxWithMetaBlob)
+						s.txIndex[result.Hash] = freshLedger.Sequence()
+						changes++
+						statuses[ptx.hash] = txSucceeded
+					case engineResult.IsTec():
+						if certainRetry {
+							hasRetry = true
+						} else {
+							freshLedger.AddTransactionWithMeta(result.Hash, result.TxWithMetaBlob)
+							s.txIndex[result.Hash] = freshLedger.Sequence()
+							statuses[ptx.hash] = txSucceeded
+						}
+					case engineResult.ShouldRetry():
+						hasRetry = true
+					default:
+						statuses[ptx.hash] = txFailed
+					}
+				}
+			}
+
+			if !hasRetry {
+				break
+			}
+			if changes == 0 && !certainRetry {
+				break
+			}
+			if changes == 0 || pass >= retryPasses {
+				certainRetry = false
+			}
+		}
+
+		s.openLedger = freshLedger
+	}
+
+	// Reset pending transactions
+	s.pendingTxs = nil
+
+	// Close the ledger with the consensus-agreed close time
+	if err := s.openLedger.Close(closeTime, 0); err != nil {
+		return 0, errors.New("failed to close ledger: " + err.Error())
+	}
+
+	// Do NOT auto-validate — validation comes from the consensus validation tracker.
+
+	// Persist
+	if err := s.persistLedger(s.openLedger); err != nil {
+		return 0, errors.New("failed to persist ledger: " + err.Error())
+	}
+
+	closedSeq := s.openLedger.Sequence()
+	closedLedgerHash := s.openLedger.Hash()
+	s.closedLedger = s.openLedger
+	s.ledgerHistory[closedSeq] = s.openLedger
+
+	// Collect transaction results for event callbacks/hooks
+	var txResults []TransactionResultEvent
+	if s.eventCallback != nil || (s.hooks != nil && (s.hooks.OnLedgerClosed != nil || s.hooks.OnTransaction != nil)) {
+		txResults = s.collectTransactionResults(s.closedLedger, closedSeq, closedLedgerHash)
+	}
+
+	// Create new open ledger
+	newOpen, err := ledger.NewOpen(s.closedLedger, time.Now())
+	if err != nil {
+		return 0, errors.New("failed to create new open ledger: " + err.Error())
+	}
+	s.openLedger = newOpen
+
+	// Fire event hooks
+	ledgerInfo := &LedgerInfo{
+		Sequence:   closedSeq,
+		Hash:       closedLedgerHash,
+		ParentHash: s.closedLedger.ParentHash(),
+		CloseTime:  s.closedLedger.CloseTime(),
+		TotalDrops: s.closedLedger.TotalDrops(),
+		Validated:  s.closedLedger.IsValidated(),
+		Closed:     s.closedLedger.IsClosed(),
+	}
+	validatedLedgers := s.getValidatedLedgersRange()
+
+	if s.hooks != nil && s.hooks.OnLedgerClosed != nil {
+		txCount := len(txResults)
+		hooks := s.hooks
+		info := ledgerInfo
+		vl := validatedLedgers
+		go hooks.OnLedgerClosed(info, txCount, vl)
+	}
+
+	if s.hooks != nil && s.hooks.OnTransaction != nil {
+		hooks := s.hooks
+		closeTimeVal := closeTime
+		for _, txResult := range txResults {
+			txInfo := TransactionInfo{
+				Hash:             txResult.TxHash,
+				TxBlob:           txResult.TxData,
+				AffectedAccounts: txResult.AffectedAccounts,
+			}
+			result := TxResult{
+				Applied:  txResult.Validated,
+				Metadata: txResult.MetaData,
+				TxIndex:  0,
+			}
+			go hooks.OnTransaction(txInfo, result, closedSeq, closedLedgerHash, closeTimeVal)
+		}
+	}
+
+	if s.eventCallback != nil {
+		event := &LedgerAcceptedEvent{
+			LedgerInfo:         ledgerInfo,
+			TransactionResults: txResults,
+		}
+		callback := s.eventCallback
+		go callback(event)
+	}
+
+	s.logger.Info("Consensus ledger accepted",
+		"sequence", closedSeq,
+		"hash", fmt.Sprintf("%x", closedLedgerHash[:8]),
+		"txs", len(txResults),
+	)
+
+	return closedSeq, nil
+}
+
+// SetValidatedLedger marks a ledger as validated by consensus.
+// Called by the consensus adaptor when the validation tracker confirms
+// a ledger has received sufficient validations.
+func (s *Service) SetValidatedLedger(seq uint32) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	l, ok := s.ledgerHistory[seq]
+	if !ok {
+		return
+	}
+	_ = l.SetValidated()
+	s.validatedLedger = l
+}
+
+// GetPendingTxBlobs returns the raw transaction blobs for all pending transactions.
+func (s *Service) GetPendingTxBlobs() [][]byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	blobs := make([][]byte, len(s.pendingTxs))
+	for i, ptx := range s.pendingTxs {
+		blobs[i] = ptx.txBlob
+	}
+	return blobs
+}
