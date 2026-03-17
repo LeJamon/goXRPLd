@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -171,6 +172,7 @@ func (o *Overlay) startListener() error {
 		Certificates:       []tls.Certificate{o.identity.TLSCertificate()},
 		InsecureSkipVerify: true,
 		MinVersion:         tls.VersionTLS12,
+		MaxVersion:         tls.VersionTLS12,
 		ClientAuth:         tls.RequestClientCert,
 	}
 
@@ -350,6 +352,9 @@ func (o *Overlay) onLedgerResponse(evt Event) {
 
 // discoveryLoop periodically attempts to connect to new peers.
 func (o *Overlay) discoveryLoop(ctx context.Context) error {
+	// Immediate first attempt on startup
+	o.autoconnect(ctx)
+
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 
@@ -375,12 +380,19 @@ func (o *Overlay) autoconnect(ctx context.Context) {
 	}
 
 	addrs := o.discovery.SelectPeersToConnect(count)
+	slog.Info("Autoconnect", "t", "Overlay", "candidates", len(addrs), "needed", count)
 	for _, addr := range addrs {
 		select {
 		case <-ctx.Done():
 			return
 		default:
-			go o.Connect(addr)
+			go func(a string) {
+				if err := o.Connect(a); err != nil {
+					slog.Info("Peer connection failed", "t", "Overlay", "addr", a, "err", err)
+				} else {
+					slog.Info("Peer connected", "t", "Overlay", "addr", a)
+				}
+			}(addr)
 		}
 	}
 }
@@ -455,6 +467,7 @@ func (o *Overlay) Connect(addr string) error {
 		TLSConfig: &tls.Config{
 			InsecureSkipVerify: true,
 			MinVersion:         tls.VersionTLS12,
+			MaxVersion:         tls.VersionTLS12,
 		},
 	}
 

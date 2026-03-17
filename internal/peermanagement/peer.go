@@ -75,6 +75,7 @@ func DefaultPeerConfig() PeerConfig {
 		TLSConfig: &tls.Config{
 			InsecureSkipVerify: true,
 			MinVersion:         tls.VersionTLS12,
+			MaxVersion:         tls.VersionTLS12,
 		},
 	}
 }

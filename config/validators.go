@@ -108,9 +108,9 @@ func validateValidatorKey(key string) error {
 		return fmt.Errorf("validator key must start with 'n', got: %s", key)
 	}
 
-	// Length check (rippled validator keys are typically 51 characters)
-	if len(key) != 51 {
-		return fmt.Errorf("validator key has invalid length %d, expected 51", len(key))
+	// Length check (rippled node public keys are 52 characters in base58)
+	if len(key) != 52 {
+		return fmt.Errorf("validator key has invalid length %d, expected 52", len(key))
 	}
 
 	// Character set validation (base58)

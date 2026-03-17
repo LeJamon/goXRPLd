@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,19 +61,30 @@ func DefaultHandshakeConfig() HandshakeConfig {
 	}
 }
 
-// MakeSharedValue computes a shared value based on the TLS connection state.
+// MakeSharedValue computes the shared value from TLS finished messages.
+// This uses reflection to access the private clientFinished and serverFinished
+// fields from the TLS connection. Requires TLS 1.2 (these fields don't exist in TLS 1.3).
+// The algorithm: SHA512(SHA512(clientFinished) XOR SHA512(serverFinished)).
 func MakeSharedValue(conn *tls.Conn) ([]byte, error) {
-	state := conn.ConnectionState()
-	localFinished := state.TLSUnique
-	if len(localFinished) < 12 {
-		return nil, fmt.Errorf("%w: local finished message too short", ErrHandshakeFailed)
+	v := reflect.ValueOf(conn).Elem()
+
+	clientFinished := v.FieldByName("clientFinished")
+	if !clientFinished.IsValid() {
+		return nil, fmt.Errorf("%w: clientFinished field not found (requires TLS 1.2)", ErrHandshakeFailed)
+	}
+	serverFinished := v.FieldByName("serverFinished")
+	if !serverFinished.IsValid() {
+		return nil, fmt.Errorf("%w: serverFinished field not found (requires TLS 1.2)", ErrHandshakeFailed)
 	}
 
-	h := sha512.New()
-	h.Write(localFinished)
-	hash := h.Sum(nil)
+	clientBytes := clientFinished.Bytes()
+	serverBytes := serverFinished.Bytes()
 
-	return hash[:32], nil
+	if len(clientBytes) == 0 || len(serverBytes) == 0 {
+		return nil, fmt.Errorf("%w: finished messages are empty", ErrHandshakeFailed)
+	}
+
+	return MakeSharedValueFromFinished(clientBytes, serverBytes)
 }
 
 // MakeSharedValueFromFinished computes the shared value from raw finished messages.
@@ -106,7 +118,7 @@ func MakeSharedValueFromFinished(localFinished, peerFinished []byte) ([]byte, er
 	h.Write(result)
 	finalHash := h.Sum(nil)
 
-	return finalHash[:32], nil
+	return finalHash, nil
 }
 
 // BuildHandshakeRequest builds an HTTP upgrade request for peer connection.

@@ -453,6 +453,10 @@ func (d *Discovery) Start(ctx context.Context) error {
 		d.AddPeer(addr, 0, 0)
 	}
 
+	for _, addr := range d.cfg.FixedPeers {
+		d.AddPeer(addr, 0, 0)
+	}
+
 	d.wg.Add(1)
 	go d.maintenanceLoop(ctx)
 
