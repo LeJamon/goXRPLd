@@ -120,26 +120,11 @@ func ParseValidatorKeys(appCfg *config.Config) ([]consensus.NodeID, error) {
 
 	var validators []consensus.NodeID
 	for _, key := range appCfg.Validators.Validators {
-		nodeID, err := decodeValidatorKey(key)
+		nodeID, err := DecodeValidatorKey(key)
 		if err != nil {
 			return nil, fmt.Errorf("invalid validator key %q: %w", key, err)
 		}
 		validators = append(validators, nodeID)
 	}
 	return validators, nil
-}
-
-// decodeValidatorKey decodes a base58-encoded validator public key (n-prefixed)
-// into a consensus.NodeID (33 bytes).
-func decodeValidatorKey(key string) (consensus.NodeID, error) {
-	// Validator keys start with 'n' and are base58-encoded compressed public keys.
-	// For now, we store the raw string bytes as a placeholder.
-	// Full implementation would use addresscodec to decode the node public key.
-	// TODO: decode base58 node public key to 33-byte compressed key
-	var nodeID consensus.NodeID
-	if len(key) < 33 {
-		return nodeID, fmt.Errorf("key too short: %d", len(key))
-	}
-	copy(nodeID[:], []byte(key)[:33])
-	return nodeID, nil
 }
