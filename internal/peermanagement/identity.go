@@ -144,6 +144,21 @@ func (i *Identity) Sign(message []byte) ([]byte, error) {
 	return sig.Serialize(), nil
 }
 
+// SignDigest signs a pre-hashed 32-byte digest directly (no additional hashing).
+// Used for session signatures where the shared value is already a SHA-512 Half.
+func (i *Identity) SignDigest(digest []byte) ([]byte, error) {
+	if i.privateKey == nil {
+		return nil, ErrInvalidPrivateKey
+	}
+
+	sig := btcecdsa.Sign(i.privateKey, digest)
+	if sig == nil {
+		return nil, ErrSignatureFailed
+	}
+
+	return sig.Serialize(), nil
+}
+
 // PublicKey returns the raw compressed public key bytes.
 func (i *Identity) PublicKey() []byte {
 	return i.publicKey.SerializeCompressed()

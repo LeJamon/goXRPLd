@@ -120,7 +120,8 @@ func MakeSharedValueFromFinished(localFinished, peerFinished []byte) ([]byte, er
 	h.Write(result)
 	finalHash := h.Sum(nil)
 
-	return finalHash, nil
+	// sha512Half — return first 32 bytes, matching rippled's makeSharedValue
+	return finalHash[:32], nil
 }
 
 // BuildHandshakeRequest builds an HTTP upgrade request for peer connection.
@@ -197,7 +198,7 @@ func addHandshakeHeaders(h http.Header, id *Identity, sharedValue []byte, cfg Ha
 	h.Set(HeaderNetworkTime, strconv.FormatUint(networkTime, 10))
 	h.Set(HeaderPublicKey, id.EncodedPublicKey())
 
-	sig, err := id.Sign(sharedValue)
+	sig, err := id.SignDigest(sharedValue)
 	if err == nil {
 		h.Set(HeaderSessionSignature, base64.StdEncoding.EncodeToString(sig))
 	}
@@ -268,11 +269,9 @@ func verifySessionSignature(pubKey *PublicKeyToken, sharedValue, signature []byt
 		return fmt.Errorf("%w: %v", ErrInvalidSignature, err)
 	}
 
-	h := sha512.New()
-	h.Write(sharedValue)
-	hash := h.Sum(nil)[:32]
-
-	if !sig.Verify(hash, pubKey.BtcecKey()) {
+	// The shared value is already a 32-byte SHA-512 Half digest.
+	// Verify directly against it (matching rippled's verifyDigest).
+	if !sig.Verify(sharedValue, pubKey.BtcecKey()) {
 		return ErrInvalidSignature
 	}
 
