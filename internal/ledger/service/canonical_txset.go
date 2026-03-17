@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"sort"
 
+	"github.com/LeJamon/goXRPLd/codec/addresscodec"
+	"github.com/LeJamon/goXRPLd/internal/tx"
 	"github.com/LeJamon/goXRPLd/shamap"
 )
 
@@ -86,6 +88,36 @@ func computeSalt(txs []pendingTx) [32]byte {
 		return [32]byte{}
 	}
 	return hash
+}
+
+// parsePendingTx creates a pendingTx from a raw transaction blob.
+// It parses the blob to extract account, sequence, and hash.
+func parsePendingTx(blob []byte) (pendingTx, error) {
+	transaction, err := tx.ParseFromBinary(blob)
+	if err != nil {
+		return pendingTx{}, err
+	}
+	transaction.SetRawBytes(blob)
+
+	common := transaction.GetCommon()
+
+	var accountID [20]byte
+	_, accountBytes, decErr := addresscodec.DecodeClassicAddressToAccountID(common.Account)
+	if decErr == nil && len(accountBytes) == 20 {
+		copy(accountID[:], accountBytes)
+	}
+
+	txHash, hashErr := tx.ComputeTransactionHash(transaction)
+	if hashErr != nil {
+		return pendingTx{}, hashErr
+	}
+
+	return pendingTx{
+		txBlob:   blob,
+		hash:     txHash,
+		account:  accountID,
+		sequence: common.SeqProxy(),
+	}, nil
 }
 
 // computeAccountKey computes the sort key for an account.

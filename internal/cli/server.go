@@ -15,6 +15,7 @@ import (
 
 	binarycodec "github.com/LeJamon/goXRPLd/codec/binarycodec"
 	"github.com/LeJamon/goXRPLd/config"
+	"github.com/LeJamon/goXRPLd/internal/consensus/adaptor"
 	"github.com/LeJamon/goXRPLd/internal/ledger/genesis"
 	"github.com/LeJamon/goXRPLd/internal/ledger/service"
 	"github.com/LeJamon/goXRPLd/internal/rpc"
@@ -200,7 +201,25 @@ func runServer(cmd *cobra.Command, args []string) {
 	// Wire up RPC services
 	types.InitServices(rpc.NewLedgerServiceAdapter(ledgerService))
 
-	if standalone {
+	// Start consensus/networking if not in standalone mode
+	var consensusComponents *adaptor.Components
+	if !standalone {
+		var compErr error
+		consensusComponents, compErr = adaptor.NewFromConfig(globalConfig, ledgerService)
+		if compErr != nil {
+			serverLog.Fatal("Failed to create consensus components", "err", compErr)
+		}
+
+		if err := consensusComponents.Start(); err != nil {
+			serverLog.Fatal("Failed to start consensus components", "err", err)
+		}
+
+		isValidator := globalConfig.IsValidator()
+		serverLog.Info("Running in consensus mode",
+			"validator", isValidator,
+			"peers", len(globalConfig.IPs)+len(globalConfig.IPsFixed),
+		)
+	} else {
 		genesisAddr, _ := ledgerService.GetGenesisAccount()
 		serverLog.Info("Running in standalone mode",
 			"genesisAccount", genesisAddr,
@@ -403,7 +422,7 @@ func runServer(cmd *cobra.Command, args []string) {
 	case <-shutdownCh:
 	}
 
-	doShutdown(httpSrvs, wsSrvs, wsServer, ledgerService, db, repoManager, serverLog)
+	doShutdown(httpSrvs, wsSrvs, wsServer, ledgerService, consensusComponents, db, repoManager, serverLog)
 }
 
 // doShutdown performs graceful shutdown of all server components
@@ -411,6 +430,7 @@ func doShutdown(
 	httpSrvs, wsSrvs []*http.Server,
 	wsServer *rpc.WebSocketServer,
 	ledgerService *service.Service,
+	consensusComponents *adaptor.Components,
 	kvDB nodestore.Database,
 	repoManager relationaldb.RepositoryManager,
 	logger xrpllog.Logger,
@@ -428,6 +448,12 @@ func doShutdown(
 	}
 
 	wsServer.Close()
+
+	// Stop consensus components (if running)
+	if consensusComponents != nil {
+		consensusComponents.Stop()
+		logger.Info("Consensus components stopped")
+	}
 
 	// Note: ledgerService has no Stop method; it is garbage collected
 	_ = ledgerService
