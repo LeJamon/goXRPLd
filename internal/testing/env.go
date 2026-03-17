@@ -44,6 +44,19 @@ type TestEnv struct {
 	// NetworkID for engine configuration (0 = mainnet default, >1024 requires NetworkID in txns)
 	networkID uint32
 
+	// VerifySignatures enables cryptographic signature verification in the engine.
+	// Default is false (test mode). Set to true for conformance tests with real tx_blobs.
+	VerifySignatures bool
+
+	// openLedger controls whether the engine checks fee adequacy.
+	// When true (default for normal tests), fee adequacy is checked
+	// (Fee >= calculateBaseFee). When false (conformance replay mode),
+	// fee adequacy is skipped, matching rippled's behavior where
+	// checkFee only checks when ctx.view.open() is true.
+	// Reference: rippled Transactor.cpp checkFee — "Only check fee is
+	// sufficient when the ledger is open."
+	openLedger bool
+
 	// Optional state map family for backed SHAMaps (PebbleDB on disk).
 	// Only set when using NewTestEnvBacked() for heavy tests that would OOM otherwise.
 	// When nil, SHAMaps use unbacked mode (fast, full in-memory clones).
@@ -53,6 +66,11 @@ type TestEnv struct {
 	// TxQ for fee escalation and sequence-gap queuing.
 	// Reference: rippled's TxQ used by NetworkOPs::processTransaction.
 	txQueue *txq.TxQ
+
+	// bypassTxQ temporarily bypasses TxQ routing when true. Used for setup
+	// operations (fund, trust) that should go directly to the ledger, matching
+	// rippled's apply() vs submit() distinction for setup operations.
+	bypassTxQ bool
 
 	// txInLedger tracks the number of transactions applied to the current open
 	// ledger. Reset on Close(). Used by TxQ for fee escalation computation.
@@ -141,6 +159,7 @@ func NewTestEnv(t *testing.T) *TestEnv {
 		reserveIncrement: 50_000_000,  // 50 XRP (matches rippled test env)
 		// Initialize with all supported amendments enabled (like rippled's testable_amendments())
 		rulesBuilder: amendment.NewRulesBuilder().FromPreset(amendment.PresetAllSupported),
+		openLedger:   true, // Normal test mode: check fee adequacy
 	}
 
 	// Register master account
@@ -245,9 +264,23 @@ func NewTestEnvWithConfig(t *testing.T, cfg genesis.Config) *TestEnv {
 		reserveIncrement: uint64(cfg.Fees.ReserveIncrement.Drops()),
 		// Initialize with all supported amendments enabled (like rippled's testable_amendments())
 		rulesBuilder: amendment.NewRulesBuilder().FromPreset(amendment.PresetAllSupported),
+		openLedger:   true, // Normal test mode: check fee adequacy
 	}
 	master := MasterAccount()
 	env.accounts[master.Name] = master
 
 	return env
+}
+
+// SetOpenLedger controls whether the engine checks fee adequacy.
+// When false, fee adequacy checks are skipped (matching rippled's closed-ledger behavior).
+func (e *TestEnv) SetOpenLedger(open bool) {
+	e.openLedger = open
+}
+
+// SetBypassTxQ temporarily bypasses TxQ routing. When true, Submit() goes
+// directly to the engine even when a TxQ is configured. This matches rippled's
+// distinction between apply() (direct, used for setup) and submit() (via TxQ).
+func (e *TestEnv) SetBypassTxQ(bypass bool) {
+	e.bypassTxQ = bypass
 }

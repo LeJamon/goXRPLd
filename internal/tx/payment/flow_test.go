@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/LeJamon/goXRPLd/amendment"
 	"github.com/LeJamon/goXRPLd/drops"
 	"github.com/LeJamon/goXRPLd/internal/ledger/state"
 	tx "github.com/LeJamon/goXRPLd/internal/tx"
@@ -57,6 +58,10 @@ func (m *paymentMockLedgerView) AdjustDropsDestroyed(drops drops.XRPAmount) {
 
 func (m *paymentMockLedgerView) TxExists(txID [32]byte) bool {
 	return false
+}
+
+func (m *paymentMockLedgerView) Rules() *amendment.Rules {
+	return nil
 }
 
 func (m *paymentMockLedgerView) ForEach(fn func(key [32]byte, data []byte) bool) error {

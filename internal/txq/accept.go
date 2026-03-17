@@ -126,17 +126,18 @@ func (q *TxQ) Accept(ctx AcceptContext) bool {
 	return ledgerChanged
 }
 
-// eraseAndAdvance removes a candidate and advances/adjusts the index appropriately.
+// eraseAndAdvance removes a candidate and adjusts the index so the next
+// appropriate candidate is tried.
+// Reference: TxQ.cpp:466-502
 func (q *TxQ) eraseAndAdvance(idx *int, c *Candidate) {
 	aq, exists := q.byAccount[c.Account]
 	if !exists {
 		return
 	}
 
-	// Check if there's a next transaction for this account that we should try
+	// Check if there's a next transaction for this account that we should try.
 	var nextCandidate *Candidate
 	if !c.SeqProxy.IsTicket {
-		// For sequence-based, look for the next sequence
 		nextSeq := c.Consequences.FollowingSeq.Value
 		for sp, candidate := range aq.Transactions {
 			if !sp.IsTicket && sp.Value == nextSeq {
@@ -146,23 +147,33 @@ func (q *TxQ) eraseAndAdvance(idx *int, c *Candidate) {
 		}
 	}
 
+	// Determine what comes next in byFee after the current candidate.
+	var feeNext *Candidate
+	if *idx+1 < len(q.byFee) {
+		feeNext = q.byFee[*idx+1]
+	}
+
+	// Should we try the account's next tx before the fee-ordered next?
+	// Yes if the account's next tx has a higher fee level than the next
+	// byFee entry (i.e., it would sort earlier).
+	useAccountNext := nextCandidate != nil &&
+		nextCandidate.SeqProxy.Value > c.SeqProxy.Value &&
+		(feeNext == nil || q.candidateLess(nextCandidate, feeNext))
+
 	// Remove the current candidate
 	q.erase(c)
 
-	// If there's a next candidate that should be tried before continuing
-	// with the fee-ordered iteration, check its position
-	if nextCandidate != nil && *idx < len(q.byFee) {
-		// Find where the next candidate is in byFee
+	if useAccountNext {
+		// Find the account's next candidate in the updated byFee
 		for j, cand := range q.byFee {
-			if cand == nextCandidate && j < *idx {
-				// The next candidate is earlier in the list, adjust index
+			if cand == nextCandidate {
 				*idx = j
 				return
 			}
 		}
 	}
-
-	// Index doesn't need adjustment since we removed an element at the current position
+	// Otherwise idx already points to the right element after erase
+	// (the element that was at idx+1 shifted down to idx)
 }
 
 // dropLastForAccount removes the last (highest sequence) transaction for an account.

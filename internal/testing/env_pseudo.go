@@ -18,6 +18,11 @@ func (e *TestEnv) DisableFeature(name string) {
 	e.rulesBuilder.DisableByName(name)
 }
 
+// SetVerifySignatures enables or disables signature verification in the engine.
+func (e *TestEnv) SetVerifySignatures(verify bool) {
+	e.VerifySignatures = verify
+}
+
 // SetNetworkID sets the network identifier for the test environment.
 // Networks with ID > 1024 require NetworkID in transactions.
 // Networks with ID <= 1024 are legacy networks and cannot have NetworkID in transactions.

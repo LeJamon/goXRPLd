@@ -4,6 +4,7 @@ import (
 	"strconv"
 
 	"github.com/LeJamon/goXRPLd/internal/tx"
+	"github.com/LeJamon/goXRPLd/internal/tx/account"
 	"github.com/LeJamon/goXRPLd/internal/tx/payment"
 )
 
@@ -101,8 +102,13 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 	snapshot := q.feeMetrics.GetSnapshot()
 	requiredFeeLevel := ScaleFeeLevel(snapshot, txInLedger)
 
+	// Only attempt direct apply if sequence matches or is a ticket.
+	// For future-sequence transactions, skip straight to queuing.
+	// Reference: rippled TxQ::tryDirectApply(), TxQ.cpp:1696-1699
+	canDirectApply := seqProxy.IsTicket || seqProxy.Value == acctSeq
+
 	// Check if fee is high enough to apply directly
-	if feeLevel >= requiredFeeLevel {
+	if canDirectApply && feeLevel >= requiredFeeLevel {
 		// Try to apply directly
 		result, applied := ctx.ApplyTransaction(txn)
 		if applied {
@@ -120,7 +126,13 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 		}
 	}
 
-	// Transaction needs to be queued
+	// Transaction needs to be queued.
+	// AccountTxnID is not supported by the transaction queue.
+	// Reference: TxQ.cpp:394-399 (canBeHeld)
+	if common.AccountTxnID != "" {
+		return ApplyResult{Result: tx.TelCAN_NOT_QUEUE, Applied: false}
+	}
+
 	// Check if account exists
 	if !ctx.AccountExists(account) {
 		return ApplyResult{Result: tx.TerNO_ACCOUNT, Applied: false}
@@ -141,8 +153,31 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 		return ApplyResult{Result: tx.TelCAN_NOT_QUEUE, Applied: false}
 	}
 
+	// Compute consequences early for blocker detection
+	consequences := computeConsequences(txn, seqProxy)
+
 	// Get or create account queue
 	aq, exists := q.byAccount[account]
+	acctTxCount := 0
+	if exists {
+		acctTxCount = aq.Count()
+	}
+
+	// Is tx a blocker? If so there are very limited conditions when it
+	// is allowed in the TxQ:
+	//  1. If the account's queue is empty or
+	//  2. If the blocker replaces the only entry in the account's queue.
+	// Reference: TxQ.cpp:832-856
+	if consequences.IsBlocker {
+		if acctTxCount > 1 {
+			return ApplyResult{Result: tx.TelCAN_NOT_QUEUE_BLOCKS, Applied: false}
+		}
+		if acctTxCount == 1 {
+			if _, replacing := aq.Transactions[seqProxy]; !replacing {
+				return ApplyResult{Result: tx.TelCAN_NOT_QUEUE_BLOCKS, Applied: false}
+			}
+		}
+	}
 
 	// Check for replacement
 	var replacingCandidate *Candidate
@@ -158,11 +193,40 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 		}
 	}
 
-	// Check per-account limit (unless replacing)
-	if replacingCandidate == nil && exists && uint32(aq.Count()) >= q.config.MaximumTxnPerAccount {
-		// Check if this fills a sequence gap
-		if !seqProxy.IsTicket && seqProxy.Value == acctSeq {
-			// This might unblock the queue, allow it
+	// Is there a blocker already in the account's queue? If so, don't
+	// allow additional transactions in the queue (unless replacing the blocker).
+	// Reference: TxQ.cpp:879-893
+	if acctTxCount > 0 && exists {
+		if acctTxCount == 1 {
+			// Only need to check the lone entry
+			for sp, c := range aq.Transactions {
+				if c.Consequences.IsBlocker && sp != seqProxy {
+					return ApplyResult{Result: tx.TelCAN_NOT_QUEUE_BLOCKED, Applied: false}
+				}
+				break
+			}
+		}
+	}
+
+	// Check per-account limit (unless replacing).
+	// Reference: TxQ.cpp:425-447
+	if replacingCandidate == nil && exists && uint32(acctTxCount) >= q.config.MaximumTxnPerAccount {
+		// Allow if this fills the next sequence gap in the account's queue.
+		nextSeq := q.getNextQueuableSeq(aq, acctSeq)
+		if !seqProxy.IsTicket && seqProxy.Value == nextSeq {
+			// Check if there's a subsequent sequence-based tx in the queue
+			// that this would connect to (i.e., a real gap, not just appending).
+			hasLaterSeq := false
+			for sp := range aq.Transactions {
+				if !sp.IsTicket && sp.Value > seqProxy.Value {
+					hasLaterSeq = true
+					break
+				}
+			}
+			if !hasLaterSeq {
+				return ApplyResult{Result: tx.TelCAN_NOT_QUEUE_FULL, Applied: false}
+			}
+			// Real gap fill — allow it
 		} else {
 			return ApplyResult{Result: tx.TelCAN_NOT_QUEUE_FULL, Applied: false}
 		}
@@ -185,8 +249,34 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 				if seqProxy.Value < nextSeq {
 					return ApplyResult{Result: tx.TefPAST_SEQ, Applied: false}
 				}
-				return ApplyResult{Result: tx.TerPRE_SEQ, Applied: false}
+				// Allow future sequences if the gap is bridged by queued txns.
+				// Reference: TxQ.cpp:1038-1040
+				return ApplyResult{Result: tx.TelCAN_NOT_QUEUE, Applied: false}
 			}
+		}
+	}
+
+	// In-flight balance check: when multiple txns are queued for the same
+	// account, verify the total fees don't exceed the account's balance or
+	// the minimum reserve.
+	// Reference: TxQ.cpp:1069-1125
+	if exists && acctTxCount > 0 && replacingCandidate == nil {
+		var totalFee uint64
+		var totalSpend uint64
+		for sp, c := range aq.Transactions {
+			if sp != seqProxy {
+				totalFee += c.Consequences.Fee
+				totalSpend += c.Consequences.PotentialSpend
+			}
+		}
+		// Add the new transaction's fee
+		totalFee += consequences.Fee
+
+		balance := ctx.GetAccountBalance(account)
+		reserve := ctx.GetAccountReserve(0) // minimum reserve
+		baseFeeVal := ctx.GetBaseFee(txn)
+		if totalFee >= balance || (reserve > 10*baseFeeVal && totalFee >= reserve) {
+			return ApplyResult{Result: tx.TelCAN_NOT_QUEUE_BALANCE, Applied: false}
 		}
 	}
 
@@ -227,7 +317,6 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 		q.byAccount[account] = aq
 	}
 
-	consequences := computeConsequences(txn, seqProxy)
 	candidate := NewCandidate(
 		txn,
 		txID,
@@ -295,10 +384,13 @@ func computeConsequences(txn tx.Transaction, seqProxy SeqProxy) TxConsequences {
 		cons.FollowingSeq = NewSeqProxySequence(nextSeq)
 	}
 
-	// Check if this is a blocker transaction
+	// Check if this is a blocker transaction.
+	// Reference: SetAccount.cpp:34-55 (makeTxConsequences), applySteps.cpp:140
 	switch txn.TxType() {
 	case tx.TypeRegularKeySet, tx.TypeSignerListSet:
 		cons.IsBlocker = true
+	case tx.TypeAccountSet:
+		cons.IsBlocker = isAccountSetBlocker(txn)
 	}
 
 	// Compute potential spend
@@ -311,4 +403,45 @@ func computeConsequences(txn tx.Transaction, seqProxy SeqProxy) TxConsequences {
 	}
 
 	return cons
+}
+
+// isAccountSetBlocker returns true if the AccountSet transaction is a blocker.
+// An AccountSet is a blocker if it sets/clears flags that affect auth behavior.
+// Reference: SetAccount.cpp:34-55 (makeTxConsequences)
+func isAccountSetBlocker(txn tx.Transaction) bool {
+	as, ok := txn.(*account.AccountSet)
+	if !ok {
+		return false
+	}
+
+	// Check transaction flags (tfRequireAuth | tfOptionalAuth)
+	common := txn.GetCommon()
+	if common.Flags != nil {
+		flags := *common.Flags
+		if flags&(account.AccountSetTxFlagRequireAuth|account.AccountSetTxFlagOptionalAuth) != 0 {
+			return true
+		}
+	}
+
+	// Check SetFlag for asfRequireAuth(2), asfDisableMaster(4), asfAccountTxnID(5)
+	if as.SetFlag != nil {
+		switch *as.SetFlag {
+		case account.AccountSetFlagRequireAuth,
+			account.AccountSetFlagDisableMaster,
+			account.AccountSetFlagAccountTxnID:
+			return true
+		}
+	}
+
+	// Check ClearFlag for asfRequireAuth(2), asfDisableMaster(4), asfAccountTxnID(5)
+	if as.ClearFlag != nil {
+		switch *as.ClearFlag {
+		case account.AccountSetFlagRequireAuth,
+			account.AccountSetFlagDisableMaster,
+			account.AccountSetFlagAccountTxnID:
+			return true
+		}
+	}
+
+	return false
 }

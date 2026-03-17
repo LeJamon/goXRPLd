@@ -88,6 +88,7 @@ func (e *TestEnv) Close() {
 	e.currentSeq++
 
 	// Reset the open-ledger transaction counters for the new ledger.
+	e.openLedgerTxns = nil
 	e.txInLedger = 0
 	e.closingTxTotal = 0
 
@@ -298,8 +299,8 @@ func (e *TestEnv) Submit(transaction interface{}) TxResult {
 		common.Sequence = &seq
 	}
 
-	// If TxQ is enabled, route through TxQ for fee escalation and queuing.
-	if e.txQueue != nil {
+	// If TxQ is enabled and not bypassed, route through TxQ for fee escalation and queuing.
+	if e.txQueue != nil && !e.bypassTxQ {
 		return e.submitViaTxQ(txn)
 	}
 
@@ -318,11 +319,12 @@ func (e *TestEnv) applyDirect(txn tx.Transaction) TxResult {
 		ReserveBase:               e.reserveBase,
 		ReserveIncrement:          e.reserveIncrement,
 		LedgerSequence:            e.ledger.Sequence(),
-		SkipSignatureVerification: true,
+		SkipSignatureVerification: !e.VerifySignatures,
 		Rules:                     e.rulesBuilder.Build(),
 		ParentCloseTime:           parentCloseTime,
 		NetworkID:                 e.networkID,
 		ParentHash:                e.ledger.ParentHash(),
+		OpenLedger:                e.openLedger,
 	}
 
 	engine := tx.NewEngine(e.ledger, engineConfig)
@@ -529,11 +531,12 @@ func (e *TestEnv) applyForReplay(txn tx.Transaction) tx.Result {
 		ReserveBase:               e.reserveBase,
 		ReserveIncrement:          e.reserveIncrement,
 		LedgerSequence:            e.ledger.Sequence(),
-		SkipSignatureVerification: true,
+		SkipSignatureVerification: !e.VerifySignatures,
 		Rules:                     e.rulesBuilder.Build(),
 		ParentCloseTime:           parentCloseTime,
 		NetworkID:                 e.networkID,
 		ParentHash:                e.ledger.ParentHash(),
+		OpenLedger:                e.openLedger,
 	}
 
 	engine := tx.NewEngine(e.ledger, engineConfig)
@@ -731,11 +734,12 @@ func (c *testTxQApplyContext) ApplyTransaction(txn tx.Transaction) (tx.Result, b
 		ReserveBase:               c.env.reserveBase,
 		ReserveIncrement:          c.env.reserveIncrement,
 		LedgerSequence:            c.env.ledger.Sequence(),
-		SkipSignatureVerification: true,
+		SkipSignatureVerification: !c.env.VerifySignatures,
 		Rules:                     c.env.rulesBuilder.Build(),
 		ParentCloseTime:           parentCloseTime,
 		NetworkID:                 c.env.networkID,
 		ParentHash:                c.env.ledger.ParentHash(),
+		OpenLedger:                c.env.openLedger,
 	}
 
 	engine := tx.NewEngine(c.env.ledger, engineConfig)
@@ -781,11 +785,12 @@ func (c *testTxQAcceptContext) ApplyTransaction(txn tx.Transaction) (tx.Result, 
 		ReserveBase:               c.env.reserveBase,
 		ReserveIncrement:          c.env.reserveIncrement,
 		LedgerSequence:            c.env.ledger.Sequence(),
-		SkipSignatureVerification: true,
+		SkipSignatureVerification: !c.env.VerifySignatures,
 		Rules:                     c.env.rulesBuilder.Build(),
 		ParentCloseTime:           parentCloseTime,
 		NetworkID:                 c.env.networkID,
 		ParentHash:                c.env.ledger.ParentHash(),
+		OpenLedger:                c.env.openLedger,
 	}
 
 	engine := tx.NewEngine(c.env.ledger, engineConfig)
@@ -846,11 +851,12 @@ func (e *TestEnv) SubmitPseudo(transaction interface{}) TxResult {
 		ReserveBase:               e.reserveBase,
 		ReserveIncrement:          e.reserveIncrement,
 		LedgerSequence:            e.ledger.Sequence(),
-		SkipSignatureVerification: true,
+		SkipSignatureVerification: !e.VerifySignatures,
 		Rules:                     e.rulesBuilder.Build(),
 		ParentCloseTime:           parentCloseTime,
 		NetworkID:                 e.networkID,
 		ParentHash:                e.ledger.ParentHash(),
+		OpenLedger:                e.openLedger,
 	}
 
 	engine := tx.NewEngine(e.ledger, engineConfig)

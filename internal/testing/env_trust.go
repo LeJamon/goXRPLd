@@ -398,9 +398,14 @@ func (e *TestEnv) SetAmendments(names []string) {
 // in the ledger, without submitting a transaction. This matches rippled's test
 // framework behavior where trust line setup reimburses the transaction fee so
 // the account's XRP balance is unchanged.
+//
+// In rippled, the reimbursement is done via a Payment from master, which costs
+// master 2*baseFee (baseFee for the payment amount + baseFee for the payment
+// tx fee). We simulate this by directly adjusting both balances.
 func (e *TestEnv) ReimburseFeeDirect(acc *Account) {
 	e.t.Helper()
 
+	// Add baseFee back to the account (reimburse the TrustSet fee)
 	accountKey := keylet.Account(acc.ID)
 	data, err := e.ledger.Read(accountKey)
 	if err != nil {
@@ -421,5 +426,29 @@ func (e *TestEnv) ReimburseFeeDirect(acc *Account) {
 
 	if err := e.ledger.Update(accountKey, updated); err != nil {
 		e.t.Fatalf("ReimburseFeeDirect: failed to update account %s: %v", acc.Name, err)
+	}
+
+	// Deduct 2*baseFee from master (payment amount + payment fee)
+	master := MasterAccount()
+	masterKey := keylet.Account(master.ID)
+	masterData, err := e.ledger.Read(masterKey)
+	if err != nil {
+		e.t.Fatalf("ReimburseFeeDirect: failed to read master: %v", err)
+	}
+
+	masterRoot, err := state.ParseAccountRoot(masterData)
+	if err != nil {
+		e.t.Fatalf("ReimburseFeeDirect: failed to parse master: %v", err)
+	}
+
+	masterRoot.Balance -= 2 * e.baseFee
+
+	masterUpdated, err := state.SerializeAccountRoot(masterRoot)
+	if err != nil {
+		e.t.Fatalf("ReimburseFeeDirect: failed to serialize master: %v", err)
+	}
+
+	if err := e.ledger.Update(masterKey, masterUpdated); err != nil {
+		e.t.Fatalf("ReimburseFeeDirect: failed to update master: %v", err)
 	}
 }

@@ -67,6 +67,7 @@ func FlowCross(
 	fixAMMv1_1 bool,
 	fixAMMv1_2 bool,
 	fixAMMOverflowOffer bool,
+	fix1781 bool,
 	domainID ...*[32]byte,
 ) FlowCrossResult {
 	// Create sandbox for tracking changes
@@ -172,6 +173,7 @@ func FlowCross(
 		paths,        // explicit paths (XRP bridge for IOU-IOU)
 		true,         // addDefaultPath
 		true,         // offerCrossing - skip trust line checks, create lines on demand
+		fix1781,      // fix1781 - gate XRP endpoint loop detection
 	)
 
 	if strandResult != tx.TesSUCCESS || len(strands) == 0 {

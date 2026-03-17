@@ -173,6 +173,16 @@ type EngineConfig struct {
 	// If nil, defaults to all amendments enabled (for backwards compatibility).
 	Rules *amendment.Rules
 
+	// OpenLedger controls whether fee adequacy is checked.
+	// When true, the engine verifies that the transaction fee meets the
+	// minimum required fee (including tx-type-specific overrides like
+	// AccountDelete's owner reserve). When false, fee adequacy is
+	// skipped — only basic fee validity (non-negative, legal amount,
+	// sufficient balance) is checked.
+	// Reference: rippled Transactor.cpp checkFee — "Only check fee is
+	// sufficient when the ledger is open."
+	OpenLedger bool
+
 	// Logger is the logger to use for this engine instance.
 	// If nil, xrpllog.Discard() is used — safe for tests and zero-value construction.
 	Logger xrpllog.Logger
@@ -212,6 +222,10 @@ type LedgerView interface {
 	// transaction detection.
 	// Reference: rippled ReadView::txExists()
 	TxExists(txID [32]byte) bool
+
+	// Rules returns the amendment rules for this view.
+	// Returns nil if rules are not available.
+	Rules() *amendment.Rules
 }
 
 // ApplyResult contains the result of applying a transaction
@@ -778,6 +792,7 @@ func parseValidationError(err error) Result {
 		"temBAD_SEND_XRP_PATHS":       TemBAD_SEND_XRP_PATHS,
 		"temBAD_SEND_XRP_LIMIT":       TemBAD_SEND_XRP_LIMIT,
 		"temBAD_SEND_XRP_NO_DIRECT":   TemBAD_SEND_XRP_NO_DIRECT,
+		"temCANNOT_PREAUTH_SELF":      TemCAN_NOT_PREAUTH_SELF,
 		"temCAN_NOT_PREAUTH_SELF":     TemCAN_NOT_PREAUTH_SELF,
 		"temEMPTY_DID":                TemEMPTY_DID,
 		"temARRAY_EMPTY":              TemARRAY_EMPTY,
@@ -851,10 +866,10 @@ func (e *Engine) validateFee(common *Common) Result {
 
 	fee := uint64(feeInt)
 
-	// Fee cannot be zero (must pay something)
-	if fee == 0 {
-		return TemBAD_FEE
-	}
+	// Fee=0 is allowed in preflight — rippled permits it here and checks the
+	// minimum fee in preclaim (checkFee). SetRegularKey uses fee=0 for the
+	// one-time free "password change". Other tx types that declare fee=0 will
+	// be caught later by telINSUF_FEE_P in preclaim.
 
 	// Fee cannot exceed maximum allowed fee
 	maxFee := e.config.MaxFee
@@ -1061,18 +1076,55 @@ func (e *Engine) preclaim(tx Transaction, txHash [32]byte) Result {
 	// Reference: rippled Transactor::checkFee in Transactor.cpp
 	// When a delegate is present, the fee is checked against the delegate's balance.
 	fee := e.calculateFee(tx)
-	if feeCalc, ok := tx.(BatchFeeCalculator); ok {
-		minFee := feeCalc.CalculateMinimumFee(e.config.BaseFee)
-		if fee < minFee {
+
+	// Calculate the minimum base fee for this transaction type.
+	// This is used both for open-ledger fee adequacy (full check) and
+	// closed-ledger zero-fee rejection (TxQ minimum).
+	// Reference: rippled applySteps.cpp — calculateBaseFee() dispatches to the
+	// tx-type-specific override; checkFee() uses that result directly.
+	var baseFeeForTx uint64
+	if feeCalc, ok := tx.(CustomBaseFeeCalculator); ok {
+		baseFeeForTx = feeCalc.CalculateBaseFee(e.view, e.config)
+	} else {
+		baseFeeForTx = e.config.BaseFee
+		if IsMultiSigned(tx) {
+			baseFeeForTx = CalculateMultiSigFee(e.config.BaseFee, len(common.Signers))
+		}
+	}
+	// SetRegularKey special case: free password change when lsfPasswordSpent not set.
+	// Reference: rippled SetRegularKey.cpp calculateBaseFee
+	if tx.TxType() == TypeRegularKeySet {
+		signedWithMaster := false
+		if spk := common.SigningPubKey; spk != "" {
+			sigAddr, sigErr := addresscodec.EncodeClassicAddressFromPublicKeyHex(spk)
+			if sigErr == nil && sigAddr == common.Account {
+				signedWithMaster = true
+			}
+		} else if e.config.SkipSignatureVerification && !IsMultiSigned(tx) {
+			signedWithMaster = true
+		}
+		if signedWithMaster && account.Flags&state.LsfPasswordSpent == 0 {
+			baseFeeForTx = 0
+		}
+	}
+
+	// Zero-fee rejection: always reject fee=0 when baseFee > 0.
+	if fee == 0 && baseFeeForTx > 0 {
+		return TelINSUF_FEE_P
+	}
+
+	// Fee adequacy check: only when the ledger is open.
+	// Reference: rippled Transactor::checkFee -- "Only check fee is
+	// sufficient when the ledger is open."
+	if e.config.OpenLedger {
+		if fee < baseFeeForTx {
 			return TelINSUF_FEE_P
 		}
 	}
-	// CustomBaseFeeCalculator: transaction types that override calculateBaseFee()
-	// with access to the full engine config (e.g., LedgerStateFix uses increment).
-	// Reference: rippled Transactor::checkFee calls calculateBaseFee(view, tx)
-	if feeCalc, ok := tx.(CustomBaseFeeCalculator); ok {
-		minFee := feeCalc.CalculateBaseFee(e.config)
-		if fee < minFee {
+
+	if feeCalc, ok := tx.(BatchFeeCalculator); ok {
+		batchMinFee := feeCalc.CalculateMinimumFee(e.config.BaseFee)
+		if fee < batchMinFee {
 			return TelINSUF_FEE_P
 		}
 	}
@@ -1126,11 +1178,42 @@ func (e *Engine) preclaim(tx Transaction, txHash [32]byte) Result {
 		}
 	}
 
-	// Step 5: checkSign — signature verification
+	// Step 5: checkSign — signature verification and multi-sign authorization
 	// Reference: rippled Transactor::checkSign in Transactor.cpp
 	// When a delegate is present, the idAccount for signature checking is the delegate.
 	// Reference: rippled line 602: auto const idAccount = ctx.tx[~sfDelegate].value_or(ctx.tx[sfAccount]);
-	if !e.config.SkipSignatureVerification && !IsMultiSigned(tx) && common.SigningPubKey != "" {
+	if IsMultiSigned(tx) {
+		// Multi-signed transaction: always check signer authorization and quorum.
+		// This runs regardless of SkipSignatureVerification because quorum and
+		// signer authorization (master key disabled, regular key, phantom accounts)
+		// are ledger-state checks, not cryptographic checks.
+		// Reference: rippled Transactor::checkMultiSign in Transactor.cpp lines 743-911
+		idAccount := common.Account
+		if common.Delegate != "" {
+			idAccount = common.Delegate
+		}
+		idAccountID, idErr := state.DecodeAccountID(idAccount)
+		if idErr != nil {
+			return TefBAD_SIGNATURE
+		}
+		// Convert tx Signers to SignerInfo for checkBatchMultiSign
+		txSigners := make([]SignerInfo, len(common.Signers))
+		for i, sw := range common.Signers {
+			txSigners[i] = SignerInfo{
+				Account:       sw.Signer.Account,
+				SigningPubKey: sw.Signer.SigningPubKey,
+			}
+		}
+		if result := e.checkBatchMultiSign(idAccountID, txSigners); result != TesSUCCESS {
+			return result
+		}
+	} else if common.SigningPubKey != "" {
+		// Single-signed transaction: check signing key authorization.
+		// This runs regardless of SkipSignatureVerification because authorization
+		// (master key disabled, regular key) is a ledger-state check, not a
+		// cryptographic check. The actual signature verification is done in
+		// Validate() and gated by SkipSignatureVerification.
+		// Reference: rippled Transactor::checkSingleSign in Transactor.cpp lines 682-740
 		signerAddress, addrErr := addresscodec.EncodeClassicAddressFromPublicKeyHex(common.SigningPubKey)
 		if addrErr != nil {
 			return TefBAD_AUTH
@@ -1159,16 +1242,41 @@ func (e *Engine) preclaim(tx Transaction, txHash [32]byte) Result {
 
 		isMasterDisabled := (idAccountRoot.Flags & state.LsfDisableMaster) != 0
 
-		if signerAddress == idAccountRoot.RegularKey {
-			// Signed with regular key — allowed
-		} else if !isMasterDisabled && signerAddress == idAccount {
-			// Signed with enabled master key — allowed
-		} else if isMasterDisabled && signerAddress == idAccount {
-			// Signed with disabled master key
-			return TefMASTER_DISABLED
+		if e.rules().Enabled(amendment.FeatureFixMasterKeyAsRegularKey) {
+			// With fixMasterKeyAsRegularKey: check regular key first, then master.
+			// This allows the master key to serve as a regular key even when
+			// master signing is disabled (e.g., regkey(alice, alice) + disable master).
+			// Reference: rippled Transactor::checkSingleSign lines 691-713
+			if signerAddress == idAccountRoot.RegularKey {
+				// Signed with regular key — allowed
+			} else if !isMasterDisabled && signerAddress == idAccount {
+				// Signed with enabled master key — allowed
+			} else if isMasterDisabled && signerAddress == idAccount {
+				// Signed with disabled master key
+				return TefMASTER_DISABLED
+			} else {
+				// Signed with an unauthorized key
+				return TefBAD_AUTH
+			}
 		} else {
-			// Signed with an unauthorized key
-			return TefBAD_AUTH
+			// Without fixMasterKeyAsRegularKey: check master key first.
+			// If signer == account, it's a master key sign attempt.
+			// The regular key is only checked if signer != account.
+			// Reference: rippled Transactor::checkSingleSign lines 715-737
+			if signerAddress == idAccount {
+				// Signing with the master key. Continue if it is not disabled.
+				if isMasterDisabled {
+					return TefMASTER_DISABLED
+				}
+			} else if signerAddress == idAccountRoot.RegularKey {
+				// Signing with the regular key. Continue.
+			} else if idAccountRoot.RegularKey != "" {
+				// Signing key does not match master or regular key.
+				return TefBAD_AUTH
+			} else {
+				// No regular key on account and signing key does not match master key.
+				return TefBAD_AUTH_MASTER
+			}
 		}
 	}
 
@@ -1266,11 +1374,17 @@ func (e *Engine) checkBatchMultiSign(accountID [20]byte, txSigners []SignerInfo)
 		return TefINTERNAL
 	}
 
-	// Walk through txSigners and match against account signer entries.
-	// Both lists are sorted by account. All signers must be valid.
-	// Reference: rippled checkMultiSign — linear walk with sorted lists
+	// Build a map from r-address to signer entry for O(1) lookup.
+	// This avoids ordering issues between binary AccountID sort (rippled/ledger)
+	// and r-address string sort (Go's AddMultiSigner).
+	authorizedSigners := make(map[string]state.AccountSignerEntry, len(signerList.SignerEntries))
+	for _, se := range signerList.SignerEntries {
+		authorizedSigners[se.Account] = se
+	}
+
+	// Verify each tx signer is authorized and accumulate weights.
+	// Reference: rippled checkMultiSign — all signers must be valid.
 	var weightSum uint32
-	accountSignerIdx := 0
 
 	for _, txSigner := range txSigners {
 		txSignerAccountID, decErr := state.DecodeAccountID(txSigner.Account)
@@ -1278,15 +1392,9 @@ func (e *Engine) checkBatchMultiSign(accountID [20]byte, txSigners []SignerInfo)
 			return TefBAD_SIGNATURE
 		}
 
-		// Advance through account signers to find a match
-		for accountSignerIdx < len(signerList.SignerEntries) &&
-			signerList.SignerEntries[accountSignerIdx].Account < txSigner.Account {
-			accountSignerIdx++
-		}
-		if accountSignerIdx >= len(signerList.SignerEntries) {
-			return TefBAD_SIGNATURE
-		}
-		if signerList.SignerEntries[accountSignerIdx].Account != txSigner.Account {
+		// Look up the signer in the authorized signers map
+		authEntry, found := authorizedSigners[txSigner.Account]
+		if !found {
 			return TefBAD_SIGNATURE
 		}
 
@@ -1344,7 +1452,7 @@ func (e *Engine) checkBatchMultiSign(accountID [20]byte, txSigners []SignerInfo)
 		}
 
 		// Signer is legitimate — add weight
-		weightSum += uint32(signerList.SignerEntries[accountSignerIdx].SignerWeight)
+		weightSum += uint32(authEntry.SignerWeight)
 	}
 
 	// Check quorum
@@ -1490,6 +1598,36 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 		Log:              e.logger,
 	}
 
+	// Consume ticket BEFORE Apply, matching rippled's Transactor::apply()
+	// which calls consumeSeqProxy() before doApply(). This ensures that when
+	// doApply() iterates the owner directory (e.g., AccountDelete), the
+	// consumed ticket is already gone.
+	if isTicket {
+		ticketKey := keylet.Ticket(accountID, *common.TicketSequence)
+		ownerDirKey := keylet.OwnerDir(accountID)
+		var ticketOwnerNode uint64
+		if ticketData, ticketErr := table.Read(ticketKey); ticketErr == nil && ticketData != nil {
+			ticketOwnerNode = state.GetOwnerNode(ticketData)
+		}
+		state.DirRemove(table, ownerDirKey, ticketOwnerNode, ticketKey.Key, true)
+		if err := table.Erase(ticketKey); err != nil {
+			return TefINTERNAL
+		}
+		if account.OwnerCount > 0 {
+			account.OwnerCount--
+		}
+		if account.TicketCount > 0 {
+			account.TicketCount--
+		}
+		preApplyData2, preApplyErr2 := state.SerializeAccountRoot(account)
+		if preApplyErr2 != nil {
+			return TefINTERNAL
+		}
+		if err := table.Update(accountKey, preApplyData2); err != nil {
+			return TefINTERNAL
+		}
+	}
+
 	// Set NumberSwitchover based on fixUniversalNumber amendment.
 	// When enabled, IOUAmount arithmetic uses Guard-based precision (XRPLNumber).
 	// Reference: rippled's setSTNumberSwitchover() in IOUAmount.cpp
@@ -1521,26 +1659,8 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 		result = TecOVERSIZE
 	}
 
-	// Consume ticket on success (tec ticket consumption is handled in the tec block below
-	// via a tracked ApplyStateTable so that proper metadata is generated).
-	// Reference: rippled Transactor::consumeSeqProxy + ticketDelete
-	if isTicket && result == TesSUCCESS {
-		ticketKey := keylet.Ticket(accountID, *common.TicketSequence)
-		ownerDirKey := keylet.OwnerDir(accountID)
-		// Remove ticket from owner directory (page 0)
-		state.DirRemove(table, ownerDirKey, 0, ticketKey.Key, true)
-		if err := table.Erase(ticketKey); err != nil {
-			return TefINTERNAL
-		}
-		if account.OwnerCount > 0 {
-			account.OwnerCount--
-		}
-		// Decrement TicketCount on the AccountRoot
-		// Reference: rippled Transactor::consumeSeqProxy() updates sfTicketCount
-		if account.TicketCount > 0 {
-			account.TicketCount--
-		}
-	}
+	// Ticket was already consumed before Apply (see below). No post-Apply
+	// ticket consumption needed for success results.
 
 	// For tec results, only apply fee/sequence changes, not transaction effects.
 	// Reference: rippled Transactor.cpp — tec codes claim the fee but discard
@@ -1607,7 +1727,12 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 		if isTicket {
 			ticketKey := keylet.Ticket(accountID, *common.TicketSequence)
 			ownerDirKey := keylet.OwnerDir(accountID)
-			state.DirRemove(tecTable, ownerDirKey, 0, ticketKey.Key, true)
+			// Read ticket SLE to get OwnerNode (directory page) for proper removal.
+			var ticketOwnerNode uint64
+			if ticketData, ticketErr := tecTable.Read(ticketKey); ticketErr == nil && ticketData != nil {
+				ticketOwnerNode = state.GetOwnerNode(ticketData)
+			}
+			state.DirRemove(tecTable, ownerDirKey, ticketOwnerNode, ticketKey.Key, true)
 			if err := tecTable.Erase(ticketKey); err != nil {
 				return TefINTERNAL
 			}

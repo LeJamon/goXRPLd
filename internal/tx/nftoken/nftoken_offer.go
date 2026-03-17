@@ -183,10 +183,12 @@ func tokenOfferCreateApply(
 	destination string,
 	expiration *uint32,
 	seqProxy uint32,
+	priorBalance uint64,
 ) tx.Result {
-	// Check reserve
+	// Check reserve using priorBalance (balance before fee deduction)
+	// Reference: rippled NFTokenUtils.cpp tokenOfferCreateApply line 1037
 	reserve := ctx.AccountReserve(ctx.Account.OwnerCount + 1)
-	if ctx.Account.Balance < reserve {
+	if priorBalance < reserve {
 		return tx.TecINSUFFICIENT_RESERVE
 	}
 

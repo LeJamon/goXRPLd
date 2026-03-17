@@ -82,7 +82,7 @@ func (n *NFTokenCancelOffer) RequiredAmendments() [][32]byte {
 }
 
 // Apply applies the NFTokenCancelOffer transaction to the ledger.
-// Reference: rippled NFTokenCancelOffer.cpp doApply and preclaim
+// Reference: rippled NFTokenCancelOffer.cpp preclaim + doApply
 func (n *NFTokenCancelOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("nftoken cancel offer apply",
 		"account", n.Account,
@@ -91,6 +91,58 @@ func (n *NFTokenCancelOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	accountID := ctx.AccountID
 
+	// --- Preclaim: verify all offers can be cancelled ---
+	// Reference: rippled NFTokenCancelOffer.cpp preclaim()
+	for _, offerIDHex := range n.NFTokenOffers {
+		offerIDBytes, err := hex.DecodeString(offerIDHex)
+		if err != nil || len(offerIDBytes) != 32 {
+			continue
+		}
+
+		var offerKeyBytes [32]byte
+		copy(offerKeyBytes[:], offerIDBytes)
+		offerKey := keylet.Keylet{Key: offerKeyBytes}
+
+		offerData, err := ctx.View.Read(offerKey)
+		if err != nil || offerData == nil {
+			// Not in ledger — assume consumed. No permission error.
+			continue
+		}
+
+		// If the entry exists but is NOT an NFTokenOffer, return tecNO_PERMISSION.
+		// Reference: rippled preclaim() line 75: if (offer->getType() != ltNFTOKEN_OFFER) return true;
+		entryType, err := state.GetLedgerEntryType(offerData)
+		if err != nil || entry.Type(entryType) != entry.TypeNFTokenOffer {
+			return tx.TecNO_PERMISSION
+		}
+
+		offer, err := state.ParseNFTokenOffer(offerData)
+		if err != nil {
+			return tx.TecNO_PERMISSION
+		}
+
+		// Anyone can cancel if expired
+		isExpired := offer.Expiration != 0 && offer.Expiration <= ctx.Config.ParentCloseTime
+		if isExpired {
+			continue
+		}
+
+		// Owner can always cancel
+		if offer.Owner == accountID {
+			continue
+		}
+
+		// Destination can always cancel
+		if offer.HasDestination && offer.Destination == accountID {
+			continue
+		}
+
+		// No permission to cancel this offer
+		return tx.TecNO_PERMISSION
+	}
+
+	// --- doApply: delete all offers ---
+	// Reference: rippled NFTokenCancelOffer.cpp doApply()
 	for _, offerIDHex := range n.NFTokenOffers {
 		offerIDBytes, err := hex.DecodeString(offerIDHex)
 		if err != nil || len(offerIDBytes) != 32 {
@@ -111,39 +163,13 @@ func (n *NFTokenCancelOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 			continue
 		}
 
-		// Check authorization to cancel
-		isExpired := offer.Expiration != 0 && offer.Expiration <= ctx.Config.ParentCloseTime
-		isOwner := offer.Owner == accountID
-		isDestination := offer.HasDestination && offer.Destination == accountID
-
-		if !isOwner && !isDestination && !isExpired {
-			ctx.Log.Warn("nftoken cancel offer: no permission to cancel",
-				"offerID", offerIDHex,
-			)
-			return tx.TecNO_PERMISSION
-		}
-
-		// NFToken buy offers do NOT escrow XRP — no refund needed on cancellation.
-		// Reference: rippled NFTokenUtils.cpp deleteTokenOffer — no balance adjustment
-
 		// Decrease owner count
 		if offer.Owner == accountID {
 			if ctx.Account.OwnerCount > 0 {
 				ctx.Account.OwnerCount--
 			}
 		} else {
-			ownerKey := keylet.Account(offer.Owner)
-			ownerData, err := ctx.View.Read(ownerKey)
-			if err == nil && ownerData != nil {
-				ownerAccount, err := state.ParseAccountRoot(ownerData)
-				if err == nil && ownerAccount.OwnerCount > 0 {
-					ownerAccount.OwnerCount--
-					ownerUpdated, _ := state.SerializeAccountRoot(ownerAccount)
-					if ownerUpdated != nil {
-						ctx.View.Update(ownerKey, ownerUpdated)
-					}
-				}
-			}
+			adjustOwnerCountViaView(ctx.View, offer.Owner, -1)
 		}
 
 		// Delete the offer with proper directory cleanup

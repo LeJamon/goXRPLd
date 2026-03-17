@@ -151,11 +151,22 @@ func (t *ApplyStateTable) Update(k keylet.Keylet, data []byte) error {
 		return err
 	}
 
-	// Track as modified
-	t.items[k.Key] = &TrackedEntry{
-		Action:   ActionModify,
-		Original: original,
-		Current:  data,
+	if original == nil {
+		// Entry doesn't exist in base — treat as insert.
+		// This happens when a prior transaction in the same ledger erased
+		// the entry, then a subsequent operation re-creates it via Update().
+		// Reference: rippled's ApplyView uses insert() for new entries.
+		t.items[k.Key] = &TrackedEntry{
+			Action:  ActionInsert,
+			Current: data,
+		}
+	} else {
+		// Track as modified
+		t.items[k.Key] = &TrackedEntry{
+			Action:   ActionModify,
+			Original: original,
+			Current:  data,
+		}
 	}
 
 	return nil
@@ -477,6 +488,11 @@ func (t *ApplyStateTable) threadOwners(data []byte, entryType string, fixCheckTh
 // Reference: rippled ReadView::txExists()
 func (t *ApplyStateTable) TxExists(txID [32]byte) bool {
 	return t.base.TxExists(txID)
+}
+
+// Rules returns the amendment rules for this view.
+func (t *ApplyStateTable) Rules() *amendment.Rules {
+	return t.rules
 }
 
 // DropsDestroyed returns the amount of XRP destroyed

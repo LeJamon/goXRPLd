@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/LeJamon/goXRPLd/amendment"
 	"github.com/LeJamon/goXRPLd/crypto/common"
 	"github.com/LeJamon/goXRPLd/drops"
 	"github.com/LeJamon/goXRPLd/internal/ledger/header"
@@ -414,6 +415,11 @@ func (l *Ledger) TxExists(txID [32]byte) bool {
 		return false
 	}
 	return exists
+}
+
+// Rules returns nil — the base ledger doesn't carry amendment rules.
+func (l *Ledger) Rules() *amendment.Rules {
+	return nil
 }
 
 // Close closes the ledger, making it immutable

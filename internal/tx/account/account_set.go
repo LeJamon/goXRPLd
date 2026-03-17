@@ -557,7 +557,7 @@ func (a *AccountSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	// TickSize
 	if a.TickSize != nil {
 		tickSize := *a.TickSize
-		if tickSize == 0 || tickSize == 15 {
+		if tickSize == 0 || tickSize == protocol.TickSizeMax {
 			account.TickSize = 0
 		} else {
 			account.TickSize = tickSize

@@ -10,59 +10,55 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Page traversal — replaces broken hashed-keylet approach
+// Page traversal using Succ (SHAMap upper_bound)
 // Reference: rippled NFTokenUtils.cpp locatePage, getPageForToken
 // ---------------------------------------------------------------------------
 
+// succNFTokenPage finds the first NFToken page key strictly greater than
+// first.Key and at most last.Key, falling back to last.Key if none exists.
+// This mirrors rippled's:
+//
+//	view.succ(first.key, last.key.next()).value_or(last.key)
+//
+// where succ(start, upperBound) returns the first key > start and < upperBound.
+func succNFTokenPage(view tx.LedgerView, first, last keylet.Keylet) ([32]byte, error) {
+	foundKey, _, found, err := view.Succ(first.Key)
+	if err != nil {
+		return [32]byte{}, err
+	}
+	if found && bytes.Compare(foundKey[:], last.Key[:]) <= 0 {
+		return foundKey, nil
+	}
+	return last.Key, nil
+}
+
 // locatePage finds the NFToken page that should contain (or does contain)
-// the given token. It walks backwards from the max page via PreviousPageMin.
+// the given token. Uses Succ for direct state tree lookup instead of walking
+// the linked list.
 // Returns (pageKeylet, pageData, err). If the owner has no pages, returns nil data.
-// Reference: rippled NFTokenUtils.cpp locatePage — uses view.succ() which we
-// emulate by walking the linked list from the max page.
+// Reference: rippled NFTokenUtils.cpp locatePage — uses view.succ()
 func locatePage(view tx.LedgerView, owner [20]byte, tokenID [32]byte) (keylet.Keylet, *state.NFTokenPageData, error) {
 	base := keylet.NFTokenPageMin(owner)
 	first := keylet.NFTokenPageForToken(base, tokenID)
-	maxKL := keylet.NFTokenPageMax(owner)
+	last := keylet.NFTokenPageMax(owner)
 
-	// Start at max page
-	data, err := view.Read(maxKL)
+	pageKey, err := succNFTokenPage(view, first, last)
+	if err != nil {
+		return keylet.Keylet{}, nil, err
+	}
+
+	kl := keylet.Keylet{Type: last.Type, Key: pageKey}
+	data, err := view.Read(kl)
 	if err != nil || data == nil {
-		return keylet.Keylet{}, nil, nil // No pages for this owner
+		return keylet.Keylet{}, nil, nil
 	}
 
-	currentKL := maxKL
-	currentData := data
-
-	for {
-		page, err := state.ParseNFTokenPage(currentData)
-		if err != nil {
-			return keylet.Keylet{}, nil, err
-		}
-
-		// Check if there's a previous page
-		var emptyHash [32]byte
-		if page.PreviousPageMin == emptyHash {
-			// This is the leftmost page — token must be here (or not exist)
-			return currentKL, page, nil
-		}
-
-		// If previous page's key <= first.Key, then current page is the first
-		// page with key strictly > first — i.e., the correct page.
-		if bytes.Compare(page.PreviousPageMin[:], first.Key[:]) <= 0 {
-			return currentKL, page, nil
-		}
-
-		// Previous page's key > first, so the right page might be further back
-		prevKL := keylet.Keylet{Type: currentKL.Type, Key: page.PreviousPageMin}
-		prevData, err := view.Read(prevKL)
-		if err != nil || prevData == nil {
-			// Broken link — fall back to current page
-			return currentKL, page, nil
-		}
-
-		currentKL = prevKL
-		currentData = prevData
+	page, err := state.ParseNFTokenPage(data)
+	if err != nil {
+		return keylet.Keylet{}, nil, err
 	}
+
+	return kl, page, nil
 }
 
 // findToken searches the owner's pages for a specific NFT ID.
@@ -100,6 +96,7 @@ func getPageForToken(
 	view tx.LedgerView,
 	owner [20]byte,
 	tokenID [32]byte,
+	fixDirV1 bool,
 ) (keylet.Keylet, *state.NFTokenPageData, int, error) {
 	base := keylet.NFTokenPageMin(owner)
 	first := keylet.NFTokenPageForToken(base, tokenID)
@@ -135,49 +132,30 @@ func getPageForToken(
 
 	// Page is full — need to split
 	// Reference: rippled NFTokenUtils.cpp getPageForToken (split logic)
-	return splitPage(view, owner, tokenID, cpKL, cp, base, first)
+	return splitPage(view, owner, tokenID, cpKL, cp, base, first, fixDirV1)
 }
 
 // locatePageForInsert finds the first existing page with key > first.Key,
-// or returns nil if no pages exist.
+// or returns nil if no pages exist. Uses Succ for direct state tree lookup.
+// Reference: rippled getPageForToken — view.succ(first.key, last.key.next()).value_or(last.key)
 func locatePageForInsert(view tx.LedgerView, owner [20]byte, first, maxKL keylet.Keylet) (keylet.Keylet, *state.NFTokenPageData, error) {
-	data, err := view.Read(maxKL)
+	pageKey, err := succNFTokenPage(view, first, maxKL)
+	if err != nil {
+		return keylet.Keylet{}, nil, err
+	}
+
+	kl := keylet.Keylet{Type: maxKL.Type, Key: pageKey}
+	data, err := view.Read(kl)
 	if err != nil || data == nil {
-		return keylet.Keylet{}, nil, nil // No pages
+		return keylet.Keylet{}, nil, nil
 	}
 
-	currentKL := maxKL
-	currentData := data
-
-	for {
-		page, err := state.ParseNFTokenPage(currentData)
-		if err != nil {
-			return keylet.Keylet{}, nil, err
-		}
-
-		var emptyHash [32]byte
-		if page.PreviousPageMin == emptyHash {
-			return currentKL, page, nil
-		}
-
-		if bytes.Compare(page.PreviousPageMin[:], first.Key[:]) <= 0 {
-			return currentKL, page, nil
-		}
-
-		prevKL := keylet.Keylet{Type: currentKL.Type, Key: page.PreviousPageMin}
-		prevData, err := view.Read(prevKL)
-		if err != nil || prevData == nil {
-			return currentKL, page, nil
-		}
-
-		currentKL = prevKL
-		currentPage, err := state.ParseNFTokenPage(prevData)
-		if err != nil {
-			return keylet.Keylet{}, nil, err
-		}
-		currentData = prevData
-		_ = currentPage
+	page, err := state.ParseNFTokenPage(data)
+	if err != nil {
+		return keylet.Keylet{}, nil, err
 	}
+
+	return kl, page, nil
 }
 
 // splitPage splits a full page and returns the right page for the new token.
@@ -189,6 +167,7 @@ func splitPage(
 	cpKL keylet.Keylet,
 	cp *state.NFTokenPageData,
 	base, first keylet.Keylet,
+	fixDirV1 bool,
 ) (keylet.Keylet, *state.NFTokenPageData, int, error) {
 	narr := cp.NFTokens // Will become the "left" page (lower keys)
 
@@ -224,6 +203,12 @@ func splitPage(
 
 	// If splitIdx == 0, entire page is equivalent tokens
 	if splitIdx == 0 {
+		// Prior to fixNFTokenDirV1 we simply stopped.
+		// Reference: rippled NFTokenUtils.cpp lines 145-147
+		if !fixDirV1 {
+			return keylet.Keylet{}, nil, 0, nil
+		}
+
 		tokenPageKey := getNFTPageKey(tokenID)
 		if tokenPageKey == cmp {
 			// Token belongs on this full page of equivalent tokens — cannot store
@@ -305,8 +290,16 @@ func splitPage(
 	}
 
 	// Determine which page to return for the new token insertion
-	// Reference: rippled — with fixNFTokenDirV1: return (first.key < np.key) ? np : cp
-	if bytes.Compare(first.Key[:], npKL.Key[:]) < 0 {
+	// Reference: rippled — fixNFTokenDirV1 corrects off-by-one: uses < instead of <=
+	// Without fixDirV1: return (first.key <= np.key) ? np : cp
+	// With fixDirV1:    return (first.key < np.key) ? np : cp
+	useNp := false
+	if fixDirV1 {
+		useNp = bytes.Compare(first.Key[:], npKL.Key[:]) < 0
+	} else {
+		useNp = bytes.Compare(first.Key[:], npKL.Key[:]) <= 0
+	}
+	if useNp {
 		// Re-read np since we just wrote it
 		npData, err := view.Read(npKL)
 		if err != nil {
@@ -336,8 +329,8 @@ func splitPage(
 // Reference: rippled NFTokenUtils.cpp insertToken
 // ---------------------------------------------------------------------------
 
-func insertNFToken(ownerID [20]byte, token state.NFTokenData, view tx.LedgerView) insertNFTokenResult {
-	pageKL, page, pagesCreated, err := getPageForToken(view, ownerID, token.NFTokenID)
+func insertNFToken(ownerID [20]byte, token state.NFTokenData, view tx.LedgerView, fixDirV1 bool) insertNFTokenResult {
+	pageKL, page, pagesCreated, err := getPageForToken(view, ownerID, token.NFTokenID, fixDirV1)
 	if err != nil {
 		return insertNFTokenResult{Result: tx.TefINTERNAL}
 	}
@@ -608,7 +601,7 @@ type transferNFTokenResult struct {
 	ToPagesCreated   int
 }
 
-func transferNFToken(from, to [20]byte, tokenID [32]byte, view tx.LedgerView, fixPageLinks bool) transferNFTokenResult {
+func transferNFToken(from, to [20]byte, tokenID [32]byte, view tx.LedgerView, fixPageLinks bool, fixDirV1 bool) transferNFTokenResult {
 	// Find the token on the sender's pages
 	_, _, idx, found := findToken(view, from, tokenID)
 	if !found {
@@ -632,7 +625,7 @@ func transferNFToken(from, to [20]byte, tokenID [32]byte, view tx.LedgerView, fi
 	}
 
 	// Insert into recipient
-	insertResult := insertNFToken(to, tokenData, view)
+	insertResult := insertNFToken(to, tokenData, view, fixDirV1)
 	if insertResult.Result != tx.TesSUCCESS {
 		return transferNFTokenResult{Result: insertResult.Result}
 	}

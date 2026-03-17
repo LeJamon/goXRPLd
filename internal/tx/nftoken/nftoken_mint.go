@@ -105,9 +105,13 @@ func (n *NFTokenMint) Validate() error {
 		return tx.Errorf(tx.TemMALFORMED, "Issuer cannot be the same as Account")
 	}
 
-	// URI validation: must be hex-encoded, not empty (if present), and <= maxTokenURILength bytes
-	if n.URI != "" {
-		// URI is hex-encoded, so length in bytes is len/2
+	// URI validation: if the field is present, it must not be empty and must
+	// not exceed maxTokenURILength bytes.
+	// Reference: rippled NFTokenMint.cpp preflight — checks isFieldPresent(sfURI)
+	// then rejects empty or oversized URIs.
+	// HasField("URI") distinguishes binary-parsed "URI present but empty" from "URI absent".
+	// For Go-created transactions (no PresentFields), fall back to n.URI != "".
+	if n.HasField("URI") || n.URI != "" {
 		uriBytes := len(n.URI) / 2
 		if uriBytes == 0 {
 			return tx.Errorf(tx.TemMALFORMED, "URI cannot be empty")
@@ -122,6 +126,42 @@ func (n *NFTokenMint) Validate() error {
 	hasOfferFields := n.Amount != nil || n.Destination != "" || n.Expiration != nil
 	if hasOfferFields && n.Amount == nil {
 		return tx.Errorf(tx.TemMALFORMED, "Amount required when Destination or Expiration present")
+	}
+
+	// When Amount is present, validate the offer fields using the same logic as
+	// tokenOfferCreatePreflight in rippled. Mint always creates a sell offer.
+	// Reference: rippled NFTokenMint.cpp preflight → tokenOfferCreatePreflight
+	if n.Amount != nil {
+		// Negative amount check — only when fixNFTokenNegOffer is enabled
+		// Reference: rippled NFTokenUtils.cpp tokenOfferCreatePreflight line 847
+		// Note: checked at runtime in Apply() since Validate() doesn't have amendment context
+
+		// IOU-specific checks
+		if !n.Amount.IsNative() {
+			// Extract NFToken flags from transaction flags (lower 16 bits)
+			nftFlags := uint16(n.GetFlags() & 0xFFFF)
+
+			// If token has OnlyXRP flag, IOU offers are not allowed
+			if nftFlags&nftFlagOnlyXRP != 0 {
+				return tx.Errorf(tx.TemBAD_AMOUNT, "NFToken requires XRP only")
+			}
+
+			// Zero IOU amount is not allowed
+			if n.Amount.IsZero() {
+				return tx.Errorf(tx.TemBAD_AMOUNT, "IOU amount cannot be zero")
+			}
+		}
+
+		// Expiration of 0 is invalid
+		if n.Expiration != nil && *n.Expiration == 0 {
+			return tx.Errorf(tx.TemBAD_EXPIRATION, "Expiration cannot be 0")
+		}
+
+		// Destination cannot be the same as the account creating the offer
+		// Reference: rippled tokenOfferCreatePreflight — "if (dest == acctID)"
+		if n.Destination != "" && n.Destination == n.Account {
+			return tx.Errorf(tx.TemMALFORMED, "Destination cannot be the same as Account")
+		}
 	}
 
 	return nil
@@ -190,6 +230,14 @@ func (n *NFTokenMint) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	accountID := ctx.AccountID
 
+	// Record owner count before insertion for reserve check.
+	// Reference: rippled NFTokenMint.cpp doApply line 296-297
+	ownerCountBefore := ctx.Account.OwnerCount
+
+	// Reconstruct mPriorBalance (balance before fee deduction).
+	// Reference: rippled Transactor.cpp — mPriorBalance is set before payFee()
+	mPriorBalance := ctx.Account.Balance + ctx.Config.BaseFee
+
 	// Determine the issuer
 	var issuerID [20]byte
 	var issuerAccount *state.AccountRoot
@@ -224,6 +272,99 @@ func (n *NFTokenMint) Apply(ctx *tx.ApplyContext) tx.Result {
 	} else {
 		issuerID = accountID
 		issuerAccount = ctx.Account
+	}
+
+	// Preclaim checks for the combined mint+offer path.
+	// Reference: rippled NFTokenMint.cpp preclaim → tokenOfferCreatePreclaim
+	if n.Amount != nil {
+		// Negative amount check — gated by fixNFTokenNegOffer amendment
+		// Reference: rippled NFTokenUtils.cpp tokenOfferCreatePreflight line 847
+		if n.Amount.IsNegative() && ctx.Rules().Enabled(amendment.FeatureFixNFTokenNegOffer) {
+			return tx.TemBAD_AMOUNT
+		}
+
+		// Check expiration
+		if n.Expiration != nil && *n.Expiration <= ctx.Config.ParentCloseTime {
+			return tx.TecEXPIRED
+		}
+
+		// Extract NFToken flags from transaction flags (lower 16 bits)
+		// These are the flags that will be embedded in the minted token.
+		nftFlags := uint16(n.GetFlags() & 0xFFFF)
+
+		// Get transfer fee
+		var transferFee uint16
+		if n.TransferFee != nil {
+			transferFee = *n.TransferFee
+		}
+
+		// IOU-specific preclaim checks
+		// Reference: rippled NFTokenUtils.cpp tokenOfferCreatePreclaim
+		if !n.Amount.IsNative() {
+			iouIssuerID, err := state.DecodeAccountID(n.Amount.Issuer)
+			if err != nil {
+				return tx.TemINVALID
+			}
+
+			// NFT issuer trust line check when transfer fee is set and no auto-trust-line flag
+			// Reference: rippled tokenOfferCreatePreclaim lines 909-929
+			if nftFlags&nftFlagTrustLine == 0 && transferFee > 0 {
+				issuerExists, _ := ctx.View.Exists(keylet.Account(issuerID))
+				if !issuerExists {
+					return tx.TecNO_ISSUER
+				}
+
+				// With featureNFTokenMintOffer: skip trust line check when NFT issuer == IOU issuer
+				if ctx.Rules().Enabled(amendment.FeatureNFTokenMintOffer) {
+					if issuerID != iouIssuerID {
+						trustLineKey := keylet.Line(issuerID, iouIssuerID, n.Amount.Currency)
+						trustLineData, err := ctx.View.Read(trustLineKey)
+						if err != nil || trustLineData == nil {
+							return tx.TecNO_LINE
+						}
+					}
+				} else {
+					trustLineKey := keylet.Line(issuerID, iouIssuerID, n.Amount.Currency)
+					exists, _ := ctx.View.Exists(trustLineKey)
+					if !exists {
+						return tx.TecNO_LINE
+					}
+				}
+
+				// Check if NFT issuer is frozen for this IOU
+				if tx.IsGlobalFrozen(ctx.View, n.Amount.Issuer) || tx.IsTrustlineFrozen(ctx.View, issuerID, iouIssuerID, n.Amount.Currency) {
+					return tx.TecFROZEN
+				}
+			}
+
+			// Check if the minting account is frozen for this IOU
+			// Reference: rippled tokenOfferCreatePreclaim line 941
+			if tx.IsGlobalFrozen(ctx.View, n.Amount.Issuer) || tx.IsTrustlineFrozen(ctx.View, accountID, iouIssuerID, n.Amount.Currency) {
+				return tx.TecFROZEN
+			}
+
+			// Trust line authorization check (with fixEnforceNFTokenTrustlineV2)
+			// Reference: rippled tokenOfferCreatePreclaim lines 1007-1018
+			if ctx.Rules().Enabled(amendment.FeatureFixEnforceNFTokenTrustlineV2) {
+				if r := checkNFTTrustlineAuthorized(ctx.View, accountID, n.Amount.Currency, iouIssuerID); r != tx.TesSUCCESS {
+					return r
+				}
+			}
+		}
+
+		// Destination check
+		// Reference: rippled tokenOfferCreatePreclaim lines 970-988
+		if n.Destination != "" {
+			destAccount, _, result := ctx.LookupAccount(n.Destination)
+			if result != tx.TesSUCCESS {
+				return result
+			}
+			if ctx.Rules().Enabled(amendment.FeatureDisallowIncoming) {
+				if destAccount.Flags&state.LsfDisallowIncomingNFTokenOffer != 0 {
+					return tx.TecNO_PERMISSION
+				}
+			}
+		}
 	}
 
 	// Get the token sequence from MintedNFTokens.
@@ -306,7 +447,8 @@ func (n *NFTokenMint) Apply(ctx *tx.ApplyContext) tx.Result {
 		URI:       n.URI,
 	}
 
-	insertResult := insertNFToken(accountID, newToken, ctx.View)
+	fixDirV1 := ctx.Rules().Enabled(amendment.FeatureFixNFTokenDirV1)
+	insertResult := insertNFToken(accountID, newToken, ctx.View, fixDirV1)
 	if insertResult.Result != tx.TesSUCCESS {
 		ctx.Log.Error("nftoken mint: failed to insert token", "result", insertResult.Result)
 		return insertResult.Result
@@ -332,20 +474,22 @@ func (n *NFTokenMint) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Reference: rippled NFTokenMint.cpp doApply — tokenOfferCreateApply
 	if n.Amount != nil {
 		seqProxy := n.GetCommon().SeqProxy()
-		result := tokenOfferCreateApply(ctx, accountID, tokenID, n.Amount, n.Destination, n.Expiration, seqProxy)
+		result := tokenOfferCreateApply(ctx, accountID, tokenID, n.Amount, n.Destination, n.Expiration, seqProxy, mPriorBalance)
 		if result != tx.TesSUCCESS {
 			return result
 		}
 	}
 
-	// Check reserve for all new objects (pages + possible offer)
-	reserve := ctx.AccountReserve(ctx.Account.OwnerCount)
-	if ctx.Account.Balance < reserve {
-		ctx.Log.Warn("nftoken mint: insufficient reserve",
-			"balance", ctx.Account.Balance,
-			"reserve", reserve,
-		)
-		return tx.TecINSUFFICIENT_RESERVE
+	// Only check the reserve if the owner count actually changed. This
+	// allows NFTs to be added to the page (and burn fees) without
+	// requiring the reserve to be met each time. The reserve is
+	// only managed when a new NFT page or sell offer is added.
+	// Reference: rippled NFTokenMint.cpp doApply lines 350-357
+	if ctx.Account.OwnerCount > ownerCountBefore {
+		reserve := ctx.AccountReserve(ctx.Account.OwnerCount)
+		if mPriorBalance < reserve {
+			return tx.TecINSUFFICIENT_RESERVE
+		}
 	}
 
 	return tx.TesSUCCESS

@@ -80,11 +80,8 @@ func (e *EscrowCreate) Validate() error {
 		return tx.Errorf(tx.TemBAD_AMOUNT, "Amount must be positive")
 	}
 
-	// Must be XRP (unless featureTokenEscrow is enabled)
+	// Non-XRP amounts require featureTokenEscrow (checked in Apply where rules are available).
 	// Reference: rippled Escrow.cpp:131-148
-	if !e.Amount.IsNative() {
-		return tx.Errorf(tx.TemBAD_AMOUNT, "escrow can only hold XRP")
-	}
 
 	// Must have at least one timeout value
 	// Reference: rippled Escrow.cpp:151-152
@@ -135,6 +132,12 @@ func (e *EscrowCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	rules := ctx.Rules()
 	closeTime := ctx.Config.ParentCloseTime
+
+	// Non-XRP amounts require featureTokenEscrow.
+	// Reference: rippled Escrow.cpp preflight lines 131-148
+	if !e.Amount.IsNative() && !rules.Enabled(amendment.FeatureTokenEscrow) {
+		return tx.TemBAD_AMOUNT
+	}
 
 	// Amendment-gated preflight: fix1571 requires FinishAfter or Condition
 	// Reference: rippled Escrow.cpp:160-167
@@ -249,9 +252,10 @@ func (e *EscrowCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TecDIR_FULL
 	}
 
-	// If cross-account, insert into destination's owner directory and
-	// increment destination's OwnerCount.
-	// Reference: rippled Escrow.cpp:560-570 + adjustOwnerCount
+	// If cross-account, insert into destination's owner directory.
+	// Note: rippled does NOT increment the destination's OwnerCount for
+	// XRP escrows. Only the creator's OwnerCount is incremented.
+	// Reference: rippled Escrow.cpp:561-569
 	if destID != accountID {
 		destDirKey := keylet.OwnerDir(destID)
 		_, err = state.DirInsert(ctx.View, destDirKey, escrowKey.Key, func(dir *state.DirectoryNode) {
@@ -260,12 +264,6 @@ func (e *EscrowCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		if err != nil {
 			ctx.Log.Error("escrow create: destination directory full", "error", err)
 			return tx.TecDIR_FULL
-		}
-
-		// Increment destination's OwnerCount
-		destAccount.OwnerCount++
-		if result := ctx.UpdateAccountRoot(destID, destAccount); result != tx.TesSUCCESS {
-			return result
 		}
 	}
 

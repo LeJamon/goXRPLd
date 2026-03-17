@@ -2,12 +2,12 @@ package credential
 
 import (
 	"encoding/hex"
-
-	"github.com/LeJamon/goXRPLd/internal/ledger/state"
-	"github.com/LeJamon/goXRPLd/keylet"
+	"errors"
 
 	"github.com/LeJamon/goXRPLd/amendment"
+	"github.com/LeJamon/goXRPLd/internal/ledger/state"
 	"github.com/LeJamon/goXRPLd/internal/tx"
+	"github.com/LeJamon/goXRPLd/keylet"
 )
 
 func init() {
@@ -49,16 +49,15 @@ func (c *CredentialCreate) TxType() tx.Type {
 
 // Validate validates the CredentialCreate transaction
 // Reference: rippled Credentials.cpp CredentialCreate::preflight()
+// Note: The fixInvalidTxFlags-gated flag check is done in Apply() because
+// Validate() has no access to amendment rules.
 func (c *CredentialCreate) Validate() error {
 	if err := c.BaseTx.Validate(); err != nil {
 		return err
 	}
 
-	// Check for invalid flags (tfUniversalMask)
-	// Reference: rippled Credentials.cpp:66-71
-	if err := tx.CheckFlags(c.GetFlags(), tx.TfUniversalMask); err != nil {
-		return err
-	}
+	// Flag check is deferred to Apply() where amendment rules are available.
+	// Reference: rippled Credentials.cpp:66-71 — gated behind fixInvalidTxFlags.
 
 	// Subject is required and must not be the zero account
 	// Reference: rippled Credentials.cpp:73-77
@@ -74,7 +73,8 @@ func (c *CredentialCreate) Validate() error {
 
 	// Validate URI field length (optional but if present must be valid)
 	// Reference: rippled Credentials.cpp:79-84
-	if c.URI != "" {
+	// HasField("URI") detects binary-parsed "URI present but empty" vs "URI absent".
+	if c.URI != "" || c.HasField("URI") {
 		decoded, err := hex.DecodeString(c.URI)
 		if err != nil {
 			return tx.Errorf(tx.TemMALFORMED, "URI must be valid hex string")
@@ -119,6 +119,14 @@ func (c *CredentialCreate) RequiredAmendments() [][32]byte {
 // Apply applies the CredentialCreate transaction to ledger state.
 // Reference: rippled Credentials.cpp CredentialCreate::doApply()
 func (c *CredentialCreate) Apply(ctx *tx.ApplyContext) tx.Result {
+	// Check for invalid flags, gated behind fixInvalidTxFlags
+	// Reference: rippled Credentials.cpp:66-71
+	if ctx.Rules().Enabled(amendment.FeatureFixInvalidTxFlags) {
+		if c.GetFlags()&tx.TfUniversalMask != 0 {
+			return tx.TemINVALID_FLAG
+		}
+	}
+
 	ctx.Log.Trace("credential create apply",
 		"issuer", c.Account,
 		"subject", c.Subject,
@@ -208,6 +216,9 @@ func (c *CredentialCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		dir.Owner = ctx.AccountID
 	})
 	if err != nil {
+		if errors.Is(err, state.ErrDirFull) {
+			return tx.TecDIR_FULL
+		}
 		return tx.TefINTERNAL
 	}
 	cred.IssuerNode = issuerDirResult.Page
@@ -219,6 +230,9 @@ func (c *CredentialCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 			dir.Owner = subjectID
 		})
 		if err != nil {
+			if errors.Is(err, state.ErrDirFull) {
+				return tx.TecDIR_FULL
+			}
 			return tx.TefINTERNAL
 		}
 		cred.SubjectNode = subjectDirResult.Page

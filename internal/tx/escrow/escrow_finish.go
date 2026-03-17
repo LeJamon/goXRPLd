@@ -3,6 +3,7 @@ package escrow
 import (
 	"encoding/hex"
 	"sort"
+	"strings"
 
 	"github.com/LeJamon/goXRPLd/amendment"
 	"github.com/LeJamon/goXRPLd/internal/ledger/state"
@@ -80,12 +81,39 @@ func (e *EscrowFinish) Validate() error {
 		return tx.Errorf(tx.TemMALFORMED, "Condition and Fulfillment must be provided together")
 	}
 
+	// Validate CredentialIDs field
+	// Reference: rippled Escrow.cpp preflight() calls credentials::checkFields()
+	// Use HasField to detect empty arrays from binary parsing where omitempty
+	// causes the Go struct field to be nil even though the field was present.
+	if e.CredentialIDs != nil || e.HasField("CredentialIDs") {
+		if len(e.CredentialIDs) == 0 || len(e.CredentialIDs) > 8 {
+			return tx.Errorf(tx.TemMALFORMED, "CredentialIDs array size is invalid")
+		}
+		seen := make(map[string]bool, len(e.CredentialIDs))
+		for _, id := range e.CredentialIDs {
+			if seen[id] {
+				return tx.Errorf(tx.TemMALFORMED, "Duplicate credential ID")
+			}
+			seen[id] = true
+		}
+	}
+
 	return nil
 }
 
 // Flatten returns a flat map of all transaction fields
 func (e *EscrowFinish) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(e)
+}
+
+// ApplyOnTec implements TecApplier. When tecEXPIRED is returned, this re-runs
+// credential expiration deletion against the engine's view so the side-effects
+// (credential deletion, owner count adjustment) persist even though the tx
+// sandbox is rolled back for tec results.
+// Reference: rippled Transactor.cpp - tecEXPIRED re-applies removeExpiredCredentials
+func (e *EscrowFinish) ApplyOnTec(ctx *tx.ApplyContext) tx.Result {
+	removeExpiredCredentials(ctx, e.CredentialIDs)
+	return tx.TecEXPIRED
 }
 
 // Apply applies an EscrowFinish transaction
@@ -186,8 +214,8 @@ func (e *EscrowFinish) Apply(ctx *tx.ApplyContext) tx.Result {
 			return tx.TecCRYPTOCONDITION_ERROR
 		}
 
-		// Condition in tx must match condition on escrow
-		if txCondition != escrowEntry.Condition {
+		// Condition in tx must match condition on escrow (case-insensitive hex comparison)
+		if !strings.EqualFold(txCondition, escrowEntry.Condition) {
 			ctx.Log.Warn("escrow finish: condition mismatch")
 			return tx.TecCRYPTOCONDITION_ERROR
 		}
@@ -216,6 +244,15 @@ func (e *EscrowFinish) Apply(ctx *tx.ApplyContext) tx.Result {
 		destAccount, err = state.ParseAccountRoot(destData)
 		if err != nil {
 			return tx.TefINTERNAL
+		}
+	}
+
+	// Check for expired credentials BEFORE deposit auth check.
+	// Reference: rippled verifyDepositPreauth() — first calls removeExpired(),
+	// returns tecEXPIRED if any credentials were expired.
+	if len(e.CredentialIDs) > 0 && rules.Enabled(amendment.FeatureCredentials) {
+		if removeExpiredCredentials(ctx, e.CredentialIDs) {
+			return tx.TecEXPIRED
 		}
 	}
 
@@ -267,13 +304,10 @@ func (e *EscrowFinish) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TefINTERNAL
 	}
 
-	// Decrement OwnerCount for escrow owner
+	// Decrement OwnerCount for escrow owner only.
+	// Note: rippled does NOT adjust destination's OwnerCount for XRP escrows.
+	// Reference: rippled Escrow.cpp:1188-1190
 	adjustOwnerCount(ctx, ownerID, -1)
-
-	// If cross-account, also decrement destination's OwnerCount
-	if escrowEntry.Account != escrowEntry.DestinationID {
-		adjustOwnerCount(ctx, escrowEntry.DestinationID, -1)
-	}
 
 	return tx.TesSUCCESS
 }
@@ -318,6 +352,45 @@ func validateCredentials(ctx *tx.ApplyContext, credentialIDs []string) tx.Result
 	}
 
 	return tx.TesSUCCESS
+}
+
+// removeExpiredCredentials checks for expired credentials and deletes them.
+// Returns true if any credentials were expired.
+// Reference: rippled credentials::removeExpired() in CredentialHelpers.cpp
+func removeExpiredCredentials(ctx *tx.ApplyContext, credentialIDs []string) bool {
+	if len(credentialIDs) == 0 {
+		return false
+	}
+
+	closeTime := ctx.Config.ParentCloseTime
+	anyExpired := false
+
+	for _, idHex := range credentialIDs {
+		credIDBytes, err := hex.DecodeString(idHex)
+		if err != nil || len(credIDBytes) != 32 {
+			continue
+		}
+		var credID [32]byte
+		copy(credID[:], credIDBytes)
+
+		credKey := keylet.CredentialByID(credID)
+		credData, err := ctx.View.Read(credKey)
+		if err != nil || credData == nil {
+			continue
+		}
+
+		cred, err := credential.ParseCredentialEntry(credData)
+		if err != nil {
+			continue
+		}
+
+		if cred.Expiration != nil && closeTime > *cred.Expiration {
+			_ = credential.DeleteSLE(ctx.View, credKey, cred)
+			anyExpired = true
+		}
+	}
+
+	return anyExpired
 }
 
 // authorizedDepositPreauth implements rippled's credentials::authorizedDepositPreauth().

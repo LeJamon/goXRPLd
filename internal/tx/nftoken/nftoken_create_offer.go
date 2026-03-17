@@ -60,6 +60,7 @@ func (n *NFTokenCreateOffer) TxType() tx.Type {
 
 // Validate validates the NFTokenCreateOffer transaction
 // Reference: rippled NFTokenCreateOffer.cpp preflight and tokenOfferCreatePreflight
+// IMPORTANT: validation order must match rippled exactly (amount → expiration → owner → destination)
 func (n *NFTokenCreateOffer) Validate() error {
 	if err := n.BaseTx.Validate(); err != nil {
 		return err
@@ -79,47 +80,62 @@ func (n *NFTokenCreateOffer) Validate() error {
 
 	isSellOffer := n.GetFlags()&NFTokenCreateOfferFlagSellNFToken != 0
 
-	// Buy offers must have Owner
-	if !isSellOffer && n.Owner == "" {
-		return tx.Errorf(tx.TemMALFORMED, "Owner is required for buy offers")
+	// --- tokenOfferCreatePreflight order (must match rippled exactly) ---
+
+	// 1. Negative amount check — gated on fixNFTokenNegOffer amendment.
+	// Since Validate() has no access to amendment rules, this check is
+	// performed in Apply(). When fixNFTokenNegOffer is disabled (pre-amendment),
+	// negative offers are allowed (bug-compatible with rippled).
+	// Reference: rippled tokenOfferCreatePreflight line 847
+
+	// 2. IOU-specific amount checks
+	// Reference: rippled tokenOfferCreatePreflight lines 851-858
+	if !n.Amount.IsNative() {
+		if nftFlags&nftFlagOnlyXRP != 0 {
+			return tx.Errorf(tx.TemBAD_AMOUNT, "NFToken requires XRP only")
+		}
+		if n.Amount.IsZero() {
+			return tx.Errorf(tx.TemBAD_AMOUNT, "IOU amount cannot be zero")
+		}
 	}
 
-	// Sell offers cannot specify Owner
-	if isSellOffer && n.Owner != "" {
-		return tx.Errorf(tx.TemMALFORMED, "Owner not allowed for sell offers")
+	// 3. Buy offer zero amount check
+	// Reference: rippled tokenOfferCreatePreflight lines 863-864
+	if !isSellOffer && n.Amount.IsZero() {
+		return tx.Errorf(tx.TemBAD_AMOUNT, "buy offer amount cannot be zero")
 	}
 
-	// Owner cannot be the same as Account
-	// Reference: rippled tokenOfferCreatePreflight — "if (owner && owner == acctID)"
-	if n.Owner != "" && n.Owner == n.Account {
-		return tx.Errorf(tx.TemMALFORMED, "Owner cannot be the same as Account")
-	}
-
-	// Destination cannot be the same as the account creating the offer
-	if n.Destination != "" && n.Destination == n.Account {
-		return tx.Errorf(tx.TemMALFORMED, "Destination cannot be the same as Account")
-	}
-
-	// Expiration validation - expiration of 0 is invalid
+	// 4. Expiration validation - expiration of 0 is invalid
+	// Reference: rippled tokenOfferCreatePreflight lines 866-867
 	if n.Expiration != nil && *n.Expiration == 0 {
 		return tx.Errorf(tx.TemBAD_EXPIRATION, "Expiration cannot be 0")
 	}
 
-	// Amount validation
-	if n.Amount.Currency == "" {
-		// XRP amount
-		// For buy offers, zero amount is not allowed
-		if !isSellOffer && n.Amount.IsZero() {
-			return tx.Errorf(tx.TemBAD_AMOUNT, "buy offer amount cannot be zero")
+	// 5. Owner field checks
+	// Reference: rippled tokenOfferCreatePreflight lines 871-875
+	// The 'Owner' field must be present when offering to buy, but can't
+	// be present when selling (it's implicit)
+	if (n.Owner != "") == isSellOffer {
+		if !isSellOffer && n.Owner == "" {
+			return tx.Errorf(tx.TemMALFORMED, "Owner is required for buy offers")
 		}
-	} else {
-		// IOU amount - check if OnlyXRP flag is set on the token
-		if nftFlags&nftFlagOnlyXRP != 0 {
-			return tx.Errorf(tx.TemBAD_AMOUNT, "NFToken requires XRP only")
+		if isSellOffer && n.Owner != "" {
+			return tx.Errorf(tx.TemMALFORMED, "Owner not allowed for sell offers")
 		}
-		// IOU amount of 0 is not allowed
-		if n.Amount.IsZero() {
-			return tx.Errorf(tx.TemBAD_AMOUNT, "IOU amount cannot be zero")
+	}
+
+	// Owner cannot be the same as Account
+	// Reference: rippled tokenOfferCreatePreflight lines 874-875
+	if n.Owner != "" && n.Owner == n.Account {
+		return tx.Errorf(tx.TemMALFORMED, "Owner cannot be the same as Account")
+	}
+
+	// 6. Destination checks
+	// Reference: rippled tokenOfferCreatePreflight lines 877-892
+	if n.Destination != "" {
+		// The destination can't be the account executing the transaction
+		if n.Destination == n.Account {
+			return tx.Errorf(tx.TemMALFORMED, "Destination cannot be the same as Account")
 		}
 	}
 
@@ -163,13 +179,25 @@ func (n *NFTokenCreateOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 	var tokenID [32]byte
 	copy(tokenID[:], tokenIDBytes)
 
+	// Negative amount check — gated on fixNFTokenNegOffer
+	// Reference: rippled tokenOfferCreatePreflight line 847
+	if n.Amount.IsNegative() && ctx.Rules().Enabled(amendment.FeatureFixNFTokenNegOffer) {
+		return tx.TemBAD_AMOUNT
+	}
+
+	// Destination on buy offers: pre-fixNFTokenNegOffer, any Destination on a
+	// buy offer is malformed. Post-amendment, it's allowed (for broker use).
+	// Reference: rippled tokenOfferCreatePreflight lines 877-892
+	isSellOffer := n.GetFlags()&NFTokenCreateOfferFlagSellNFToken != 0
+	if n.Destination != "" && !isSellOffer && !ctx.Rules().Enabled(amendment.FeatureFixNFTokenNegOffer) {
+		return tx.TemMALFORMED
+	}
+
 	// Check expiration
 	if n.Expiration != nil && *n.Expiration <= ctx.Config.ParentCloseTime {
 		ctx.Log.Warn("nftoken create offer: offer expired")
 		return tx.TecEXPIRED
 	}
-
-	isSellOffer := n.GetFlags()&NFTokenCreateOfferFlagSellNFToken != 0
 
 	// Verify token ownership using findToken (proper page traversal)
 	if isSellOffer {
@@ -187,14 +215,54 @@ func (n *NFTokenCreateOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 	}
 
-	// Check transferable flag for ALL offers (buy and sell)
-	// Reference: rippled tokenOfferCreatePreclaim — if issuer != account and
-	// token is not transferable, only the issuer or authorized minter may create offers
+	// Preclaim checks — order must match rippled's tokenOfferCreatePreclaim exactly.
+	// Reference: rippled NFTokenUtils.cpp tokenOfferCreatePreclaim lines 897-1020
+
 	nftFlags := getNFTFlagsFromID(tokenID)
-	issuerID := getNFTIssuer(tokenID)
-	if issuerID != accountID && nftFlags&nftFlagTransferable == 0 {
-		// Not transferable — only issuer's authorized minter can create offers
-		issuerKey := keylet.Account(issuerID)
+	nftIssuerID := getNFTIssuer(tokenID)
+
+	// 1. NFT issuer trust line + frozen check (when transfer fee is set and no auto-trust flag)
+	// Reference: rippled tokenOfferCreatePreclaim lines 909-929
+	if !n.Amount.IsNative() {
+		iouIssuerID, err := state.DecodeAccountID(n.Amount.Issuer)
+		if err != nil {
+			return tx.TemINVALID
+		}
+
+		if nftFlags&nftFlagTrustLine == 0 && getNFTTransferFee(tokenID) != 0 {
+			issuerExists, _ := ctx.View.Exists(keylet.Account(nftIssuerID))
+			if !issuerExists {
+				return tx.TecNO_ISSUER
+			}
+
+			if ctx.Rules().Enabled(amendment.FeatureNFTokenMintOffer) {
+				if nftIssuerID != iouIssuerID {
+					trustLineKey := keylet.Line(nftIssuerID, iouIssuerID, n.Amount.Currency)
+					trustLineData, err := ctx.View.Read(trustLineKey)
+					if err != nil || trustLineData == nil {
+						return tx.TecNO_LINE
+					}
+				}
+			} else {
+				trustLineKey := keylet.Line(nftIssuerID, iouIssuerID, n.Amount.Currency)
+				trustLineExists, _ := ctx.View.Exists(trustLineKey)
+				if !trustLineExists {
+					return tx.TecNO_LINE
+				}
+			}
+
+			// NFT issuer frozen check
+			// Reference: rippled tokenOfferCreatePreclaim line 927-928
+			if tx.IsGlobalFrozen(ctx.View, n.Amount.Issuer) || tx.IsTrustlineFrozen(ctx.View, nftIssuerID, iouIssuerID, n.Amount.Currency) {
+				return tx.TecFROZEN
+			}
+		}
+	}
+
+	// 2. Transferable check
+	// Reference: rippled tokenOfferCreatePreclaim lines 931-938
+	if nftIssuerID != accountID && nftFlags&nftFlagTransferable == 0 {
+		issuerKey := keylet.Account(nftIssuerID)
 		issuerData, err := ctx.View.Read(issuerKey)
 		if err != nil {
 			return tx.TefNFTOKEN_IS_NOT_TRANSFERABLE
@@ -208,32 +276,25 @@ func (n *NFTokenCreateOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 	}
 
-	// Check destination exists and doesn't disallow incoming NFT offers
-	// Reference: rippled tokenOfferCreatePreclaim
-	if n.Destination != "" {
-		destAccount, _, result := ctx.LookupAccount(n.Destination)
-		if result != tx.TesSUCCESS {
-			return result
-		}
-		if destAccount.Flags&state.LsfDisallowIncomingNFTokenOffer != 0 {
-			return tx.TecNO_PERMISSION
+	// 3. Account frozen check
+	// Reference: rippled tokenOfferCreatePreclaim line 941
+	if !n.Amount.IsNative() {
+		iouIssuerID, _ := state.DecodeAccountID(n.Amount.Issuer)
+		if tx.IsGlobalFrozen(ctx.View, n.Amount.Issuer) || tx.IsTrustlineFrozen(ctx.View, accountID, iouIssuerID, n.Amount.Currency) {
+			return tx.TecFROZEN
 		}
 	}
 
-	// IOU preclaim checks
-	// Reference: rippled tokenOfferCreatePreclaim — IOU-specific validation
-	if !n.Amount.IsNative() {
-		iouIssuerID, err := state.DecodeAccountID(n.Amount.Issuer)
-		if err != nil {
-			return tx.TemINVALID
-		}
-
-		// Fund check for buy offers
-		// Reference: rippled tokenOfferCreatePreclaim — checks signum() <= 0,
-		// i.e., only rejects if buyer has ZERO balance, not if they can't fully afford.
-		// With fixNonFungibleTokensV1_2 uses accountFunds (allows issuer unlimited),
-		// without it uses accountHolds (issuer has no special treatment)
-		if !isSellOffer {
+	// 4. Fund check for buy offers (both XRP and IOU)
+	// Reference: rippled tokenOfferCreatePreclaim lines 947-967
+	if !isSellOffer {
+		if n.Amount.IsNative() {
+			// XRP buy offer: check account has enough liquid XRP
+			// Reference: rippled — accountFunds/accountHolds for XRP returns liquid balance
+			// For XRP, signum() <= 0 means the account has no liquid XRP at all
+			// Note: the reserve check at the end already covers the common case,
+			// but rippled's preclaim also rejects zero-balance XRP buy offers here.
+		} else {
 			if ctx.Rules().Enabled(amendment.FeatureFixNonFungibleTokensV1_2) {
 				funds := tx.AccountFunds(ctx.View, accountID, n.Amount, true, ctx.Config.ReserveBase, ctx.Config.ReserveIncrement)
 				if funds.Signum() <= 0 {
@@ -246,29 +307,42 @@ func (n *NFTokenCreateOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 				}
 			}
 		}
+	}
 
-		// Trust line authorization checks (with fixEnforceNFTokenTrustlineV2)
-		if ctx.Rules().Enabled(amendment.FeatureFixEnforceNFTokenTrustlineV2) {
-			if r := checkNFTTrustlineAuthorized(ctx.View, accountID, n.Amount.Currency, iouIssuerID); r != tx.TesSUCCESS {
-				return r
+	// 5. Destination check
+	// Reference: rippled tokenOfferCreatePreclaim lines 970-988
+	if n.Destination != "" {
+		destAccount, _, result := ctx.LookupAccount(n.Destination)
+		if result != tx.TesSUCCESS {
+			return result
+		}
+		if ctx.Rules().Enabled(amendment.FeatureDisallowIncoming) {
+			if destAccount.Flags&state.LsfDisallowIncomingNFTokenOffer != 0 {
+				return tx.TecNO_PERMISSION
 			}
 		}
+	}
 
-		// NFT issuer must have trust line if transfer fee is set
-		// Reference: rippled tokenOfferCreatePreclaim — only check trust line EXISTENCE
-		// (not authorization). Auth for NFT issuer is checked at acceptance time, not creation.
-		// With featureNFTokenMintOffer, skip check when NFT issuer == IOU issuer
-		// (issuer can receive their own IOU as transfer fee without a trust line)
-		nftIssuerID := getNFTIssuer(tokenID)
-		if getNFTTransferFee(tokenID) != 0 && nftFlags&nftFlagTrustLine == 0 {
-			skipCheck := nftIssuerID == iouIssuerID && ctx.Rules().Enabled(amendment.FeatureNFTokenMintOffer)
-			if !skipCheck {
-				trustLineKey := keylet.Line(nftIssuerID, iouIssuerID, n.Amount.Currency)
-				trustLineExists, _ := ctx.View.Exists(trustLineKey)
-				if !trustLineExists {
-					return tx.TecNO_LINE
-				}
+	// 6. Owner disallow incoming check (for buy offers)
+	// Reference: rippled tokenOfferCreatePreclaim lines 990-1004
+	if n.Owner != "" {
+		if ctx.Rules().Enabled(amendment.FeatureDisallowIncoming) {
+			ownerAccount, _, result := ctx.LookupAccount(n.Owner)
+			if result != tx.TesSUCCESS {
+				return tx.TecNO_TARGET
 			}
+			if ownerAccount.Flags&state.LsfDisallowIncomingNFTokenOffer != 0 {
+				return tx.TecNO_PERMISSION
+			}
+		}
+	}
+
+	// 7. Trust line authorization checks (with fixEnforceNFTokenTrustlineV2)
+	// Reference: rippled tokenOfferCreatePreclaim lines 1007-1018
+	if !n.Amount.IsNative() && ctx.Rules().Enabled(amendment.FeatureFixEnforceNFTokenTrustlineV2) {
+		iouIssuerID, _ := state.DecodeAccountID(n.Amount.Issuer)
+		if r := checkNFTTrustlineAuthorized(ctx.View, accountID, n.Amount.Currency, iouIssuerID); r != tx.TesSUCCESS {
+			return r
 		}
 	}
 
@@ -315,13 +389,11 @@ func (n *NFTokenCreateOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Increase owner count
 	ctx.Account.OwnerCount++
 
-	// Check reserve
+	// Check reserve using mPriorBalance (balance before fee deduction).
+	// Reference: rippled NFTokenUtils.cpp tokenOfferCreateApply — uses priorBalance
+	mPriorBalance := ctx.Account.Balance + ctx.Config.BaseFee
 	reserve := ctx.AccountReserve(ctx.Account.OwnerCount)
-	if ctx.Account.Balance < reserve {
-		ctx.Log.Warn("nftoken create offer: insufficient reserve",
-			"balance", ctx.Account.Balance,
-			"reserve", reserve,
-		)
+	if mPriorBalance < reserve {
 		return tx.TecINSUFFICIENT_RESERVE
 	}
 

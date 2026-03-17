@@ -41,6 +41,9 @@ func (e *TestEnv) FundAmount(acc *Account, amount uint64) {
 	p := payment.NewPayment(master.Address, acc.Address, tx.NewXRPAmount(int64(totalFunding)))
 	p.Fee = formatUint64(e.baseFee)
 	p.Sequence = &seq
+	if e.networkID > 1024 {
+		p.NetworkID = &e.networkID
+	}
 
 	// Submit the payment
 	result := e.Submit(p)
@@ -69,6 +72,9 @@ func (e *TestEnv) Pay(acc *Account, drops uint64) {
 	p := payment.NewPayment(master.Address, acc.Address, tx.NewXRPAmount(int64(drops)))
 	p.Fee = formatUint64(e.baseFee)
 	p.Sequence = &seq
+	if e.networkID > 1024 {
+		p.NetworkID = &e.networkID
+	}
 
 	result := e.Submit(p)
 	if !result.Success {
@@ -86,6 +92,9 @@ func (e *TestEnv) enableDefaultRipple(acc *Account) {
 	accountSet.Fee = formatUint64(e.baseFee)
 	seq := e.Seq(acc)
 	accountSet.Sequence = &seq
+	if e.networkID > 1024 {
+		accountSet.NetworkID = &e.networkID
+	}
 
 	result := e.Submit(accountSet)
 	if !result.Success {
@@ -117,6 +126,9 @@ func (e *TestEnv) FundAmountNoRipple(acc *Account, amount uint64) {
 	pay := payment.NewPayment(master.Address, acc.Address, tx.NewXRPAmount(int64(amount)))
 	pay.Fee = formatUint64(e.baseFee)
 	pay.Sequence = &seq
+	if e.networkID > 1024 {
+		pay.NetworkID = &e.networkID
+	}
 
 	result := e.Submit(pay)
 	if !result.Success {

@@ -149,8 +149,16 @@ func (s *SetRegularKey) TxType() tx.Type {
 }
 
 // Validate validates the SetRegularKey transaction
+// Reference: rippled SetRegularKey.cpp preflight() — no type-specific flags allowed
 func (s *SetRegularKey) Validate() error {
-	return s.BaseTx.Validate()
+	if err := s.BaseTx.Validate(); err != nil {
+		return err
+	}
+	// SetRegularKey has no type-specific flags.
+	if s.GetFlags()&tx.TfUniversalMask != 0 {
+		return tx.Errorf(tx.TemINVALID_FLAG, "invalid flags for SetRegularKey")
+	}
+	return nil
 }
 
 // Flatten returns a flat map of all transaction fields
@@ -169,8 +177,16 @@ func (s *SetRegularKey) ClearKey() {
 }
 
 // Apply applies the SetRegularKey transaction to ledger state.
-// Reference: rippled SetRegularKey.cpp doApply()
+// Reference: rippled SetRegularKey.cpp preflight + doApply()
 func (s *SetRegularKey) Apply(ctx *tx.ApplyContext) tx.Result {
+	// Amendment-gated preflight check: reject setting RegularKey to own account.
+	// Reference: rippled SetRegularKey.cpp preflight lines 66-71
+	if ctx.Rules().Enabled(amendment.FeatureFixMasterKeyAsRegularKey) {
+		if s.RegularKey != "" && s.RegularKey == s.Account {
+			return tx.TemBAD_REGKEY
+		}
+	}
+
 	if s.RegularKey != "" {
 		ctx.Log.Trace("set regular key apply",
 			"account", s.Account,
@@ -198,6 +214,16 @@ func (s *SetRegularKey) Apply(ctx *tx.ApplyContext) tx.Result {
 			}
 		}
 		ctx.Account.RegularKey = ""
+	}
+
+	// If this was a free password change (fee=0), mark the password as spent.
+	// Reference: rippled SetRegularKey.cpp doApply — sets lsfPasswordSpent
+	// when the open ledger fee was 0 (the one-time free password change).
+	if ctx.Config.BaseFee > 0 {
+		fee := s.GetCommon().Fee
+		if fee == "0" {
+			ctx.Account.Flags |= state.LsfPasswordSpent
+		}
 	}
 
 	return tx.TesSUCCESS
