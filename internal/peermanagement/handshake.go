@@ -1,10 +1,12 @@
 package peermanagement
 
 import (
+	"bytes"
 	"crypto/sha512"
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -137,6 +139,32 @@ func BuildHandshakeRequest(id *Identity, sharedValue []byte, cfg HandshakeConfig
 	addHandshakeHeaders(req.Header, id, sharedValue, cfg)
 
 	return req, nil
+}
+
+// WriteRawHandshakeRequest writes the handshake request as raw bytes.
+// Rippled's HTTP parser is strict and rejects the extra headers
+// (Host, Content-Length, etc.) that Go's http.Request.Write adds.
+func WriteRawHandshakeRequest(w io.Writer, req *http.Request) error {
+	var buf bytes.Buffer
+	buf.WriteString("GET / HTTP/1.1\r\n")
+	// Write headers in a fixed order for predictability
+	writeHeader := func(key string) {
+		for _, v := range req.Header.Values(key) {
+			buf.WriteString(key + ": " + v + "\r\n")
+		}
+	}
+	writeHeader(HeaderUserAgent)
+	writeHeader(HeaderUpgrade)
+	writeHeader(HeaderConnection)
+	writeHeader(HeaderConnectAs)
+	writeHeader(HeaderCrawl)
+	writeHeader(HeaderPublicKey)
+	writeHeader(HeaderSessionSignature)
+	writeHeader(HeaderNetworkID)
+	writeHeader(HeaderNetworkTime)
+	buf.WriteString("\r\n")
+	_, err := w.Write(buf.Bytes())
+	return err
 }
 
 // BuildHandshakeResponse builds an HTTP 101 Switching Protocols response.

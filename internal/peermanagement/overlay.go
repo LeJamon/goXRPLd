@@ -1,15 +1,18 @@
 package peermanagement
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/LeJamon/goXRPLd/internal/peermanagement/message"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -251,7 +254,10 @@ func (o *Overlay) handleInbound(ctx context.Context, conn net.Conn) {
 
 	// Run peer read/write loops
 	go func() {
-		peer.Run(ctx)
+		err := peer.Run(ctx)
+		if err != nil {
+			slog.Info("Inbound peer run ended", "t", "Overlay", "remote", remoteAddr, "err", err)
+		}
 		o.removePeer(peerID)
 	}()
 }
@@ -271,21 +277,23 @@ func (o *Overlay) performInboundHandshake(ctx context.Context, peer *Peer, tlsCo
 		return NewHandshakeError(peer.Endpoint(), "shared_value", err)
 	}
 
-	// Read HTTP upgrade request
-	buf := make([]byte, 4096)
+	// Use a buffered reader to parse the HTTP request precisely
+	// without consuming binary protocol data that follows.
 	deadline := time.Now().Add(o.cfg.HandshakeTimeout)
 	tlsConn.SetDeadline(deadline)
 	defer tlsConn.SetDeadline(time.Time{})
 
-	n, err := tlsConn.Read(buf)
+	bufReader := bufio.NewReader(tlsConn)
+	req, err := http.ReadRequest(bufReader)
 	if err != nil {
 		return NewHandshakeError(peer.Endpoint(), "read_request", err)
 	}
+	req.Body.Close()
 
-	// Verify the request
-	if n < 12 {
-		return NewHandshakeError(peer.Endpoint(), "verify", ErrInvalidHandshake)
-	}
+	// Store the buffered reader on the peer for the readLoop
+	peer.mu.Lock()
+	peer.bufReader = bufReader
+	peer.mu.Unlock()
 
 	// Build and send response
 	cfg := HandshakeConfig{
@@ -335,7 +343,11 @@ func (o *Overlay) handleEvent(evt Event) {
 }
 
 func (o *Overlay) onPeerConnected(evt Event) {
-	o.discovery.MarkConnected(evt.Endpoint.String(), evt.PeerID)
+	// Only track outbound connections in discovery — inbound endpoints
+	// use ephemeral source ports that aren't connectable.
+	if !evt.Inbound {
+		o.discovery.MarkConnected(evt.Endpoint.String(), evt.PeerID)
+	}
 }
 
 func (o *Overlay) onPeerHandshakeComplete(evt Event) {
@@ -354,6 +366,12 @@ func (o *Overlay) onPeerFailed(evt Event) {
 }
 
 func (o *Overlay) onMessageReceived(evt Event) {
+	// Handle PING at transport level — respond with PONG immediately
+	if message.MessageType(evt.MessageType) == message.TypePing {
+		o.handlePing(evt)
+		return
+	}
+
 	// Forward to external consumers
 	select {
 	case o.messages <- &InboundMessage{
@@ -363,6 +381,34 @@ func (o *Overlay) onMessageReceived(evt Event) {
 	}:
 	default:
 		// Drop if channel full
+	}
+}
+
+func (o *Overlay) handlePing(evt Event) {
+	decoded, err := message.Decode(message.TypePing, evt.Payload)
+	if err != nil {
+		return
+	}
+	ping, ok := decoded.(*message.Ping)
+	if !ok {
+		return
+	}
+
+	if ping.PType == message.PingTypePing {
+		pong := &message.Ping{
+			PType:    message.PingTypePong,
+			Seq:      ping.Seq,
+			PingTime: ping.PingTime,
+		}
+		encoded, err := message.Encode(pong)
+		if err != nil {
+			return
+		}
+		wireMsg, err := message.BuildWireMessage(message.TypePing, encoded)
+		if err != nil {
+			return
+		}
+		o.Send(evt.PeerID, wireMsg)
 	}
 }
 
@@ -477,6 +523,11 @@ func (o *Overlay) Connect(addr string) error {
 
 	peerID := PeerID(o.nextID.Add(1))
 	peer := NewPeer(peerID, endpoint, false, o.identity, o.events)
+	peer.handshakeCfg = HandshakeConfig{
+		UserAgent:   o.cfg.UserAgent,
+		NetworkID:   o.cfg.NetworkID,
+		CrawlPublic: false,
+	}
 
 	o.events <- Event{
 		Type:     EventPeerConnecting,
@@ -513,7 +564,10 @@ func (o *Overlay) Connect(addr string) error {
 
 	// Run peer read/write loops
 	go func() {
-		peer.Run(o.ctx)
+		err := peer.Run(o.ctx)
+		if err != nil {
+			slog.Info("Peer run ended", "t", "Overlay", "addr", addr, "err", err)
+		}
 		o.removePeer(peerID)
 	}()
 

@@ -1,13 +1,17 @@
 package peermanagement
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
-	"io"
+	"fmt"
 	"net"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/LeJamon/goXRPLd/internal/peermanagement/message"
 )
 
 // PeerState represents the peer connection state.
@@ -48,8 +52,10 @@ type Peer struct {
 	remotePubKey *PublicKeyToken
 	capabilities *PeerCapabilities
 
-	conn  net.Conn
-	state PeerState
+	conn         net.Conn
+	bufReader    *bufio.Reader
+	state        PeerState
+	handshakeCfg HandshakeConfig
 
 	send   chan []byte
 	events chan<- Event
@@ -195,8 +201,7 @@ func (p *Peer) performHandshake(ctx context.Context, tlsConn *tls.Conn) error {
 		return NewHandshakeError(p.endpoint, "shared_value", err)
 	}
 
-	cfg := DefaultHandshakeConfig()
-	req, err := BuildHandshakeRequest(p.identity, sharedValue, cfg)
+	req, err := BuildHandshakeRequest(p.identity, sharedValue, p.handshakeCfg)
 	if err != nil {
 		return NewHandshakeError(p.endpoint, "build_request", err)
 	}
@@ -208,22 +213,31 @@ func (p *Peer) performHandshake(ctx context.Context, tlsConn *tls.Conn) error {
 	tlsConn.SetDeadline(deadline)
 	defer tlsConn.SetDeadline(time.Time{})
 
-	if err := req.Write(tlsConn); err != nil {
+	// Write the request as raw bytes (rippled's HTTP parser is strict
+	// and rejects the extra headers that Go's http.Request.Write adds).
+	if err := WriteRawHandshakeRequest(tlsConn, req); err != nil {
 		return NewHandshakeError(p.endpoint, "send_request", err)
 	}
 
-	// Read response (simplified - in practice need full HTTP parsing)
-	buf := make([]byte, 4096)
-	n, err := tlsConn.Read(buf)
-	if err != nil && err != io.EOF {
+	// Use a buffered reader to parse the HTTP response precisely
+	// without consuming binary protocol data that follows it.
+	p.mu.Lock()
+	p.bufReader = bufio.NewReader(tlsConn)
+	p.mu.Unlock()
+
+	resp, err := http.ReadResponse(p.bufReader, req)
+	if err != nil {
 		return NewHandshakeError(p.endpoint, "read_response", err)
 	}
 
-	// Verify the response contains upgrade
-	response := string(buf[:n])
-	if len(response) < 12 {
-		return NewHandshakeError(p.endpoint, "verify", ErrInvalidHandshake)
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		body := make([]byte, 1024)
+		n, _ := resp.Body.Read(body)
+		resp.Body.Close()
+		return NewHandshakeError(p.endpoint, "verify",
+			fmt.Errorf("%w: got status %d, headers: %v, body: %s", ErrInvalidHandshake, resp.StatusCode, resp.Header, string(body[:n])))
 	}
+	resp.Body.Close()
 
 	p.mu.Lock()
 	p.capabilities = NewPeerCapabilities()
@@ -232,7 +246,7 @@ func (p *Peer) performHandshake(ctx context.Context, tlsConn *tls.Conn) error {
 	return nil
 }
 
-// Run starts the peer's read/write loops.
+// Run starts the peer's read/write/ping loops.
 func (p *Peer) Run(ctx context.Context) error {
 	p.mu.RLock()
 	if p.state != PeerStateConnected {
@@ -241,7 +255,7 @@ func (p *Peer) Run(ctx context.Context) error {
 	}
 	p.mu.RUnlock()
 
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 3)
 
 	go func() {
 		errCh <- p.readLoop(ctx)
@@ -249,6 +263,10 @@ func (p *Peer) Run(ctx context.Context) error {
 
 	go func() {
 		errCh <- p.writeLoop(ctx)
+	}()
+
+	go func() {
+		errCh <- p.pingLoop(ctx)
 	}()
 
 	select {
@@ -272,14 +290,14 @@ func (p *Peer) readLoop(ctx context.Context) error {
 		}
 
 		p.mu.RLock()
-		conn := p.conn
+		reader := p.bufReader
 		p.mu.RUnlock()
 
-		if conn == nil {
+		if reader == nil {
 			return ErrConnectionClosed
 		}
 
-		header, payload, err := ReadMessage(conn)
+		header, payload, err := ReadMessage(reader)
 		if err != nil {
 			if p.closed.Load() {
 				return nil
@@ -325,6 +343,36 @@ func (p *Peer) writeLoop(ctx context.Context) error {
 
 			_, err := conn.Write(data)
 			if err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (p *Peer) pingLoop(ctx context.Context) error {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-p.closeCh:
+			return nil
+		case <-ticker.C:
+			ping := &message.Ping{
+				PType: message.PingTypePing,
+				Seq:   uint32(time.Now().UnixMilli() & 0xFFFFFFFF),
+			}
+			encoded, err := message.Encode(ping)
+			if err != nil {
+				continue
+			}
+			wireMsg, err := message.BuildWireMessage(message.TypePing, encoded)
+			if err != nil {
+				continue
+			}
+			if err := p.Send(wireMsg); err != nil {
 				return err
 			}
 		}
