@@ -15,6 +15,7 @@ import (
 
 	binarycodec "github.com/LeJamon/goXRPLd/codec/binarycodec"
 	"github.com/LeJamon/goXRPLd/config"
+	"github.com/LeJamon/goXRPLd/internal/consensus/adaptor"
 	"github.com/LeJamon/goXRPLd/internal/ledger/genesis"
 	"github.com/LeJamon/goXRPLd/internal/ledger/service"
 	"github.com/LeJamon/goXRPLd/internal/rpc"
@@ -200,7 +201,40 @@ func runServer(cmd *cobra.Command, args []string) {
 	// Wire up RPC services
 	types.InitServices(rpc.NewLedgerServiceAdapter(ledgerService))
 
-	if standalone {
+	// Start consensus/networking if not in standalone mode
+	var consensusComponents *adaptor.Components
+	if !standalone {
+		var compErr error
+		consensusComponents, compErr = adaptor.NewFromConfig(globalConfig, ledgerService)
+		if compErr != nil {
+			serverLog.Fatal("Failed to create consensus components", "err", compErr)
+		}
+
+		// Start overlay (P2P networking)
+		overlayCtx, overlayCancel := context.WithCancel(context.Background())
+		go func() {
+			if err := consensusComponents.Overlay.Run(overlayCtx); err != nil {
+				serverLog.Error("Overlay stopped", "err", err)
+			}
+		}()
+		_ = overlayCancel // stored for shutdown
+
+		// Start consensus engine
+		if err := consensusComponents.Engine.Start(context.Background()); err != nil {
+			serverLog.Fatal("Failed to start consensus engine", "err", err)
+		}
+
+		// Start message router
+		routerCtx, routerCancel := context.WithCancel(context.Background())
+		go consensusComponents.Router.Run(routerCtx)
+		_ = routerCancel // stored for shutdown
+
+		isValidator := globalConfig.IsValidator()
+		serverLog.Info("Running in consensus mode",
+			"validator", isValidator,
+			"peers", len(globalConfig.IPs)+len(globalConfig.IPsFixed),
+		)
+	} else {
 		genesisAddr, _ := ledgerService.GetGenesisAccount()
 		serverLog.Info("Running in standalone mode",
 			"genesisAccount", genesisAddr,
@@ -403,7 +437,7 @@ func runServer(cmd *cobra.Command, args []string) {
 	case <-shutdownCh:
 	}
 
-	doShutdown(httpSrvs, wsSrvs, wsServer, ledgerService, db, repoManager, serverLog)
+	doShutdown(httpSrvs, wsSrvs, wsServer, ledgerService, consensusComponents, db, repoManager, serverLog)
 }
 
 // doShutdown performs graceful shutdown of all server components
@@ -411,6 +445,7 @@ func doShutdown(
 	httpSrvs, wsSrvs []*http.Server,
 	wsServer *rpc.WebSocketServer,
 	ledgerService *service.Service,
+	consensusComponents *adaptor.Components,
 	kvDB nodestore.Database,
 	repoManager relationaldb.RepositoryManager,
 	logger xrpllog.Logger,
@@ -428,6 +463,17 @@ func doShutdown(
 	}
 
 	wsServer.Close()
+
+	// Stop consensus components (if running)
+	if consensusComponents != nil {
+		if consensusComponents.Engine != nil {
+			_ = consensusComponents.Engine.Stop()
+		}
+		if consensusComponents.Overlay != nil {
+			_ = consensusComponents.Overlay.Stop()
+		}
+		logger.Info("Consensus components stopped")
+	}
 
 	// Note: ledgerService has no Stop method; it is garbage collected
 	_ = ledgerService
