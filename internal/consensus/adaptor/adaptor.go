@@ -5,11 +5,13 @@ package adaptor
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/LeJamon/goXRPLd/internal/consensus"
+	"github.com/LeJamon/goXRPLd/internal/ledger/header"
 	"github.com/LeJamon/goXRPLd/internal/ledger/service"
 	"github.com/LeJamon/goXRPLd/internal/peermanagement/message"
 )
@@ -28,6 +30,7 @@ type NetworkSender interface {
 	RelayProposal(proposal *consensus.Proposal) error
 	RequestTxSet(id consensus.TxSetID) error
 	RequestLedger(id consensus.LedgerID) error
+	RequestLedgerByHashAndSeq(hash [32]byte, seq uint32) error
 	SendToPeer(peerID uint64, frame []byte) error
 }
 
@@ -39,8 +42,9 @@ func (n *noopSender) BroadcastValidation(*consensus.Validation) error  { return 
 func (n *noopSender) BroadcastStatusChange(*message.StatusChange) error { return nil }
 func (n *noopSender) RelayProposal(*consensus.Proposal) error          { return nil }
 func (n *noopSender) RequestTxSet(consensus.TxSetID) error             { return nil }
-func (n *noopSender) RequestLedger(consensus.LedgerID) error           { return nil }
-func (n *noopSender) SendToPeer(uint64, []byte) error                  { return nil }
+func (n *noopSender) RequestLedger(consensus.LedgerID) error              { return nil }
+func (n *noopSender) RequestLedgerByHashAndSeq([32]byte, uint32) error    { return nil }
+func (n *noopSender) SendToPeer(uint64, []byte) error                     { return nil }
 
 // Compile-time interface check.
 var _ consensus.Adaptor = (*Adaptor)(nil)
@@ -133,6 +137,10 @@ func (a *Adaptor) RequestTxSet(id consensus.TxSetID) error {
 
 func (a *Adaptor) RequestLedger(id consensus.LedgerID) error {
 	return a.sender.RequestLedger(id)
+}
+
+func (a *Adaptor) RequestLedgerByHashAndSeq(hash [32]byte, seq uint32) error {
+	return a.sender.RequestLedgerByHashAndSeq(hash, seq)
 }
 
 func (a *Adaptor) SendToPeer(peerID uint64, frame []byte) error {
@@ -365,6 +373,36 @@ func (a *Adaptor) OnModeChange(oldMode, newMode consensus.Mode) {
 		"from", oldMode.String(),
 		"to", newMode.String(),
 	)
+}
+
+// NeedsInitialSync returns true if the node hasn't yet adopted a ledger from peers.
+func (a *Adaptor) NeedsInitialSync() bool {
+	return a.ledgerService.NeedsInitialSync()
+}
+
+// AdoptLedgerFromHeader adopts a peer's ledger from a serialized header.
+func (a *Adaptor) AdoptLedgerFromHeader(headerData []byte) error {
+	h, err := header.DeserializePrefixedHeader(headerData, true)
+	if err != nil {
+		// Try without prefix (some responses omit it)
+		h, err = header.DeserializeHeader(headerData, true)
+		if err != nil {
+			return fmt.Errorf("deserialize header: %w", err)
+		}
+	}
+
+	if err := a.ledgerService.AdoptLedgerHeader(h); err != nil {
+		return fmt.Errorf("adopt ledger: %w", err)
+	}
+
+	// Transition to Full mode so the consensus engine starts running
+	a.SetOperatingMode(consensus.OpModeFull)
+
+	a.logger.Info("Adopted peer ledger",
+		"seq", h.LedgerIndex,
+		"hash", fmt.Sprintf("%x", h.Hash[:8]),
+	)
+	return nil
 }
 
 func (a *Adaptor) OnPhaseChange(oldPhase, newPhase consensus.Phase) {

@@ -55,6 +55,7 @@ func (a *LedgerServiceAdapter) GetServerInfo() types.LedgerServerInfo {
 	info := a.svc.GetServerInfo()
 	return types.LedgerServerInfo{
 		Standalone:          info.Standalone,
+		ServerState:         info.ServerState,
 		OpenLedgerSeq:       info.OpenLedgerSeq,
 		ClosedLedgerSeq:     info.ClosedLedgerSeq,
 		ClosedLedgerHash:    info.ClosedLedgerHash,
