@@ -144,6 +144,21 @@ func (i *Identity) Sign(message []byte) ([]byte, error) {
 	return sig.Serialize(), nil
 }
 
+// SignDigest signs a pre-hashed 32-byte digest directly (no additional hashing).
+// Used for session signatures where the shared value is already a SHA-512 Half.
+func (i *Identity) SignDigest(digest []byte) ([]byte, error) {
+	if i.privateKey == nil {
+		return nil, ErrInvalidPrivateKey
+	}
+
+	sig := btcecdsa.Sign(i.privateKey, digest)
+	if sig == nil {
+		return nil, ErrSignatureFailed
+	}
+
+	return sig.Serialize(), nil
+}
+
 // PublicKey returns the raw compressed public key bytes.
 func (i *Identity) PublicKey() []byte {
 	return i.publicKey.SerializeCompressed()
@@ -208,15 +223,15 @@ func (i *Identity) Save(dataDir string) error {
 }
 
 // TLSCertificate generates a self-signed TLS certificate for this identity.
+// Uses a fresh P256 key for TLS (separate from the secp256k1 node identity)
+// since Go's TLS stack doesn't support secp256k1 certificates.
 func (i *Identity) TLSCertificate() tls.Certificate {
-	// Convert btcec private key to standard ecdsa key
-	privKeyBytes := i.privateKey.Serialize()
-	privKey := new(ecdsa.PrivateKey)
-	privKey.Curve = elliptic.P256()
-	privKey.D = new(big.Int).SetBytes(privKeyBytes)
-	privKey.PublicKey.X, privKey.PublicKey.Y = privKey.Curve.ScalarBaseMult(privKeyBytes)
+	// Generate a fresh P256 key for TLS (not derived from the node identity).
+	tlsKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}
+	}
 
-	// Create self-signed certificate template
 	now := time.Now()
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
@@ -230,16 +245,17 @@ func (i *Identity) TLSCertificate() tls.Certificate {
 		BasicConstraintsValid: true,
 	}
 
-	// Self-sign the certificate
-	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &privKey.PublicKey, privKey)
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &tlsKey.PublicKey, tlsKey)
 	if err != nil {
-		// Return empty certificate on error (should not happen in practice)
 		return tls.Certificate{}
 	}
 
-	// Encode to PEM
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privKeyBytes})
+	keyDER, err := x509.MarshalECPrivateKey(tlsKey)
+	if err != nil {
+		return tls.Certificate{}
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 
 	cert, _ := tls.X509KeyPair(certPEM, keyPEM)
 	return cert

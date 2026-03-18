@@ -1,11 +1,14 @@
 package peermanagement
 
 import (
+	"bytes"
 	"crypto/sha512"
 	"crypto/tls"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -60,19 +63,30 @@ func DefaultHandshakeConfig() HandshakeConfig {
 	}
 }
 
-// MakeSharedValue computes a shared value based on the TLS connection state.
+// MakeSharedValue computes the shared value from TLS finished messages.
+// This uses reflection to access the private clientFinished and serverFinished
+// fields from the TLS connection. Requires TLS 1.2 (these fields don't exist in TLS 1.3).
+// The algorithm: SHA512(SHA512(clientFinished) XOR SHA512(serverFinished)).
 func MakeSharedValue(conn *tls.Conn) ([]byte, error) {
-	state := conn.ConnectionState()
-	localFinished := state.TLSUnique
-	if len(localFinished) < 12 {
-		return nil, fmt.Errorf("%w: local finished message too short", ErrHandshakeFailed)
+	v := reflect.ValueOf(conn).Elem()
+
+	clientFinished := v.FieldByName("clientFinished")
+	if !clientFinished.IsValid() {
+		return nil, fmt.Errorf("%w: clientFinished field not found (requires TLS 1.2)", ErrHandshakeFailed)
+	}
+	serverFinished := v.FieldByName("serverFinished")
+	if !serverFinished.IsValid() {
+		return nil, fmt.Errorf("%w: serverFinished field not found (requires TLS 1.2)", ErrHandshakeFailed)
 	}
 
-	h := sha512.New()
-	h.Write(localFinished)
-	hash := h.Sum(nil)
+	clientBytes := clientFinished.Bytes()
+	serverBytes := serverFinished.Bytes()
 
-	return hash[:32], nil
+	if len(clientBytes) == 0 || len(serverBytes) == 0 {
+		return nil, fmt.Errorf("%w: finished messages are empty", ErrHandshakeFailed)
+	}
+
+	return MakeSharedValueFromFinished(clientBytes, serverBytes)
 }
 
 // MakeSharedValueFromFinished computes the shared value from raw finished messages.
@@ -106,6 +120,7 @@ func MakeSharedValueFromFinished(localFinished, peerFinished []byte) ([]byte, er
 	h.Write(result)
 	finalHash := h.Sum(nil)
 
+	// sha512Half — return first 32 bytes, matching rippled's makeSharedValue
 	return finalHash[:32], nil
 }
 
@@ -125,6 +140,32 @@ func BuildHandshakeRequest(id *Identity, sharedValue []byte, cfg HandshakeConfig
 	addHandshakeHeaders(req.Header, id, sharedValue, cfg)
 
 	return req, nil
+}
+
+// WriteRawHandshakeRequest writes the handshake request as raw bytes.
+// Rippled's HTTP parser is strict and rejects the extra headers
+// (Host, Content-Length, etc.) that Go's http.Request.Write adds.
+func WriteRawHandshakeRequest(w io.Writer, req *http.Request) error {
+	var buf bytes.Buffer
+	buf.WriteString("GET / HTTP/1.1\r\n")
+	// Write headers in a fixed order for predictability
+	writeHeader := func(key string) {
+		for _, v := range req.Header.Values(key) {
+			buf.WriteString(key + ": " + v + "\r\n")
+		}
+	}
+	writeHeader(HeaderUserAgent)
+	writeHeader(HeaderUpgrade)
+	writeHeader(HeaderConnection)
+	writeHeader(HeaderConnectAs)
+	writeHeader(HeaderCrawl)
+	writeHeader(HeaderPublicKey)
+	writeHeader(HeaderSessionSignature)
+	writeHeader(HeaderNetworkID)
+	writeHeader(HeaderNetworkTime)
+	buf.WriteString("\r\n")
+	_, err := w.Write(buf.Bytes())
+	return err
 }
 
 // BuildHandshakeResponse builds an HTTP 101 Switching Protocols response.
@@ -157,7 +198,7 @@ func addHandshakeHeaders(h http.Header, id *Identity, sharedValue []byte, cfg Ha
 	h.Set(HeaderNetworkTime, strconv.FormatUint(networkTime, 10))
 	h.Set(HeaderPublicKey, id.EncodedPublicKey())
 
-	sig, err := id.Sign(sharedValue)
+	sig, err := id.SignDigest(sharedValue)
 	if err == nil {
 		h.Set(HeaderSessionSignature, base64.StdEncoding.EncodeToString(sig))
 	}
@@ -228,11 +269,9 @@ func verifySessionSignature(pubKey *PublicKeyToken, sharedValue, signature []byt
 		return fmt.Errorf("%w: %v", ErrInvalidSignature, err)
 	}
 
-	h := sha512.New()
-	h.Write(sharedValue)
-	hash := h.Sum(nil)[:32]
-
-	if !sig.Verify(hash, pubKey.BtcecKey()) {
+	// The shared value is already a 32-byte SHA-512 Half digest.
+	// Verify directly against it (matching rippled's verifyDigest).
+	if !sig.Verify(sharedValue, pubKey.BtcecKey()) {
 		return ErrInvalidSignature
 	}
 

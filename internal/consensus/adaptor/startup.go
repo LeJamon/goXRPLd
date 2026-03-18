@@ -3,6 +3,7 @@ package adaptor
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/LeJamon/goXRPLd/config"
 	"github.com/LeJamon/goXRPLd/internal/consensus"
@@ -133,14 +134,14 @@ func OverlayOptionsFromConfig(appCfg *config.Config) []peermanagement.Option {
 		opts = append(opts, peermanagement.WithListenAddr(peerPort.GetBindAddress()))
 	}
 
-	// Bootstrap peers
+	// Bootstrap peers (convert "host port" → "host:port")
 	if len(appCfg.IPs) > 0 {
-		opts = append(opts, peermanagement.WithBootstrapPeers(appCfg.IPs...))
+		opts = append(opts, peermanagement.WithBootstrapPeers(normalizeAddresses(appCfg.IPs)...))
 	}
 
-	// Fixed peers
+	// Fixed peers (convert "host port" → "host:port")
 	if len(appCfg.IPsFixed) > 0 {
-		opts = append(opts, peermanagement.WithFixedPeers(appCfg.IPsFixed...))
+		opts = append(opts, peermanagement.WithFixedPeers(normalizeAddresses(appCfg.IPsFixed)...))
 	}
 
 	// Max peers
@@ -174,4 +175,17 @@ func ParseValidatorKeys(appCfg *config.Config) ([]consensus.NodeID, error) {
 		validators = append(validators, nodeID)
 	}
 	return validators, nil
+}
+
+// normalizeAddresses converts rippled-style "host port" addresses to "host:port".
+func normalizeAddresses(addrs []string) []string {
+	out := make([]string, len(addrs))
+	for i, addr := range addrs {
+		if parts := strings.Fields(addr); len(parts) == 2 && !strings.Contains(addr, ":") {
+			out[i] = parts[0] + ":" + parts[1]
+		} else {
+			out[i] = addr
+		}
+	}
+	return out
 }

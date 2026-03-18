@@ -1,6 +1,7 @@
 package message
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -234,6 +235,15 @@ func WriteMessageCompressed(w io.Writer, msgType MessageType, payload []byte, al
 
 	_, err := w.Write(buf)
 	return err
+}
+
+// BuildWireMessage creates a complete wire-protocol message (header + payload) as bytes.
+func BuildWireMessage(msgType MessageType, payload []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := WriteMessage(&buf, msgType, payload); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // PeekHeader reads and returns the header without consuming the payload.
