@@ -248,6 +248,12 @@ func (o *Overlay) handleInbound(ctx context.Context, conn net.Conn) {
 		return
 	}
 
+	// Reject duplicate: if we already have a connection to this IP.
+	if o.isConnectedTo(endpoint) {
+		conn.Close()
+		return
+	}
+
 	peer.setState(PeerStateConnected)
 	slog.Info("Inbound peer connected", "t", "Overlay", "remote", remoteAddr)
 
@@ -561,6 +567,13 @@ func (o *Overlay) Connect(addr string) error {
 		return err
 	}
 
+	// Re-check after handshake: another goroutine may have connected
+	// to the same host (inbound or outbound) while we were handshaking.
+	if o.isConnectedTo(endpoint) {
+		peer.Close()
+		return ErrAlreadyConnected
+	}
+
 	o.addPeer(peer)
 
 	// Run peer read/write loops
@@ -661,13 +674,17 @@ func (o *Overlay) removePeer(peerID PeerID) {
 	}
 }
 
-// isConnectedTo checks if we're already connected to an endpoint.
+// isConnectedTo checks if we're already connected to a host.
+// Compares by resolved remote IP to handle DNS names vs raw IPs.
 func (o *Overlay) isConnectedTo(endpoint Endpoint) bool {
 	o.peersMu.RLock()
 	defer o.peersMu.RUnlock()
 
 	for _, peer := range o.peers {
-		if peer.Endpoint().String() == endpoint.String() {
+		if peer.RemoteIP() == endpoint.Host {
+			return true
+		}
+		if peer.Endpoint().Host == endpoint.Host {
 			return true
 		}
 	}

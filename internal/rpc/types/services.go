@@ -30,6 +30,9 @@ type ServiceContainer struct {
 
 	// NodePublicKey is the base58-encoded node identity public key (e.g. "n9...")
 	NodePublicKey string
+
+	// PeerCount returns the number of connected peers (nil when not in consensus mode)
+	PeerCount func() int
 }
 
 // LedgerNavigator provides ledger index navigation and mode queries.

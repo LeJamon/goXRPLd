@@ -186,9 +186,7 @@ func runServer(cmd *cobra.Command, args []string) {
 		RelationalDB: repoManager,
 		Logger:       rootLogger,
 	}
-	if standalone {
-		cfg.GenesisConfig = genesisConfig
-	}
+	cfg.GenesisConfig = genesisConfig
 
 	ledgerService, err := service.New(cfg)
 	if err != nil {
@@ -215,8 +213,9 @@ func runServer(cmd *cobra.Command, args []string) {
 			serverLog.Fatal("Failed to start consensus components", "err", err)
 		}
 
-		// Expose node identity to RPC handlers
+		// Expose node identity and peer count to RPC handlers
 		types.Services.NodePublicKey = consensusComponents.Overlay.Identity().EncodedPublicKey()
+		types.Services.PeerCount = consensusComponents.Overlay.PeerCount
 
 		isValidator := globalConfig.IsValidator()
 		serverLog.Info("Running in consensus mode",
