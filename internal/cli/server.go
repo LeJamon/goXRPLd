@@ -21,12 +21,12 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/rpc"
 	"github.com/LeJamon/goXRPLd/internal/rpc/types"
 	xrpllog "github.com/LeJamon/goXRPLd/log"
-	"github.com/LeJamon/goXRPLd/version"
 	kvpebble "github.com/LeJamon/goXRPLd/storage/kvstore/pebble"
 	"github.com/LeJamon/goXRPLd/storage/nodestore"
 	"github.com/LeJamon/goXRPLd/storage/relationaldb"
 	"github.com/LeJamon/goXRPLd/storage/relationaldb/postgres"
 	sqlitedb "github.com/LeJamon/goXRPLd/storage/relationaldb/sqlite"
+	"github.com/LeJamon/goXRPLd/version"
 	"github.com/spf13/cobra"
 )
 
