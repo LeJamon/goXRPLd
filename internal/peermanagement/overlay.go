@@ -373,11 +373,15 @@ func (o *Overlay) onPeerFailed(evt Event) {
 }
 
 func (o *Overlay) onMessageReceived(evt Event) {
+	msgType := message.MessageType(evt.MessageType)
+
 	// Handle PING at transport level — respond with PONG immediately
-	if message.MessageType(evt.MessageType) == message.TypePing {
+	if msgType == message.TypePing {
 		o.handlePing(evt)
 		return
 	}
+
+	slog.Debug("Message received", "t", "Overlay", "type", msgType.String(), "peer", evt.PeerID, "size", len(evt.Payload))
 
 	// Forward to external consumers
 	select {
@@ -387,7 +391,7 @@ func (o *Overlay) onMessageReceived(evt Event) {
 		Payload: evt.Payload,
 	}:
 	default:
-		// Drop if channel full
+		slog.Warn("Message dropped: channel full", "t", "Overlay", "type", msgType.String())
 	}
 }
 

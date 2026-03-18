@@ -242,13 +242,13 @@ enum TMQueryType {
 }
 
 message TMGetLedger {
-    TMLedgerInfoType itype = 1;
-    TMLedgerType ltype = 2;
+    optional TMLedgerInfoType itype = 1;
+    optional TMLedgerType ltype = 2;
     bytes ledger_hash = 3;
     uint32 ledger_seq = 4;
     repeated bytes node_ids = 5;
     uint64 request_cookie = 6;
-    TMQueryType query_type = 7;
+    optional TMQueryType query_type = 7;
     uint32 query_depth = 8;
 }
 

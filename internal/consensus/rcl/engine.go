@@ -117,7 +117,12 @@ func (e *Engine) Stop() error {
 func (e *Engine) StartRound(round consensus.RoundID, proposing bool) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.startRoundLocked(round, proposing)
+}
 
+// startRoundLocked is the lock-free inner implementation of StartRound.
+// Caller must hold e.mu.
+func (e *Engine) startRoundLocked(round consensus.RoundID, proposing bool) error {
 	// Determine mode
 	if proposing && e.adaptor.IsValidator() && e.adaptor.GetOperatingMode() == consensus.OpModeFull {
 		e.setMode(consensus.ModeProposing)
@@ -336,6 +341,8 @@ func (e *Engine) run() {
 }
 
 // checkAndStartRound checks if we should start a new round.
+// This serves as a fallback in case the auto-advance in acceptLedger
+// didn't trigger (e.g., first round after startup).
 func (e *Engine) checkAndStartRound() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -365,11 +372,7 @@ func (e *Engine) checkAndStartRound() {
 		Seq:        ledger.Seq() + 1,
 		ParentHash: ledger.ID(),
 	}
-
-	// Release lock before calling StartRound (it re-acquires)
-	e.mu.Unlock()
-	e.StartRound(round, proposing)
-	e.mu.Lock()
+	e.startRoundLocked(round, proposing)
 }
 
 // setMode changes the consensus mode.
@@ -723,6 +726,14 @@ func (e *Engine) acceptLedger(result consensus.Result) {
 
 	// Move to accepted phase
 	e.setPhase(consensus.PhaseAccepted)
+
+	// Immediately start next round (matching rippled's endConsensus→beginConsensus flow)
+	proposing := e.adaptor.IsValidator() && e.adaptor.GetOperatingMode() == consensus.OpModeFull
+	nextRound := consensus.RoundID{
+		Seq:        newLedger.Seq() + 1,
+		ParentHash: newLedger.ID(),
+	}
+	e.startRoundLocked(nextRound, proposing)
 }
 
 // determineCloseTime determines the consensus close time.

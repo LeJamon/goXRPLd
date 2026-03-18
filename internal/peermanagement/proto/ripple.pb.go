@@ -1969,13 +1969,13 @@ func (x *TMLedgerNode) GetNodeid() []byte {
 
 type TMGetLedger struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Itype         TMLedgerInfoType       `protobuf:"varint,1,opt,name=itype,proto3,enum=protocol.TMLedgerInfoType" json:"itype,omitempty"`
-	Ltype         TMLedgerType           `protobuf:"varint,2,opt,name=ltype,proto3,enum=protocol.TMLedgerType" json:"ltype,omitempty"`
+	Itype         *TMLedgerInfoType      `protobuf:"varint,1,opt,name=itype,proto3,enum=protocol.TMLedgerInfoType,oneof" json:"itype,omitempty"`
+	Ltype         *TMLedgerType          `protobuf:"varint,2,opt,name=ltype,proto3,enum=protocol.TMLedgerType,oneof" json:"ltype,omitempty"`
 	LedgerHash    []byte                 `protobuf:"bytes,3,opt,name=ledger_hash,json=ledgerHash,proto3" json:"ledger_hash,omitempty"`
 	LedgerSeq     uint32                 `protobuf:"varint,4,opt,name=ledger_seq,json=ledgerSeq,proto3" json:"ledger_seq,omitempty"`
 	NodeIds       [][]byte               `protobuf:"bytes,5,rep,name=node_ids,json=nodeIds,proto3" json:"node_ids,omitempty"`
 	RequestCookie uint64                 `protobuf:"varint,6,opt,name=request_cookie,json=requestCookie,proto3" json:"request_cookie,omitempty"`
-	QueryType     TMQueryType            `protobuf:"varint,7,opt,name=query_type,json=queryType,proto3,enum=protocol.TMQueryType" json:"query_type,omitempty"`
+	QueryType     *TMQueryType           `protobuf:"varint,7,opt,name=query_type,json=queryType,proto3,enum=protocol.TMQueryType,oneof" json:"query_type,omitempty"`
 	QueryDepth    uint32                 `protobuf:"varint,8,opt,name=query_depth,json=queryDepth,proto3" json:"query_depth,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2012,15 +2012,15 @@ func (*TMGetLedger) Descriptor() ([]byte, []int) {
 }
 
 func (x *TMGetLedger) GetItype() TMLedgerInfoType {
-	if x != nil {
-		return x.Itype
+	if x != nil && x.Itype != nil {
+		return *x.Itype
 	}
 	return TMLedgerInfoType_liBASE
 }
 
 func (x *TMGetLedger) GetLtype() TMLedgerType {
-	if x != nil {
-		return x.Ltype
+	if x != nil && x.Ltype != nil {
+		return *x.Ltype
 	}
 	return TMLedgerType_ltACCEPTED
 }
@@ -2054,8 +2054,8 @@ func (x *TMGetLedger) GetRequestCookie() uint64 {
 }
 
 func (x *TMGetLedger) GetQueryType() TMQueryType {
-	if x != nil {
-		return x.QueryType
+	if x != nil && x.QueryType != nil {
+		return *x.QueryType
 	}
 	return TMQueryType_qtINDIRECT
 }
@@ -2744,20 +2744,23 @@ const file_internal_peermanagement_proto_ripple_proto_rawDesc = "" +
 	"\aobjects\x18\x06 \x03(\v2\x19.protocol.TMIndexedObjectR\aobjects\"B\n" +
 	"\fTMLedgerNode\x12\x1a\n" +
 	"\bnodedata\x18\x01 \x01(\fR\bnodedata\x12\x16\n" +
-	"\x06nodeid\x18\x02 \x01(\fR\x06nodeid\"\xc6\x02\n" +
-	"\vTMGetLedger\x120\n" +
-	"\x05itype\x18\x01 \x01(\x0e2\x1a.protocol.TMLedgerInfoTypeR\x05itype\x12,\n" +
-	"\x05ltype\x18\x02 \x01(\x0e2\x16.protocol.TMLedgerTypeR\x05ltype\x12\x1f\n" +
+	"\x06nodeid\x18\x02 \x01(\fR\x06nodeid\"\xf8\x02\n" +
+	"\vTMGetLedger\x125\n" +
+	"\x05itype\x18\x01 \x01(\x0e2\x1a.protocol.TMLedgerInfoTypeH\x00R\x05itype\x88\x01\x01\x121\n" +
+	"\x05ltype\x18\x02 \x01(\x0e2\x16.protocol.TMLedgerTypeH\x01R\x05ltype\x88\x01\x01\x12\x1f\n" +
 	"\vledger_hash\x18\x03 \x01(\fR\n" +
 	"ledgerHash\x12\x1d\n" +
 	"\n" +
 	"ledger_seq\x18\x04 \x01(\rR\tledgerSeq\x12\x19\n" +
 	"\bnode_ids\x18\x05 \x03(\fR\anodeIds\x12%\n" +
-	"\x0erequest_cookie\x18\x06 \x01(\x04R\rrequestCookie\x124\n" +
+	"\x0erequest_cookie\x18\x06 \x01(\x04R\rrequestCookie\x129\n" +
 	"\n" +
-	"query_type\x18\a \x01(\x0e2\x15.protocol.TMQueryTypeR\tqueryType\x12\x1f\n" +
+	"query_type\x18\a \x01(\x0e2\x15.protocol.TMQueryTypeH\x02R\tqueryType\x88\x01\x01\x12\x1f\n" +
 	"\vquery_depth\x18\b \x01(\rR\n" +
-	"queryDepth\"\x81\x02\n" +
+	"queryDepthB\b\n" +
+	"\x06_itypeB\b\n" +
+	"\x06_ltypeB\r\n" +
+	"\v_query_type\"\x81\x02\n" +
 	"\fTMLedgerData\x12\x1f\n" +
 	"\vledger_hash\x18\x01 \x01(\fR\n" +
 	"ledgerHash\x12\x1d\n" +
@@ -2997,6 +3000,7 @@ func file_internal_peermanagement_proto_ripple_proto_init() {
 	if File_internal_peermanagement_proto_ripple_proto != nil {
 		return
 	}
+	file_internal_peermanagement_proto_ripple_proto_msgTypes[19].OneofWrappers = []any{}
 	file_internal_peermanagement_proto_ripple_proto_msgTypes[21].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

@@ -52,11 +52,28 @@ func (s *OverlaySender) RequestTxSet(id consensus.TxSetID) error {
 	return s.overlay.Broadcast(frame)
 }
 
+func (s *OverlaySender) BroadcastStatusChange(sc *message.StatusChange) error {
+	frame, err := encodeFrame(message.TypeStatusChange, sc)
+	if err != nil {
+		return fmt.Errorf("encode status change: %w", err)
+	}
+	return s.overlay.Broadcast(frame)
+}
+
 func (s *OverlaySender) RequestLedger(id consensus.LedgerID) error {
-	// Request ledger data from peers using GetLedger message.
-	// For now, this is a placeholder — full implementation in Phase 4.
-	_ = id
-	return nil
+	msg := &message.GetLedger{
+		InfoType:   message.LedgerInfoBase,
+		LedgerHash: id[:],
+	}
+	frame, err := encodeFrame(message.TypeGetLedger, msg)
+	if err != nil {
+		return fmt.Errorf("encode get_ledger: %w", err)
+	}
+	return s.overlay.Broadcast(frame)
+}
+
+func (s *OverlaySender) SendToPeer(peerID uint64, frame []byte) error {
+	return s.overlay.Send(peermanagement.PeerID(peerID), frame)
 }
 
 // encodeFrame serializes a message and wraps it with the wire protocol header.

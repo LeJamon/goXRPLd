@@ -11,6 +11,7 @@ import (
 
 	"github.com/LeJamon/goXRPLd/internal/consensus"
 	"github.com/LeJamon/goXRPLd/internal/ledger/service"
+	"github.com/LeJamon/goXRPLd/internal/peermanagement/message"
 )
 
 var (
@@ -23,19 +24,23 @@ var (
 type NetworkSender interface {
 	BroadcastProposal(proposal *consensus.Proposal) error
 	BroadcastValidation(validation *consensus.Validation) error
+	BroadcastStatusChange(sc *message.StatusChange) error
 	RelayProposal(proposal *consensus.Proposal) error
 	RequestTxSet(id consensus.TxSetID) error
 	RequestLedger(id consensus.LedgerID) error
+	SendToPeer(peerID uint64, frame []byte) error
 }
 
 // noopSender is a no-op NetworkSender for standalone or test use.
 type noopSender struct{}
 
-func (n *noopSender) BroadcastProposal(*consensus.Proposal) error     { return nil }
-func (n *noopSender) BroadcastValidation(*consensus.Validation) error { return nil }
-func (n *noopSender) RelayProposal(*consensus.Proposal) error         { return nil }
-func (n *noopSender) RequestTxSet(consensus.TxSetID) error            { return nil }
-func (n *noopSender) RequestLedger(consensus.LedgerID) error          { return nil }
+func (n *noopSender) BroadcastProposal(*consensus.Proposal) error      { return nil }
+func (n *noopSender) BroadcastValidation(*consensus.Validation) error  { return nil }
+func (n *noopSender) BroadcastStatusChange(*message.StatusChange) error { return nil }
+func (n *noopSender) RelayProposal(*consensus.Proposal) error          { return nil }
+func (n *noopSender) RequestTxSet(consensus.TxSetID) error             { return nil }
+func (n *noopSender) RequestLedger(consensus.LedgerID) error           { return nil }
+func (n *noopSender) SendToPeer(uint64, []byte) error                  { return nil }
 
 // Compile-time interface check.
 var _ consensus.Adaptor = (*Adaptor)(nil)
@@ -128,6 +133,15 @@ func (a *Adaptor) RequestTxSet(id consensus.TxSetID) error {
 
 func (a *Adaptor) RequestLedger(id consensus.LedgerID) error {
 	return a.sender.RequestLedger(id)
+}
+
+func (a *Adaptor) SendToPeer(peerID uint64, frame []byte) error {
+	return a.sender.SendToPeer(peerID, frame)
+}
+
+// LedgerService returns the underlying ledger service for direct queries.
+func (a *Adaptor) LedgerService() *service.Service {
+	return a.ledgerService
 }
 
 // --- Ledger operations ---
@@ -359,8 +373,53 @@ func (a *Adaptor) OnPhaseChange(oldPhase, newPhase consensus.Phase) {
 		"to", newPhase.String(),
 	)
 
+	// Broadcast status change to peers so rippled knows our ledger state
+	switch newPhase {
+	case consensus.PhaseEstablish:
+		a.broadcastStatus(message.NodeEventClosingLedger)
+	case consensus.PhaseAccepted:
+		a.broadcastStatus(message.NodeEventAcceptedLedger)
+	}
+
 	// Notify via hooks for WebSocket subscription broadcasting
 	if hooks := a.ledgerService.GetEventHooks(); hooks != nil && hooks.OnConsensusPhase != nil {
 		go hooks.OnConsensusPhase(newPhase.String())
+	}
+}
+
+// broadcastStatus sends a TMStatusChange message to all peers.
+func (a *Adaptor) broadcastStatus(event message.NodeEvent) {
+	l := a.ledgerService.GetClosedLedger()
+	if l == nil {
+		return
+	}
+
+	hash := l.Hash()
+	parentHash := l.ParentHash()
+
+	status := message.NodeStatusConnected
+	if a.IsValidator() {
+		status = message.NodeStatusValidating
+	}
+
+	// NetworkTime: XRPL epoch seconds (rippled sends seconds, not microseconds)
+	networkTime := uint64(time.Now().Unix() - xrplEpochOffset)
+
+	firstSeq := uint32(2) // genesis sequence
+	lastSeq := l.Sequence()
+
+	sc := &message.StatusChange{
+		NewStatus:          status,
+		NewEvent:           event,
+		LedgerSeq:          l.Sequence(),
+		LedgerHash:         hash[:],
+		LedgerHashPrevious: parentHash[:],
+		NetworkTime:        networkTime,
+		FirstSeq:           firstSeq,
+		LastSeq:            lastSeq,
+	}
+
+	if err := a.sender.BroadcastStatusChange(sc); err != nil {
+		a.logger.Warn("failed to broadcast status change", "error", err)
 	}
 }

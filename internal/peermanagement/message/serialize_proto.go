@@ -207,9 +207,11 @@ func toProto(msg Message) (pb.Message, error) {
 		}, nil
 
 	case *GetLedger:
+		itype := proto.TMLedgerInfoType(m.InfoType)
+		ltype := proto.TMLedgerType(m.LType)
 		return &proto.TMGetLedger{
-			Itype:         proto.TMLedgerInfoType(m.InfoType),
-			Ltype:         proto.TMLedgerType(m.LType),
+			Itype:         &itype,
+			Ltype:         &ltype,
 			LedgerHash:    m.LedgerHash,
 			LedgerSeq:     m.LedgerSeq,
 			NodeIds:       m.NodeIDs,
@@ -375,8 +377,8 @@ func fromProto(msgType MessageType, protoMsg pb.Message) (Message, error) {
 	case TypeGetLedger:
 		p := protoMsg.(*proto.TMGetLedger)
 		return &GetLedger{
-			InfoType:      LedgerInfoType(p.Itype),
-			LType:         LedgerType(p.Ltype),
+			InfoType:      LedgerInfoType(p.GetItype()),
+			LType:         LedgerType(p.GetLtype()),
 			LedgerHash:    p.LedgerHash,
 			LedgerSeq:     p.LedgerSeq,
 			NodeIDs:       p.NodeIds,
