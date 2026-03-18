@@ -78,7 +78,7 @@ func buildServerInfo(human bool) map[string]interface{} {
 	info := map[string]interface{}{
 		"build_version":     BuildVersion,
 		"complete_ledgers":  completeLedgers,
-		"io_latency_ms":     1,                                                      // TODO: track real IO latency
+		"io_latency_ms":     1, // TODO: track real IO latency
 		"pubkey_node":       types.Services.NodePublicKey,
 		"server_state":      serverState,
 		"uptime":            uptime,
