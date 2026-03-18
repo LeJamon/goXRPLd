@@ -1181,6 +1181,55 @@ func (s *Service) AdoptLedgerHeader(h *header.LedgerHeader) error {
 	return nil
 }
 
+// ReAdoptLedgerHeader re-adopts a peer's ledger header while catching up.
+// Unlike AdoptLedgerHeader, this works after needsInitialSync has been cleared.
+// Used during the catch-up phase when we're still behind the network.
+func (s *Service) ReAdoptLedgerHeader(h *header.LedgerHeader) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.genesisLedger == nil {
+		return errors.New("no genesis ledger available")
+	}
+
+	// Only allow re-adoption if the new sequence is ahead of our current
+	if s.closedLedger != nil && h.LedgerIndex <= s.closedLedger.Sequence() {
+		return fmt.Errorf("re-adopt seq %d not ahead of current %d", h.LedgerIndex, s.closedLedger.Sequence())
+	}
+
+	// Snapshot genesis state (same as initial adoption)
+	stateMap, err := s.genesisLedger.StateMapSnapshot()
+	if err != nil {
+		return fmt.Errorf("failed to snapshot genesis state: %w", err)
+	}
+
+	txMap, err := s.genesisLedger.TxMapSnapshot()
+	if err != nil {
+		return fmt.Errorf("failed to snapshot genesis tx map: %w", err)
+	}
+
+	adopted := ledger.NewFromHeader(*h, stateMap, txMap, drops.Fees{})
+
+	s.closedLedger = adopted
+	s.validatedLedger = adopted
+	s.ledgerHistory[h.LedgerIndex] = adopted
+
+	// Create new open ledger on top
+	openLedger, err := ledger.NewOpen(adopted, time.Now())
+	if err != nil {
+		return fmt.Errorf("failed to create open ledger: %w", err)
+	}
+	s.openLedger = openLedger
+	s.pendingTxs = nil
+
+	s.logger.Info("Re-adopted ledger from peer",
+		"seq", h.LedgerIndex,
+		"hash", fmt.Sprintf("%x", h.Hash[:8]),
+	)
+
+	return nil
+}
+
 // GetPendingTxBlobs returns the raw transaction blobs for all pending transactions.
 func (s *Service) GetPendingTxBlobs() [][]byte {
 	s.mu.RLock()
