@@ -248,6 +248,7 @@ func (o *Overlay) handleInbound(ctx context.Context, conn net.Conn) {
 		return
 	}
 
+	peer.setState(PeerStateConnected)
 	slog.Info("Inbound peer connected", "t", "Overlay", "remote", remoteAddr)
 
 	o.addPeer(peer)
