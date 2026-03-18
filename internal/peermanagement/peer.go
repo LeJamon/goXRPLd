@@ -115,6 +115,22 @@ func (p *Peer) Endpoint() Endpoint {
 	return p.endpoint
 }
 
+// RemoteIP returns the resolved remote IP from the actual TCP connection.
+func (p *Peer) RemoteIP() string {
+	p.mu.RLock()
+	conn := p.conn
+	p.mu.RUnlock()
+
+	if conn == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err != nil {
+		return ""
+	}
+	return host
+}
+
 // Inbound returns true if this is an inbound connection.
 func (p *Peer) Inbound() bool {
 	return p.inbound

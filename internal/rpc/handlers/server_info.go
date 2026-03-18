@@ -83,7 +83,7 @@ func buildServerInfo(human bool) map[string]interface{} {
 		"server_state":      serverState,
 		"uptime":            uptime,
 		"validation_quorum": 1, // TODO: get from consensus/validators
-		"peers":             0, // TODO: get from peer manager
+		"peers":             getPeerCount(),
 
 		// Overflow/disconnect counters (string in rippled)
 		"jq_trans_overflow":          "0", // TODO: track real overflow count
@@ -220,4 +220,11 @@ func buildServerInfo(human bool) map[string]interface{} {
 	}
 
 	return info
+}
+
+func getPeerCount() int {
+	if types.Services.PeerCount != nil {
+		return types.Services.PeerCount()
+	}
+	return 0
 }
