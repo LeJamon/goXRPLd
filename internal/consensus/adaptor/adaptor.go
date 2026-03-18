@@ -261,11 +261,23 @@ func (a *Adaptor) AddPendingTx(blob []byte) {
 	a.pendingTxs[txID] = blob
 }
 
-// ClearPendingTxs removes all pending transactions (after ledger close).
+// ClearPendingTxs removes all pending transactions.
 func (a *Adaptor) ClearPendingTxs() {
 	a.pendingTxsMu.Lock()
 	defer a.pendingTxsMu.Unlock()
 	a.pendingTxs = make(map[consensus.TxID][]byte)
+}
+
+// RemovePendingTxs removes specific transactions from the pending pool.
+// Used after consensus to remove only txs that were included in the ledger,
+// keeping any txs that arrived after the tx set was built.
+func (a *Adaptor) RemovePendingTxs(txBlobs [][]byte) {
+	a.pendingTxsMu.Lock()
+	defer a.pendingTxsMu.Unlock()
+	for _, blob := range txBlobs {
+		txID := computeTxID(blob)
+		delete(a.pendingTxs, txID)
+	}
 }
 
 // --- Validator operations ---
@@ -351,8 +363,19 @@ func (a *Adaptor) SetOperatingMode(mode consensus.OperatingMode) {
 }
 
 func (a *Adaptor) OnConsensusReached(ledger consensus.Ledger, validations []*consensus.Validation) {
-	// Clear pending transactions that were included in the consensus
-	a.ClearPendingTxs()
+	// Remove only txs that were included in the closed ledger.
+	// Txs that arrived after the tx set was built stay in the pool
+	// for the next round — matching rippled's LocalTxs behavior.
+	wrapper, ok := ledger.(*LedgerWrapper)
+	if ok {
+		l := wrapper.Unwrap()
+		l.ForEachTransaction(func(txHash [32]byte, _ []byte) bool {
+			a.pendingTxsMu.Lock()
+			delete(a.pendingTxs, consensus.TxID(txHash))
+			a.pendingTxsMu.Unlock()
+			return true
+		})
+	}
 
 	// Mark the ledger as validated in the service
 	a.ledgerService.SetValidatedLedger(ledger.Seq())
