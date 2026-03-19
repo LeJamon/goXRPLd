@@ -367,10 +367,10 @@ func (r *Router) reAdoptFromStatusChange(seq uint32, hash, parentHash [32]byte) 
 	}
 
 	h := &header.LedgerHeader{
-		LedgerIndex: seq,
-		Hash:        hash,
-		ParentHash:  parentHash,
-		AccountHash: closedLedger.Header().AccountHash,
+		LedgerIndex:         seq,
+		Hash:                hash,
+		ParentHash:          parentHash,
+		AccountHash:         closedLedger.Header().AccountHash,
 		Drops:               100_000_000_000_000_000,
 		CloseTimeResolution: 10,
 	}

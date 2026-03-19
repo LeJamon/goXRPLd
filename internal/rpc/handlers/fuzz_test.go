@@ -6,11 +6,11 @@ import (
 )
 
 func FuzzParseCTID(f *testing.F) {
-	f.Add("C005523A00020001") // valid 16-char hex
-	f.Add("")                 // empty
-	f.Add("C005523A0002")     // too short
+	f.Add("C005523A00020001")     // valid 16-char hex
+	f.Add("")                     // empty
+	f.Add("C005523A0002")         // too short
 	f.Add("C005523A000200010000") // too long
-	f.Add("ZZZZZZZZZZZZZZZZ")    // invalid hex chars
+	f.Add("ZZZZZZZZZZZZZZZZ")     // invalid hex chars
 	f.Add("0000000000000000")     // all zeros
 	f.Add("FFFFFFFFFFFFFFFF")     // all F
 
@@ -32,8 +32,8 @@ func FuzzParseUintParam(f *testing.F) {
 	f.Add([]byte(`42`))
 	f.Add([]byte(`0`))
 	f.Add([]byte(`-1`))
-	f.Add([]byte(`4294967295`))  // uint32 max
-	f.Add([]byte(`4294967296`))  // uint32 max + 1
+	f.Add([]byte(`4294967295`)) // uint32 max
+	f.Add([]byte(`4294967296`)) // uint32 max + 1
 	f.Add([]byte(`3.14`))
 	f.Add([]byte(`"text"`))
 	f.Add([]byte(`null`))

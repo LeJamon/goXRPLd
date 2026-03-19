@@ -102,8 +102,8 @@ func FuzzNewInnerNodeFromWire(f *testing.F) {
 	// Full format with hashes at positions 0 and 15
 	fullWithHashes := make([]byte, 513)
 	for i := 0; i < 32; i++ {
-		fullWithHashes[i] = 0xAA       // branch 0
-		fullWithHashes[480+i] = 0xBB   // branch 15
+		fullWithHashes[i] = 0xAA     // branch 0
+		fullWithHashes[480+i] = 0xBB // branch 15
 	}
 	fullWithHashes[512] = protocol.WireTypeInner
 	f.Add(fullWithHashes)

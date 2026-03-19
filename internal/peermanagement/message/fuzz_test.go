@@ -52,13 +52,13 @@ func FuzzDecodeHeader(f *testing.F) {
 	// Seed: 5 bytes (too short for a header)
 	f.Add([]byte{0x00, 0x01, 0x02, 0x03, 0x04})
 	// Seed: valid 6-byte uncompressed header (payload=100, type=Ping)
-	f.Add(mustEncodeHeader( 100, TypePing, AlgorithmNone, 0))
+	f.Add(mustEncodeHeader(100, TypePing, AlgorithmNone, 0))
 	// Seed: valid 10-byte compressed header (payload=50, type=Transaction, LZ4, uncompressed=200)
-	f.Add(mustEncodeHeader( 50, TypeTransaction, AlgorithmLZ4, 200))
+	f.Add(mustEncodeHeader(50, TypeTransaction, AlgorithmLZ4, 200))
 	// Seed: compression bit set with invalid algorithm bits (algorithm=2)
 	f.Add([]byte{0xA0, 0x00, 0x00, 0x32, 0x00, 0x1E, 0x00, 0x00, 0x00, 0xC8})
 	// Seed: max payload size at 26-bit limit
-	f.Add(mustEncodeHeader( MaxPayloadSize, TypeLedgerData, AlgorithmNone, 0))
+	f.Add(mustEncodeHeader(MaxPayloadSize, TypeLedgerData, AlgorithmNone, 0))
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		h, err := DecodeHeader(data)
