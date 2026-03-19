@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,8 +19,10 @@ import (
 	"github.com/LeJamon/goXRPLd/amendment"
 	"github.com/LeJamon/goXRPLd/drops"
 	"github.com/LeJamon/goXRPLd/internal/ledger/genesis"
+	"github.com/LeJamon/goXRPLd/internal/ledger/state"
 	jtx "github.com/LeJamon/goXRPLd/internal/testing"
 	"github.com/LeJamon/goXRPLd/internal/tx"
+	"github.com/LeJamon/goXRPLd/internal/tx/amm"
 	_ "github.com/LeJamon/goXRPLd/internal/tx/all"
 	"github.com/LeJamon/goXRPLd/internal/tx/trustset"
 	"github.com/LeJamon/goXRPLd/internal/txq"
@@ -189,6 +192,28 @@ type runner struct {
 	// last env setup. Used to detect implicit scope boundaries when fund
 	// steps re-create already-existing accounts.
 	hadTxSteps bool
+
+	// ammAddrMap maps fixture AMM pseudo-account addresses to actual goXRPL
+	// AMM addresses. AMM pseudo-account addresses depend on parentHash, which
+	// differs between rippled and goXRPL. Transactions referencing LP token
+	// issuers (AMM accounts) need address remapping to work correctly.
+	ammAddrMap map[string]string
+
+	// fixtureAMMAddrs is the set of AMM account addresses found in the fixture
+	// by pre-scanning LP token references. Used to detect which addresses need
+	// remapping after AMMCreate succeeds.
+	fixtureAMMAddrs map[string]bool
+
+	// fixtureAMMPairs stores (issuer, currency) pairs for LP token references
+	// found during prescan. This enables precise matching of fixture AMM
+	// addresses to specific AMM instances when multiple AMMs exist.
+	fixtureAMMPairs []ammPair
+}
+
+// ammPair associates an LP token issuer with its currency code.
+type ammPair struct {
+	issuer   string
+	currency string
 }
 
 // txqMinTxnLookup maps TxQ fixture test case names to their
@@ -259,11 +284,15 @@ func RunFixture(t *testing.T, fixturePath string) {
 		}
 	}
 
+	fixtureAddrs, fixturePairs := prescanAMMAddresses(fixture.Steps)
 	r := &runner{
-		t:         t,
-		accounts:  make(map[string]*jtx.Account),
-		enableTxQ: isTxQSuite,
-		txqMinTxn: minTxn,
+		t:               t,
+		accounts:        make(map[string]*jtx.Account),
+		enableTxQ:       isTxQSuite,
+		txqMinTxn:       minTxn,
+		ammAddrMap:      make(map[string]string),
+		fixtureAMMAddrs: fixtureAddrs,
+		fixtureAMMPairs: fixturePairs,
 	}
 
 	// If this fixture depends on a predecessor, build the dependency chain
@@ -483,7 +512,18 @@ func (r *runner) replayTx(step Step) {
 	if err != nil {
 		return
 	}
-	r.env.Submit(parsed)
+	r.remapAMMAddresses(parsed)
+	result := r.env.Submit(parsed)
+
+	// Register AMM mapping after successful AMMCreate
+	if result.Success && step.TxJSON != nil {
+		var txj map[string]interface{}
+		if json.Unmarshal(step.TxJSON, &txj) == nil {
+			if txj["TransactionType"] == "AMMCreate" {
+				r.registerAMMMapping(step)
+			}
+		}
+	}
 }
 
 // setupEnv creates a TestEnv with the given configuration.
@@ -601,7 +641,13 @@ func (r *runner) execTrust(stepIdx int, step Step) {
 		r.t.Fatalf("Step %d (trust): invalid limit value %q: %v", stepIdx, step.LimitAmount.Value, err)
 	}
 
-	limitAmount := tx.NewIssuedAmountFromFloat64(value, step.LimitAmount.Currency, step.LimitAmount.Issuer)
+	// Remap AMM issuer address if needed
+	issuer := step.LimitAmount.Issuer
+	if actual, ok := r.ammAddrMap[issuer]; ok {
+		issuer = actual
+	}
+
+	limitAmount := tx.NewIssuedAmountFromFloat64(value, step.LimitAmount.Currency, issuer)
 
 	ts := trustset.NewTrustSet(acc.Address, limitAmount)
 	ts.Fee = strconv.FormatUint(r.env.BaseFee(), 10)
@@ -660,6 +706,11 @@ func (r *runner) execTx(stepIdx int, step Step) {
 		r.t.Fatalf("Step %d (tx): failed to parse tx_blob: %v", stepIdx, err)
 	}
 
+	// Remap AMM pseudo-account addresses in the parsed transaction.
+	// This is needed because AMM addresses depend on parentHash, which
+	// differs between rippled and goXRPL.
+	r.remapAMMAddresses(parsed)
+
 	// Set the clock to match the fixture's parent_close_time so that
 	// time-dependent checks (expiration, cancel-after, etc.) evaluate
 	// correctly regardless of how many closes were replayed from
@@ -711,6 +762,17 @@ func (r *runner) execTx(stepIdx int, step Step) {
 		return
 	}
 
+	// After a successful AMMCreate, discover the actual AMM account address
+	// and register the mapping from fixture to actual address.
+	if result.Success && step.TxJSON != nil {
+		var txj map[string]interface{}
+		if json.Unmarshal(step.TxJSON, &txj) == nil {
+			if txj["TransactionType"] == "AMMCreate" {
+				r.registerAMMMapping(step)
+			}
+		}
+	}
+
 	// Assert post-state only for applied results (tesSUCCESS or tec).
 	// Failed transactions (tem/tef/tel/ter) don't modify ledger state,
 	// so post-state checks would compare against pre-transaction state
@@ -760,6 +822,7 @@ func (r *runner) execRetryBatch(batch []struct {
 			r.t.Fatalf("Step %d (retry): failed to parse tx_blob: %v", entry.idx, err)
 			return
 		}
+		r.remapAMMAddresses(parsed)
 		seq := uint32(0)
 		if entry.step.TxJSON != nil {
 			var txj map[string]interface{}
@@ -1327,4 +1390,232 @@ func parseDropsAmount(raw json.RawMessage) (uint64, error) {
 	}
 
 	return 0, fmt.Errorf("cannot parse amount: %s", string(raw))
+}
+
+// prescanAMMAddresses scans fixture steps to find all issuer addresses
+// associated with LP token currencies (03-prefixed 40-char hex). These
+// addresses are AMM pseudo-account addresses that may differ between rippled
+// and goXRPL due to different parentHash values. Returns both the set of
+// addresses and the (issuer, currency) pairs for precise matching.
+func prescanAMMAddresses(steps []Step) (map[string]bool, []ammPair) {
+	addrs := make(map[string]bool)
+	var pairs []ammPair
+
+	// Pattern: find "issuer" values near "currency" values that match LP token format.
+	// We scan tx_json and trust limit_amount fields.
+	for _, step := range steps {
+		// Check tx_json
+		if step.TxJSON != nil {
+			var txj map[string]interface{}
+			if json.Unmarshal(step.TxJSON, &txj) == nil {
+				collectLPTokenIssuers(txj, addrs, &pairs)
+			}
+		}
+		// Check trust limit_amount
+		if step.LimitAmount != nil && isLPTokenCurrency(step.LimitAmount.Currency) {
+			if step.LimitAmount.Issuer != "" {
+				addrs[step.LimitAmount.Issuer] = true
+				pairs = append(pairs, ammPair{issuer: step.LimitAmount.Issuer, currency: step.LimitAmount.Currency})
+			}
+		}
+	}
+	return addrs, pairs
+}
+
+// isLPTokenCurrency returns true if the currency is an LP token currency
+// (40-char hex starting with "03").
+func isLPTokenCurrency(currency string) bool {
+	return len(currency) == 40 && strings.HasPrefix(strings.ToUpper(currency), "03")
+}
+
+// collectLPTokenIssuers recursively walks a JSON map to find amount objects
+// with LP token currencies and collects their issuer addresses and pairs.
+func collectLPTokenIssuers(obj map[string]interface{}, addrs map[string]bool, pairs *[]ammPair) {
+	for _, v := range obj {
+		switch val := v.(type) {
+		case map[string]interface{}:
+			// Check if this is an amount object with LP token currency
+			if cur, ok := val["currency"].(string); ok && isLPTokenCurrency(cur) {
+				if issuer, ok := val["issuer"].(string); ok && issuer != "" {
+					addrs[issuer] = true
+					*pairs = append(*pairs, ammPair{issuer: issuer, currency: cur})
+				}
+			}
+			// Recurse into nested objects
+			collectLPTokenIssuers(val, addrs, pairs)
+		case []interface{}:
+			for _, item := range val {
+				if m, ok := item.(map[string]interface{}); ok {
+					collectLPTokenIssuers(m, addrs, pairs)
+				}
+			}
+		}
+	}
+}
+
+// discoverAMMAddress looks up the AMM entry for the given asset pair in the
+// current ledger and returns the actual AMM pseudo-account address.
+func (r *runner) discoverAMMAddress(asset1, asset2 tx.Asset) string {
+	ammKeylet := amm.ComputeAMMKeylet(asset1, asset2)
+	data, err := r.env.Ledger().Read(ammKeylet)
+	if err != nil || data == nil {
+		return ""
+	}
+
+	ammData, err := amm.ParseAMMData(data)
+	if err != nil {
+		return ""
+	}
+
+	addr, err := state.EncodeAccountID(ammData.Account)
+	if err != nil {
+		return ""
+	}
+	return addr
+}
+
+// registerAMMMapping is called after a successful AMMCreate to build the
+// address mapping from fixture AMM addresses to actual goXRPL AMM addresses.
+// It extracts the asset pair from the AMMCreate tx_json, looks up the actual
+// AMM account, and maps fixture AMM addresses that were seen with this AMM's
+// LP token currency.
+func (r *runner) registerAMMMapping(step Step) {
+	if len(r.fixtureAMMAddrs) == 0 {
+		return // no LP token addresses to remap
+	}
+
+	// Parse asset pair from tx_json
+	if step.TxJSON == nil {
+		return
+	}
+	var txj map[string]interface{}
+	if json.Unmarshal(step.TxJSON, &txj) != nil {
+		return
+	}
+
+	// Extract asset pair from Amount and Amount2
+	asset1 := extractAsset(txj, "Amount")
+	asset2 := extractAsset(txj, "Amount2")
+	if asset1.Currency == "" && asset1.Issuer == "" && asset2.Currency == "" {
+		return
+	}
+
+	// Discover the actual AMM account address
+	actualAddr := r.discoverAMMAddress(asset1, asset2)
+	if actualAddr == "" {
+		return
+	}
+
+	// Find the fixture AMM address for this asset pair by matching the LP
+	// token currency. We compute the expected LP token currency from the
+	// asset pair and check which fixture address was associated with it.
+	lptCurrency := strings.ToUpper(amm.GenerateAMMLPTCurrency(asset1.Currency, asset2.Currency))
+
+	for fixtureAddr := range r.fixtureAMMAddrs {
+		if _, alreadyMapped := r.ammAddrMap[fixtureAddr]; alreadyMapped {
+			continue
+		}
+		if r.fixtureAddrSeenWithCurrency(fixtureAddr, lptCurrency) {
+			r.ammAddrMap[fixtureAddr] = actualAddr
+		}
+	}
+}
+
+// fixtureAddrSeenWithCurrency checks if a fixture address was seen as the
+// issuer of the given LP token currency in the prescan data.
+func (r *runner) fixtureAddrSeenWithCurrency(fixtureAddr, lptCurrency string) bool {
+	for _, pair := range r.fixtureAMMPairs {
+		if pair.issuer == fixtureAddr && strings.EqualFold(pair.currency, lptCurrency) {
+			return true
+		}
+	}
+	return false
+}
+
+// extractAsset extracts a tx.Asset from a JSON amount field.
+func extractAsset(txj map[string]interface{}, field string) tx.Asset {
+	val, ok := txj[field]
+	if !ok {
+		return tx.Asset{}
+	}
+
+	switch v := val.(type) {
+	case map[string]interface{}:
+		// IOU amount: {currency, issuer, value}
+		asset := tx.Asset{}
+		if cur, ok := v["currency"].(string); ok {
+			asset.Currency = cur
+		}
+		if iss, ok := v["issuer"].(string); ok {
+			asset.Issuer = iss
+		}
+		return asset
+	case string:
+		// XRP amount (drops string)
+		return tx.Asset{Currency: "XRP"}
+	case float64:
+		// XRP amount (drops number)
+		return tx.Asset{Currency: "XRP"}
+	}
+	return tx.Asset{}
+}
+
+// remapAMMAddresses remaps AMM pseudo-account addresses in a parsed
+// transaction. It walks all Amount and Asset fields using reflection and
+// replaces issuer addresses that match fixture AMM addresses with the actual
+// goXRPL AMM addresses.
+func (r *runner) remapAMMAddresses(txn tx.Transaction) {
+	if len(r.ammAddrMap) == 0 {
+		return
+	}
+	remapAmountFields(reflect.ValueOf(txn), r.ammAddrMap)
+}
+
+// remapAmountFields recursively walks a reflect.Value to find and remap
+// Amount.Issuer, Asset.Issuer, and address string fields (Destination, etc.).
+func remapAmountFields(v reflect.Value, addrMap map[string]string) {
+	switch v.Kind() {
+	case reflect.Ptr:
+		if v.IsNil() {
+			return
+		}
+		remapAmountFields(v.Elem(), addrMap)
+	case reflect.Struct:
+		t := v.Type()
+
+		// Check if this is a state.Amount or Asset (has Issuer and Currency fields)
+		issuerField := v.FieldByName("Issuer")
+		currencyField := v.FieldByName("Currency")
+		if issuerField.IsValid() && issuerField.CanSet() && issuerField.Kind() == reflect.String &&
+			currencyField.IsValid() && currencyField.Kind() == reflect.String {
+			issuer := issuerField.String()
+			if actual, ok := addrMap[issuer]; ok {
+				issuerField.SetString(actual)
+			}
+		}
+
+		// Also check string fields that may contain AMM addresses.
+		// Common fields: Destination, Account (in inner tx contexts), etc.
+		for i := 0; i < t.NumField(); i++ {
+			field := v.Field(i)
+			if !field.CanInterface() {
+				continue // skip unexported fields
+			}
+
+			// Remap string fields that match known AMM addresses
+			if field.Kind() == reflect.String && field.CanSet() {
+				s := field.String()
+				if actual, ok := addrMap[s]; ok {
+					field.SetString(actual)
+				}
+			}
+
+			// Recurse into struct/ptr/slice fields
+			remapAmountFields(field, addrMap)
+		}
+	case reflect.Slice:
+		for i := 0; i < v.Len(); i++ {
+			remapAmountFields(v.Index(i), addrMap)
+		}
+	}
 }

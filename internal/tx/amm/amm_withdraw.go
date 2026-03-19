@@ -231,6 +231,40 @@ func (a *AMMWithdraw) Apply(ctx *tx.ApplyContext) tx.Result {
 	flags := a.GetFlags()
 	tfee := amm.TradingFee
 
+	// Frozen asset checks — must come before withdrawal calculations.
+	// Reference: rippled AMMWithdraw.cpp preclaim lines 205-248
+	checkFrozen := func(asset tx.Asset) tx.Result {
+		if isFrozen(ctx.View, ammAccountID, asset) {
+			return tx.TecFROZEN
+		}
+		if tx.IsIndividualFrozen(ctx.View, accountID, asset) {
+			return tx.TecFROZEN
+		}
+		return tx.TesSUCCESS
+	}
+	if a.Amount != nil {
+		amtAsset := tx.Asset{Currency: a.Amount.Currency, Issuer: a.Amount.Issuer}
+		if r := checkFrozen(amtAsset); r != tx.TesSUCCESS {
+			return r
+		}
+	}
+	if a.Amount2 != nil {
+		amt2Asset := tx.Asset{Currency: a.Amount2.Currency, Issuer: a.Amount2.Issuer}
+		if r := checkFrozen(amt2Asset); r != tx.TesSUCCESS {
+			return r
+		}
+	}
+	// For tfLPToken and tfWithdrawAll: check AMM's assets even if not specified
+	// in the transaction. Reference: rippled AMMWithdraw.cpp lines 280-286
+	if flags&(tfLPToken|tfWithdrawAll) != 0 {
+		if r := checkFrozen(amm.Asset); r != tx.TesSUCCESS {
+			return r
+		}
+		if r := checkFrozen(amm.Asset2); r != tx.TesSUCCESS {
+			return r
+		}
+	}
+
 	// Preclaim: EPrice issue must match LP token issue (rippled AMMWithdraw.cpp:273-278)
 	if a.EPrice != nil {
 		lptCurrency := GenerateAMMLPTCurrency(amm.Asset.Currency, amm.Asset2.Currency)

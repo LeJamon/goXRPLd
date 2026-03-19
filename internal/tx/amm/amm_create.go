@@ -327,6 +327,9 @@ func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	isXRP1 := sortedAsset1.Currency == "" || sortedAsset1.Currency == "XRP"
 	isXRP2 := sortedAsset2.Currency == "" || sortedAsset2.Currency == "XRP"
 
+	// Track owner count delta from trust line operations
+	creatorOwnerDelta := int32(0)
+
 	// Transfer first asset
 	// Reference: rippled AMMCreate.cpp sendAndTrustSet uses accountSend which
 	// handles issuer-as-sender (no self-trust-line debit needed).
@@ -346,9 +349,11 @@ func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		// issuers have unlimited supply and no self-trust-line).
 		issuerID1, _ := state.DecodeAccountID(sortedAsset1.Issuer)
 		if accountID != issuerID1 {
-			if err := updateTrustlineBalanceInView(accountID, issuerID1, sortedAsset1.Currency, sortedAmount1.Negate(), ctx.View); err != nil {
+			tlResult, tlErr := updateTrustlineBalanceInViewEx(accountID, issuerID1, sortedAsset1.Currency, sortedAmount1.Negate(), ctx.View)
+			if tlErr != nil {
 				return TecUNFUNDED_AMM
 			}
+			creatorOwnerDelta += int32(tlResult.SenderOwnerCountDelta)
 		}
 	}
 
@@ -367,14 +372,23 @@ func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 		issuerID2, _ := state.DecodeAccountID(sortedAsset2.Issuer)
 		if accountID != issuerID2 {
-			if err := updateTrustlineBalanceInView(accountID, issuerID2, sortedAsset2.Currency, sortedAmount2.Negate(), ctx.View); err != nil {
+			tlResult, tlErr := updateTrustlineBalanceInViewEx(accountID, issuerID2, sortedAsset2.Currency, sortedAmount2.Negate(), ctx.View)
+			if tlErr != nil {
 				return TecUNFUNDED_AMM
 			}
+			creatorOwnerDelta += int32(tlResult.SenderOwnerCountDelta)
 		}
 	}
 
-	// Update creator account (owner count increases for LP token trustline)
-	ctx.Account.OwnerCount++
+	// Update creator account owner count:
+	// +1 for the LP token trustline, plus any adjustments from IOU trust line
+	// deletion (when the creator deposits all their IOU balance, the original
+	// trust line may be deleted, decrementing owner count).
+	newOwnerCount := int32(ctx.Account.OwnerCount) + 1 + creatorOwnerDelta
+	if newOwnerCount < 0 {
+		newOwnerCount = 0
+	}
+	ctx.Account.OwnerCount = uint32(newOwnerCount)
 
 	// Persist updated creator account
 	accountKey := keylet.Account(accountID)

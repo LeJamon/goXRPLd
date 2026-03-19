@@ -1056,6 +1056,11 @@ func offerDivRound(num, den tx.Amount, native bool, currency, issuer string, rou
 		if native {
 			// canonicalizeRound for native (XRP drops)
 			drops := payment.CanonicalizeDrops(int64(amount), offset)
+			// Fallback: if rounding up produced zero, return minimum positive (1 drop).
+			// Reference: rippled STAmount.cpp divRoundImpl lines 1720-1726
+			if drops == 0 && roundUp && !resultNegative {
+				drops = 1
+			}
 			if resultNegative {
 				drops = -drops
 			}
@@ -1165,6 +1170,11 @@ func offerDivRoundStrict(num, den tx.Amount, native bool, currency, issuer strin
 		if native {
 			// canonicalizeRoundStrict for native (XRP drops)
 			drops := payment.CanonicalizeDropsStrict(int64(amount), offset, roundUp)
+			// Fallback: if rounding up produced zero, return minimum positive (1 drop).
+			// Reference: rippled STAmount.cpp divRoundImpl lines 1720-1726
+			if drops == 0 && roundUp && !resultNegative {
+				drops = 1
+			}
 			if resultNegative {
 				drops = -drops
 			}
@@ -1282,6 +1292,12 @@ func offerMulRound(v1, v2 tx.Amount, native bool, currency, issuer string, round
 		if native {
 			// canonicalizeRound for native (XRP drops)
 			drops := payment.CanonicalizeDrops(int64(amount), offset)
+			// Fallback: if rounding up produced zero, return minimum positive (1 drop).
+			// Reference: rippled STAmount.cpp mulRoundImpl lines 1624-1630:
+			//   if (roundUp && !resultNegative && !result) { amount = 1; offset = 0; }
+			if drops == 0 && roundUp && !resultNegative {
+				drops = 1
+			}
 			if resultNegative {
 				drops = -drops
 			}
