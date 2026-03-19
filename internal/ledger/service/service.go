@@ -13,6 +13,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/ledger/header"
 	"github.com/LeJamon/goXRPLd/internal/tx"
 	xrpllog "github.com/LeJamon/goXRPLd/log"
+	"github.com/LeJamon/goXRPLd/shamap"
 	"github.com/LeJamon/goXRPLd/storage/nodestore"
 	"github.com/LeJamon/goXRPLd/storage/relationaldb"
 )
@@ -1239,6 +1240,46 @@ func (s *Service) ReAdoptLedgerHeader(h *header.LedgerHeader) error {
 	s.logger.Info("Re-adopted ledger from peer",
 		"seq", h.LedgerIndex,
 		"hash", fmt.Sprintf("%x", h.Hash[:8]),
+	)
+
+	return nil
+}
+
+// AdoptLedgerWithState adopts a ledger using a fully-fetched state map from a peer.
+// Unlike AdoptLedgerHeader which reuses genesis state, this uses the real state tree
+// fetched via the TMGetLedger/TMLedgerData protocol.
+func (s *Service) AdoptLedgerWithState(h *header.LedgerHeader, stateMap *shamap.SHAMap) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.genesisLedger == nil {
+		return errors.New("no genesis ledger available")
+	}
+
+	// Create empty tx map
+	txMap, err := s.genesisLedger.TxMapSnapshot()
+	if err != nil {
+		return fmt.Errorf("failed to snapshot tx map: %w", err)
+	}
+
+	adopted := ledger.NewFromHeader(*h, stateMap, txMap, drops.Fees{})
+
+	s.closedLedger = adopted
+	s.validatedLedger = adopted
+	s.ledgerHistory[h.LedgerIndex] = adopted
+	s.needsInitialSync = false
+
+	// Create new open ledger on top
+	openLedger, err := ledger.NewOpen(adopted, time.Now())
+	if err != nil {
+		return fmt.Errorf("failed to create open ledger: %w", err)
+	}
+	s.openLedger = openLedger
+
+	s.logger.Info("Adopted ledger with full state from peer",
+		"seq", h.LedgerIndex,
+		"hash", fmt.Sprintf("%x", h.Hash[:8]),
+		"account_hash", fmt.Sprintf("%x", h.AccountHash[:8]),
 	)
 
 	return nil

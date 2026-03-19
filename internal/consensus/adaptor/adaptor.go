@@ -31,20 +31,24 @@ type NetworkSender interface {
 	RequestTxSet(id consensus.TxSetID) error
 	RequestLedger(id consensus.LedgerID) error
 	RequestLedgerByHashAndSeq(hash [32]byte, seq uint32) error
+	RequestLedgerBaseFromPeer(peerID uint64, hash [32]byte, seq uint32) error
+	RequestStateNodes(peerID uint64, ledgerHash [32]byte, nodeIDs [][]byte) error
 	SendToPeer(peerID uint64, frame []byte) error
 }
 
 // noopSender is a no-op NetworkSender for standalone or test use.
 type noopSender struct{}
 
-func (n *noopSender) BroadcastProposal(*consensus.Proposal) error       { return nil }
-func (n *noopSender) BroadcastValidation(*consensus.Validation) error   { return nil }
-func (n *noopSender) BroadcastStatusChange(*message.StatusChange) error { return nil }
-func (n *noopSender) RelayProposal(*consensus.Proposal) error           { return nil }
-func (n *noopSender) RequestTxSet(consensus.TxSetID) error              { return nil }
-func (n *noopSender) RequestLedger(consensus.LedgerID) error            { return nil }
-func (n *noopSender) RequestLedgerByHashAndSeq([32]byte, uint32) error  { return nil }
-func (n *noopSender) SendToPeer(uint64, []byte) error                   { return nil }
+func (n *noopSender) BroadcastProposal(*consensus.Proposal) error                      { return nil }
+func (n *noopSender) BroadcastValidation(*consensus.Validation) error                  { return nil }
+func (n *noopSender) BroadcastStatusChange(*message.StatusChange) error                { return nil }
+func (n *noopSender) RelayProposal(*consensus.Proposal) error                          { return nil }
+func (n *noopSender) RequestTxSet(consensus.TxSetID) error                             { return nil }
+func (n *noopSender) RequestLedger(consensus.LedgerID) error                           { return nil }
+func (n *noopSender) RequestLedgerByHashAndSeq([32]byte, uint32) error                 { return nil }
+func (n *noopSender) RequestLedgerBaseFromPeer(uint64, [32]byte, uint32) error         { return nil }
+func (n *noopSender) RequestStateNodes(uint64, [32]byte, [][]byte) error               { return nil }
+func (n *noopSender) SendToPeer(uint64, []byte) error                                  { return nil }
 
 // Compile-time interface check.
 var _ consensus.Adaptor = (*Adaptor)(nil)
@@ -141,6 +145,14 @@ func (a *Adaptor) RequestLedger(id consensus.LedgerID) error {
 
 func (a *Adaptor) RequestLedgerByHashAndSeq(hash [32]byte, seq uint32) error {
 	return a.sender.RequestLedgerByHashAndSeq(hash, seq)
+}
+
+func (a *Adaptor) RequestLedgerBaseFromPeer(peerID uint64, hash [32]byte, seq uint32) error {
+	return a.sender.RequestLedgerBaseFromPeer(peerID, hash, seq)
+}
+
+func (a *Adaptor) RequestStateNodes(peerID uint64, ledgerHash [32]byte, nodeIDs [][]byte) error {
+	return a.sender.RequestStateNodes(peerID, ledgerHash, nodeIDs)
 }
 
 func (a *Adaptor) SendToPeer(peerID uint64, frame []byte) error {

@@ -9,20 +9,25 @@ import (
 
 // LCFNoConsensusTime Ledger close flags
 const LCFNoConsensusTime uint8 = 0x01
+
+// xrplEpochOffset is the difference between Unix epoch and XRPL epoch (2000-01-01 00:00:00 UTC).
+const xrplEpochOffset int64 = 946684800
+
 const (
-	// SizeBase Calculate based on actual serialized format, not Go struct size
+	// SizeBase matches rippled's serialized ledger header format exactly.
+	// Reference: rippled LedgerHeader.cpp addRaw() lines 27-42.
 	SizeBase = 4 + // LedgerIndex (uint32)
 		8 + // Drops (uint64)
 		32 + // ParentHash ([32]byte)
 		32 + // TxHash ([32]byte)
 		32 + // AccountHash ([32]byte)
-		8 + // ParentCloseTime (int64 as timestamp)
-		8 + // CloseTime (int64 as timestamp)
-		4 + // CloseTimeResolution (uint32)
+		4 + // ParentCloseTime (uint32, XRPL epoch seconds)
+		4 + // CloseTime (uint32, XRPL epoch seconds)
+		1 + // CloseTimeResolution (uint8)
 		1 // CloseFlags (uint8)
-	// = 129 bytes
+	// = 118 bytes
 
-	SizeWithHash = SizeBase + 32 // + Hash ([32]byte) = 161 bytes
+	SizeWithHash = SizeBase + 32 // + Hash ([32]byte) = 150 bytes
 )
 
 type LedgerHeader struct {
@@ -55,19 +60,20 @@ type LedgerHeader struct {
 	CloseTime time.Time
 }
 
+// AddRaw serializes a ledger header to bytes matching rippled's format exactly.
+// Reference: rippled LedgerHeader.cpp addRaw() — all times are uint32 XRPL epoch,
+// closeTimeResolution is uint8.
 func AddRaw(header LedgerHeader, includeHash bool) ([]byte, error) {
 	size := SizeBase
 	if includeHash {
 		size = SizeWithHash
 	}
-	buf := bytes.NewBuffer(make([]byte, 0, size)) // pre-allocate capacity
+	buf := bytes.NewBuffer(make([]byte, 0, size))
 
-	err := binary.Write(buf, binary.BigEndian, header.LedgerIndex)
-	if err != nil {
+	if err := binary.Write(buf, binary.BigEndian, header.LedgerIndex); err != nil {
 		return nil, err
 	}
-	err = binary.Write(buf, binary.BigEndian, header.Drops)
-	if err != nil {
+	if err := binary.Write(buf, binary.BigEndian, header.Drops); err != nil {
 		return nil, err
 	}
 
@@ -75,20 +81,21 @@ func AddRaw(header LedgerHeader, includeHash bool) ([]byte, error) {
 	buf.Write(header.TxHash[:])
 	buf.Write(header.AccountHash[:])
 
-	err = binary.Write(buf, binary.BigEndian, header.ParentCloseTime.Unix())
-	if err != nil {
+	// Times as uint32 XRPL epoch seconds (matching rippled's s.add32())
+	parentCloseTime := timeToXRPLEpoch(header.ParentCloseTime)
+	if err := binary.Write(buf, binary.BigEndian, parentCloseTime); err != nil {
 		return nil, err
 	}
-	err = binary.Write(buf, binary.BigEndian, header.CloseTime.Unix())
-	if err != nil {
+	closeTime := timeToXRPLEpoch(header.CloseTime)
+	if err := binary.Write(buf, binary.BigEndian, closeTime); err != nil {
 		return nil, err
 	}
-	err = binary.Write(buf, binary.BigEndian, header.CloseTimeResolution)
-	if err != nil {
+
+	// CloseTimeResolution as uint8 (matching rippled's s.add8())
+	if err := binary.Write(buf, binary.BigEndian, uint8(header.CloseTimeResolution)); err != nil {
 		return nil, err
 	}
-	err = binary.Write(buf, binary.BigEndian, header.CloseFlags)
-	if err != nil {
+	if err := binary.Write(buf, binary.BigEndian, header.CloseFlags); err != nil {
 		return nil, err
 	}
 
@@ -104,7 +111,8 @@ func (h *LedgerHeader) GetCloseAgree() bool {
 	return (h.CloseFlags & LCFNoConsensusTime) == 0
 }
 
-// DeserializeHeader deserializes a ledger header from a byte array
+// DeserializeHeader deserializes a ledger header from a byte array.
+// Format matches rippled's addRaw(): uint32 times, uint8 resolution.
 func DeserializeHeader(data []byte, hasHash bool) (*LedgerHeader, error) {
 	minSize := SizeBase
 	if hasHash {
@@ -118,60 +126,52 @@ func DeserializeHeader(data []byte, hasHash bool) (*LedgerHeader, error) {
 	reader := bytes.NewReader(data)
 	header := &LedgerHeader{}
 
-	// Read sequence number (32-bit)
-	var seq uint32
-	if err := binary.Read(reader, binary.BigEndian, &seq); err != nil {
+	// Read sequence number (uint32)
+	if err := binary.Read(reader, binary.BigEndian, &header.LedgerIndex); err != nil {
 		return nil, err
 	}
-	header.LedgerIndex = seq
 
-	// Read drops (64-bit)
+	// Read drops (uint64)
 	if err := binary.Read(reader, binary.BigEndian, &header.Drops); err != nil {
 		return nil, err
 	}
 
-	// Read parent hash (256-bit)
+	// Read hashes (3 x 32 bytes)
 	if _, err := reader.Read(header.ParentHash[:]); err != nil {
 		return nil, err
 	}
-
-	// Read tx hash (256-bit)
 	if _, err := reader.Read(header.TxHash[:]); err != nil {
 		return nil, err
 	}
-
-	// Read account hash (256-bit)
 	if _, err := reader.Read(header.AccountHash[:]); err != nil {
 		return nil, err
 	}
 
-	// Read parent close time (64-bit timestamp)
-	var parentCloseTime int64
+	// Read parent close time (uint32, XRPL epoch seconds)
+	var parentCloseTime uint32
 	if err := binary.Read(reader, binary.BigEndian, &parentCloseTime); err != nil {
 		return nil, err
 	}
-	header.ParentCloseTime = time.Unix(parentCloseTime, 0)
+	header.ParentCloseTime = xrplEpochToTime(parentCloseTime)
 
-	// Read close time (64-bit timestamp)
-	var closeTime int64
+	// Read close time (uint32, XRPL epoch seconds)
+	var closeTime uint32
 	if err := binary.Read(reader, binary.BigEndian, &closeTime); err != nil {
 		return nil, err
 	}
-	header.CloseTime = time.Unix(closeTime, 0)
+	header.CloseTime = xrplEpochToTime(closeTime)
 
-	// Read close time resolution (32-bit)
-	var closeTimeResolution uint32
+	// Read close time resolution (uint8)
+	var closeTimeResolution uint8
 	if err := binary.Read(reader, binary.BigEndian, &closeTimeResolution); err != nil {
 		return nil, err
 	}
-	header.CloseTimeResolution = closeTimeResolution
+	header.CloseTimeResolution = uint32(closeTimeResolution)
 
-	// Read close flags (8-bit)
-	var closeFlags uint8
-	if err := binary.Read(reader, binary.BigEndian, &closeFlags); err != nil {
+	// Read close flags (uint8)
+	if err := binary.Read(reader, binary.BigEndian, &header.CloseFlags); err != nil {
 		return nil, err
 	}
-	header.CloseFlags = closeFlags
 
 	// Optionally read hash
 	if hasHash {
@@ -190,4 +190,26 @@ func DeserializePrefixedHeader(data []byte, hasHash bool) (*LedgerHeader, error)
 	}
 	// Skip the first 4 bytes (prefix) and deserialize the rest
 	return DeserializeHeader(data[4:], hasHash)
+}
+
+// timeToXRPLEpoch converts a time.Time to uint32 XRPL epoch seconds.
+// Returns 0 for the zero time.
+func timeToXRPLEpoch(t time.Time) uint32 {
+	if t.IsZero() {
+		return 0
+	}
+	secs := t.Unix() - xrplEpochOffset
+	if secs < 0 {
+		return 0
+	}
+	return uint32(secs)
+}
+
+// xrplEpochToTime converts uint32 XRPL epoch seconds to time.Time.
+// Returns the zero time for 0.
+func xrplEpochToTime(epoch uint32) time.Time {
+	if epoch == 0 {
+		return time.Time{}
+	}
+	return time.Unix(int64(epoch)+xrplEpochOffset, 0)
 }
