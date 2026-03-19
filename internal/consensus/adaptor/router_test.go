@@ -56,7 +56,7 @@ func TestRouterDispatchesProposal(t *testing.T) {
 	adaptor := newTestAdaptor(t)
 	inbox := make(chan *peermanagement.InboundMessage, 10)
 
-	router := NewRouter(engine, adaptor, inbox)
+	router := NewRouter(engine, adaptor, nil, inbox)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -91,7 +91,7 @@ func TestRouterDispatchesValidation(t *testing.T) {
 	adaptor := newTestAdaptor(t)
 	inbox := make(chan *peermanagement.InboundMessage, 10)
 
-	router := NewRouter(engine, adaptor, inbox)
+	router := NewRouter(engine, adaptor, nil, inbox)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -117,7 +117,7 @@ func TestRouterDispatchesTransaction(t *testing.T) {
 	adaptor := newTestAdaptor(t)
 	inbox := make(chan *peermanagement.InboundMessage, 10)
 
-	router := NewRouter(engine, adaptor, inbox)
+	router := NewRouter(engine, adaptor, nil, inbox)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -147,7 +147,7 @@ func TestRouterIgnoresUnknownMessages(t *testing.T) {
 	adaptor := newTestAdaptor(t)
 	inbox := make(chan *peermanagement.InboundMessage, 10)
 
-	router := NewRouter(engine, adaptor, inbox)
+	router := NewRouter(engine, adaptor, nil, inbox)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -171,7 +171,7 @@ func TestRouterHandlesMalformedMessage(t *testing.T) {
 	adaptor := newTestAdaptor(t)
 	inbox := make(chan *peermanagement.InboundMessage, 10)
 
-	router := NewRouter(engine, adaptor, inbox)
+	router := NewRouter(engine, adaptor, nil, inbox)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -194,7 +194,7 @@ func TestRouterStopsOnContextCancel(t *testing.T) {
 	adaptor := newTestAdaptor(t)
 	inbox := make(chan *peermanagement.InboundMessage, 10)
 
-	router := NewRouter(engine, adaptor, inbox)
+	router := NewRouter(engine, adaptor, nil, inbox)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -218,7 +218,7 @@ func TestRouterStopsOnChannelClose(t *testing.T) {
 	adaptor := newTestAdaptor(t)
 	inbox := make(chan *peermanagement.InboundMessage, 10)
 
-	router := NewRouter(engine, adaptor, inbox)
+	router := NewRouter(engine, adaptor, nil, inbox)
 
 	done := make(chan struct{})
 	go func() {

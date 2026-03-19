@@ -22,10 +22,11 @@ type peerLedgerState struct {
 // Router reads inbound messages from the P2P overlay and dispatches
 // them to the consensus engine and adaptor.
 type Router struct {
-	engine  consensus.Engine
-	adaptor *Adaptor
-	inbox   <-chan *peermanagement.InboundMessage
-	logger  *slog.Logger
+	engine      consensus.Engine
+	adaptor     *Adaptor
+	modeManager *ModeManager
+	inbox       <-chan *peermanagement.InboundMessage
+	logger      *slog.Logger
 
 	// Peer ledger tracking for catch-up detection
 	peersMu    sync.RWMutex
@@ -33,13 +34,14 @@ type Router struct {
 }
 
 // NewRouter creates a new Router.
-func NewRouter(engine consensus.Engine, adaptor *Adaptor, inbox <-chan *peermanagement.InboundMessage) *Router {
+func NewRouter(engine consensus.Engine, adaptor *Adaptor, modeManager *ModeManager, inbox <-chan *peermanagement.InboundMessage) *Router {
 	return &Router{
-		engine:     engine,
-		adaptor:    adaptor,
-		inbox:      inbox,
-		logger:     slog.Default().With("component", "consensus-router"),
-		peerStates: make(map[peermanagement.PeerID]*peerLedgerState),
+		engine:      engine,
+		adaptor:     adaptor,
+		modeManager: modeManager,
+		inbox:       inbox,
+		logger:      slog.Default().With("component", "consensus-router"),
+		peerStates:  make(map[peermanagement.PeerID]*peerLedgerState),
 	}
 }
 
@@ -273,6 +275,27 @@ func (r *Router) handleStatusChange(msg *peermanagement.InboundMessage) {
 			return
 		}
 
+		// When in Full mode and significantly behind (gap > 2), detect divergence
+		// and force back to Syncing — matching rippled's checkLastClosedLedger() behavior.
+		if r.adaptor.GetOperatingMode() == consensus.OpModeFull && sc.LedgerSeq > 1 {
+			svc := r.adaptor.LedgerService()
+			if svc != nil {
+				ourSeq := svc.GetClosedLedgerIndex()
+				if sc.LedgerSeq > ourSeq+2 {
+					r.logger.Warn("behind network while in Full mode, dropping to Syncing",
+						"our_seq", ourSeq,
+						"peer_seq", sc.LedgerSeq,
+						"gap", sc.LedgerSeq-ourSeq,
+					)
+					if r.modeManager != nil {
+						r.modeManager.OnWrongLedger()
+					}
+					r.reAdoptFromStatusChange(sc.LedgerSeq, peerHash, parentHash)
+					return
+				}
+			}
+		}
+
 		// While not in Full mode, keep re-adopting from StatusChange until
 		// we're within 1 ledger of the network. This prevents the consensus
 		// engine from running solo rounds that produce divergent close times.
@@ -398,13 +421,21 @@ func (r *Router) checkBehind(peerSeq uint32, peerHash [32]byte) {
 	ourSeq := svc.GetClosedLedgerIndex()
 
 	// If we're caught up (gap ≤ 1) and not yet Full, transition to Full
+	// only if our LCL hash matches what the majority of peers report.
 	if peerSeq <= ourSeq+1 {
 		if r.adaptor.GetOperatingMode() == consensus.OpModeTracking {
-			r.logger.Info("caught up with network, transitioning to Full",
-				"our_seq", ourSeq,
-				"peer_seq", peerSeq,
-			)
-			r.adaptor.SetOperatingMode(consensus.OpModeFull)
+			if r.ourLCLMatchesPeers() {
+				r.logger.Info("caught up with network, transitioning to Full",
+					"our_seq", ourSeq,
+					"peer_seq", peerSeq,
+				)
+				r.adaptor.SetOperatingMode(consensus.OpModeFull)
+			} else {
+				r.logger.Info("caught up but LCL hash differs, staying in Tracking",
+					"our_seq", ourSeq,
+					"peer_seq", peerSeq,
+				)
+			}
 		}
 		return
 	}
@@ -419,6 +450,47 @@ func (r *Router) checkBehind(peerSeq uint32, peerHash [32]byte) {
 	if err := r.adaptor.RequestLedgerByHashAndSeq(peerHash, peerSeq); err != nil {
 		r.logger.Debug("failed to request ledger", "seq", peerSeq, "error", err)
 	}
+}
+
+// ourLCLMatchesPeers checks if our closed ledger hash matches what the
+// majority of tracked peers report. Returns true if we have no peer data
+// (to avoid blocking startup).
+func (r *Router) ourLCLMatchesPeers() bool {
+	svc := r.adaptor.LedgerService()
+	if svc == nil {
+		return true
+	}
+	closedLedger := svc.GetClosedLedger()
+	if closedLedger == nil {
+		return true
+	}
+	ourHash := closedLedger.Hash()
+	ourSeq := svc.GetClosedLedgerIndex()
+
+	r.peersMu.RLock()
+	defer r.peersMu.RUnlock()
+
+	if len(r.peerStates) == 0 {
+		return true
+	}
+
+	matching := 0
+	total := 0
+	for _, ps := range r.peerStates {
+		if ps.LedgerSeq == ourSeq {
+			total++
+			if ps.LedgerHash == ourHash {
+				matching++
+			}
+		}
+	}
+
+	// If no peers at our seq, allow transition (they may have advanced)
+	if total == 0 {
+		return true
+	}
+
+	return matching > total/2
 }
 
 func (r *Router) handleLedgerData(msg *peermanagement.InboundMessage) {

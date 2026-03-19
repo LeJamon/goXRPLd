@@ -109,7 +109,7 @@ func NewFromConfig(
 	engine := rcl.NewEngine(adaptor, rcl.DefaultConfig())
 
 	// Create the router
-	router := NewRouter(engine, adaptor, overlay.Messages())
+	router := NewRouter(engine, adaptor, modeManager, overlay.Messages())
 
 	// Wire operating mode into ledger service for server_info
 	ledgerSvc.SetServerStateFunc(func() string {

@@ -418,8 +418,9 @@ func (a *Adaptor) AdoptLedgerFromHeader(headerData []byte) error {
 		return fmt.Errorf("adopt ledger: %w", err)
 	}
 
-	// Transition to Full mode so the consensus engine starts running
-	a.SetOperatingMode(consensus.OpModeFull)
+	// Transition to Tracking mode — the router manages the Full transition
+	// once we verify our LCL matches the network.
+	a.SetOperatingMode(consensus.OpModeTracking)
 
 	a.logger.Info("Adopted peer ledger",
 		"seq", h.LedgerIndex,
