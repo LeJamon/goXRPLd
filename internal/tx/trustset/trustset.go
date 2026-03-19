@@ -105,7 +105,9 @@ func (t *TrustSet) Validate() error {
 	}
 
 	// Check if destination makes sense
-	if t.LimitAmount.Issuer == "" {
+	// In rippled, preflight checks: if (!issuer || issuer == noAccount())
+	// noAccount() is ACCOUNT_ONE = rrrrrrrrrrrrrrrrrrrrBZbvji
+	if t.LimitAmount.Issuer == "" || t.LimitAmount.Issuer == "rrrrrrrrrrrrrrrrrrrrBZbvji" {
 		return tx.Errorf(tx.TemDST_NEEDED, "issuer is required")
 	}
 

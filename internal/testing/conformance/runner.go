@@ -498,9 +498,20 @@ func (r *runner) setupEnv(cfg EnvConfig) {
 	// Enable TxQ if this is a TxQ test suite. TxQ must be created with the
 	// test env so Submit() routes through fee escalation and queuing.
 	// Use per-fixture MinimumTxnInLedgerStandalone from txqMinTxnLookup.
+	//
+	// These config values match rippled's test makeConfig() in envconfig.cpp:
+	//   ledgers_in_queue = 2
+	//   minimum_queue_size = 2
+	//   normal_consensus_increase_percent = 0
+	//   retry_sequence_percent = 25
+	// The default StandaloneConfig() uses different values (20, 2000, 20)
+	// which causes fee escalation and queue sizing to diverge from rippled.
 	if r.enableTxQ {
 		txqCfg := txq.StandaloneConfig()
 		txqCfg.MinimumTxnInLedgerStandalone = r.txqMinTxn
+		txqCfg.LedgersInQueue = 2
+		txqCfg.QueueSizeMin = 2
+		txqCfg.NormalConsensusIncreasePercent = 0
 		r.env = jtx.NewTestEnvWithTxQAndConfig(r.t, txqCfg, genCfg)
 	} else {
 		r.env = jtx.NewTestEnvWithConfig(r.t, genCfg)

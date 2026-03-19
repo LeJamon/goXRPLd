@@ -170,12 +170,17 @@ func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TecAMM_INVALID_TOKENS
 	}
 
-	// Check clawback - if featureAMMClawback is not enabled, reject clawback-enabled issuers
-	// Reference: rippled AMMCreate.cpp line 194-214
-	// Note: We assume AMMClawback amendment is enabled in this implementation
-	// If not enabled, we would need to check:
-	// if result := clawbackDisabled(ctx.View, asset1); result != tx.TesSUCCESS { return result }
-	// if result := clawbackDisabled(ctx.View, asset2); result != tx.TesSUCCESS { return result }
+	// Check clawback - if featureAMMClawback is not enabled, reject clawback-enabled issuers.
+	// If featureAMMClawback IS enabled, allow AMMCreate regardless of clawback flag.
+	// Reference: rippled AMMCreate.cpp preclaim lines 194-214
+	if !ctx.Rules().Enabled(amendment.FeatureAMMClawback) {
+		if result := clawbackDisabled(ctx.View, asset1); result != tx.TesSUCCESS {
+			return result
+		}
+		if result := clawbackDisabled(ctx.View, asset2); result != tx.TesSUCCESS {
+			return result
+		}
+	}
 
 	// Check for pseudo-account collision with featureSingleAssetVault
 	// Reference: rippled AMMCreate.cpp preclaim lines 186-192
@@ -680,4 +685,37 @@ func setAMMNodeFlag(ammAccountID [20]byte, asset tx.Asset, view tx.LedgerView) e
 	}
 
 	return view.Update(trustLineKey, rsBytes)
+}
+
+// clawbackDisabled checks if the issuer of an asset has clawback enabled.
+// Returns tecNO_PERMISSION if the issuer has lsfAllowTrustLineClawback set,
+// tecINTERNAL if the issuer account cannot be found, and tesSUCCESS otherwise.
+// XRP assets always return tesSUCCESS (no issuer to check).
+// Reference: rippled AMMCreate.cpp preclaim lines 201-210
+func clawbackDisabled(view tx.LedgerView, asset tx.Asset) tx.Result {
+	if asset.Currency == "" || asset.Currency == "XRP" {
+		return tx.TesSUCCESS
+	}
+
+	issuerID, err := state.DecodeAccountID(asset.Issuer)
+	if err != nil {
+		return tx.TecINTERNAL
+	}
+
+	issuerKey := keylet.Account(issuerID)
+	issuerData, err := view.Read(issuerKey)
+	if err != nil || issuerData == nil {
+		return tx.TecINTERNAL
+	}
+
+	issuerAccount, err := state.ParseAccountRoot(issuerData)
+	if err != nil {
+		return tx.TecINTERNAL
+	}
+
+	if (issuerAccount.Flags & state.LsfAllowTrustLineClawback) != 0 {
+		return tx.TecNO_PERMISSION
+	}
+
+	return tx.TesSUCCESS
 }
