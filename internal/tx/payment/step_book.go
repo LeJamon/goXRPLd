@@ -255,13 +255,11 @@ func (s *BookStep) Rev(
 		ownerGives := MulRatio(ofrOut, ofrTrOut, QualityOne, false)
 
 		// Funding cap (CLOB only — AMM is always funded)
-		// Use afView (all-funds view) for funding check, NOT the execution sandbox.
-		// Reference: rippled OfferStream reads ownerFunds from view_ (afView),
-		// not from the execution sandbox sb. This prevents offers in a bridged
-		// path from seeing intermediate balance changes during the reverse pass.
+		// Reference: rippled OfferStream reads ownerFunds from view_ (sb),
+		// which is the execution sandbox, so consumed balances are visible.
 		if !isAMM {
 			offerOwner, _ := state.DecodeAccountID(clobOffer.Account)
-			funds := s.getOfferFundedAmount(afView, clobOffer)
+			funds := s.getOfferFundedAmount(sb, clobOffer)
 			isFundedByIssuer := offerOwner == s.book.Out.Issuer
 			if !isFundedByIssuer && funds.Compare(ownerGives) < 0 {
 				ownerGives = funds
@@ -378,16 +376,16 @@ func (s *BookStep) Rev(
 		}
 
 		// Pre-execOffer checks (OfferStream level)
-		// Use afView for funding check, matching rippled's OfferStream::step()
-		// which reads ownerFunds from view_ (the all-funds view).
-		ownerFunds := s.getOfferFundedAmount(afView, offer)
+		// Pre-execOffer checks (OfferStream level)
+		// Reference: rippled OfferStream::step() reads ownerFunds from view_ (sb).
+		ownerFunds := s.getOfferFundedAmount(sb, offer)
 		if ownerFunds.IsEffectivelyZero() || offer.TakerGets.IsZero() {
 			ofrsToRm[offerKey] = true
 			s.offersUsed_++
 			unfundedCount++
 			continue
 		}
-		if s.shouldRmSmallIncreasedQOffer(afView, offer, ownerFunds) {
+		if s.shouldRmSmallIncreasedQOffer(sb, offer, ownerFunds) {
 			ofrsToRm[offerKey] = true
 			s.offersUsed_++
 			continue
@@ -549,10 +547,10 @@ func (s *BookStep) Fwd(
 		ownerGives := MulRatio(ofrOut, ofrTrOut, QualityOne, false)
 
 		// Funding cap (CLOB only)
-		// Use afView for funding check, matching rippled's OfferStream.
+		// Reference: rippled OfferStream reads ownerFunds from view_ (sb).
 		if !isAMM {
 			offerOwner, _ := state.DecodeAccountID(clobOffer.Account)
-			funds := s.getOfferFundedAmount(afView, clobOffer)
+			funds := s.getOfferFundedAmount(sb, clobOffer)
 			isFundedByIssuer := offerOwner == s.book.Out.Issuer
 			if !isFundedByIssuer && funds.Compare(ownerGives) < 0 {
 				ownerGives = funds
@@ -725,14 +723,14 @@ func (s *BookStep) Fwd(
 			}
 		}
 
-		// Use afView for funding check, matching rippled's OfferStream::step().
-		ownerFunds := s.getOfferFundedAmount(afView, offer)
+		// Reference: rippled OfferStream::step() reads ownerFunds from view_ (sb).
+		ownerFunds := s.getOfferFundedAmount(sb, offer)
 		if ownerFunds.IsEffectivelyZero() || offer.TakerGets.IsZero() {
 			ofrsToRm[offerKey] = true
 			s.offersUsed_++
 			continue
 		}
-		if s.shouldRmSmallIncreasedQOffer(afView, offer, ownerFunds) {
+		if s.shouldRmSmallIncreasedQOffer(sb, offer, ownerFunds) {
 			ofrsToRm[offerKey] = true
 			s.offersUsed_++
 			continue

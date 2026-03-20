@@ -703,7 +703,8 @@ func TestAMMTokens_DirectLPTokenPayment(t *testing.T) {
 	// and payment checks the limit.
 	// NOTE: rippled allows TrustSet for LP tokens to AMM accounts, but goXRPL
 	// currently blocks all TrustSet to AMM pseudo-accounts with tecNO_PERMISSION.
-	lpToken := amm.LPTokenAmount(amm.XRP(), env.USD, 2000000)
+	// Use real AMM account address (pseudo-account) for the LP token issuer.
+	lpToken := env.LPTokenAmountFromLedger(amm.XRP(), env.USD, 2000000)
 	trustTx := trustset.TrustSet(env.Carol, lpToken).Build()
 	result = env.Submit(trustTx)
 	if !result.Success {
@@ -724,7 +725,7 @@ func TestAMMTokens_DirectLPTokenPayment(t *testing.T) {
 
 	// Alice pays Carol 100 LP tokens.
 	// Pool balance should not change, only LP token balances shift.
-	payAmt := amm.LPTokenAmount(amm.XRP(), env.USD, 100)
+	payAmt := env.LPTokenAmountFromLedger(amm.XRP(), env.USD, 100)
 	payTx := payment.PayIssued(env.Alice, env.Carol, payAmt).Build()
 	result = env.Submit(payTx)
 	if !result.Success {
@@ -738,7 +739,7 @@ func TestAMMTokens_DirectLPTokenPayment(t *testing.T) {
 
 	// Alice sets trust line for LP tokens (limit 20,000,000) to receive back.
 	// Alice's auto-created trust line from AMMCreate also has limit 0.
-	trustTx2 := trustset.TrustSet(env.Alice, amm.LPTokenAmount(amm.XRP(), env.USD, 20000000)).Build()
+	trustTx2 := trustset.TrustSet(env.Alice, env.LPTokenAmountFromLedger(amm.XRP(), env.USD, 20000000)).Build()
 	result = env.Submit(trustTx2)
 	if !result.Success {
 		t.Fatalf("Alice trust set for LP token failed: %s - %s", result.Code, result.Message)

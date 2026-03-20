@@ -6,7 +6,6 @@ package offer
 // Reference: rippled/src/test/app/ReducedOffer_test.cpp
 
 import (
-	"fmt"
 	"testing"
 
 	jtx "github.com/LeJamon/goXRPLd/internal/testing"
@@ -300,8 +299,6 @@ func testUnderFundedXrpIouQChange(t *testing.T) {
 
 				if !bobsOfferGone && !aliceHasUSD {
 					blockedOrderBookCount++
-					fmt.Printf("[UNDERFUND-DBG] BLOCKED iter=%.3f bobsOfferGone=%v aliceHasUSD=%v aliceBal=%v\n",
-						initialBobUSDFloat, bobsOfferGone, aliceHasUSD, aliceBalanceUSD)
 				}
 
 				// Clean up offers, zero out balances, then close (matching rippled order)

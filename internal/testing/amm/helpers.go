@@ -241,6 +241,19 @@ func LPTokenAmount(asset1, asset2 tx.Asset, amount float64) tx.Amount {
 	return tx.NewIssuedAmountFromFloat64(amount, lptCurrency, ammAccountAddr)
 }
 
+// LPTokenAmountFromLedger creates an LP token amount using the real AMM pseudo-account
+// as issuer, read from the ledger. This is the equivalent of rippled's amm.lptIssue().
+// Must be called after the AMM is created.
+func (e *AMMTestEnv) LPTokenAmountFromLedger(asset1, asset2 tx.Asset, amount float64) tx.Amount {
+	e.T.Helper()
+	ammAcc := e.ReadAMMAccount(asset1, asset2)
+	if ammAcc == nil {
+		e.T.Fatalf("LPTokenAmountFromLedger: AMM not found for %s/%s", asset1.Currency, asset2.Currency)
+	}
+	lptCurrency := coreAmm.GenerateAMMLPTCurrency(asset1.Currency, asset2.Currency)
+	return tx.NewIssuedAmountFromFloat64(amount, lptCurrency, ammAcc.Address)
+}
+
 // TestAMMCallback is the function signature for AMM test callbacks.
 // Reference: rippled's testAMM callback pattern
 type TestAMMCallback func(env *AMMTestEnv, ammAcc *jtx.Account)
