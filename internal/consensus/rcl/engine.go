@@ -647,7 +647,7 @@ func (e *Engine) handleWrongLedger(netLedgerID consensus.LedgerID) {
 	// First try by hash, then check if the adaptor's LCL has already been
 	// updated (e.g., by inbound ledger adoption in the router).
 	newLedger, err := e.adaptor.GetLedger(netLedgerID)
-	if (err != nil || newLedger == nil) {
+	if err != nil || newLedger == nil {
 		if lcl, lclErr := e.adaptor.GetLastClosedLedger(); lclErr == nil && lcl != nil && lcl.ID() == netLedgerID {
 			newLedger = lcl
 			err = nil
@@ -859,20 +859,6 @@ func (e *Engine) closeLedger() {
 
 	// Start timeout timer
 	e.startTimeoutTimer()
-}
-
-// roundCloseTime calculates the close time for this round.
-func (e *Engine) roundCloseTime() time.Time {
-	now := e.adaptor.Now()
-	resolution := e.adaptor.CloseTimeResolution()
-
-	// Round to the nearest resolution
-	rounded := now.Truncate(resolution)
-	if now.Sub(rounded) > resolution/2 {
-		rounded = rounded.Add(resolution)
-	}
-
-	return rounded
 }
 
 // startTimeoutTimer starts the timeout timer for the establish phase.
