@@ -82,6 +82,10 @@ func DecodeQuality(quality string) (string, error) {
 		return "", err
 	}
 
+	if len(decoded) < 8 {
+		return "", ErrInvalidQuality
+	}
+
 	bytes := decoded[len(decoded)-8:]
 	exp := int(bytes[0]) - 100
 	mantissaBytes := append([]byte{0}, bytes[1:]...)

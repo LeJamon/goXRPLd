@@ -82,8 +82,18 @@ func (c ED25519CryptoAlgorithm) Validate(msg, pubkey, sig string) bool {
 		return false
 	}
 
+	// Public key must be 33 bytes: 1-byte prefix + 32-byte ed25519 key
+	if len(bp) != 33 {
+		return false
+	}
+
 	bs, err := hex.DecodeString(sig)
 	if err != nil {
+		return false
+	}
+
+	// Ed25519 signatures must be exactly 64 bytes
+	if len(bs) != ed25519.SignatureSize {
 		return false
 	}
 

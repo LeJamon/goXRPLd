@@ -61,14 +61,22 @@ func Encode(b []byte, typePrefix []byte, expectedLength int) (string, error) {
 func Decode(b58string string, typePrefix []byte) ([]byte, error) {
 	prefixLength := len(typePrefix)
 
-	if !bytes.Equal(DecodeBase58(b58string)[:prefixLength], typePrefix) {
+	decoded := DecodeBase58(b58string)
+	if len(decoded) < prefixLength {
+		return nil, errors.New("b58string too short for expected prefix")
+	}
+
+	if !bytes.Equal(decoded[:prefixLength], typePrefix) {
 		return nil, errors.New("b58string prefix and typeprefix not equal")
 	}
 
 	result, err := Base58CheckDecode(b58string)
+	if err != nil {
+		return nil, err
+	}
 	result = result[prefixLength:]
 
-	return result, err
+	return result, nil
 }
 
 // EncodeClassicAddressFromPublicKeyHex returns the classic address from a public key hex string.
