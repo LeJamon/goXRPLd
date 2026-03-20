@@ -53,6 +53,17 @@ func validateAMMAmountWithPair(amt tx.Amount, asset1, asset2 *tx.Asset, validZer
 	return ""
 }
 
+// validateAssetPair validates an AMM asset pair.
+// Reference: rippled AMMCore.cpp invalidAMMAssetPair()
+// - Assets must not be the same issue
+// - XRP assets (empty currency) are valid
+func validateAssetPair(asset1, asset2 tx.Asset) error {
+	if matchesAssetByIssue(asset1, asset2) {
+		return tx.Errorf(tx.TemBAD_AMM_TOKENS, "asset pair has same issue")
+	}
+	return nil
+}
+
 // ammErrCodeToResult maps a string error code from validateAMMAmountWithPair
 // to its corresponding tx.Result constant.
 func ammErrCodeToResult(code string) tx.Result {

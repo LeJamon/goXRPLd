@@ -152,7 +152,7 @@ func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Check reserve for LP token trustline
 	// Reference: rippled AMMCreate.cpp line 145-151
 	// The account needs enough XRP for the reserve after creating the LP trustline
-	xrpLiquid := xrpLiquidBalance(ctx.View, accountID, 1)
+	xrpLiquid := xrpLiquidBalanceWithReserves(ctx.View, accountID, 1, ctx.Config.ReserveBase, ctx.Config.ReserveIncrement)
 	if xrpLiquid <= 0 {
 		return TecINSUF_RESERVE_LINE
 	}
@@ -553,9 +553,9 @@ func noDefaultRipple(view tx.LedgerView, asset tx.Asset) bool {
 	return (issuerAccount.Flags & state.LsfDefaultRipple) == 0
 }
 
-// xrpLiquidBalance returns the XRP available after reserving for ownerCount additional objects.
-// Reference: rippled AMMCreate.cpp line 145
-func xrpLiquidBalance(view tx.LedgerView, accountID [20]byte, additionalOwnerCount int) int64 {
+// xrpLiquidBalanceWithReserves returns XRP available after reserves, using explicit reserve values.
+// Reference: rippled xrpLiquid() — reads from view.fees()
+func xrpLiquidBalanceWithReserves(view tx.LedgerView, accountID [20]byte, additionalOwnerCount int, reserveBase, reserveIncrement uint64) int64 {
 	accountKey := keylet.Account(accountID)
 	data, err := view.Read(accountKey)
 	if err != nil || data == nil {
@@ -567,11 +567,7 @@ func xrpLiquidBalance(view tx.LedgerView, accountID [20]byte, additionalOwnerCou
 		return 0
 	}
 
-	// Base reserve + owner reserve * (ownerCount + additional)
-	// Using standard XRPL reserves: 10 XRP base + 2 XRP per owner
-	baseReserve := int64(10_000_000) // 10 XRP in drops
-	ownerReserve := int64(2_000_000) // 2 XRP in drops
-	totalReserve := baseReserve + ownerReserve*int64(account.OwnerCount+uint32(additionalOwnerCount))
+	totalReserve := int64(reserveBase) + int64(reserveIncrement)*int64(account.OwnerCount+uint32(additionalOwnerCount))
 
 	liquid := int64(account.Balance) - totalReserve
 	if liquid < 0 {

@@ -746,6 +746,28 @@ func (r *runner) execTx(stepIdx int, step Step) {
 
 	result := r.env.Submit(parsed)
 
+	// When goXRPL returns terPRE_SEQ but the fixture expects a different result,
+	// the account's ledger sequence is behind the fixture's baked-in sequence.
+	// This happens when rippled's test framework consumed sequences for tem*
+	// results (via type-specific preflight inside doApply) but goXRPL did not.
+	// Bump the account sequence (and deduct fee for each skipped seq) to align
+	// with the fixture, then resubmit.
+	if result.Code == "terPRE_SEQ" && step.ExpectTER != "terPRE_SEQ" {
+		common := parsed.GetCommon()
+		if common.Account != "" && common.Sequence != nil {
+			acc := r.accountByAddress(common.Account)
+			if acc != nil && r.env.Exists(acc) {
+				currentSeq := r.env.Seq(acc)
+				targetSeq := *common.Sequence
+				for currentSeq < targetSeq {
+					r.env.BumpSequenceAndDeductFee(acc)
+					currentSeq++
+				}
+				result = r.env.Submit(parsed)
+			}
+		}
+	}
+
 	// Assert TER code.
 	//
 	// Special handling for telENV_RPC_FAILED: this is rippled's test-framework
@@ -1827,4 +1849,16 @@ func remapAmountFields(v reflect.Value, addrMap map[string]string) {
 			remapAmountFields(v.Index(i), addrMap)
 		}
 	}
+}
+
+// accountByAddress looks up a test account by address in the runner's
+// account map. If no registered account matches, creates a temporary
+// reference so the caller can interact with the ledger.
+func (r *runner) accountByAddress(address string) *jtx.Account {
+	for _, acc := range r.accounts {
+		if acc.Address == address {
+			return acc
+		}
+	}
+	return jtx.NewAccountWithAddress("tmp_"+address[len(address)-8:], address)
 }

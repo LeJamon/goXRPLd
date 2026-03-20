@@ -74,14 +74,6 @@ func (a *AMMWithdraw) Validate() error {
 		return tx.Errorf(tx.TemINVALID_FLAG, "invalid flags for AMMWithdraw")
 	}
 
-	if a.Asset.Currency == "" {
-		return tx.Errorf(tx.TemMALFORMED, "Asset is required")
-	}
-
-	if a.Asset2.Currency == "" {
-		return tx.Errorf(tx.TemMALFORMED, "Asset2 is required")
-	}
-
 	flags := a.GetFlags()
 
 	// Withdrawal sub-transaction flags (exactly one must be set)
@@ -138,6 +130,12 @@ func (a *AMMWithdraw) Validate() error {
 		if !hasAmount || !hasEPrice || hasLPTokenIn || hasAmount2 {
 			return tx.Errorf(tx.TemMALFORMED, "tfLimitLPToken requires Amount and EPrice")
 		}
+	}
+
+	// Validate asset pair
+	// Reference: rippled AMMWithdraw.cpp lines 100-106
+	if err := validateAssetPair(a.Asset, a.Asset2); err != nil {
+		return err
 	}
 
 	// Amount and Amount2 cannot have the same issue if both present
@@ -560,7 +558,9 @@ func (a *AMMWithdraw) Apply(ctx *tx.ApplyContext) tx.Result {
 	case flags&tfLimitLPToken != 0:
 		// Single asset withdrawal with effective price limit (singleWithdrawEPrice)
 		// Reference: rippled AMMWithdraw.cpp singleWithdrawEPrice()
-		if amount1.IsZero() || a.EPrice == nil || a.EPrice.IsZero() {
+		// Note: amount1 == 0 is valid — it means no minimum on withdrawal amount.
+		// rippled AMMWithdraw.cpp:1079: if (amount == beast::zero || amountWithdraw >= amount)
+		if a.EPrice == nil || a.EPrice.IsZero() {
 			return tx.TemMALFORMED
 		}
 

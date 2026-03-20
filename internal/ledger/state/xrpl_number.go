@@ -492,6 +492,44 @@ func (n XRPLNumber) ToIOUAmountValue() IOUAmountValue {
 	return IOUAmountValue{mantissa: n.mantissa, exponent: n.exponent}
 }
 
+// ToInt64WithMode converts this Number to an int64 using Guard-based rounding,
+// matching rippled's Number::operator rep() (Number.cpp lines 480-512).
+// The mode parameter overrides the global rounding mode for this conversion.
+func (n XRPLNumber) ToInt64WithMode(mode RoundingMode) int64 {
+	drops := n.mantissa
+	offset := n.exponent
+	var g xrplGuard
+
+	if drops != 0 {
+		if drops < 0 {
+			g.setNegative()
+			drops = -drops
+		}
+		for offset < 0 {
+			g.push(uint(drops % 10))
+			drops /= 10
+			offset++
+		}
+		for offset > 0 {
+			drops *= 10
+			offset--
+		}
+
+		// Apply rounding with the specified mode
+		savedMode := SetNumberRound(mode)
+		r := g.round()
+		SetNumberRound(savedMode)
+
+		if r == 1 || (r == 0 && (drops&1) == 1) {
+			drops++
+		}
+		if g.sbit {
+			drops = -drops
+		}
+	}
+	return drops
+}
+
 // root2 computes the square root of n using Newton-Raphson iteration.
 // Reference: root2() in Number.cpp lines 700-736
 func (n XRPLNumber) root2() XRPLNumber {

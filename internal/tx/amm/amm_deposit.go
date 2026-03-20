@@ -134,15 +134,8 @@ func (a *AMMDeposit) Validate() error {
 
 	// Validate asset pair
 	// Reference: rippled AMMDeposit.cpp lines 100-106
-	if a.Asset.Currency == "" && a.Asset.Issuer == "" {
-		// XRP asset - OK
-	} else if a.Asset.Currency == "" {
-		return tx.Errorf(tx.TemMALFORMED, "Asset is invalid")
-	}
-	if a.Asset2.Currency == "" && a.Asset2.Issuer == "" {
-		// XRP asset - OK
-	} else if a.Asset2.Currency == "" {
-		return tx.Errorf(tx.TemMALFORMED, "Asset2 is invalid")
+	if err := validateAssetPair(a.Asset, a.Asset2); err != nil {
+		return err
 	}
 
 	// Amount and Amount2 cannot have the same issue
@@ -344,18 +337,23 @@ func (a *AMMDeposit) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Reference: rippled AMMDeposit.cpp lines 353-362
 	ammAccountAddr, _ := encodeAccountID(ammAccountID)
 	lptCurrency := GenerateAMMLPTCurrency(a.Asset.Currency, a.Asset2.Currency)
-	// Note: LPTokenOut issue validation (rippled preclaim lines 343-349) is
-	// intentionally deferred. The check compares LPTokenOut.issue against the
-	// AMM's stored LP token issue. This works in rippled because the
-	// pseudo-account address is deterministic from the parent hash. In our
-	// conformance tests, the parent hash differs, so the AMM pseudo-account
-	// address doesn't match the address hardcoded in the fixture's LPTokenOut.
-	// TODO: Re-enable once the conformance runner handles AMM address remapping.
+	// Validate LPTokenOut issue matches AMM's LP token issue.
+	// Reference: rippled AMMDeposit.cpp preclaim lines 343-349
+	// Compare against the AMM's stored LP token balance issue (currency only,
+	// since the conformance runner remaps issuer addresses).
+	if a.LPTokenOut != nil {
+		storedLPTCurrency := amm.LPTokenBalance.Currency
+		if a.LPTokenOut.Currency != storedLPTCurrency {
+			return tx.TemBAD_AMM_TOKENS
+		}
+	}
+
 	lptKey := keylet.Line(accountID, ammAccountID, lptCurrency)
 	lptExists, _ := ctx.View.Exists(lptKey)
 	if !lptExists {
 		// Account needs reserve for new LP token trustline
-		xrpLiquid := xrpLiquidBalance(ctx.View, accountID, 1)
+		// Reference: rippled AMMDeposit.cpp preclaim lines 353-362
+		xrpLiquid := xrpLiquidBalanceWithReserves(ctx.View, accountID, 1, ctx.Config.ReserveBase, ctx.Config.ReserveIncrement)
 		if xrpLiquid <= 0 {
 			return TecINSUF_RESERVE_LINE
 		}

@@ -60,12 +60,9 @@ func (a *AMMBid) Validate() error {
 	}
 
 	// Validate asset pair
-	if a.Asset.Currency == "" {
-		return tx.Errorf(tx.TemMALFORMED, "Asset is required")
-	}
-
-	if a.Asset2.Currency == "" {
-		return tx.Errorf(tx.TemMALFORMED, "Asset2 is required")
+	// Reference: rippled AMMBid.cpp preflight lines 48-53
+	if err := validateAssetPair(a.Asset, a.Asset2); err != nil {
+		return err
 	}
 
 	// Validate BidMin if present
