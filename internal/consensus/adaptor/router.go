@@ -279,21 +279,19 @@ func (r *Router) handleStatusChange(msg *peermanagement.InboundMessage) {
 			return
 		}
 
-		// When in Full mode and significantly behind (gap > 2), detect divergence
-		// and force back to Syncing — matching rippled's checkLastClosedLedger() behavior.
+		// When in Full mode and significantly behind (gap > 2), acquire the
+		// latest ledger from the peer but stay in Full mode so we keep
+		// participating in consensus.
 		if r.adaptor.GetOperatingMode() == consensus.OpModeFull && sc.LedgerSeq > 1 {
 			svc := r.adaptor.LedgerService()
 			if svc != nil {
 				ourSeq := svc.GetClosedLedgerIndex()
 				if sc.LedgerSeq > ourSeq+2 {
-					r.logger.Warn("behind network while in Full mode, dropping to Syncing",
+					r.logger.Warn("behind network while in Full mode, catching up",
 						"our_seq", ourSeq,
 						"peer_seq", sc.LedgerSeq,
 						"gap", sc.LedgerSeq-ourSeq,
 					)
-					if r.modeManager != nil {
-						r.modeManager.OnWrongLedger()
-					}
 					r.startLedgerAcquisition(sc.LedgerSeq, peerHash, uint64(msg.PeerID))
 					return
 				}
@@ -586,7 +584,11 @@ func (r *Router) completeInboundLedger() {
 		return
 	}
 
-	r.adaptor.SetOperatingMode(consensus.OpModeTracking)
+	// Only upgrade to Tracking if still in a lower mode.
+	// Never demote from Full — that would break consensus participation.
+	if r.adaptor.GetOperatingMode() < consensus.OpModeTracking {
+		r.adaptor.SetOperatingMode(consensus.OpModeTracking)
+	}
 	r.logger.Info("adopted ledger with full state from peer",
 		"seq", h.LedgerIndex,
 		"hash", fmt.Sprintf("%x", h.Hash[:8]),

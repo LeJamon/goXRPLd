@@ -393,6 +393,10 @@ func (e *Engine) checkAndStartRound() {
 	// Determine if we should propose
 	proposing := e.adaptor.IsValidator() && e.adaptor.GetOperatingMode() == consensus.OpModeFull
 
+	// Update prevLedger to the current LCL — it may have been changed
+	// by an InboundLedger adoption since the last round.
+	e.prevLedger = ledger
+
 	// Start the round
 	round := consensus.RoundID{
 		Seq:        ledger.Seq() + 1,
@@ -673,7 +677,10 @@ func (e *Engine) acceptLedger(result consensus.Result) {
 	// Determine winning close time and apply effCloseTime
 	closeTime := e.determineCloseTime()
 	resolution := e.adaptor.CloseTimeResolution()
-	closeTime = effCloseTime(closeTime, resolution, e.prevLedger.CloseTime())
+	priorClose := e.prevLedger.CloseTime()
+	closeTime = effCloseTime(closeTime, resolution, priorClose)
+
+	_ = priorClose // used by effCloseTime above
 
 	// Get the agreed transaction set
 	var txSet consensus.TxSet

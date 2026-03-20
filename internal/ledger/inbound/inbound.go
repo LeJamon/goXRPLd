@@ -112,6 +112,8 @@ func (l *Ledger) GotBase(nodes []message.LedgerNode) error {
 			return l.err
 		}
 	}
+	// The wire format doesn't include the hash — set it from our known hash.
+	h.Hash = l.hash
 	l.header = h
 
 	l.logger.Info("inbound ledger: got header",
