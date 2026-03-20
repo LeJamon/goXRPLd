@@ -13,6 +13,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/ledger/header"
 	"github.com/LeJamon/goXRPLd/internal/tx"
 	xrpllog "github.com/LeJamon/goXRPLd/log"
+	"github.com/LeJamon/goXRPLd/shamap"
 	"github.com/LeJamon/goXRPLd/storage/nodestore"
 	"github.com/LeJamon/goXRPLd/storage/relationaldb"
 )
@@ -841,17 +842,34 @@ type LedgerInfo struct {
 //   - Does NOT require standalone mode
 //   - Does NOT automatically validate (validation comes from the validation tracker)
 //
+// The parent parameter specifies which ledger to build on top of. When the
+// consensus engine switches chains (wrong ledger detection), this may differ
+// from s.closedLedger. The service resets its internal state accordingly.
+//
 // The multi-pass retry logic is the same as AcceptLedger to match rippled's
 // BuildLedger behavior.
-func (s *Service) AcceptConsensusResult(txBlobs [][]byte, closeTime time.Time) (uint32, error) {
+func (s *Service) AcceptConsensusResult(parent *ledger.Ledger, txBlobs [][]byte, closeTime time.Time) (uint32, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.openLedger == nil {
-		return 0, ErrNoOpenLedger
-	}
 	if s.closedLedger == nil {
 		return 0, ErrNoClosedLedger
+	}
+
+	// If the parent differs from our closed ledger (chain switch via wrong
+	// ledger detection), reset internal state to build on the correct chain.
+	if parent != nil && parent.Sequence() != s.closedLedger.Sequence() {
+		s.closedLedger = parent
+		s.ledgerHistory[parent.Sequence()] = parent
+		newOpen, err := ledger.NewOpen(parent, closeTime)
+		if err != nil {
+			return 0, fmt.Errorf("failed to create open ledger from parent: %w", err)
+		}
+		s.openLedger = newOpen
+	}
+
+	if s.openLedger == nil {
+		return 0, ErrNoOpenLedger
 	}
 
 	if len(txBlobs) > 0 {
@@ -1150,6 +1168,11 @@ func (s *Service) AdoptLedgerHeader(h *header.LedgerHeader) error {
 		return fmt.Errorf("failed to snapshot genesis state: %w", err)
 	}
 
+	// Update LedgerHashes skiplist so state matches rippled
+	if err := ledger.UpdateSkipListOnMap(stateMap, h.LedgerIndex, h.ParentHash); err != nil {
+		s.logger.Warn("failed to update skip list during adoption", "error", err)
+	}
+
 	// Create empty tx map
 	txMap, err := s.genesisLedger.TxMapSnapshot()
 	if err != nil {
@@ -1197,10 +1220,19 @@ func (s *Service) ReAdoptLedgerHeader(h *header.LedgerHeader) error {
 		return fmt.Errorf("re-adopt seq %d not ahead of current %d", h.LedgerIndex, s.closedLedger.Sequence())
 	}
 
-	// Snapshot genesis state (same as initial adoption)
-	stateMap, err := s.genesisLedger.StateMapSnapshot()
+	// Snapshot from the closed ledger so the skiplist accumulates across re-adoptions
+	source := s.closedLedger
+	if source == nil {
+		source = s.genesisLedger
+	}
+	stateMap, err := source.StateMapSnapshot()
 	if err != nil {
-		return fmt.Errorf("failed to snapshot genesis state: %w", err)
+		return fmt.Errorf("failed to snapshot state: %w", err)
+	}
+
+	// Update LedgerHashes skiplist so state matches rippled
+	if err := ledger.UpdateSkipListOnMap(stateMap, h.LedgerIndex, h.ParentHash); err != nil {
+		s.logger.Warn("failed to update skip list during re-adoption", "error", err)
 	}
 
 	txMap, err := s.genesisLedger.TxMapSnapshot()
@@ -1225,6 +1257,46 @@ func (s *Service) ReAdoptLedgerHeader(h *header.LedgerHeader) error {
 	s.logger.Info("Re-adopted ledger from peer",
 		"seq", h.LedgerIndex,
 		"hash", fmt.Sprintf("%x", h.Hash[:8]),
+	)
+
+	return nil
+}
+
+// AdoptLedgerWithState adopts a ledger using a fully-fetched state map from a peer.
+// Unlike AdoptLedgerHeader which reuses genesis state, this uses the real state tree
+// fetched via the TMGetLedger/TMLedgerData protocol.
+func (s *Service) AdoptLedgerWithState(h *header.LedgerHeader, stateMap *shamap.SHAMap) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.genesisLedger == nil {
+		return errors.New("no genesis ledger available")
+	}
+
+	// Create empty tx map
+	txMap, err := s.genesisLedger.TxMapSnapshot()
+	if err != nil {
+		return fmt.Errorf("failed to snapshot tx map: %w", err)
+	}
+
+	adopted := ledger.NewFromHeader(*h, stateMap, txMap, drops.Fees{})
+
+	s.closedLedger = adopted
+	s.validatedLedger = adopted
+	s.ledgerHistory[h.LedgerIndex] = adopted
+	s.needsInitialSync = false
+
+	// Create new open ledger on top
+	openLedger, err := ledger.NewOpen(adopted, time.Now())
+	if err != nil {
+		return fmt.Errorf("failed to create open ledger: %w", err)
+	}
+	s.openLedger = openLedger
+
+	s.logger.Info("Adopted ledger with full state from peer",
+		"seq", h.LedgerIndex,
+		"hash", fmt.Sprintf("%x", h.Hash[:8]),
+		"account_hash", fmt.Sprintf("%x", h.AccountHash[:8]),
 	)
 
 	return nil

@@ -268,6 +268,8 @@ func (a *mockAdaptor) CloseTimeResolution() time.Duration {
 	return time.Second
 }
 
+func (a *mockAdaptor) AdjustCloseTime(rawCloseTimes consensus.CloseTimes) {}
+
 func (a *mockAdaptor) OnConsensusReached(ledger consensus.Ledger, validations []*consensus.Validation) {
 }
 
@@ -577,6 +579,7 @@ func TestEngine_PhaseTransitions(t *testing.T) {
 	// Use very short timings for testing
 	config.Timing.LedgerMinClose = 10 * time.Millisecond
 	config.Timing.LedgerMaxClose = 100 * time.Millisecond
+	config.Timing.LedgerIdleInterval = 20 * time.Millisecond
 
 	engine := NewEngine(adaptor, config)
 
@@ -596,7 +599,7 @@ func TestEngine_PhaseTransitions(t *testing.T) {
 		t.Errorf("Expected Open phase, got %v", engine.Phase())
 	}
 
-	// Wait for close timer
+	// Wait for close timer (idle interval triggers close with no txs)
 	time.Sleep(50 * time.Millisecond)
 
 	// Should transition to Establish phase

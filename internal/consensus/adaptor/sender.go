@@ -90,6 +90,36 @@ func (s *OverlaySender) SendToPeer(peerID uint64, frame []byte) error {
 	return s.overlay.Send(peermanagement.PeerID(peerID), frame)
 }
 
+// RequestLedgerBaseFromPeer sends a GetLedger(LedgerInfoBase) to a specific peer.
+func (s *OverlaySender) RequestLedgerBaseFromPeer(peerID uint64, hash [32]byte, seq uint32) error {
+	msg := &message.GetLedger{
+		InfoType:   message.LedgerInfoBase,
+		LType:      message.LedgerTypeClosed,
+		LedgerHash: hash[:],
+		LedgerSeq:  seq,
+	}
+	frame, err := encodeFrame(message.TypeGetLedger, msg)
+	if err != nil {
+		return fmt.Errorf("encode get_ledger (base): %w", err)
+	}
+	return s.overlay.Send(peermanagement.PeerID(peerID), frame)
+}
+
+// RequestStateNodes sends a GetLedger request for account state SHAMap nodes.
+func (s *OverlaySender) RequestStateNodes(peerID uint64, ledgerHash [32]byte, nodeIDs [][]byte) error {
+	msg := &message.GetLedger{
+		InfoType:   message.LedgerInfoAsNode,
+		LedgerHash: ledgerHash[:],
+		NodeIDs:    nodeIDs,
+		QueryDepth: 2, // Return fat nodes (node + 2 levels of descendants)
+	}
+	frame, err := encodeFrame(message.TypeGetLedger, msg)
+	if err != nil {
+		return fmt.Errorf("encode get_ledger (state nodes): %w", err)
+	}
+	return s.overlay.Send(peermanagement.PeerID(peerID), frame)
+}
+
 // encodeFrame serializes a message and wraps it with the wire protocol header.
 // The result can be passed directly to Overlay.Broadcast() or Overlay.Send().
 func encodeFrame(msgType message.MessageType, msg message.Message) ([]byte, error) {

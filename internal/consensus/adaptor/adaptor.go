@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/LeJamon/goXRPLd/internal/consensus"
+	"github.com/LeJamon/goXRPLd/internal/ledger"
 	"github.com/LeJamon/goXRPLd/internal/ledger/header"
 	"github.com/LeJamon/goXRPLd/internal/ledger/service"
 	"github.com/LeJamon/goXRPLd/internal/peermanagement/message"
@@ -31,20 +32,24 @@ type NetworkSender interface {
 	RequestTxSet(id consensus.TxSetID) error
 	RequestLedger(id consensus.LedgerID) error
 	RequestLedgerByHashAndSeq(hash [32]byte, seq uint32) error
+	RequestLedgerBaseFromPeer(peerID uint64, hash [32]byte, seq uint32) error
+	RequestStateNodes(peerID uint64, ledgerHash [32]byte, nodeIDs [][]byte) error
 	SendToPeer(peerID uint64, frame []byte) error
 }
 
 // noopSender is a no-op NetworkSender for standalone or test use.
 type noopSender struct{}
 
-func (n *noopSender) BroadcastProposal(*consensus.Proposal) error       { return nil }
-func (n *noopSender) BroadcastValidation(*consensus.Validation) error   { return nil }
-func (n *noopSender) BroadcastStatusChange(*message.StatusChange) error { return nil }
-func (n *noopSender) RelayProposal(*consensus.Proposal) error           { return nil }
-func (n *noopSender) RequestTxSet(consensus.TxSetID) error              { return nil }
-func (n *noopSender) RequestLedger(consensus.LedgerID) error            { return nil }
-func (n *noopSender) RequestLedgerByHashAndSeq([32]byte, uint32) error  { return nil }
-func (n *noopSender) SendToPeer(uint64, []byte) error                   { return nil }
+func (n *noopSender) BroadcastProposal(*consensus.Proposal) error              { return nil }
+func (n *noopSender) BroadcastValidation(*consensus.Validation) error          { return nil }
+func (n *noopSender) BroadcastStatusChange(*message.StatusChange) error        { return nil }
+func (n *noopSender) RelayProposal(*consensus.Proposal) error                  { return nil }
+func (n *noopSender) RequestTxSet(consensus.TxSetID) error                     { return nil }
+func (n *noopSender) RequestLedger(consensus.LedgerID) error                   { return nil }
+func (n *noopSender) RequestLedgerByHashAndSeq([32]byte, uint32) error         { return nil }
+func (n *noopSender) RequestLedgerBaseFromPeer(uint64, [32]byte, uint32) error { return nil }
+func (n *noopSender) RequestStateNodes(uint64, [32]byte, [][]byte) error       { return nil }
+func (n *noopSender) SendToPeer(uint64, []byte) error                          { return nil }
 
 // Compile-time interface check.
 var _ consensus.Adaptor = (*Adaptor)(nil)
@@ -65,6 +70,10 @@ type Adaptor struct {
 
 	// Operating mode
 	operatingMode consensus.OperatingMode
+
+	// Close time offset — adjusted each round toward network average.
+	// Matches rippled's timeKeeper().closeTime() offset.
+	closeOffset time.Duration
 
 	// Transaction set cache
 	txSetCache *TxSetCache
@@ -143,6 +152,14 @@ func (a *Adaptor) RequestLedgerByHashAndSeq(hash [32]byte, seq uint32) error {
 	return a.sender.RequestLedgerByHashAndSeq(hash, seq)
 }
 
+func (a *Adaptor) RequestLedgerBaseFromPeer(peerID uint64, hash [32]byte, seq uint32) error {
+	return a.sender.RequestLedgerBaseFromPeer(peerID, hash, seq)
+}
+
+func (a *Adaptor) RequestStateNodes(peerID uint64, ledgerHash [32]byte, nodeIDs [][]byte) error {
+	return a.sender.RequestStateNodes(peerID, ledgerHash, nodeIDs)
+}
+
 func (a *Adaptor) SendToPeer(peerID uint64, frame []byte) error {
 	return a.sender.SendToPeer(peerID, frame)
 }
@@ -172,8 +189,14 @@ func (a *Adaptor) GetLastClosedLedger() (consensus.Ledger, error) {
 }
 
 func (a *Adaptor) BuildLedger(parent consensus.Ledger, txSet consensus.TxSet, closeTime time.Time) (consensus.Ledger, error) {
-	// Apply the consensus-agreed transaction set to produce a new ledger
-	seq, err := a.ledgerService.AcceptConsensusResult(txSet.Txs(), closeTime)
+	// Unwrap the parent to get the concrete ledger for the service.
+	// This is critical for chain switching: the parent may differ from
+	// the service's internal closedLedger after wrong ledger detection.
+	var parentLedger *ledger.Ledger
+	if w, ok := parent.(*LedgerWrapper); ok {
+		parentLedger = w.Unwrap()
+	}
+	seq, err := a.ledgerService.AcceptConsensusResult(parentLedger, txSet.Txs(), closeTime)
 	if err != nil {
 		return nil, err
 	}
@@ -341,11 +364,52 @@ func (a *Adaptor) GetQuorum() int {
 // --- Time operations ---
 
 func (a *Adaptor) Now() time.Time {
-	return time.Now()
+	a.mu.RLock()
+	offset := a.closeOffset
+	a.mu.RUnlock()
+	return time.Now().Add(offset)
 }
 
 func (a *Adaptor) CloseTimeResolution() time.Duration {
-	return consensus.DefaultTiming().LedgerGranularity
+	l := a.ledgerService.GetClosedLedger()
+	if l != nil {
+		res := l.Header().CloseTimeResolution
+		if res >= 2 && res <= 120 {
+			return time.Duration(res) * time.Second
+		}
+	}
+	return 30 * time.Second // rippled default
+}
+
+// AdjustCloseTime computes the weighted average of all raw close times
+// and adjusts our clock offset toward the network. Matches rippled's
+// adjustCloseTime() in RCLConsensus.cpp:694-732.
+func (a *Adaptor) AdjustCloseTime(rawCloseTimes consensus.CloseTimes) {
+	if rawCloseTimes.Self.IsZero() {
+		return
+	}
+
+	totalSecs := rawCloseTimes.Self.Unix()
+	count := int64(1)
+	for t, v := range rawCloseTimes.Peers {
+		count += int64(v)
+		totalSecs += t.Unix() * int64(v)
+	}
+	avgSecs := (totalSecs + count/2) / count
+	avg := time.Unix(avgSecs, 0)
+
+	offset := avg.Sub(rawCloseTimes.Self)
+
+	a.mu.Lock()
+	a.closeOffset = offset
+	a.mu.Unlock()
+
+	if offset != 0 {
+		a.logger.Debug("adjusted close time offset",
+			"offset_ms", offset.Milliseconds(),
+			"peers", len(rawCloseTimes.Peers),
+		)
+	}
 }
 
 // --- Status operations ---
@@ -418,8 +482,9 @@ func (a *Adaptor) AdoptLedgerFromHeader(headerData []byte) error {
 		return fmt.Errorf("adopt ledger: %w", err)
 	}
 
-	// Transition to Full mode so the consensus engine starts running
-	a.SetOperatingMode(consensus.OpModeFull)
+	// Transition to Tracking mode — the router manages the Full transition
+	// once we verify our LCL matches the network.
+	a.SetOperatingMode(consensus.OpModeTracking)
 
 	a.logger.Info("Adopted peer ledger",
 		"seq", h.LedgerIndex,
