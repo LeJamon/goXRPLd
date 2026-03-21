@@ -332,6 +332,23 @@ func feeMultHalf(tfee uint16) tx.Amount {
 	return subFromOne(halfFee)
 }
 
+// numberPower returns f^n using exponentiation by squaring.
+// Reference: rippled Number.cpp power(Number const& f, unsigned n)
+func numberPower(f tx.Amount, n int) tx.Amount {
+	if n == 0 {
+		return oneAmount()
+	}
+	if n == 1 {
+		return f
+	}
+	r := numberPower(f, n/2)
+	r = r.Mul(r, false)
+	if n%2 != 0 {
+		r = r.Mul(f, false)
+	}
+	return r
+}
+
 // oneAmount returns the Amount value 1.0 as an IOU for arithmetic.
 func oneAmount() tx.Amount {
 	return state.NewIssuedAmountFromValue(1e15, -15, "", "")
