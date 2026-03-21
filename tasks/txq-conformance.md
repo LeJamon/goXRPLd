@@ -2,8 +2,9 @@
 
 ## Status
 - Started: 22 failing TxQ conformance tests
-- Current: 18 failing (4 fixed: straightfoward_positive_case, replace_last_tx, replace_middle_tx, last_ledger_sequence)
-- 20 passing (up from 16)
+- Previous: 18 failing (4 fixed: straightfoward_positive_case, replace_last_tx, replace_middle_tx, last_ledger_sequence)
+- Current: 16 failing (6 fixed total: +queue_sequence, +queue_ticket)
+- 22 passing (up from 16)
 
 ## Fixes Applied
 
@@ -22,7 +23,16 @@ Added `closingFeeLevels` to track actual fee levels of applied transactions inst
 ### 5. initFee config support (conformance/runner.go, testing/env.go)
 Added `txqInitFeeLookup` map and `SetBaseFee`/`SetReserves` methods. Fixtures that use rippled's `initFee()` pattern (255 close steps followed by fee vote) need post-initFee reserves applied. The runner detects the initFee pattern and applies the correct reserves (e.g., base=10, reserve=200, increment=50 drops).
 
-## Remaining Failing Tests (18)
+### 6. Relevant transaction count for blocker detection (txq/apply.go, txq/candidate.go)
+Rippled computes `acctTxCount` using `lower_bound(acctSeqProx)` to skip stale transactions in the account queue (seqProxy < account's current sequence). goXRPL was counting ALL transactions. Added `RelevantCount()` and `FirstRelevant()` methods to `AccountQueue` and updated all blocker detection, sequence validation, and in-flight balance checks to use only relevant transactions.
+
+### 7. Front-of-queue sequence validation (txq/apply.go)
+When a sequence-based transaction goes at the FRONT of the account queue (before all existing entries), rippled returns `terPRE_SEQ` for future sequences. When it goes AFTER existing entries and doesn't match `nextQueuableSeq`, it returns `telCAN_NOT_QUEUE`. goXRPL was returning `telCAN_NOT_QUEUE` in both cases. Added `goesAtFront` detection using `GetPrevTx()` to match rippled's behavior. This fixed queue_ticket.
+
+### 8. localTxs retry mechanism (testing/env_submission.go)
+Rippled's `localTxs` mechanism retries ALL locally-submitted transactions at the next ledger close, regardless of result code (including tel codes like `telCAN_NOT_QUEUE_FULL`). goXRPL was only holding `terQUEUED` and retryable (`ter`) results. Extended the held transaction mechanism to also hold `tel` results, and added `retryAllHeldViaTxQ()` which is called after queue drain during Close() to resubmit held transactions through the TxQ. This fixed queue_sequence and contributed to fixing queue_ticket.
+
+## Remaining Failing Tests (16)
 
 ### TxQMetaInfo (9 fail)
 1. Sequence_in_queue_and_open_ledger — direct open ledger modify (bypasses TxQ)
@@ -35,33 +45,35 @@ Added `txqInitFeeLookup` map and `SetBaseFee`/`SetReserves` methods. Fixtures th
 8. Queue_full_drop_penalty — drop penalty during queue management
 9. Re-execute_preflight — preflight re-execution during queue processing
 
-### TxQPosNegFlows (9 fail)
-1. zero_transaction_fee — fee=0 transactions + blocker logic
-2. unexpected_balance_change — balance check differences
-3. multi_tx_per_account — balance/blocker edge cases
-4. queue_sequence — balance tracking after queue operations
-5. blockers_sequence — blocker detection logic differences
-6. blockers_ticket — blocker detection with tickets
-7. In-flight_balance_checks — in-flight balance computation
-8. queue_ticket — ticket queue ordering
-9. zero_transaction_fee — fee=0 edge case
+### TxQPosNegFlows (7 fail, was 9)
+1. zero_transaction_fee — fee=0 blocker can't be drained (feeLevel=0 < baseLevel)
+2. unexpected_balance_change — in-flight balance/preclaim differences
+3. multi_tx_per_account — balance/blocker edge cases (many steps)
+4. blockers_sequence — blocker staying in queue after drain, localTxs gaps
+5. blockers_ticket — blocker detection with tickets
+6. In-flight_balance_checks — telCAN_NOT_QUEUE_BALANCE vs terINSUF_FEE_B (2 errors)
+7. ~~queue_sequence~~ — FIXED (localTxs retry)
+8. ~~queue_ticket~~ — FIXED (front-of-queue sequence validation)
 
 ## Remaining Root Causes
 
-### Direct open ledger modify (2 tests)
+### Direct open ledger modify (2 tests: Sequence_in_queue_and_open_ledger, Ticket_in_queue_and_open_ledger)
 Some rippled tests use `env.app().openLedger().modify()` to apply transactions directly to the open ledger, bypassing the TxQ entirely. The fixture recorder captures these as normal tx steps with tesSUCCESS. The goXRPL runner routes them through TxQ, causing terQUEUED instead of tesSUCCESS.
 
-### Blocker detection differences (3 tests)
-The blocker check in goXRPL counts ALL transactions in the account queue, while rippled only counts transactions with seqProxy >= account's current sequence. This causes false-positive blocker detection.
+### Blocker detection differences (PARTIALLY FIXED)
+The blocker check now uses RelevantCount (seqProxy >= acctSeqProx), matching rippled's lower_bound behavior. Remaining blocker issues (blockers_sequence, blockers_ticket, zero_transaction_fee) are caused by fee=0 blocker transactions that can't be drained from the queue during accept() because feeLevel=0 < baseLevel=256. In rippled, these appear to be drained through the localTxs replay mechanism or through the open-ledger transaction re-application path in OpenLedger::accept().
 
-### Fee=0 edge cases (2 tests)
-Transactions with fee=0 have fee level 0, which is below BaseLevel (256). During queue drain, these can't meet the base fee requirement. But in rippled, certain mechanisms (localTxs, direct apply) handle these differently.
+### Fee=0 blocker drain (3 tests: zero_transaction_fee, blockers_sequence, blockers_ticket)
+Transactions with fee=0 have feeLevel=0 < baseLevel(256). During TxQ::accept() drain, these can't meet the fee requirement. In rippled, the open-ledger re-application path (OpenLedger.cpp:96-112) re-applies the previous open ledger's transactions to the new open ledger, which accounts for these fee=0 transactions being in the view. goXRPL doesn't replicate this step.
 
-### Balance tracking after queue operations (4 tests)
-The in-flight balance check and balance tracking after queue clear operations has subtle differences from rippled.
+### In-flight balance check ordering (2 tests: In-flight_balance_checks, unexpected_balance_change)
+In rippled, the in-flight balance check (telCAN_NOT_QUEUE_BALANCE) is followed by a preclaim check on a modified test view (with deducted balance). When the modified balance is too low for the fee, preclaim returns terINSUF_FEE_B. goXRPL's balance check catches the same condition earlier with telCAN_NOT_QUEUE_BALANCE, before preclaim can run.
 
-### localTxs retry mechanism (several tests)
-Rippled retries dropped queue transactions via localTxs. The goXRPL runner's held-txn mechanism doesn't perfectly replicate this.
+### Preclaim in TxQ multiTxn path (not implemented)
+Rippled creates a `MultiTxn` object with a modified ApplyView that adjusts the account balance and sequence for preclaim. This allows preclaim to run with simulated post-queue state. goXRPL skips this preclaim step entirely — it only checks the simple balance/reserve threshold.
+
+### localTxs retry limitations
+The held-txn retry mechanism now includes tel results and retries at close time. However, some edge cases remain where rippled's localTxs retry differs from goXRPL's implementation. The primary gap is that rippled's OpenLedger::accept() re-applies the current open view's transactions to the new view (step b), which goXRPL doesn't replicate for TxQ-routed submissions.
 
 ## Key Files
 

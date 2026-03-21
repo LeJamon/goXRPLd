@@ -203,6 +203,36 @@ func (aq *AccountQueue) GetFirstSeqTx() *Candidate {
 	return first
 }
 
+// RelevantCount returns the number of queued transactions with seqProxy >= acctSeqProx.
+// This mirrors rippled's lower_bound(acctSeqProx) filtering which ignores stale
+// sequence-based transactions that slipped into the ledger while the queue wasn't
+// watching.
+// Reference: TxQ.cpp:809-830
+func (aq *AccountQueue) RelevantCount(acctSeqProx SeqProxy) int {
+	count := 0
+	for sp := range aq.Transactions {
+		if !sp.Less(acctSeqProx) { // sp >= acctSeqProx
+			count++
+		}
+	}
+	return count
+}
+
+// FirstRelevant returns the first (lowest) relevant transaction with seqProxy >= acctSeqProx.
+// Returns nil if no relevant transactions exist.
+// Reference: TxQ.cpp:818 lower_bound(acctSeqProx)
+func (aq *AccountQueue) FirstRelevant(acctSeqProx SeqProxy) *Candidate {
+	var first *Candidate
+	for sp, c := range aq.Transactions {
+		if !sp.Less(acctSeqProx) { // sp >= acctSeqProx
+			if first == nil || sp.Less(first.SeqProxy) {
+				first = c
+			}
+		}
+	}
+	return first
+}
+
 // GetSortedCandidates returns all candidates sorted by SeqProxy.
 func (aq *AccountQueue) GetSortedCandidates() []*Candidate {
 	result := make([]*Candidate, 0, len(aq.Transactions))

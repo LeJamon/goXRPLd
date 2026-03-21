@@ -229,39 +229,80 @@ func (a *AMMWithdraw) Apply(ctx *tx.ApplyContext) tx.Result {
 	flags := a.GetFlags()
 	tfee := amm.TradingFee
 
-	// Frozen asset checks — must come before withdrawal calculations.
-	// Reference: rippled AMMWithdraw.cpp preclaim lines 205-248
-	checkFrozen := func(asset tx.Asset) tx.Result {
-		if isFrozen(ctx.View, ammAccountID, asset) {
+	// Get current AMM balances from actual state (not stored in AMM entry)
+	// Needed for preclaim checks below.
+	assetBalance1, assetBalance2, lptBalance := AMMHolds(ctx.View, amm, false)
+
+	// Reorder balances to match the transaction's asset ordering.
+	// AMMHolds returns in amm.Asset / amm.Asset2 order, but the transaction
+	// may specify assets in a different order. rippled's ammHolds() reorders
+	// based on optional issue hints; we do it explicitly here.
+	if !matchesAssetByIssue(amm.Asset, a.Asset) {
+		assetBalance1, assetBalance2 = assetBalance2, assetBalance1
+	}
+
+	if lptBalance.IsZero() {
+		return tx.TecAMM_EMPTY
+	}
+
+	// Preclaim checks: amount > balance, authorization, and freeze.
+	// Reference: rippled AMMWithdraw.cpp preclaim lines 205-286
+	// Order: amount > balance → requireAuth → isFrozen → isIndividualFrozen
+	//
+	// rippled's ammHolds() reorders pool balances so amountBalance matches the
+	// Amount issue and amount2Balance matches Amount2 issue. We need to find
+	// the correct pool balance for each tx amount.
+	balanceForAmount := func(amt *tx.Amount) tx.Amount {
+		if amt == nil {
+			return assetBalance1
+		}
+		amtAsset := tx.Asset{Currency: amt.Currency, Issuer: amt.Issuer}
+		if matchesAssetByIssue(a.Asset, amtAsset) {
+			return assetBalance1
+		}
+		return assetBalance2
+	}
+
+	checkAmount := func(amt *tx.Amount, balance tx.Amount) tx.Result {
+		if amt == nil {
+			return tx.TesSUCCESS
+		}
+		amtAsset := tx.Asset{Currency: amt.Currency, Issuer: amt.Issuer}
+		// Check amount doesn't exceed pool balance
+		if isGreater(toIOUForCalc(*amt), toIOUForCalc(balance)) {
+			return tx.TecAMM_BALANCE
+		}
+		// Check authorization
+		if result := requireAuth(ctx.View, amtAsset, accountID); result != tx.TesSUCCESS {
+			return result
+		}
+		// Check AMM account freeze
+		if isFrozen(ctx.View, ammAccountID, amtAsset) {
 			return tx.TecFROZEN
 		}
-		if tx.IsIndividualFrozen(ctx.View, accountID, asset) {
+		// Check individual freeze
+		if tx.IsIndividualFrozen(ctx.View, accountID, amtAsset) {
 			return tx.TecFROZEN
 		}
 		return tx.TesSUCCESS
 	}
-	if a.Amount != nil {
-		amtAsset := tx.Asset{Currency: a.Amount.Currency, Issuer: a.Amount.Issuer}
-		if r := checkFrozen(amtAsset); r != tx.TesSUCCESS {
-			return r
-		}
+	if r := checkAmount(a.Amount, balanceForAmount(a.Amount)); r != tx.TesSUCCESS {
+		return r
 	}
-	if a.Amount2 != nil {
-		amt2Asset := tx.Asset{Currency: a.Amount2.Currency, Issuer: a.Amount2.Issuer}
-		if r := checkFrozen(amt2Asset); r != tx.TesSUCCESS {
-			return r
-		}
+	if r := checkAmount(a.Amount2, balanceForAmount(a.Amount2)); r != tx.TesSUCCESS {
+		return r
 	}
-	// For tfLPToken and tfWithdrawAll: check AMM's assets even if not specified
-	// in the transaction. Reference: rippled AMMWithdraw.cpp lines 280-286
-	if flags&(tfLPToken|tfWithdrawAll) != 0 {
-		if r := checkFrozen(amm.Asset); r != tx.TesSUCCESS {
-			return r
-		}
-		if r := checkFrozen(amm.Asset2); r != tx.TesSUCCESS {
-			return r
-		}
+
+	// Get withdrawer's LP token balance from trustline
+	// Reference: rippled AMMWithdraw.cpp preclaim lines 250-258
+	lpTokensHeld := ammLPHolds(ctx.View, amm, accountID)
+	if lpTokensHeld.IsZero() {
+		return tx.TecAMM_BALANCE
 	}
+
+	// Check LP token issue match
+	// Reference: rippled AMMWithdraw.cpp preclaim lines 261-265, 267-271
+	// (lpTokensWithdraw issue and amount checks are handled in the mode switch below)
 
 	// Preclaim: EPrice issue must match LP token issue (rippled AMMWithdraw.cpp:273-278)
 	if a.EPrice != nil {
@@ -269,6 +310,26 @@ func (a *AMMWithdraw) Apply(ctx *tx.ApplyContext) tx.Result {
 		ammAccountAddr, _ := encodeAccountID(amm.Account)
 		if a.EPrice.Currency != lptCurrency || a.EPrice.Issuer != ammAccountAddr {
 			return tx.TemBAD_AMM_TOKENS
+		}
+	}
+
+	// For tfLPToken and tfWithdrawAll: check AMM's assets even if not specified
+	// in the transaction. Reference: rippled AMMWithdraw.cpp lines 280-286
+	if flags&(tfLPToken|tfWithdrawAll) != 0 {
+		checkFreezeOnly := func(asset tx.Asset) tx.Result {
+			if isFrozen(ctx.View, ammAccountID, asset) {
+				return tx.TecFROZEN
+			}
+			if tx.IsIndividualFrozen(ctx.View, accountID, asset) {
+				return tx.TecFROZEN
+			}
+			return tx.TesSUCCESS
+		}
+		if r := checkFreezeOnly(amm.Asset); r != tx.TesSUCCESS {
+			return r
+		}
+		if r := checkFreezeOnly(amm.Asset2); r != tx.TesSUCCESS {
+			return r
 		}
 	}
 
@@ -289,27 +350,6 @@ func (a *AMMWithdraw) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 	if a.LPTokenIn != nil {
 		lpTokensRequested = *a.LPTokenIn
-	}
-
-	// Get current AMM balances from actual state (not stored in AMM entry)
-	assetBalance1, assetBalance2, lptBalance := AMMHolds(ctx.View, amm, false)
-
-	// Reorder balances to match the transaction's asset ordering.
-	// AMMHolds returns in amm.Asset / amm.Asset2 order, but the transaction
-	// may specify assets in a different order. rippled's ammHolds() reorders
-	// based on optional issue hints; we do it explicitly here.
-	if !matchesAssetByIssue(amm.Asset, a.Asset) {
-		assetBalance1, assetBalance2 = assetBalance2, assetBalance1
-	}
-
-	if lptBalance.IsZero() {
-		return tx.TecAMM_EMPTY
-	}
-
-	// Get withdrawer's LP token balance from trustline
-	lpTokensHeld := ammLPHolds(ctx.View, amm, accountID)
-	if lpTokensHeld.IsZero() {
-		return tx.TecAMM_BALANCE
 	}
 
 	// For tfWithdrawAll / tfOneAssetWithdrawAll, lpTokensWithdraw = lpTokensHeld

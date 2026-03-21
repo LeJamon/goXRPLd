@@ -102,6 +102,14 @@ func (e *TestEnv) Close() {
 	// Reference: rippled TxQ::accept called when new open ledger is created.
 	if e.txQueue != nil {
 		e.drainQueue()
+
+		// Retry held transactions through the TxQ after drain.
+		// This mirrors rippled's OpenLedger::accept() step (d) which
+		// iterates localTxs and calls TxQ::apply() for each. This allows
+		// transactions that were rejected with tel codes (telCAN_NOT_QUEUE_FULL
+		// etc.) to be re-queued now that the queue has been drained and has
+		// room. Reference: rippled OpenLedger.cpp:117-118
+		e.retryAllHeldViaTxQ()
 	}
 }
 
@@ -160,6 +168,7 @@ func (e *TestEnv) CloseWithTimeLeap() {
 
 	if e.txQueue != nil {
 		e.drainQueue()
+		e.retryAllHeldViaTxQ()
 	}
 }
 
@@ -508,7 +517,14 @@ func (e *TestEnv) submitViaTxQ(txn tx.Transaction) TxResult {
 	// Handle retryable results by holding the transaction.
 	// Reference: rippled NetworkOPs::apply holds isTerRetry results in
 	// LedgerMaster's held transaction map.
-	if isRetryable(result.Result) {
+	//
+	// Also hold tel results (telCAN_NOT_QUEUE_FULL, telCAN_NOT_QUEUE_FEE, etc.)
+	// because rippled's localTxs mechanism retries ALL locally-submitted
+	// transactions at the next close, regardless of result code. This is
+	// critical for TxQ tests where transactions rejected with tel codes get
+	// re-queued after the queue drains during close.
+	// Reference: rippled NetworkOPs.cpp:1677-1682 (m_localTX->push_back)
+	if isRetryable(result.Result) || isTelLocal(result.Result) {
 		e.addHeldTransaction(accountAddr, txn)
 	}
 
@@ -526,6 +542,13 @@ func isRetryable(result tx.Result) bool {
 	return result >= -99 && result < 0
 }
 
+// isTelLocal returns true if the result is a tel (local error) code.
+// tel codes are in the range -399 to -300.
+// Reference: rippled TER.h telLOCAL_ERROR = -399, telCAN_NOT_QUEUE = -381
+func isTelLocal(result tx.Result) bool {
+	return result >= -399 && result <= -300
+}
+
 // addHeldTransaction adds a transaction to the held map for later retry.
 // Reference: rippled LedgerMaster::addHeldTransaction
 func (e *TestEnv) addHeldTransaction(accountAddr string, txn tx.Transaction) {
@@ -533,6 +556,36 @@ func (e *TestEnv) addHeldTransaction(accountAddr string, txn tx.Transaction) {
 		e.heldTxns = make(map[string][]tx.Transaction)
 	}
 	e.heldTxns[accountAddr] = append(e.heldTxns[accountAddr], txn)
+}
+
+// retryAllHeldViaTxQ retries ALL held transactions through the TxQ.
+// This mirrors rippled's OpenLedger::accept() step (d) which iterates
+// localTxs and calls TxQ::apply() for each after the queue drain.
+// This allows transactions that were previously rejected (tel codes,
+// ter codes, etc.) to be re-queued or applied now that the queue has
+// been drained and conditions may have changed.
+// Reference: rippled OpenLedger.cpp:117-118
+func (e *TestEnv) retryAllHeldViaTxQ() {
+	if e.heldTxns == nil || len(e.heldTxns) == 0 {
+		return
+	}
+
+	// Collect all held transactions from all accounts
+	var allHeld []tx.Transaction
+	for _, txns := range e.heldTxns {
+		allHeld = append(allHeld, txns...)
+	}
+
+	// Clear all held transactions before retrying
+	// (successfully retried ones may get re-added if they result in ter/tel)
+	e.heldTxns = nil
+
+	// Sort by canonical order (account, sequence) for deterministic processing
+	sortCanonical(allHeld)
+
+	for _, heldTxn := range allHeld {
+		e.submitViaTxQ(heldTxn)
+	}
 }
 
 // retryHeldTransactions pops and retries held transactions for an account.
