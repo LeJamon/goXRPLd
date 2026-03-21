@@ -439,10 +439,14 @@ func toSTAmount(original, result tx.Amount) tx.Amount {
 }
 
 // toSTAmountIssue converts a result to the issue of the given amount.
-// Reference: rippled's toSTAmount(issue, number)
+// For XRP, uses to_nearest rounding (matching rippled's toSTAmount default).
+// Reference: rippled AmountConversions.h toSTAmount(issue, number, mode=getround())
 func toSTAmountIssue(amt tx.Amount, result tx.Amount) tx.Amount {
 	if amt.IsNative() {
-		return state.NewXRPAmountFromInt(iouToDrops(result))
+		g := state.NewNumberRoundModeGuard(state.RoundToNearest)
+		drops := iouToDropsRounded(result)
+		g.Release()
+		return state.NewXRPAmountFromInt(drops)
 	}
 	return state.NewIssuedAmountFromValue(result.Mantissa(), result.Exponent(),
 		amt.Currency, amt.Issuer)
