@@ -157,7 +157,7 @@ func (c *CheckCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		// Check source trust line freeze (if source is not issuer)
 		// Reference: CreateCheck.cpp L131-145
 		if accountID != issuerID {
-			if isTrustLineFrozen(ctx, accountID, issuerID, c.SendMax.Currency) {
+			if isTrustLineFrozen(ctx, accountID, issuerID, c.SendMax.Currency, false) {
 				return tx.TecFROZEN
 			}
 		}
@@ -166,7 +166,7 @@ func (c *CheckCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		// For destination, check if DESTINATION froze their own line (not issuer freeze)
 		// Reference: CreateCheck.cpp L146-159
 		if destID != issuerID {
-			if isTrustLineFrozen(ctx, destID, issuerID, c.SendMax.Currency) {
+			if isTrustLineFrozen(ctx, destID, issuerID, c.SendMax.Currency, true) {
 				return tx.TecFROZEN
 			}
 		}
@@ -210,8 +210,10 @@ func (c *CheckCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 }
 
 // isTrustLineFrozen checks whether the trust line between accountID and issuerID
-// for the given currency is frozen on the account's side.
-func isTrustLineFrozen(ctx *tx.ApplyContext, accountID, issuerID [20]byte, currency string) bool {
+// for the given currency is frozen from the perspective of accountID.
+// When checkSelf is false, it checks whether the OTHER side (issuer) froze the line.
+// When checkSelf is true, it checks whether accountID froze their own side of the line.
+func isTrustLineFrozen(ctx *tx.ApplyContext, accountID, issuerID [20]byte, currency string, checkSelf bool) bool {
 	tlKey := keylet.Line(accountID, issuerID, currency)
 	exists, _ := ctx.View.Exists(tlKey)
 	if !exists {
@@ -226,6 +228,14 @@ func isTrustLineFrozen(ctx *tx.ApplyContext, accountID, issuerID [20]byte, curre
 		return false
 	}
 	isLow := keylet.IsLowAccount(accountID, issuerID)
+	if checkSelf {
+		// Check if accountID froze their own side
+		if isLow {
+			return tl.Flags&state.LsfLowFreeze != 0
+		}
+		return tl.Flags&state.LsfHighFreeze != 0
+	}
+	// Check if the other side (issuer) froze the line
 	if isLow {
 		return tl.Flags&state.LsfHighFreeze != 0
 	}
