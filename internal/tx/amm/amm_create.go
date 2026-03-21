@@ -565,29 +565,6 @@ func noDefaultRipple(view tx.LedgerView, asset tx.Asset) bool {
 	return (issuerAccount.Flags & state.LsfDefaultRipple) == 0
 }
 
-// xrpLiquidBalanceWithReserves returns XRP available after reserves, using explicit reserve values.
-// Reference: rippled xrpLiquid() — reads from view.fees()
-func xrpLiquidBalanceWithReserves(view tx.LedgerView, accountID [20]byte, additionalOwnerCount int, reserveBase, reserveIncrement uint64) int64 {
-	accountKey := keylet.Account(accountID)
-	data, err := view.Read(accountKey)
-	if err != nil || data == nil {
-		return 0
-	}
-
-	account, err := state.ParseAccountRoot(data)
-	if err != nil {
-		return 0
-	}
-
-	totalReserve := int64(reserveBase) + int64(reserveIncrement)*int64(account.OwnerCount+uint32(additionalOwnerCount))
-
-	liquid := int64(account.Balance) - totalReserve
-	if liquid < 0 {
-		return 0
-	}
-	return liquid
-}
-
 // insufficientBalance checks if the account has insufficient balance for the amount.
 // Reference: rippled AMMCreate.cpp line 153-163
 func insufficientBalance(view tx.LedgerView, accountID [20]byte, amount tx.Amount, xrpLiquid int64) bool {
