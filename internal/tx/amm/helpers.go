@@ -1157,83 +1157,6 @@ func isLessOrEqual(a, b tx.Amount) bool {
 	return a.Compare(b) <= 0
 }
 
-// serializeAmount serializes a tx.Amount to binary.
-// Format: 1 byte type (0=XRP, 1=IOU), then:
-//   - XRP: 8 bytes int64 drops
-//   - IOU: 8 bytes int64 mantissa + 4 bytes int32 exponent
-func serializeAmount(amt tx.Amount) []byte {
-	if amt.IsNative() {
-		buf := make([]byte, 9) // 1 type + 8 drops
-		buf[0] = 0             // XRP type
-		binary.BigEndian.PutUint64(buf[1:9], uint64(amt.Drops()))
-		return buf
-	}
-	buf := make([]byte, 13) // 1 type + 8 mantissa + 4 exponent
-	buf[0] = 1              // IOU type
-	binary.BigEndian.PutUint64(buf[1:9], uint64(amt.Mantissa()))
-	binary.BigEndian.PutUint32(buf[9:13], uint32(amt.Exponent()+128)) // offset exponent to avoid negative
-	return buf
-}
-
-// deserializeAmount deserializes a tx.Amount from binary.
-// Returns the Amount and bytes consumed.
-func deserializeAmount(data []byte) (tx.Amount, int) {
-	if len(data) < 1 {
-		return state.NewXRPAmountFromInt(0), 0
-	}
-	amtType := data[0]
-	if amtType == 0 {
-		// XRP
-		if len(data) < 9 {
-			return state.NewXRPAmountFromInt(0), 0
-		}
-		drops := int64(binary.BigEndian.Uint64(data[1:9]))
-		return state.NewXRPAmountFromInt(drops), 9
-	}
-	// IOU
-	if len(data) < 13 {
-		return state.NewIssuedAmountFromValue(0, -100, "", ""), 0
-	}
-	mantissa := int64(binary.BigEndian.Uint64(data[1:9]))
-	exponent := int(binary.BigEndian.Uint32(data[9:13])) - 128 // reverse offset
-	return state.NewIssuedAmountFromValue(mantissa, exponent, "", ""), 13
-}
-
-// serializeIssue serializes an Issue (currency + issuer) to binary.
-// Format: 20 bytes currency + 20 bytes issuer = 40 bytes total
-func serializeIssue(asset tx.Asset) []byte {
-	buf := make([]byte, 40)
-	// Currency (20 bytes)
-	currency := state.GetCurrencyBytes(asset.Currency)
-	copy(buf[0:20], currency[:])
-	// Issuer (20 bytes)
-	issuer := getIssuerBytes(asset.Issuer)
-	copy(buf[20:40], issuer[:])
-	return buf
-}
-
-// deserializeIssue deserializes an Issue from binary.
-// Returns the Asset and bytes consumed (always 40).
-func deserializeIssue(data []byte) (tx.Asset, int) {
-	if len(data) < 40 {
-		return tx.Asset{}, 0
-	}
-	// Currency (20 bytes)
-	var currencyBytes [20]byte
-	copy(currencyBytes[:], data[0:20])
-	currency := state.GetCurrencyString(currencyBytes)
-
-	// Issuer (20 bytes)
-	var issuerBytes [20]byte
-	copy(issuerBytes[:], data[20:40])
-	issuer := ""
-	if issuerBytes != [20]byte{} {
-		issuer, _ = state.EncodeAccountID(issuerBytes)
-	}
-
-	return tx.Asset{Currency: currency, Issuer: issuer}, 40
-}
-
 // ParseAMMData deserializes an AMM ledger entry from binary codec format.
 // Exported for use by TrustSet to check LP token balance.
 func ParseAMMData(data []byte) (*AMMData, error) {
@@ -1814,7 +1737,6 @@ func updateTrustlineBalanceInViewEx(accountID [20]byte, issuerID [20]byte, curre
 			senderLimit.IsZero() &&
 			senderQualityIn == 0 &&
 			senderQualityOut == 0 {
-
 			result.SenderOwnerCountDelta = -1
 			rs.Flags &^= senderReserveFlag
 

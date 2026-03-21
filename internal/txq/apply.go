@@ -338,7 +338,6 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 	hasMultiTxn := acctTxCount > 1 || replacingCandidate == nil
 	if !seqProxy.IsTicket && exists && acctTxCount > 0 && hasMultiTxn &&
 		feeLevel > requiredFeeLevel && requiredFeeLevel > FeeLevel(BaseLevel) {
-
 		// Check if first queued sequence tx has full retries remaining
 		firstSeqTx := aq.GetFirstSeqTx()
 		if firstSeqTx != nil && firstSeqTx.RetriesRemaining == RetriesAllowed {
