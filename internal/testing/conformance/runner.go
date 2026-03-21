@@ -218,6 +218,16 @@ type runner struct {
 	// fixtureSteps stores all fixture steps for use by registerAMMMapping
 	// when it needs to scan for unfunded AMM address candidates.
 	fixtureSteps []Step
+
+	// timeLeapSteps is a set of step indices where Close() should use
+	// a time-leap (consensus delay). This resets TxQ fee metrics back
+	// toward the minimum, matching rippled's env.close(env.now() + 5s, 10000ms).
+	// These cannot be detected from the fixture data alone.
+	timeLeapSteps map[int]bool
+
+	// initFee stores the post-initFee fee configuration for fixtures that
+	// use rippled's initFee() pattern. Applied after the initial close sequence.
+	initFee *initFeeConfig
 }
 
 // ammPair associates an LP token issuer with its currency code.
@@ -267,6 +277,48 @@ var txqMinTxnLookup = map[string]uint32{
 	"clear queue failure (load)":                   3,
 }
 
+// txqInitFeeConfig maps TxQ fixture test case names that use initFee()
+// to the resulting fee configuration (base, reserve, increment) after
+// the fee vote completes. initFee() runs 257 ledger closes to reach the
+// flag ledger, executes a fee vote that changes the reserves, then does
+// a time-leap close. Since goXRPL doesn't implement fee voting pseudo-
+// transactions, we apply the post-initFee reserves directly after
+// processing the initial close sequence.
+// The step index is the step AFTER which the reserves should be applied.
+type initFeeConfig struct {
+	BaseFee          uint64
+	ReserveBase      uint64
+	ReserveIncrement uint64
+	ApplyAfterStep   int // Step index after which to apply the config
+}
+
+var txqInitFeeLookup = map[string]initFeeConfig{
+	"multi tx per account":       {BaseFee: 10, ReserveBase: 200, ReserveIncrement: 50, ApplyAfterStep: 257},
+	"In-flight balance checks":   {BaseFee: 10, ReserveBase: 200, ReserveIncrement: 50, ApplyAfterStep: 257},
+	"unexpected balance change":  {BaseFee: 10, ReserveBase: 200, ReserveIncrement: 50, ApplyAfterStep: 257},
+	"Zero reference fee":         {BaseFee: 0, ReserveBase: 0, ReserveIncrement: 0, ApplyAfterStep: 257},
+}
+
+// txqTimeLeapLookup maps TxQ fixture test case names to the step indices
+// where Close() should use a time-leap (consensus delay). Time-leap closes
+// reset TxQ fee metrics back toward the minimum, matching rippled's
+// env.close(env.now() + 5s, 10000ms) in TxQ_test.cpp.
+//
+// These indices cannot be auto-detected from fixture data because the
+// fixture recorder doesn't capture consensus delay information.
+// Derived from rippled/src/test/app/TxQ_test.cpp.
+var txqTimeLeapLookup = map[string][]int{
+	"queue sequence":       {27},
+	"last ledger sequence": {2, 5, 8},
+	"zero transaction fee": {2, 4},
+	"scaling":              {150, 151, 152, 153, 203},
+	// initFee pattern: 255 close steps + 2 tx steps + 1 time-leap close at step 257
+	"multi tx per account":       {257},
+	"In-flight balance checks":   {257},
+	"unexpected balance change":  {257},
+	"Zero reference fee":         {257},
+}
+
 // RunFixture loads and executes a single fixture file.
 func RunFixture(t *testing.T, fixturePath string) {
 	t.Helper()
@@ -295,6 +347,25 @@ func RunFixture(t *testing.T, fixturePath string) {
 	}
 
 	fixtureAddrs, fixturePairs, unfundedAddrs := prescanAMMAddresses(fixture.Steps)
+
+	// Build time-leap step index set from the lookup table
+	timeLeapSet := make(map[int]bool)
+	if isTxQSuite {
+		if indices, ok := txqTimeLeapLookup[fixture.Testcase]; ok {
+			for _, idx := range indices {
+				timeLeapSet[idx] = true
+			}
+		}
+	}
+
+	// Look up initFee config for this fixture
+	var initFee *initFeeConfig
+	if isTxQSuite {
+		if cfg, ok := txqInitFeeLookup[fixture.Testcase]; ok {
+			initFee = &cfg
+		}
+	}
+
 	r := &runner{
 		t:                    t,
 		accounts:             make(map[string]*jtx.Account),
@@ -305,6 +376,8 @@ func RunFixture(t *testing.T, fixturePath string) {
 		fixtureAMMPairs:      fixturePairs,
 		fixtureUnfundedAddrs: unfundedAddrs,
 		fixtureSteps:         fixture.Steps,
+		timeLeapSteps:        timeLeapSet,
+		initFee:              initFee,
 	}
 
 	// If this fixture depends on a predecessor, build the dependency chain
@@ -686,7 +759,23 @@ func (r *runner) execClose(stepIdx int, step Step) {
 		targetTime := rippleEpoch.Add(time.Duration(*step.CloseTime) * time.Second)
 		r.env.SetTime(targetTime.Add(-10 * time.Second))
 	}
-	r.env.Close()
+	// Use time-leap close if this step index is in the time-leap set.
+	// Time-leap closes reset TxQ fee metrics (txnsExpected) back toward
+	// the minimum, matching rippled's env.close(env.now() + 5s, 10000ms).
+	if r.timeLeapSteps[stepIdx] {
+		r.env.CloseWithTimeLeap()
+	} else {
+		r.env.Close()
+	}
+
+	// Apply post-initFee reserves after the initFee close sequence.
+	// initFee() in rippled runs a fee vote that changes reserves to much
+	// lower values (e.g., 200 drops instead of 200 XRP). Since goXRPL
+	// doesn't implement fee voting, we apply the changed values directly.
+	if r.initFee != nil && stepIdx == r.initFee.ApplyAfterStep {
+		r.env.SetBaseFee(r.initFee.BaseFee)
+		r.env.SetReserves(r.initFee.ReserveBase, r.initFee.ReserveIncrement)
+	}
 }
 
 // execTx handles a "tx" step.

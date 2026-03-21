@@ -29,7 +29,9 @@ type TxQ struct {
 
 	// maxSize is the dynamic maximum queue size.
 	// It's recomputed after each ledger close based on recent transaction counts.
-	maxSize uint32
+	// nil means no limit (before the first processClosedLedger call).
+	// Reference: rippled uses std::optional<size_t> maxSize_ which starts as nullopt.
+	maxSize *uint32
 
 	// parentHash is used to pseudo-randomly order transactions with the same fee.
 	// This ensures different validators build similar queues.
@@ -43,7 +45,8 @@ func New(config Config) *TxQ {
 		feeMetrics: NewFeeMetrics(config),
 		byFee:      make([]*Candidate, 0),
 		byAccount:  make(map[[20]byte]*AccountQueue),
-		maxSize:    config.QueueSizeMin,
+		// maxSize starts as nil (no limit) matching rippled's std::optional nullopt.
+		// It gets set on the first processClosedLedger call.
 	}
 }
 
@@ -88,10 +91,9 @@ func (q *TxQ) GetMetrics(txInLedger uint32) Metrics {
 		minProcessingFeeLevel = uint64(q.byFee[len(q.byFee)-1].FeeLevel) + 1
 	}
 
-	maxSize := q.maxSize
 	return Metrics{
 		TxCount:               uint32(len(q.byFee)),
-		TxQMaxSize:            &maxSize,
+		TxQMaxSize:            q.maxSize,
 		TxInLedger:            txInLedger,
 		TxPerLedger:           snapshot.TxnsExpected,
 		ReferenceFeeLevel:     BaseLevel,
@@ -102,15 +104,19 @@ func (q *TxQ) GetMetrics(txInLedger uint32) Metrics {
 }
 
 // isFull returns true if the queue has reached its maximum size.
+// Returns false if maxSize is nil (no limit).
+// Reference: rippled returns maxSize_ && byFee_.size() >= *maxSize_
 // Caller must hold the lock.
 func (q *TxQ) isFull() bool {
-	return uint32(len(q.byFee)) >= q.maxSize
+	return q.maxSize != nil && uint32(len(q.byFee)) >= *q.maxSize
 }
 
 // isFullPct returns true if the queue is at least fillPct percent full.
+// Returns false if maxSize is nil (no limit).
+// Reference: rippled isFull<fillPercentage>() returns false when maxSize_ is nullopt.
 // Caller must hold the lock.
 func (q *TxQ) isFullPct(fillPct uint32) bool {
-	return uint32(len(q.byFee)) >= (q.maxSize * fillPct / 100)
+	return q.maxSize != nil && uint32(len(q.byFee)) >= (*q.maxSize*fillPct/100)
 }
 
 // Size returns the number of transactions in the queue.

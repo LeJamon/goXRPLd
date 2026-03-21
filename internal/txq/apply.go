@@ -280,6 +280,31 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 		}
 	}
 
+	// Try to clear the account queue by paying the escalated series fee.
+	// This allows a high-fee transaction to "rescue" earlier queued txns.
+	// Reference: rippled TxQ::tryClearAccountQueueUpThruTx, TxQ.cpp:518-614
+	//
+	// Conditions (from rippled TxQ.cpp:1198-1200):
+	// 1. Transaction uses a sequence (not ticket)
+	// 2. Account has queued transactions
+	// 3. Multi-tx validation passed (we got here without returning)
+	// 4. First queued tx hasn't failed before (full retries)
+	// 5. Fee level paid > required fee level (can afford escalation)
+	// 6. Fee escalation is active (required > baseLevel)
+	// multiTxn is set in rippled when (acctTxCount > 1 || !replacedTxIter)
+	hasMultiTxn := acctTxCount > 1 || replacingCandidate == nil
+	if !seqProxy.IsTicket && exists && acctTxCount > 0 && hasMultiTxn &&
+		feeLevel > requiredFeeLevel && requiredFeeLevel > FeeLevel(BaseLevel) {
+
+		// Check if first queued sequence tx has full retries remaining
+		firstSeqTx := aq.GetFirstSeqTx()
+		if firstSeqTx != nil && firstSeqTx.RetriesRemaining == RetriesAllowed {
+			if result := q.tryClearAccountQueue(ctx, aq, txn, seqProxy, feeLevel, txInLedger, account); result != nil {
+				return *result
+			}
+		}
+	}
+
 	// Check if queue is full (when not replacing)
 	if replacingCandidate == nil && q.isFull() {
 		// Need to kick something out
@@ -332,6 +357,104 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 	q.insertByFee(candidate)
 
 	return ApplyResult{Result: tx.TerQUEUED, Queued: true}
+}
+
+// tryClearAccountQueue attempts to clear all queued transactions for an account
+// up through the new transaction by paying the escalated series fee.
+// Returns nil if the attempt should be skipped (fall through to normal queuing),
+// or an ApplyResult if the attempt produced a definitive result.
+//
+// Reference: rippled TxQ::tryClearAccountQueueUpThruTx, TxQ.cpp:518-614
+func (q *TxQ) tryClearAccountQueue(
+	ctx ApplyContext,
+	aq *AccountQueue,
+	txn tx.Transaction,
+	seqProxy SeqProxy,
+	feeLevelPaid FeeLevel,
+	txInLedger uint32,
+	account [20]byte,
+) *ApplyResult {
+	// Collect queued sequence-based transactions that come BEFORE the new tx.
+	// These need to be applied first in order.
+	var preceding []*Candidate
+	for sp, c := range aq.Transactions {
+		if sp.Less(seqProxy) {
+			preceding = append(preceding, c)
+		}
+	}
+
+	if len(preceding) == 0 {
+		return nil
+	}
+
+	// Sort preceding by SeqProxy (ascending order for application)
+	for i := 0; i < len(preceding)-1; i++ {
+		for j := i + 1; j < len(preceding); j++ {
+			if preceding[j].SeqProxy.Less(preceding[i].SeqProxy) {
+				preceding[i], preceding[j] = preceding[j], preceding[i]
+			}
+		}
+	}
+
+	dist := uint32(len(preceding))
+
+	// Compute the required total fee level for clearing dist+1 transactions.
+	// This is the sum of escalated fees for positions [txInLedger+1, txInLedger+dist+1].
+	snapshot := q.feeMetrics.GetSnapshot()
+	requiredTotalFeeLevel, ok := EscalatedSeriesFeeLevel(snapshot, txInLedger, 0, dist+1)
+	if !ok {
+		// Overflow, can't verify
+		return nil
+	}
+
+	// Sum the fee levels of all preceding transactions plus the new one.
+	totalFeeLevelPaid := feeLevelPaid
+	for _, c := range preceding {
+		totalFeeLevelPaid += c.FeeLevel
+	}
+
+	// If total fee is not enough, fall through to normal queuing.
+	if totalFeeLevelPaid < requiredTotalFeeLevel {
+		return nil
+	}
+
+	// Total fee is sufficient. Try to apply all preceding transactions in order.
+	for _, c := range preceding {
+		result, applied := ctx.ApplyTransaction(c.Txn)
+		c.RetriesRemaining--
+		c.LastResult = result
+
+		if result == tx.TefNO_TICKET {
+			// Ticket was already consumed; treat as success for clearing purposes.
+			continue
+		}
+
+		if !applied {
+			// A preceding transaction failed to apply. Abort the clear attempt.
+			return nil
+		}
+	}
+
+	// All preceding transactions applied. Now apply the new transaction.
+	result, applied := ctx.ApplyTransaction(txn)
+	if applied {
+		// Remove all applied preceding transactions from the queue.
+		for _, c := range preceding {
+			q.erase(c)
+		}
+		// Also remove the replacement if one exists at the new tx's seqProxy.
+		if c, exists := aq.Transactions[seqProxy]; exists {
+			q.erase(c)
+		}
+		return &ApplyResult{Result: result, Applied: true}
+	}
+
+	// New transaction failed but preceding ones were applied.
+	// Remove the applied preceding transactions.
+	for _, c := range preceding {
+		q.erase(c)
+	}
+	return &ApplyResult{Result: result, Applied: false}
 }
 
 // getNextQueuableSeq returns the next sequence number that can be queued for an account.
