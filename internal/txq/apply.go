@@ -1,11 +1,13 @@
 package txq
 
 import (
+	"sort"
 	"strconv"
 
 	"github.com/LeJamon/goXRPLd/internal/tx"
 	"github.com/LeJamon/goXRPLd/internal/tx/account"
 	"github.com/LeJamon/goXRPLd/internal/tx/payment"
+	"github.com/LeJamon/goXRPLd/internal/tx/ticket"
 )
 
 // ApplyResult represents the result of trying to apply or queue a transaction.
@@ -156,11 +158,17 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 	// Compute consequences early for blocker detection
 	consequences := computeConsequences(txn, seqProxy)
 
-	// Get or create account queue
+	// Get or create account queue.
+	// Compute acctTxCount using only "relevant" transactions: those with
+	// seqProxy >= the account's current sequence. This mirrors rippled's
+	// lower_bound(acctSeqProx) filtering (TxQ.cpp:809-830) which ignores
+	// stale sequence-based transactions that slipped into the ledger while
+	// the queue wasn't watching.
 	aq, exists := q.byAccount[account]
+	acctSeqProx := NewSeqProxySequence(acctSeq)
 	acctTxCount := 0
 	if exists {
-		acctTxCount = aq.Count()
+		acctTxCount = aq.RelevantCount(acctSeqProx)
 	}
 
 	// Is tx a blocker? If so there are very limited conditions when it
@@ -173,7 +181,8 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 			return ApplyResult{Result: tx.TelCAN_NOT_QUEUE_BLOCKS, Applied: false}
 		}
 		if acctTxCount == 1 {
-			if _, replacing := aq.Transactions[seqProxy]; !replacing {
+			firstRelevant := aq.FirstRelevant(acctSeqProx)
+			if firstRelevant == nil || firstRelevant.SeqProxy != seqProxy {
 				return ApplyResult{Result: tx.TelCAN_NOT_QUEUE_BLOCKS, Applied: false}
 			}
 		}
@@ -195,16 +204,15 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 
 	// Is there a blocker already in the account's queue? If so, don't
 	// allow additional transactions in the queue (unless replacing the blocker).
+	// We only need to check the first relevant entry because we require that
+	// a blocker be alone in the account's queue.
 	// Reference: TxQ.cpp:879-893
 	if acctTxCount > 0 && exists {
-		if acctTxCount == 1 {
-			// Only need to check the lone entry
-			for sp, c := range aq.Transactions {
-				if c.Consequences.IsBlocker && sp != seqProxy {
-					return ApplyResult{Result: tx.TelCAN_NOT_QUEUE_BLOCKED, Applied: false}
-				}
-				break
-			}
+		firstRelevant := aq.FirstRelevant(acctSeqProx)
+		if acctTxCount == 1 && firstRelevant != nil &&
+			firstRelevant.Consequences.IsBlocker &&
+			firstRelevant.SeqProxy != seqProxy {
+			return ApplyResult{Result: tx.TelCAN_NOT_QUEUE_BLOCKED, Applied: false}
 		}
 	}
 
@@ -232,38 +240,75 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 		}
 	}
 
-	// Validate sequence/ticket ordering
+	// Validate sequence/ticket ordering.
+	// Use acctTxCount (relevant count) to decide between "no queued txns" and
+	// "has queued txns" paths, matching rippled's logic.
+	// Reference: TxQ.cpp:946-1041
 	if !seqProxy.IsTicket {
-		if !exists || aq.Empty() {
-			// First transaction for this account, must match account sequence
+		if acctTxCount == 0 {
+			// No relevant transactions for this account in the queue.
+			// Must match account sequence.
 			if seqProxy.Value != acctSeq {
 				if seqProxy.Value < acctSeq {
 					return ApplyResult{Result: tx.TefPAST_SEQ, Applied: false}
 				}
 				return ApplyResult{Result: tx.TerPRE_SEQ, Applied: false}
 			}
-		} else if replacingCandidate == nil {
-			// Must follow the last queued sequence
-			nextSeq := q.getNextQueuableSeq(aq, acctSeq)
-			if seqProxy.Value != nextSeq {
-				if seqProxy.Value < nextSeq {
-					return ApplyResult{Result: tx.TefPAST_SEQ, Applied: false}
+		} else {
+			// There are relevant transactions in the queue.
+			// Reference: TxQ.cpp:966
+			if acctSeq > seqProxy.Value {
+				return ApplyResult{Result: tx.TefPAST_SEQ, Applied: false}
+			}
+
+			if replacingCandidate == nil {
+				// Check if the tx goes at the front of the queue (before all
+				// existing relevant entries). Reference: TxQ.cpp:1006-1030
+				prevTx := aq.GetPrevTx(seqProxy)
+				goesAtFront := prevTx == nil || seqProxy.Less(prevTx.SeqProxy)
+				// Also treat as front if prevTx is stale (< acctSeqProx)
+				if prevTx != nil && prevTx.SeqProxy.Less(acctSeqProx) {
+					goesAtFront = true
 				}
-				// Allow future sequences if the gap is bridged by queued txns.
-				// Reference: TxQ.cpp:1038-1040
-				return ApplyResult{Result: tx.TelCAN_NOT_QUEUE, Applied: false}
+
+				if goesAtFront {
+					// The tx goes at the front of the queue.
+					// The first Sequence in the queue must match acctSeq.
+					if seqProxy.Value < acctSeq {
+						return ApplyResult{Result: tx.TefPAST_SEQ, Applied: false}
+					}
+					if seqProxy.Value > acctSeq {
+						return ApplyResult{Result: tx.TerPRE_SEQ, Applied: false}
+					}
+				} else {
+					// The tx goes after existing entries.
+					// Must follow the last queued sequence.
+					nextSeq := q.getNextQueuableSeq(aq, acctSeq)
+					if seqProxy.Value != nextSeq {
+						if seqProxy.Value < nextSeq {
+							return ApplyResult{Result: tx.TefPAST_SEQ, Applied: false}
+						}
+						// Gap not bridged by queued txns.
+						// Reference: TxQ.cpp:1038-1040
+						return ApplyResult{Result: tx.TelCAN_NOT_QUEUE, Applied: false}
+					}
+				}
 			}
 		}
 	}
 
 	// In-flight balance check: when multiple txns are queued for the same
 	// account, verify the total fees don't exceed the account's balance or
-	// the minimum reserve.
-	// Reference: TxQ.cpp:1069-1125
+	// the minimum reserve. Only considers relevant transactions (seqProxy >= acctSeqProx).
+	// Reference: TxQ.cpp:1043-1125
 	if exists && acctTxCount > 0 && replacingCandidate == nil {
 		var totalFee uint64
 		var totalSpend uint64
 		for sp, c := range aq.Transactions {
+			if sp.Less(acctSeqProx) {
+				// Skip stale transactions
+				continue
+			}
 			if sp != seqProxy {
 				totalFee += c.Consequences.Fee
 				totalSpend += c.Consequences.PotentialSpend
@@ -277,6 +322,30 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 		baseFeeVal := ctx.GetBaseFee(txn)
 		if totalFee >= balance || (reserve > 10*baseFeeVal && totalFee >= reserve) {
 			return ApplyResult{Result: tx.TelCAN_NOT_QUEUE_BALANCE, Applied: false}
+		}
+	}
+
+	// Try to clear the account queue by paying the escalated series fee.
+	// This allows a high-fee transaction to "rescue" earlier queued txns.
+	// Reference: rippled TxQ::tryClearAccountQueueUpThruTx, TxQ.cpp:518-614
+	//
+	// Conditions (from rippled TxQ.cpp:1198-1200):
+	// 1. Transaction uses a sequence (not ticket)
+	// 2. Account has queued transactions
+	// 3. Multi-tx validation passed (we got here without returning)
+	// 4. First queued tx hasn't failed before (full retries)
+	// 5. Fee level paid > required fee level (can afford escalation)
+	// 6. Fee escalation is active (required > baseLevel)
+	// multiTxn is set in rippled when (acctTxCount > 1 || !replacedTxIter)
+	hasMultiTxn := acctTxCount > 1 || replacingCandidate == nil
+	if !seqProxy.IsTicket && exists && acctTxCount > 0 && hasMultiTxn &&
+		feeLevel > requiredFeeLevel && requiredFeeLevel > FeeLevel(BaseLevel) {
+		// Check if first queued sequence tx has full retries remaining
+		firstSeqTx := aq.GetFirstSeqTx()
+		if firstSeqTx != nil && firstSeqTx.RetriesRemaining == RetriesAllowed {
+			if result := q.tryClearAccountQueue(ctx, aq, txn, seqProxy, feeLevel, txInLedger, account); result != nil {
+				return *result
+			}
 		}
 	}
 
@@ -334,6 +403,110 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 	return ApplyResult{Result: tx.TerQUEUED, Queued: true}
 }
 
+// tryClearAccountQueue attempts to clear all queued transactions for an account
+// up through the new transaction by paying the escalated series fee.
+// Returns nil if the attempt should be skipped (fall through to normal queuing),
+// or an ApplyResult if the attempt produced a definitive result.
+//
+// Reference: rippled TxQ::tryClearAccountQueueUpThruTx, TxQ.cpp:518-614
+func (q *TxQ) tryClearAccountQueue(
+	ctx ApplyContext,
+	aq *AccountQueue,
+	txn tx.Transaction,
+	seqProxy SeqProxy,
+	feeLevelPaid FeeLevel,
+	txInLedger uint32,
+	account [20]byte,
+) *ApplyResult {
+	// Collect queued sequence-based transactions that come BEFORE the new tx.
+	// These need to be applied first in order.
+	var preceding []*Candidate
+	for sp, c := range aq.Transactions {
+		if sp.Less(seqProxy) {
+			preceding = append(preceding, c)
+		}
+	}
+
+	if len(preceding) == 0 {
+		return nil
+	}
+
+	// Sort preceding by SeqProxy (ascending order for application)
+	sort.Slice(preceding, func(i, j int) bool {
+		return preceding[i].SeqProxy.Less(preceding[j].SeqProxy)
+	})
+
+	dist := uint32(len(preceding))
+
+	// Compute the required total fee level for clearing dist+1 transactions.
+	// This is the sum of escalated fees for positions [txInLedger+1, txInLedger+dist+1].
+	snapshot := q.feeMetrics.GetSnapshot()
+	requiredTotalFeeLevel, ok := EscalatedSeriesFeeLevel(snapshot, txInLedger, 0, dist+1)
+	if !ok {
+		// Overflow, can't verify
+		return nil
+	}
+
+	// Sum the fee levels of all preceding transactions plus the new one.
+	totalFeeLevelPaid := feeLevelPaid
+	for _, c := range preceding {
+		totalFeeLevelPaid += c.FeeLevel
+	}
+
+	// If total fee is not enough, fall through to normal queuing.
+	if totalFeeLevelPaid < requiredTotalFeeLevel {
+		return nil
+	}
+
+	// Total fee is sufficient. Try to apply all preceding transactions in order.
+	// TODO: use sandbox view for full atomicity (matching rippled's OpenView).
+	// Currently, successfully-applied preceding txns cannot be rolled back if a
+	// later one fails. We track applied candidates to keep the queue consistent.
+	var applied []*Candidate
+	for _, c := range preceding {
+		result, ok := ctx.ApplyTransaction(c.Txn)
+		c.RetriesRemaining--
+		c.LastResult = result
+
+		if result == tx.TefNO_TICKET {
+			// Ticket was already consumed; treat as success for clearing purposes.
+			applied = append(applied, c)
+			continue
+		}
+
+		if !ok {
+			// A preceding transaction failed to apply. Erase already-applied
+			// candidates from the queue to stay consistent with ledger state.
+			for _, a := range applied {
+				q.erase(a)
+			}
+			return nil
+		}
+		applied = append(applied, c)
+	}
+
+	// All preceding transactions applied. Now apply the new transaction.
+	result, ok := ctx.ApplyTransaction(txn)
+	if ok {
+		// Remove all applied preceding transactions from the queue.
+		for _, c := range applied {
+			q.erase(c)
+		}
+		// Also remove the replacement if one exists at the new tx's seqProxy.
+		if c, exists := aq.Transactions[seqProxy]; exists {
+			q.erase(c)
+		}
+		return &ApplyResult{Result: result, Applied: true}
+	}
+
+	// New transaction failed but preceding ones were applied.
+	// Remove the applied preceding transactions from the queue.
+	for _, c := range applied {
+		q.erase(c)
+	}
+	return &ApplyResult{Result: result, Applied: false}
+}
+
 // getNextQueuableSeq returns the next sequence number that can be queued for an account.
 func (q *TxQ) getNextQueuableSeq(aq *AccountQueue, acctSeq uint32) uint32 {
 	if aq == nil || aq.Empty() {
@@ -380,7 +553,11 @@ func computeConsequences(txn tx.Transaction, seqProxy SeqProxy) TxConsequences {
 		cons.FollowingSeq = seqProxy
 	} else {
 		nextSeq := seqProxy.Value + 1
-		// TODO: Handle TicketCreate which advances by ticket count
+		// TicketCreate consumes TicketCount additional sequences.
+		// Reference: TicketCreate.cpp makeTxConsequences
+		if tc, ok := txn.(*ticket.TicketCreate); ok && tc.TicketCount > 0 {
+			nextSeq = seqProxy.Value + 1 + tc.TicketCount
+		}
 		cons.FollowingSeq = NewSeqProxySequence(nextSeq)
 	}
 

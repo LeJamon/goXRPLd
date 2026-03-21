@@ -37,11 +37,11 @@ func toNumber(amt tx.Amount) tx.Amount {
 // fromNumber converts an IOU-like number back to the original amount type.
 // If the original was XRP, converts back to XRP drops using precise integer arithmetic.
 // If the original was IOU, restores the currency/issuer.
-// Reference: rippled STAmount::operator=(Number const&) for Number→STAmount conversion
+// Reference: rippled STAmount::operator=(Number const&) for Number->STAmount conversion
 func fromNumber(num tx.Amount, original tx.Amount) tx.Amount {
 	if original.IsNative() {
 		// Convert IOU-like number back to XRP drops.
-		// The Number has mantissa and exponent — compute drops = mantissa * 10^exponent
+		// The Number has mantissa and exponent -- compute drops = mantissa * 10^exponent
 		if num.IsNative() {
 			return num
 		}
@@ -73,6 +73,18 @@ func fromNumber(num tx.Amount, original tx.Amount) tx.Amount {
 // For XRP: rounds drops upward (ceil) instead of truncating.
 // Reference: rippled toAmount() with Number::upward
 func fromNumberRoundUp(num tx.Amount, original tx.Amount) tx.Amount {
+	return fromNumberWithGuard(num, original, state.RoundUpward)
+}
+
+// fromNumberWithGuard converts an IOU-like Number back to the original amount type,
+// using the XRPLNumber Guard mechanism to match rippled's Number::operator rep()
+// for correct rounding when converting to XRP drops.
+// For IOU amounts, the rounding mode only affects XRP conversion (per rippled's
+// toAmount<T>() which only sets the rounding mode for XRP issues).
+// Reference: rippled AmountConversions.h toAmount<T>() lines 125-151
+//
+//	and Number.cpp Number::operator rep() lines 480-512
+func fromNumberWithGuard(num tx.Amount, original tx.Amount, mode state.RoundingMode) tx.Amount {
 	if original.IsNative() {
 		if num.IsNative() {
 			return num
@@ -82,26 +94,13 @@ func fromNumberRoundUp(num tx.Amount, original tx.Amount) tx.Amount {
 		if mantissa == 0 {
 			return state.NewXRPAmountFromInt(0)
 		}
-		drops := mantissa
-		hasRemainder := false
-		if exponent > 0 {
-			for i := 0; i < exponent; i++ {
-				drops *= 10
-			}
-		} else if exponent < 0 {
-			for i := 0; i < -exponent; i++ {
-				if drops%10 != 0 {
-					hasRemainder = true
-				}
-				drops /= 10
-			}
-			// Round up if any division had a remainder
-			if hasRemainder {
-				drops++
-			}
-		}
+		// Use XRPLNumber's ToInt64WithMode for Guard-based conversion.
+		// This matches rippled's Number::operator rep() with rounding mode.
+		n := state.NewXRPLNumber(mantissa, exponent)
+		drops := n.ToInt64WithMode(mode)
 		return state.NewXRPAmountFromInt(drops)
 	}
+	// For IOU, just restore currency/issuer. The rounding mode does not apply.
 	return fromNumber(num, original)
 }
 
@@ -117,6 +116,30 @@ func ammSub(a, b tx.Amount) tx.Amount {
 	return r
 }
 
+// numberMul multiplies two IOU-like amounts using XRPLNumber arithmetic.
+// This ensures Guard-based rounding is used, respecting the global rounding mode.
+// Reference: rippled Number::operator*= in Number.cpp
+func numberMul(a, b tx.Amount) tx.Amount {
+	na := state.NewXRPLNumber(a.Mantissa(), a.Exponent())
+	nb := state.NewXRPLNumber(b.Mantissa(), b.Exponent())
+	result := na.Mul(nb)
+	iou := result.ToIOUAmountValue()
+	return state.NewIssuedAmountFromValue(iou.Mantissa(), iou.Exponent(), a.Currency, a.Issuer)
+}
+
+// numberDiv divides two IOU-like amounts using XRPLNumber arithmetic.
+// This ensures Guard-based rounding is used, respecting the global rounding mode.
+// Amount.Div() does NOT use XRPLNumber even when NumberSwitchover is on;
+// this function provides the correct Number/Guard-based division for AMM math.
+// Reference: rippled Number::operator/= in Number.cpp
+func numberDiv(a, b tx.Amount) tx.Amount {
+	na := state.NewXRPLNumber(a.Mantissa(), a.Exponent())
+	nb := state.NewXRPLNumber(b.Mantissa(), b.Exponent())
+	result := na.Div(nb)
+	iou := result.ToIOUAmountValue()
+	return state.NewIssuedAmountFromValue(iou.Mantissa(), iou.Exponent(), a.Currency, a.Issuer)
+}
+
 // AMMFeeMult returns (1 - tfee/100000) as a fee multiplier.
 // tfee is in basis points (e.g., 500 = 0.5%).
 // Reference: rippled AMMCore.h feeMult()
@@ -130,7 +153,7 @@ func AMMFeeMult(tfee uint16) tx.Amount {
 func AMMFeeMultHalf(tfee uint16) tx.Amount {
 	halfFee := state.NewIssuedAmountFromValue(int64(tfee), 0, "", "")
 	denom := state.NewIssuedAmountFromValue(2e15, -10, "", "") // 200000
-	result := halfFee.Div(denom, false)
+	result := numberDiv(halfFee, denom)
 	return ammSub(ammOne(), result)
 }
 
@@ -142,7 +165,7 @@ func AMMGetFee(tfee uint16) tx.Amount {
 	}
 	numerator := state.NewIssuedAmountFromValue(int64(tfee), 0, "", "")
 	denominator := state.NewIssuedAmountFromValue(1e15, -10, "", "") // 100000
-	return numerator.Div(denominator, false)
+	return numberDiv(numerator, denominator)
 }
 
 // SwapAssetIn calculates how much you get out when swapping assetIn into the pool.
@@ -157,25 +180,39 @@ func SwapAssetIn(poolIn, poolOut, assetIn tx.Amount, tfee uint16, fixAMMv1_1 boo
 	nAssetIn := toNumber(assetIn)
 
 	if fixAMMv1_1 {
-		numerator := nPoolIn.Mul(nPoolOut, true) // round up
+		// Save and restore rounding mode -- rippled uses saveNumberRoundMode RAII.
+		// Reference: rippled AMMHelpers.h swapAssetIn() lines 493-514
+		savedMode := state.SetNumberRound(state.RoundUpward)
+		defer state.SetNumberRound(savedMode)
 
+		// Number::setround(Number::upward)
+		state.SetNumberRound(state.RoundUpward)
+		numerator := numberMul(nPoolIn, nPoolOut)
 		fee := AMMGetFee(tfee)
-		fMult := ammSub(ammOne(), fee)
 
-		assetFee := nAssetIn.Mul(fMult, false) // round down
+		// Number::setround(Number::downward)
+		state.SetNumberRound(state.RoundDownward)
+		fMult := ammSub(ammOne(), fee)
+		assetFee := numberMul(nAssetIn, fMult)
 		denom := ammAdd(nPoolIn, assetFee)
 
 		if denom.Signum() <= 0 {
 			return zeroLikeAmount(poolOut)
 		}
 
-		ratio := numerator.Div(denom, true) // round up
+		// Number::setround(Number::upward)
+		state.SetNumberRound(state.RoundUpward)
+		ratio := numberDiv(numerator, denom)
+
+		// Number::setround(Number::downward)
+		state.SetNumberRound(state.RoundDownward)
 		swapOut := ammSub(nPoolOut, ratio)
 
 		if swapOut.Signum() < 0 {
 			return zeroLikeAmount(poolOut)
 		}
-		return fromNumber(swapOut, poolOut)
+		// toAmount with Number::downward
+		return fromNumberWithGuard(swapOut, poolOut, state.RoundDownward)
 	}
 
 	// Pre-fixAMMv1_1: simple formula
@@ -191,7 +228,7 @@ func SwapAssetIn(poolIn, poolOut, assetIn tx.Amount, tfee uint16, fixAMMv1_1 boo
 	if result.Signum() < 0 {
 		return zeroLikeAmount(poolOut)
 	}
-	return fromNumber(result, poolOut)
+	return fromNumberWithGuard(result, poolOut, state.RoundDownward)
 }
 
 // SwapAssetOut calculates how much you must put in to get assetOut from the pool.
@@ -206,25 +243,41 @@ func SwapAssetOut(poolIn, poolOut, assetOut tx.Amount, tfee uint16, fixAMMv1_1 b
 	nAssetOut := toNumber(assetOut)
 
 	if fixAMMv1_1 {
-		numerator := nPoolIn.Mul(nPoolOut, true) // round up
+		// Save and restore rounding mode -- rippled uses saveNumberRoundMode RAII.
+		// Reference: rippled AMMHelpers.h swapAssetOut() lines 562-587
+		savedMode := state.SetNumberRound(state.RoundUpward)
+		defer state.SetNumberRound(savedMode)
 
+		// Number::setround(Number::upward)
+		state.SetNumberRound(state.RoundUpward)
+		numerator := numberMul(nPoolIn, nPoolOut)
+
+		// Number::setround(Number::downward)
+		state.SetNumberRound(state.RoundDownward)
 		denom := ammSub(nPoolOut, nAssetOut)
 		if denom.Signum() <= 0 {
 			return maxAmountLike(poolIn)
 		}
 
-		ratio := numerator.Div(denom, true) // round up
+		// Number::setround(Number::upward)
+		state.SetNumberRound(state.RoundUpward)
+		ratio := numberDiv(numerator, denom)
 		numerator2 := ammSub(ratio, nPoolIn)
-
 		fee := AMMGetFee(tfee)
+
+		// Number::setround(Number::downward)
+		state.SetNumberRound(state.RoundDownward)
 		fMult := ammSub(ammOne(), fee)
 
-		swapIn := numerator2.Div(fMult, true) // round up
+		// Number::setround(Number::upward)
+		state.SetNumberRound(state.RoundUpward)
+		swapIn := numberDiv(numerator2, fMult)
 
 		if swapIn.Signum() < 0 {
 			return zeroLikeAmount(poolIn)
 		}
-		return fromNumber(swapIn, poolIn)
+		// toAmount with Number::upward
+		return fromNumberWithGuard(swapIn, poolIn, state.RoundUpward)
 	}
 
 	// Pre-fixAMMv1_1: simple formula
@@ -240,15 +293,15 @@ func SwapAssetOut(poolIn, poolOut, assetOut tx.Amount, tfee uint16, fixAMMv1_1 b
 	if result.Signum() < 0 {
 		return zeroLikeAmount(poolIn)
 	}
-	return fromNumber(result, poolIn)
+	return fromNumberWithGuard(result, poolIn, state.RoundUpward)
 }
 
 // SolveQuadraticEq computes (-b + sqrt(b^2 - 4*a*c)) / (2*a).
 // Reference: rippled AMMHelpers.cpp solveQuadraticEq()
 func SolveQuadraticEq(a, b, c tx.Amount) tx.Amount {
-	b2 := b.Mul(b, false)
+	b2 := numberMul(b, b)
 	four := state.NewIssuedAmountFromValue(4e15, -15, "", "")
-	ac4 := four.Mul(a, false).Mul(c, false)
+	ac4 := numberMul(numberMul(four, a), c)
 	d := ammSub(b2, ac4)
 
 	sqrtD := d.Sqrt()
@@ -256,17 +309,17 @@ func SolveQuadraticEq(a, b, c tx.Amount) tx.Amount {
 	neg_b := b.Negate()
 	num := ammAdd(neg_b, sqrtD)
 	two := state.NewIssuedAmountFromValue(2e15, -15, "", "")
-	denom := two.Mul(a, false)
-	return num.Div(denom, false)
+	denom := numberMul(two, a)
+	return numberDiv(num, denom)
 }
 
 // SolveQuadraticEqSmallest uses the citardauq formula for better numerical stability.
 // Returns the smallest positive root, or nil if discriminant < 0.
 // Reference: rippled AMMHelpers.cpp solveQuadraticEqSmallest()
 func SolveQuadraticEqSmallest(a, b, c tx.Amount) *tx.Amount {
-	b2 := b.Mul(b, false)
+	b2 := numberMul(b, b)
 	four := state.NewIssuedAmountFromValue(4e15, -15, "", "")
-	ac4 := four.Mul(a, false).Mul(c, false)
+	ac4 := numberMul(numberMul(four, a), c)
 	d := ammSub(b2, ac4)
 
 	if d.Signum() < 0 {
@@ -275,17 +328,17 @@ func SolveQuadraticEqSmallest(a, b, c tx.Amount) *tx.Amount {
 
 	sqrtD := d.Sqrt()
 
-	twoC := state.NewIssuedAmountFromValue(2e15, -15, "", "").Mul(c, false)
+	twoC := numberMul(state.NewIssuedAmountFromValue(2e15, -15, "", ""), c)
 
 	var result tx.Amount
 	if b.Signum() > 0 {
 		neg_b := b.Negate()
 		denom := ammSub(neg_b, sqrtD)
-		result = twoC.Div(denom, false)
+		result = numberDiv(twoC, denom)
 	} else {
 		neg_b := b.Negate()
 		denom := ammAdd(neg_b, sqrtD)
-		result = twoC.Div(denom, false)
+		result = numberDiv(twoC, denom)
 	}
 
 	return &result
@@ -354,7 +407,7 @@ func changeSpotPriceQualityPreFix(poolIn, poolOut tx.Amount, quality Quality, tf
 		nTakerPaysPropose = constraint
 	}
 
-	// Round takerPays UP — matches rippled's toAmount() with Number::upward
+	// Round takerPays UP -- matches rippled's toAmount() with Number::upward
 	takerPays := fromNumberRoundUp(nTakerPaysPropose, poolIn)
 	takerGets := SwapAssetIn(poolIn, poolOut, takerPays, tfee, false)
 
@@ -370,13 +423,17 @@ func changeSpotPriceQualityPreFix(poolIn, poolOut tx.Amount, quality Quality, tf
 }
 
 // getAMMOfferStartWithTakerGets generates AMM offer starting with takerGets.
-// Used when pool output is XRP (IOU→XRP pair).
+// Used when pool output is XRP (IOU->XRP pair).
 // Reference: rippled AMMHelpers.h getAMMOfferStartWithTakerGets()
 func getAMMOfferStartWithTakerGets(poolIn, poolOut tx.Amount, quality Quality, tfee uint16) (in, out tx.Amount, ok bool) {
 	qRate := qualityToRate(quality)
 	if qRate.IsZero() {
 		return tx.Amount{}, tx.Amount{}, false
 	}
+
+	// NumberRoundModeGuard mg(Number::to_nearest) -- all quadratic solving uses to_nearest
+	savedMode := state.SetNumberRound(state.RoundToNearest)
+	defer state.SetNumberRound(savedMode)
 
 	// Convert to Number for uniform arithmetic
 	nPoolIn := toNumber(poolIn)
@@ -387,15 +444,15 @@ func getAMMOfferStartWithTakerGets(poolIn, poolOut tx.Amount, quality Quality, t
 
 	a := ammOne()
 	// b = poolIn * (1 - 1/f) / quality.rate() - 2 * poolOut
-	oneOverF := ammOne().Div(f, false)
+	oneOverF := numberDiv(ammOne(), f)
 	oneMinusOneOverF := ammSub(ammOne(), oneOverF)
-	bTerm1 := nPoolIn.Mul(oneMinusOneOverF, false).Div(qRate, false)
-	bTerm2 := two.Mul(nPoolOut, false)
+	bTerm1 := numberDiv(numberMul(nPoolIn, oneMinusOneOverF), qRate)
+	bTerm2 := numberMul(two, nPoolOut)
 	b := ammSub(bTerm1, bTerm2)
 
 	// c = poolOut^2 - poolIn * poolOut / quality.rate()
-	poolOutSq := nPoolOut.Mul(nPoolOut, false)
-	poolInOutRate := nPoolIn.Mul(nPoolOut, false).Div(qRate, false)
+	poolOutSq := numberMul(nPoolOut, nPoolOut)
+	poolInOutRate := numberDiv(numberMul(nPoolIn, nPoolOut), qRate)
 	c := ammSub(poolOutSq, poolInOutRate)
 
 	nTakerGets := SolveQuadraticEqSmallest(a, b, c)
@@ -404,8 +461,8 @@ func getAMMOfferStartWithTakerGets(poolIn, poolOut tx.Amount, quality Quality, t
 	}
 
 	// Constraint: o = poolOut - poolIn / (quality.rate() * f)
-	qRateTimesF := qRate.Mul(f, false)
-	constraint := ammSub(nPoolOut, nPoolIn.Div(qRateTimesF, false))
+	qRateTimesF := numberMul(qRate, f)
+	constraint := ammSub(nPoolOut, numberDiv(nPoolIn, qRateTimesF))
 	if constraint.Signum() <= 0 {
 		return tx.Amount{}, tx.Amount{}, false
 	}
@@ -414,7 +471,9 @@ func getAMMOfferStartWithTakerGets(poolIn, poolOut tx.Amount, quality Quality, t
 		nTakerGets = &constraint
 	}
 
-	takerGets := fromNumber(*nTakerGets, poolOut)
+	// Round takerGets downward to minimize the offer.
+	// Reference: rippled toAmount with Number::downward (line 229)
+	takerGets := fromNumberWithGuard(*nTakerGets, poolOut, state.RoundDownward)
 	takerPays := SwapAssetOut(poolIn, poolOut, takerGets, tfee, true)
 
 	offerQ := QualityFromAmounts(toEitherAmt(takerPays), toEitherAmt(takerGets))
@@ -440,6 +499,10 @@ func getAMMOfferStartWithTakerPays(poolIn, poolOut tx.Amount, quality Quality, t
 		return tx.Amount{}, tx.Amount{}, false
 	}
 
+	// NumberRoundModeGuard mg(Number::to_nearest) -- all quadratic solving uses to_nearest
+	savedMode := state.SetNumberRound(state.RoundToNearest)
+	defer state.SetNumberRound(savedMode)
+
 	// Convert to Number for uniform arithmetic
 	nPoolIn := toNumber(poolIn)
 	nPoolOut := toNumber(poolOut)
@@ -448,9 +511,9 @@ func getAMMOfferStartWithTakerPays(poolIn, poolOut tx.Amount, quality Quality, t
 
 	a := f
 	onePlusF := ammAdd(ammOne(), f)
-	b := nPoolIn.Mul(onePlusF, false)
-	poolInSq := nPoolIn.Mul(nPoolIn, false)
-	poolInOutRate := nPoolIn.Mul(nPoolOut, false).Mul(qRate, false)
+	b := numberMul(nPoolIn, onePlusF)
+	poolInSq := numberMul(nPoolIn, nPoolIn)
+	poolInOutRate := numberMul(numberMul(nPoolIn, nPoolOut), qRate)
 	c := ammSub(poolInSq, poolInOutRate)
 
 	nTakerPays := SolveQuadraticEqSmallest(a, b, c)
@@ -459,7 +522,7 @@ func getAMMOfferStartWithTakerPays(poolIn, poolOut tx.Amount, quality Quality, t
 	}
 
 	// Constraint: i = poolOut * quality.rate() - poolIn / f
-	constraint := ammSub(nPoolOut.Mul(qRate, false), nPoolIn.Div(f, false))
+	constraint := ammSub(numberMul(nPoolOut, qRate), numberDiv(nPoolIn, f))
 	if constraint.Signum() <= 0 {
 		return tx.Amount{}, tx.Amount{}, false
 	}
@@ -468,7 +531,9 @@ func getAMMOfferStartWithTakerPays(poolIn, poolOut tx.Amount, quality Quality, t
 		nTakerPays = &constraint
 	}
 
-	takerPays := fromNumber(*nTakerPays, poolIn)
+	// Round takerPays downward to minimize the offer and maximize quality.
+	// Reference: rippled toAmount with Number::downward (line 298-299)
+	takerPays := fromNumberWithGuard(*nTakerPays, poolIn, state.RoundDownward)
 	takerGets := SwapAssetIn(poolIn, poolOut, takerPays, tfee, true)
 
 	offerQ := QualityFromAmounts(toEitherAmt(takerPays), toEitherAmt(takerGets))
@@ -505,9 +570,9 @@ func WithinRelativeDistance(q1, q2 Quality, threshold float64) bool {
 
 // qualityToRate converts a Quality to its rate representation as an Amount.
 // In rippled, quality.rate() calls amountFromQuality(m_value) which converts
-// the stored uint64 directly to an STAmount — no inversion.
+// the stored uint64 directly to an STAmount -- no inversion.
 // Quality stores in/out, so rate() returns in/out as an STAmount.
-// Reference: rippled Quality.h rate() → amountFromQuality()
+// Reference: rippled Quality.h rate() -> amountFromQuality()
 func qualityToRate(q Quality) tx.Amount {
 	if q.Value == 0 {
 		return state.NewIssuedAmountFromValue(0, -100, "", "")

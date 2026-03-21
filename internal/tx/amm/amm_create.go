@@ -152,7 +152,7 @@ func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Check reserve for LP token trustline
 	// Reference: rippled AMMCreate.cpp line 145-151
 	// The account needs enough XRP for the reserve after creating the LP trustline
-	xrpLiquid := xrpLiquidBalance(ctx.View, accountID, 1)
+	xrpLiquid := xrpLiquidBalanceWithReserves(ctx.View, accountID, 1, ctx.Config.ReserveBase, ctx.Config.ReserveIncrement)
 	if xrpLiquid <= 0 {
 		return TecINSUF_RESERVE_LINE
 	}
@@ -170,12 +170,17 @@ func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TecAMM_INVALID_TOKENS
 	}
 
-	// Check clawback - if featureAMMClawback is not enabled, reject clawback-enabled issuers
-	// Reference: rippled AMMCreate.cpp line 194-214
-	// Note: We assume AMMClawback amendment is enabled in this implementation
-	// If not enabled, we would need to check:
-	// if result := clawbackDisabled(ctx.View, asset1); result != tx.TesSUCCESS { return result }
-	// if result := clawbackDisabled(ctx.View, asset2); result != tx.TesSUCCESS { return result }
+	// Check clawback - if featureAMMClawback is not enabled, reject clawback-enabled issuers.
+	// If featureAMMClawback IS enabled, allow AMMCreate regardless of clawback flag.
+	// Reference: rippled AMMCreate.cpp preclaim lines 194-214
+	if !ctx.Rules().Enabled(amendment.FeatureAMMClawback) {
+		if result := clawbackDisabled(ctx.View, asset1); result != tx.TesSUCCESS {
+			return result
+		}
+		if result := clawbackDisabled(ctx.View, asset2); result != tx.TesSUCCESS {
+			return result
+		}
+	}
 
 	// Check for pseudo-account collision with featureSingleAssetVault
 	// Reference: rippled AMMCreate.cpp preclaim lines 186-192
@@ -225,10 +230,16 @@ func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Calculate initial LP token balance: sqrt(amount1 * amount2)
 	// Reference: rippled AMMCreate.cpp line 256
 	fixV1_3 := ctx.Rules().Enabled(amendment.FeatureFixAMMv1_3)
-	lpTokenBalance := calculateLPTokens(sortedAmount1, sortedAmount2, fixV1_3)
-	if lpTokenBalance.IsZero() {
+	lpTokenBalanceRaw := calculateLPTokens(sortedAmount1, sortedAmount2, fixV1_3)
+	if lpTokenBalanceRaw.IsZero() {
 		return tx.TecAMM_BALANCE
 	}
+	// Set the correct issue (currency + issuer) on the LP token balance.
+	// The LP token currency is derived from the asset pair and the issuer
+	// is the AMM pseudo-account.
+	lpTokenBalance := state.NewIssuedAmountFromValue(
+		lpTokenBalanceRaw.Mantissa(), lpTokenBalanceRaw.Exponent(),
+		lptCurrency, ammAccountAddr)
 
 	// Create the AMM pseudo-account.
 	// Reference: rippled View.cpp createPseudoAccount (line 1112-1133)
@@ -322,6 +333,9 @@ func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	isXRP1 := sortedAsset1.Currency == "" || sortedAsset1.Currency == "XRP"
 	isXRP2 := sortedAsset2.Currency == "" || sortedAsset2.Currency == "XRP"
 
+	// Track owner count delta from trust line operations
+	creatorOwnerDelta := int32(0)
+
 	// Transfer first asset
 	// Reference: rippled AMMCreate.cpp sendAndTrustSet uses accountSend which
 	// handles issuer-as-sender (no self-trust-line debit needed).
@@ -341,9 +355,11 @@ func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		// issuers have unlimited supply and no self-trust-line).
 		issuerID1, _ := state.DecodeAccountID(sortedAsset1.Issuer)
 		if accountID != issuerID1 {
-			if err := updateTrustlineBalanceInView(accountID, issuerID1, sortedAsset1.Currency, sortedAmount1.Negate(), ctx.View); err != nil {
+			tlResult, tlErr := updateTrustlineBalanceInViewEx(accountID, issuerID1, sortedAsset1.Currency, sortedAmount1.Negate(), ctx.View)
+			if tlErr != nil {
 				return TecUNFUNDED_AMM
 			}
+			creatorOwnerDelta += int32(tlResult.SenderOwnerCountDelta)
 		}
 	}
 
@@ -362,14 +378,23 @@ func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 		issuerID2, _ := state.DecodeAccountID(sortedAsset2.Issuer)
 		if accountID != issuerID2 {
-			if err := updateTrustlineBalanceInView(accountID, issuerID2, sortedAsset2.Currency, sortedAmount2.Negate(), ctx.View); err != nil {
+			tlResult, tlErr := updateTrustlineBalanceInViewEx(accountID, issuerID2, sortedAsset2.Currency, sortedAmount2.Negate(), ctx.View)
+			if tlErr != nil {
 				return TecUNFUNDED_AMM
 			}
+			creatorOwnerDelta += int32(tlResult.SenderOwnerCountDelta)
 		}
 	}
 
-	// Update creator account (owner count increases for LP token trustline)
-	ctx.Account.OwnerCount++
+	// Update creator account owner count:
+	// +1 for the LP token trustline, plus any adjustments from IOU trust line
+	// deletion (when the creator deposits all their IOU balance, the original
+	// trust line may be deleted, decrementing owner count).
+	newOwnerCount := int32(ctx.Account.OwnerCount) + 1 + creatorOwnerDelta
+	if newOwnerCount < 0 {
+		newOwnerCount = 0
+	}
+	ctx.Account.OwnerCount = uint32(newOwnerCount)
 
 	// Persist updated creator account
 	accountKey := keylet.Account(accountID)
@@ -528,9 +553,9 @@ func noDefaultRipple(view tx.LedgerView, asset tx.Asset) bool {
 	return (issuerAccount.Flags & state.LsfDefaultRipple) == 0
 }
 
-// xrpLiquidBalance returns the XRP available after reserving for ownerCount additional objects.
-// Reference: rippled AMMCreate.cpp line 145
-func xrpLiquidBalance(view tx.LedgerView, accountID [20]byte, additionalOwnerCount int) int64 {
+// xrpLiquidBalanceWithReserves returns XRP available after reserves, using explicit reserve values.
+// Reference: rippled xrpLiquid() — reads from view.fees()
+func xrpLiquidBalanceWithReserves(view tx.LedgerView, accountID [20]byte, additionalOwnerCount int, reserveBase, reserveIncrement uint64) int64 {
 	accountKey := keylet.Account(accountID)
 	data, err := view.Read(accountKey)
 	if err != nil || data == nil {
@@ -542,11 +567,7 @@ func xrpLiquidBalance(view tx.LedgerView, accountID [20]byte, additionalOwnerCou
 		return 0
 	}
 
-	// Base reserve + owner reserve * (ownerCount + additional)
-	// Using standard XRPL reserves: 10 XRP base + 2 XRP per owner
-	baseReserve := int64(10_000_000) // 10 XRP in drops
-	ownerReserve := int64(2_000_000) // 2 XRP in drops
-	totalReserve := baseReserve + ownerReserve*int64(account.OwnerCount+uint32(additionalOwnerCount))
+	totalReserve := int64(reserveBase) + int64(reserveIncrement)*int64(account.OwnerCount+uint32(additionalOwnerCount))
 
 	liquid := int64(account.Balance) - totalReserve
 	if liquid < 0 {
@@ -680,4 +701,37 @@ func setAMMNodeFlag(ammAccountID [20]byte, asset tx.Asset, view tx.LedgerView) e
 	}
 
 	return view.Update(trustLineKey, rsBytes)
+}
+
+// clawbackDisabled checks if the issuer of an asset has clawback enabled.
+// Returns tecNO_PERMISSION if the issuer has lsfAllowTrustLineClawback set,
+// tecINTERNAL if the issuer account cannot be found, and tesSUCCESS otherwise.
+// XRP assets always return tesSUCCESS (no issuer to check).
+// Reference: rippled AMMCreate.cpp preclaim lines 201-210
+func clawbackDisabled(view tx.LedgerView, asset tx.Asset) tx.Result {
+	if asset.Currency == "" || asset.Currency == "XRP" {
+		return tx.TesSUCCESS
+	}
+
+	issuerID, err := state.DecodeAccountID(asset.Issuer)
+	if err != nil {
+		return tx.TecINTERNAL
+	}
+
+	issuerKey := keylet.Account(issuerID)
+	issuerData, err := view.Read(issuerKey)
+	if err != nil || issuerData == nil {
+		return tx.TecINTERNAL
+	}
+
+	issuerAccount, err := state.ParseAccountRoot(issuerData)
+	if err != nil {
+		return tx.TecINTERNAL
+	}
+
+	if (issuerAccount.Flags & state.LsfAllowTrustLineClawback) != 0 {
+		return tx.TecNO_PERMISSION
+	}
+
+	return tx.TesSUCCESS
 }

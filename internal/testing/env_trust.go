@@ -363,6 +363,38 @@ func (e *TestEnv) SetFirstNFTokenSequenceDirect(acc *Account, seq uint32) {
 	}
 }
 
+// BumpSequenceAndDeductFee increments an account's sequence and deducts the
+// base fee directly in the ledger. Used by the conformance runner to match
+// rippled's behavior where tem* results from type-specific preflight (inside
+// doApply) still consume the sequence and fee because the engine's generic
+// preclaim already passed.
+func (e *TestEnv) BumpSequenceAndDeductFee(acc *Account) {
+	e.t.Helper()
+
+	accountKey := keylet.Account(acc.ID)
+	data, err := e.ledger.Read(accountKey)
+	if err != nil {
+		e.t.Fatalf("BumpSequenceAndDeductFee: failed to read account: %v", err)
+	}
+
+	accountRoot, err := state.ParseAccountRoot(data)
+	if err != nil {
+		e.t.Fatalf("BumpSequenceAndDeductFee: failed to parse account: %v", err)
+	}
+
+	accountRoot.Sequence++
+	accountRoot.Balance -= e.baseFee
+
+	updated, err := state.SerializeAccountRoot(accountRoot)
+	if err != nil {
+		e.t.Fatalf("BumpSequenceAndDeductFee: failed to serialize: %v", err)
+	}
+
+	if err := e.ledger.Update(accountKey, updated); err != nil {
+		e.t.Fatalf("BumpSequenceAndDeductFee: failed to update: %v", err)
+	}
+}
+
 // SetDelegate creates a Delegate SLE that grants delegation permissions from one account to another.
 // permissions is a list of permission names like "Payment", "AccountDomainSet", etc.
 // Reference: rippled's delegate::set(account, authorize, permissions) in Delegate_test.cpp

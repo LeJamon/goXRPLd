@@ -30,13 +30,14 @@ func (q *TxQ) ProcessClosedLedger(ctx ClosedLedgerContext, timeLeap bool) uint32
 	txCount := q.feeMetrics.Update(feeLevels, timeLeap, q.config)
 
 	// Update maximum queue size
+	// Reference: rippled sets maxSize_ = max(txnsExpected * ledgersInQueue, queueSizeMin)
 	if !timeLeap {
 		snapshot := q.feeMetrics.GetSnapshot()
 		newMaxSize := snapshot.TxnsExpected * q.config.LedgersInQueue
 		if newMaxSize < q.config.QueueSizeMin {
 			newMaxSize = q.config.QueueSizeMin
 		}
-		q.maxSize = newMaxSize
+		q.maxSize = &newMaxSize
 	}
 
 	// Remove expired transactions (where LastLedgerSequence <= ledgerSeq)
@@ -80,7 +81,7 @@ func (q *TxQ) Clear() {
 func (q *TxQ) SetMaxSize(maxSize uint32) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	q.maxSize = maxSize
+	q.maxSize = &maxSize
 }
 
 // GetConfig returns the queue configuration.

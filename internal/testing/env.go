@@ -84,6 +84,13 @@ type TestEnv struct {
 	// batch txns with N inner transactions.
 	closingTxTotal uint32
 
+	// closingFeeLevels tracks the actual fee levels of transactions in the
+	// current open ledger. Used by ProcessClosedLedger to compute the median
+	// fee level (escalation multiplier). Without this, the median would always
+	// be BaseLevel, causing fee escalation to be less aggressive than rippled.
+	// Reset on Close().
+	closingFeeLevels []txq.FeeLevel
+
 	// heldTxns stores transactions that got terPRE_SEQ or other retryable
 	// results. After a successful transaction for the same account, held
 	// transactions are retried. This mirrors rippled's LedgerMaster held
@@ -283,4 +290,17 @@ func (e *TestEnv) SetOpenLedger(open bool) {
 // distinction between apply() (direct, used for setup) and submit() (via TxQ).
 func (e *TestEnv) SetBypassTxQ(bypass bool) {
 	e.bypassTxQ = bypass
+}
+
+// SetBaseFee changes the base fee for subsequent transactions.
+// Used to apply post-initFee() fee changes in conformance tests.
+func (e *TestEnv) SetBaseFee(baseFee uint64) {
+	e.baseFee = baseFee
+}
+
+// SetReserves changes the reserve base and increment for subsequent transactions.
+// Used to apply post-initFee() reserve changes in conformance tests.
+func (e *TestEnv) SetReserves(reserveBase, reserveIncrement uint64) {
+	e.reserveBase = reserveBase
+	e.reserveIncrement = reserveIncrement
 }

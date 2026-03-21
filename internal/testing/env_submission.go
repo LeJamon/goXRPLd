@@ -3,6 +3,7 @@ package testing
 import (
 	"crypto/sha512"
 	"sort"
+	"strconv"
 	"time"
 
 	addresscodec "github.com/LeJamon/goXRPLd/codec/addresscodec"
@@ -60,12 +61,16 @@ func (e *TestEnv) Close() {
 	// Update TxQ metrics based on the closed ledger.
 	// Reference: rippled TxQ::processClosedLedger called after ledger close.
 	if e.txQueue != nil {
-		// Build fee levels for all transactions in the closed ledger.
-		// In the test env, all transactions pay the base fee, so their fee
-		// level is BaseLevel (256).
-		feeLevels := make([]txq.FeeLevel, closingTxCount)
-		for i := range feeLevels {
-			feeLevels[i] = txq.FeeLevel(txq.BaseLevel)
+		// Use the actual fee levels recorded during this ledger.
+		// If we have tracked fee levels, use those. Otherwise fall back to
+		// generating BaseLevel entries for each transaction (for backward
+		// compatibility with tests that don't track fee levels).
+		feeLevels := e.closingFeeLevels
+		if len(feeLevels) == 0 && closingTxCount > 0 {
+			feeLevels = make([]txq.FeeLevel, closingTxCount)
+			for i := range feeLevels {
+				feeLevels[i] = txq.FeeLevel(txq.BaseLevel)
+			}
 		}
 		closedCtx := &testClosedLedgerContext{
 			ledgerSeq: e.ledger.Sequence(),
@@ -91,11 +96,79 @@ func (e *TestEnv) Close() {
 	e.openLedgerTxns = nil
 	e.txInLedger = 0
 	e.closingTxTotal = 0
+	e.closingFeeLevels = nil
 
 	// Accept queued transactions into the new open ledger.
 	// Reference: rippled TxQ::accept called when new open ledger is created.
 	if e.txQueue != nil {
 		e.drainQueue()
+
+		// Retry held transactions through the TxQ after drain.
+		// This mirrors rippled's OpenLedger::accept() step (d) which
+		// iterates localTxs and calls TxQ::apply() for each. This allows
+		// transactions that were rejected with tel codes (telCAN_NOT_QUEUE_FULL
+		// etc.) to be re-queued now that the queue has been drained and has
+		// room. Reference: rippled OpenLedger.cpp:117-118
+		e.retryAllHeldViaTxQ()
+	}
+}
+
+// CloseWithTimeLeap closes the current ledger with a simulated time leap.
+// A time leap indicates that consensus was slow, causing the TxQ to aggressively
+// reduce txnsExpected back toward the minimum. This matches rippled's behavior
+// when env.close(env.now() + 5s, 10000ms) is called in tests.
+// Reference: rippled TxQ::FeeMetrics::update timeLeap handling
+func (e *TestEnv) CloseWithTimeLeap() {
+	e.t.Helper()
+
+	closingTxCount := e.closingTxTotal
+	e.clock.Advance(10 * time.Second)
+
+	if err := e.ledger.Close(e.clock.Now(), 0); err != nil {
+		e.t.Fatalf("Failed to close ledger: %v", err)
+	}
+	if err := e.ledger.SetValidated(); err != nil {
+		e.t.Fatalf("Failed to validate ledger: %v", err)
+	}
+
+	if h, err := e.ledger.StateMapHash(); err == nil {
+		e.ledgerRootHashes[e.ledger.Sequence()] = h
+	}
+	if e.stateFamily != nil {
+		e.stateFamily.Sweep()
+	}
+
+	// Process with timeLeap=true to reset metrics
+	if e.txQueue != nil {
+		feeLevels := e.closingFeeLevels
+		if len(feeLevels) == 0 && closingTxCount > 0 {
+			feeLevels = make([]txq.FeeLevel, closingTxCount)
+			for i := range feeLevels {
+				feeLevels[i] = txq.FeeLevel(txq.BaseLevel)
+			}
+		}
+		closedCtx := &testClosedLedgerContext{
+			ledgerSeq: e.ledger.Sequence(),
+			feeLevels: feeLevels,
+		}
+		e.txQueue.ProcessClosedLedger(closedCtx, true) // timeLeap = true
+	}
+
+	e.lastClosedLedger = e.ledger
+	newLedger, err := ledger.NewOpen(e.ledger, e.clock.Now())
+	if err != nil {
+		e.t.Fatalf("Failed to create new ledger: %v", err)
+	}
+	e.ledger = newLedger
+	e.currentSeq++
+	e.openLedgerTxns = nil
+	e.txInLedger = 0
+	e.closingTxTotal = 0
+	e.closingFeeLevels = nil
+
+	if e.txQueue != nil {
+		e.drainQueue()
+		e.retryAllHeldViaTxQ()
 	}
 }
 
@@ -144,6 +217,7 @@ func (e *TestEnv) closeWithReplay() {
 	// Reset counters for the fresh replay
 	e.txInLedger = 0
 	e.closingTxTotal = 0
+	e.closingFeeLevels = nil
 
 	// Apply all transactions with retry passes, matching rippled's
 	// applyTransactions() in BuildLedger.cpp.
@@ -234,6 +308,7 @@ func (e *TestEnv) closeWithReplay() {
 	e.openLedgerTxns = nil
 	e.txInLedger = 0
 	e.closingTxTotal = 0
+	e.closingFeeLevels = nil
 
 	// Update TxQ metrics if applicable
 	// (Not typically used together with replay, but handle for completeness)
@@ -333,6 +408,7 @@ func (e *TestEnv) applyDirect(txn tx.Transaction) TxResult {
 	if applyResult.Result.IsApplied() {
 		e.txInLedger++
 		e.closingTxTotal++
+		e.recordTxFeeLevel(txn)
 		// For batch transactions, also count inner txns for fee metrics.
 		// Reference: rippled counts inner batch txns as separate entries in
 		// the closed ledger's tx map, which affects ProcessClosedLedger.
@@ -441,7 +517,14 @@ func (e *TestEnv) submitViaTxQ(txn tx.Transaction) TxResult {
 	// Handle retryable results by holding the transaction.
 	// Reference: rippled NetworkOPs::apply holds isTerRetry results in
 	// LedgerMaster's held transaction map.
-	if isRetryable(result.Result) {
+	//
+	// Also hold tel results (telCAN_NOT_QUEUE_FULL, telCAN_NOT_QUEUE_FEE, etc.)
+	// because rippled's localTxs mechanism retries ALL locally-submitted
+	// transactions at the next close, regardless of result code. This is
+	// critical for TxQ tests where transactions rejected with tel codes get
+	// re-queued after the queue drains during close.
+	// Reference: rippled NetworkOPs.cpp:1677-1682 (m_localTX->push_back)
+	if isRetryable(result.Result) || isTelLocal(result.Result) {
 		e.addHeldTransaction(accountAddr, txn)
 	}
 
@@ -459,6 +542,13 @@ func isRetryable(result tx.Result) bool {
 	return result >= -99 && result < 0
 }
 
+// isTelLocal returns true if the result is a tel (local error) code.
+// tel codes are in the range -399 to -300.
+// Reference: rippled TER.h telLOCAL_ERROR = -399, telCAN_NOT_QUEUE = -381
+func isTelLocal(result tx.Result) bool {
+	return result >= -399 && result <= -300
+}
+
 // addHeldTransaction adds a transaction to the held map for later retry.
 // Reference: rippled LedgerMaster::addHeldTransaction
 func (e *TestEnv) addHeldTransaction(accountAddr string, txn tx.Transaction) {
@@ -466,6 +556,36 @@ func (e *TestEnv) addHeldTransaction(accountAddr string, txn tx.Transaction) {
 		e.heldTxns = make(map[string][]tx.Transaction)
 	}
 	e.heldTxns[accountAddr] = append(e.heldTxns[accountAddr], txn)
+}
+
+// retryAllHeldViaTxQ retries ALL held transactions through the TxQ.
+// This mirrors rippled's OpenLedger::accept() step (d) which iterates
+// localTxs and calls TxQ::apply() for each after the queue drain.
+// This allows transactions that were previously rejected (tel codes,
+// ter codes, etc.) to be re-queued or applied now that the queue has
+// been drained and conditions may have changed.
+// Reference: rippled OpenLedger.cpp:117-118
+func (e *TestEnv) retryAllHeldViaTxQ() {
+	if e.heldTxns == nil || len(e.heldTxns) == 0 {
+		return
+	}
+
+	// Collect all held transactions from all accounts
+	var allHeld []tx.Transaction
+	for _, txns := range e.heldTxns {
+		allHeld = append(allHeld, txns...)
+	}
+
+	// Clear all held transactions before retrying
+	// (successfully retried ones may get re-added if they result in ter/tel)
+	e.heldTxns = nil
+
+	// Sort by canonical order (account, sequence) for deterministic processing
+	sortCanonical(allHeld)
+
+	for _, heldTxn := range allHeld {
+		e.submitViaTxQ(heldTxn)
+	}
 }
 
 // retryHeldTransactions pops and retries held transactions for an account.
@@ -749,6 +869,7 @@ func (c *testTxQApplyContext) ApplyTransaction(txn tx.Transaction) (tx.Result, b
 	if applied {
 		c.env.txInLedger++
 		c.env.closingTxTotal++
+		c.env.recordTxFeeLevel(txn)
 		if counter, ok := txn.(innerTxCounter); ok {
 			c.env.closingTxTotal += uint32(counter.InnerTxCount())
 		}
@@ -800,11 +921,39 @@ func (c *testTxQAcceptContext) ApplyTransaction(txn tx.Transaction) (tx.Result, 
 	if applied {
 		c.env.txInLedger++
 		c.env.closingTxTotal++
+		c.env.recordTxFeeLevel(txn)
 		if counter, ok := txn.(innerTxCounter); ok {
 			c.env.closingTxTotal += uint32(counter.InnerTxCount())
 		}
 	}
 	return applyResult.Result, applied
+}
+
+// recordTxFeeLevel computes and records the fee level of an applied transaction.
+// This is used to compute the median fee level for ProcessClosedLedger, which
+// determines the escalation multiplier. Without tracking actual fee levels,
+// the escalation multiplier would always be the minimum (128000), causing
+// fee escalation to be less aggressive than rippled when high-fee transactions
+// are in the ledger.
+// Reference: rippled getFeeLevelPaid in TxQ.cpp:38-64
+func (e *TestEnv) recordTxFeeLevel(txn tx.Transaction) {
+	common := txn.GetCommon()
+	if common == nil {
+		return
+	}
+
+	feePaid, _ := strconv.ParseUint(common.Fee, 10, 64)
+	baseFee := e.baseFee
+
+	// Use the actual base fee for the transaction type (e.g., batch tx may
+	// have a higher base fee). The TxQ apply context uses GetBaseFee which
+	// calls CalculateMinimumFee for batch transactions.
+	if calc, ok := txn.(baseFeeCalculator); ok {
+		baseFee = calc.CalculateMinimumFee(e.baseFee)
+	}
+
+	feeLevel := txq.ToFeeLevel(feePaid, baseFee)
+	e.closingFeeLevels = append(e.closingFeeLevels, feeLevel)
 }
 
 func (c *testTxQAcceptContext) GetParentHash() [32]byte {

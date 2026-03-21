@@ -137,9 +137,10 @@ func TestInvalidBid(t *testing.T) {
 		}
 		env.Close()
 
+		// Use real LP token issuer so we reach the bidMin > bidMax check
 		bidTx := amm.AMMBid(env.Carol, amm.XRP(), env.USD).
-			BidMin(amm.LPTokenAmount(amm.XRP(), env.USD, 200)).
-			BidMax(amm.LPTokenAmount(amm.XRP(), env.USD, 100)).
+			BidMin(env.LPTokenAmountFromLedger(amm.XRP(), env.USD, 200)).
+			BidMax(env.LPTokenAmountFromLedger(amm.XRP(), env.USD, 100)).
 			Build()
 		result = env.Submit(bidTx)
 
@@ -259,9 +260,9 @@ func TestInvalidBid(t *testing.T) {
 		}
 		env.Close()
 
-		// Try to bid more tokens than Carol owns
+		// Try to bid more tokens than Carol owns — use real LP token issuer
 		bidTx := amm.AMMBid(env.Carol, amm.XRP(), env.USD).
-			BidMin(amm.LPTokenAmount(amm.XRP(), env.USD, 1000001)).
+			BidMin(env.LPTokenAmountFromLedger(amm.XRP(), env.USD, 1000001)).
 			Build()
 		result = env.Submit(bidTx)
 
@@ -292,7 +293,7 @@ func TestBid(t *testing.T) {
 		env.Close()
 
 		bidTx := amm.AMMBid(env.Carol, amm.XRP(), env.USD).
-			BidMin(amm.LPTokenAmount(amm.XRP(), env.USD, 110)).
+			BidMin(env.LPTokenAmountFromLedger(amm.XRP(), env.USD, 110)).
 			Build()
 		result = env.Submit(bidTx)
 
@@ -321,8 +322,8 @@ func TestBid(t *testing.T) {
 		env.Close()
 
 		bidTx := amm.AMMBid(env.Carol, amm.XRP(), env.USD).
-			BidMin(amm.LPTokenAmount(amm.XRP(), env.USD, 110)).
-			BidMax(amm.LPTokenAmount(amm.XRP(), env.USD, 110)).
+			BidMin(env.LPTokenAmountFromLedger(amm.XRP(), env.USD, 110)).
+			BidMax(env.LPTokenAmountFromLedger(amm.XRP(), env.USD, 110)).
 			Build()
 		result = env.Submit(bidTx)
 
@@ -340,8 +341,8 @@ func TestBid(t *testing.T) {
 		env := setupAMM(t)
 
 		bidTx := amm.AMMBid(env.Alice, amm.XRP(), env.USD).
-			BidMin(amm.LPTokenAmount(amm.XRP(), env.USD, 100)).
-			BidMax(amm.LPTokenAmount(amm.XRP(), env.USD, 200)).
+			BidMin(env.LPTokenAmountFromLedger(amm.XRP(), env.USD, 100)).
+			BidMax(env.LPTokenAmountFromLedger(amm.XRP(), env.USD, 200)).
 			Build()
 		result := env.Submit(bidTx)
 
@@ -370,7 +371,7 @@ func TestBid(t *testing.T) {
 		env.Close()
 
 		bidTx := amm.AMMBid(env.Carol, amm.XRP(), env.USD).
-			BidMax(amm.LPTokenAmount(amm.XRP(), env.USD, 600)).
+			BidMax(env.LPTokenAmountFromLedger(amm.XRP(), env.USD, 600)).
 			Build()
 		result = env.Submit(bidTx)
 
@@ -420,7 +421,7 @@ func TestBid(t *testing.T) {
 		env.Close()
 
 		bidTx := amm.AMMBid(env.Carol, amm.XRP(), env.USD).
-			BidMin(amm.LPTokenAmount(amm.XRP(), env.USD, 120)).
+			BidMin(env.LPTokenAmountFromLedger(amm.XRP(), env.USD, 120)).
 			AuthAccounts(env.Bob.Address).
 			Build()
 		result = env.Submit(bidTx)
@@ -451,7 +452,7 @@ func TestBid(t *testing.T) {
 
 		// Carol bids first
 		bidTx1 := amm.AMMBid(env.Carol, amm.XRP(), env.USD).
-			BidMin(amm.LPTokenAmount(amm.XRP(), env.USD, 110)).
+			BidMin(env.LPTokenAmountFromLedger(amm.XRP(), env.USD, 110)).
 			Build()
 		result = env.Submit(bidTx1)
 		if !result.Success {
@@ -461,7 +462,7 @@ func TestBid(t *testing.T) {
 
 		// Alice outbids Carol
 		bidTx2 := amm.AMMBid(env.Alice, amm.XRP(), env.USD).
-			BidMin(amm.LPTokenAmount(amm.XRP(), env.USD, 200)).
+			BidMin(env.LPTokenAmountFromLedger(amm.XRP(), env.USD, 200)).
 			Build()
 		result = env.Submit(bidTx2)
 		if !result.Success {

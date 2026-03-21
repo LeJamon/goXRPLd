@@ -54,12 +54,9 @@ func (a *AMMVote) Validate() error {
 	}
 
 	// Validate asset pair
-	if a.Asset.Currency == "" {
-		return tx.Errorf(tx.TemMALFORMED, "Asset is required")
-	}
-
-	if a.Asset2.Currency == "" {
-		return tx.Errorf(tx.TemMALFORMED, "Asset2 is required")
+	// Reference: rippled AMMVote.cpp preflight lines 39-44
+	if err := validateAssetPair(a.Asset, a.Asset2); err != nil {
+		return err
 	}
 
 	// TradingFee must be within threshold

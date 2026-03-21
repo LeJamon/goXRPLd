@@ -360,6 +360,42 @@ func (r Result) String() string {
 		return "tecLOCKED"
 	case TecBAD_CREDENTIALS:
 		return "tecBAD_CREDENTIALS"
+	case TecXCHAIN_BAD_TRANSFER_ISSUE:
+		return "tecXCHAIN_BAD_TRANSFER_ISSUE"
+	case TecXCHAIN_NO_CLAIM_ID:
+		return "tecXCHAIN_NO_CLAIM_ID"
+	case TecXCHAIN_BAD_CLAIM_ID:
+		return "tecXCHAIN_BAD_CLAIM_ID"
+	case TecXCHAIN_CLAIM_NO_QUORUM:
+		return "tecXCHAIN_CLAIM_NO_QUORUM"
+	case TecXCHAIN_PROOF_UNKNOWN_KEY:
+		return "tecXCHAIN_PROOF_UNKNOWN_KEY"
+	case TecXCHAIN_CREATE_ACCOUNT_NONXRP_ISSUE:
+		return "tecXCHAIN_CREATE_ACCOUNT_NONXRP_ISSUE"
+	case TecXCHAIN_WRONG_CHAIN:
+		return "tecXCHAIN_WRONG_CHAIN"
+	case TecXCHAIN_REWARD_MISMATCH:
+		return "tecXCHAIN_REWARD_MISMATCH"
+	case TecXCHAIN_NO_SIGNERS_LIST:
+		return "tecXCHAIN_NO_SIGNERS_LIST"
+	case TecXCHAIN_SENDING_ACCOUNT_MISMATCH:
+		return "tecXCHAIN_SENDING_ACCOUNT_MISMATCH"
+	case TecXCHAIN_INSUFF_CREATE_AMOUNT:
+		return "tecXCHAIN_INSUFF_CREATE_AMOUNT"
+	case TecXCHAIN_ACCOUNT_CREATE_PAST:
+		return "tecXCHAIN_ACCOUNT_CREATE_PAST"
+	case TecXCHAIN_ACCOUNT_CREATE_TOO_MANY:
+		return "tecXCHAIN_ACCOUNT_CREATE_TOO_MANY"
+	case TecXCHAIN_PAYMENT_FAILED:
+		return "tecXCHAIN_PAYMENT_FAILED"
+	case TecXCHAIN_SELF_COMMIT:
+		return "tecXCHAIN_SELF_COMMIT"
+	case TecXCHAIN_BAD_PUBLIC_KEY_ACCOUNT_PAIR:
+		return "tecXCHAIN_BAD_PUBLIC_KEY_ACCOUNT_PAIR"
+	case TecXCHAIN_CREATE_ACCOUNT_DISABLED:
+		return "tecXCHAIN_CREATE_ACCOUNT_DISABLED"
+	case TecHOOK_REJECTED:
+		return "tecHOOK_REJECTED"
 	case TecWRONG_ASSET:
 		return "tecWRONG_ASSET"
 	case TecPSEUDO_ACCOUNT:
@@ -392,14 +428,20 @@ func (r Result) String() string {
 		return "tefFAILURE"
 	case TefALREADY:
 		return "tefALREADY"
+	case TefBAD_ADD_AUTH:
+		return "tefBAD_ADD_AUTH"
 	case TefBAD_AUTH:
 		return "tefBAD_AUTH"
 	case TefBAD_LEDGER:
 		return "tefBAD_LEDGER"
+	case TefCREATED:
+		return "tefCREATED"
 	case TefEXCEPTION:
 		return "tefEXCEPTION"
 	case TefINTERNAL:
 		return "tefINTERNAL"
+	case TefNO_AUTH_REQUIRED:
+		return "tefNO_AUTH_REQUIRED"
 	case TefPAST_SEQ:
 		return "tefPAST_SEQ"
 	case TefWRONG_PRIOR:
@@ -416,6 +458,8 @@ func (r Result) String() string {
 		return "tefNOT_MULTI_SIGNING"
 	case TefBAD_AUTH_MASTER:
 		return "tefBAD_AUTH_MASTER"
+	case TefINVARIANT_FAILED:
+		return "tefINVARIANT_FAILED"
 	case TefTOO_BIG:
 		return "tefTOO_BIG"
 	case TefNO_TICKET:
@@ -428,10 +472,16 @@ func (r Result) String() string {
 		return "telLOCAL_ERROR"
 	case TelBAD_DOMAIN:
 		return "telBAD_DOMAIN"
+	case TelBAD_PATH_COUNT:
+		return "telBAD_PATH_COUNT"
 	case TelBAD_PUBLIC_KEY:
 		return "telBAD_PUBLIC_KEY"
+	case TelFAILED_PROCESSING:
+		return "telFAILED_PROCESSING"
 	case TelINSUF_FEE_P:
 		return "telINSUF_FEE_P"
+	case TelNO_DST_PARTIAL:
+		return "telNO_DST_PARTIAL"
 	case TelCAN_NOT_QUEUE:
 		return "telCAN_NOT_QUEUE"
 	case TelCAN_NOT_QUEUE_BALANCE:
@@ -528,6 +578,18 @@ func (r Result) String() string {
 		return "temBAD_NFTOKEN_TRANSFER_FEE"
 	case TemBAD_REGKEY:
 		return "temBAD_REGKEY"
+	case TemXCHAIN_EQUAL_DOOR_ACCOUNTS:
+		return "temXCHAIN_EQUAL_DOOR_ACCOUNTS"
+	case TemXCHAIN_BAD_PROOF:
+		return "temXCHAIN_BAD_PROOF"
+	case TemXCHAIN_BRIDGE_BAD_ISSUES:
+		return "temXCHAIN_BRIDGE_BAD_ISSUES"
+	case TemXCHAIN_BRIDGE_NONDOOR_OWNER:
+		return "temXCHAIN_BRIDGE_NONDOOR_OWNER"
+	case TemXCHAIN_BRIDGE_BAD_MIN_ACCOUNT_CREATE_AMOUNT:
+		return "temXCHAIN_BRIDGE_BAD_MIN_ACCOUNT_CREATE_AMOUNT"
+	case TemXCHAIN_BRIDGE_BAD_REWARD_AMOUNT:
+		return "temXCHAIN_BRIDGE_BAD_REWARD_AMOUNT"
 	case TerRETRY:
 		return "terRETRY"
 	case TerFUNDS_SPENT:

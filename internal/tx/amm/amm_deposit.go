@@ -134,15 +134,8 @@ func (a *AMMDeposit) Validate() error {
 
 	// Validate asset pair
 	// Reference: rippled AMMDeposit.cpp lines 100-106
-	if a.Asset.Currency == "" && a.Asset.Issuer == "" {
-		// XRP asset - OK
-	} else if a.Asset.Currency == "" {
-		return tx.Errorf(tx.TemMALFORMED, "Asset is invalid")
-	}
-	if a.Asset2.Currency == "" && a.Asset2.Issuer == "" {
-		// XRP asset - OK
-	} else if a.Asset2.Currency == "" {
-		return tx.Errorf(tx.TemMALFORMED, "Asset2 is invalid")
+	if err := validateAssetPair(a.Asset, a.Asset2); err != nil {
+		return err
 	}
 
 	// Amount and Amount2 cannot have the same issue
@@ -311,32 +304,49 @@ func (a *AMMDeposit) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 	}
 
-	// Check amounts if provided (authorization and freeze)
+	// Check amounts for authorization and freeze status.
 	// Reference: rippled AMMDeposit.cpp lines 279-341
-	if a.Amount != nil && !(flags&tfLPToken != 0) {
-		amtAsset := tx.Asset{Currency: a.Amount.Currency, Issuer: a.Amount.Issuer}
-		if result := requireAuth(ctx.View, amtAsset, accountID); result != tx.TesSUCCESS {
+	//
+	// For tfLPToken mode: check the AMM's pool asset balances (not tx Amount/Amount2).
+	// Reference: rippled lines 335-341 — checkAmount(amountBalance, false) / checkAmount(amount2Balance, false)
+	//
+	// For all other modes: check the tx Amount/Amount2 fields.
+	// Reference: rippled lines 327-334 — checkAmount(amount, true) / checkAmount(amount2, true)
+	checkFreezeForAsset := func(asset tx.Asset) tx.Result {
+		if result := requireAuth(ctx.View, asset, accountID); result != tx.TesSUCCESS {
 			return result
 		}
 		// Check AMM account freeze
-		if isFrozen(ctx.View, ammAccountID, amtAsset) {
+		if isFrozen(ctx.View, ammAccountID, asset) {
 			return tx.TecFROZEN
 		}
 		// Check individual freeze
-		if tx.IsIndividualFrozen(ctx.View, accountID, amtAsset) {
+		if tx.IsIndividualFrozen(ctx.View, accountID, asset) {
 			return tx.TecFROZEN
 		}
+		return tx.TesSUCCESS
 	}
-	if a.Amount2 != nil && !(flags&tfLPToken != 0) {
-		amt2Asset := tx.Asset{Currency: a.Amount2.Currency, Issuer: a.Amount2.Issuer}
-		if result := requireAuth(ctx.View, amt2Asset, accountID); result != tx.TesSUCCESS {
-			return result
+
+	if flags&tfLPToken != 0 {
+		// tfLPToken: check both AMM pool assets for freeze
+		if r := checkFreezeForAsset(a.Asset); r != tx.TesSUCCESS {
+			return r
 		}
-		if isFrozen(ctx.View, ammAccountID, amt2Asset) {
-			return tx.TecFROZEN
+		if r := checkFreezeForAsset(a.Asset2); r != tx.TesSUCCESS {
+			return r
 		}
-		if tx.IsIndividualFrozen(ctx.View, accountID, amt2Asset) {
-			return tx.TecFROZEN
+	} else {
+		if a.Amount != nil {
+			amtAsset := tx.Asset{Currency: a.Amount.Currency, Issuer: a.Amount.Issuer}
+			if r := checkFreezeForAsset(amtAsset); r != tx.TesSUCCESS {
+				return r
+			}
+		}
+		if a.Amount2 != nil {
+			amt2Asset := tx.Asset{Currency: a.Amount2.Currency, Issuer: a.Amount2.Issuer}
+			if r := checkFreezeForAsset(amt2Asset); r != tx.TesSUCCESS {
+				return r
+			}
 		}
 	}
 
@@ -344,11 +354,26 @@ func (a *AMMDeposit) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Reference: rippled AMMDeposit.cpp lines 353-362
 	ammAccountAddr, _ := encodeAccountID(ammAccountID)
 	lptCurrency := GenerateAMMLPTCurrency(a.Asset.Currency, a.Asset2.Currency)
+	// Validate LPTokenOut issue matches AMM's LP token issue.
+	// Reference: rippled AMMDeposit.cpp preclaim lines 343-349
+	// Compare against the AMM's stored LP token balance issue (currency only,
+	// since the conformance runner remaps issuer addresses).
+	if a.LPTokenOut != nil {
+		storedLPTCurrency := amm.LPTokenBalance.Currency
+		if a.LPTokenOut.Currency != storedLPTCurrency {
+			return tx.TemBAD_AMM_TOKENS
+		}
+	}
+
 	lptKey := keylet.Line(accountID, ammAccountID, lptCurrency)
 	lptExists, _ := ctx.View.Exists(lptKey)
-	if !lptExists {
-		// Account needs reserve for new LP token trustline
-		xrpLiquid := xrpLiquidBalance(ctx.View, accountID, 1)
+	// Check reserve for LP token trustline if the user doesn't currently hold any LP tokens.
+	// rippled uses ammLPHolds to check the actual LP balance (not just trust line existence).
+	// This matters when a user withdrew all LP tokens but the trust line still exists.
+	// Reference: rippled AMMDeposit.cpp preclaim lines 353-362
+	lpTokensHeld := ammLPHolds(ctx.View, amm, accountID)
+	if lpTokensHeld.IsZero() {
+		xrpLiquid := xrpLiquidBalanceWithReserves(ctx.View, accountID, 1, ctx.Config.ReserveBase, ctx.Config.ReserveIncrement)
 		if xrpLiquid <= 0 {
 			return TecINSUF_RESERVE_LINE
 		}
@@ -436,6 +461,37 @@ func (a *AMMDeposit) Apply(ctx *tx.ApplyContext) tx.Result {
 		depositAmount1 = getRoundedAsset(fixV1_3, assetBalance1, frac, true)
 		depositAmount2 = getRoundedAsset(fixV1_3, assetBalance2, frac, true)
 		lpTokensToIssue = tokensAdj
+
+		// Check deposit minimums: when Amount/Amount2 are specified with
+		// tfLPToken, they serve as minimum deposit amounts the user will accept.
+		// If the proportional deposit is less than the minimum, fail.
+		// Reference: rippled AMMDeposit.cpp deposit() lines 553-556
+		// Also: rippled equalDepositTokens passes amount/amount2 as depositMin/deposit2Min
+		//
+		// Map each tx Amount to the corresponding computed deposit amount.
+		// depositAmount1 corresponds to a.Asset, depositAmount2 to a.Asset2.
+		checkDepositMin := func(txAmt *tx.Amount) tx.Result {
+			if txAmt == nil || txAmt.IsZero() {
+				return tx.TesSUCCESS
+			}
+			amtAsset := tx.Asset{Currency: txAmt.Currency, Issuer: txAmt.Issuer}
+			var deposit tx.Amount
+			if matchesAssetByIssue(a.Asset, amtAsset) {
+				deposit = depositAmount1
+			} else {
+				deposit = depositAmount2
+			}
+			if isGreater(toIOUForCalc(*txAmt), toIOUForCalc(deposit)) {
+				return tx.TecAMM_FAILED
+			}
+			return tx.TesSUCCESS
+		}
+		if r := checkDepositMin(a.Amount); r != tx.TesSUCCESS {
+			return r
+		}
+		if r := checkDepositMin(a.Amount2); r != tx.TesSUCCESS {
+			return r
+		}
 
 	case flags&tfSingleAsset != 0:
 		// Single asset deposit (singleDeposit)

@@ -16,8 +16,9 @@ func TestNew(t *testing.T) {
 		if q.config.MaximumTxnPerAccount != 10 {
 			t.Errorf("MaximumTxnPerAccount = %d, want 10", q.config.MaximumTxnPerAccount)
 		}
-		if q.maxSize != cfg.QueueSizeMin {
-			t.Errorf("maxSize = %d, want %d", q.maxSize, cfg.QueueSizeMin)
+		// maxSize starts as nil (no limit), matching rippled's std::optional nullopt.
+		if q.maxSize != nil {
+			t.Errorf("maxSize = %v, want nil (no limit)", q.maxSize)
 		}
 	})
 
@@ -92,8 +93,9 @@ func TestTxQ_GetMetrics(t *testing.T) {
 	if metrics.ReferenceFeeLevel != BaseLevel {
 		t.Errorf("ReferenceFeeLevel = %d, want %d", metrics.ReferenceFeeLevel, BaseLevel)
 	}
-	if metrics.TxQMaxSize == nil || *metrics.TxQMaxSize != cfg.QueueSizeMin {
-		t.Errorf("TxQMaxSize = %v, want %d", metrics.TxQMaxSize, cfg.QueueSizeMin)
+	// maxSize starts as nil before any ledger close
+	if metrics.TxQMaxSize != nil {
+		t.Errorf("TxQMaxSize = %v, want nil (no limit)", metrics.TxQMaxSize)
 	}
 }
 
@@ -101,7 +103,8 @@ func TestTxQ_GetMetrics(t *testing.T) {
 func TestTxQ_IsFull(t *testing.T) {
 	cfg := DefaultConfig()
 	q := New(cfg)
-	q.maxSize = 100 // Size for testing percentage math
+	ms := uint32(100)
+	q.maxSize = &ms // Size for testing percentage math
 
 	// Create test candidates (100 items = 100% full)
 	for i := 0; i < 100; i++ {
@@ -261,7 +264,7 @@ func TestTxQ_SetMaxSize(t *testing.T) {
 	maxSize := q.maxSize
 	q.mu.Unlock()
 
-	if maxSize != 100 {
-		t.Errorf("maxSize = %d, want 100", maxSize)
+	if maxSize == nil || *maxSize != 100 {
+		t.Errorf("maxSize = %v, want 100", maxSize)
 	}
 }

@@ -60,12 +60,9 @@ func (a *AMMBid) Validate() error {
 	}
 
 	// Validate asset pair
-	if a.Asset.Currency == "" {
-		return tx.Errorf(tx.TemMALFORMED, "Asset is required")
-	}
-
-	if a.Asset2.Currency == "" {
-		return tx.Errorf(tx.TemMALFORMED, "Asset2 is required")
+	// Reference: rippled AMMBid.cpp preflight lines 48-53
+	if err := validateAssetPair(a.Asset, a.Asset2); err != nil {
+		return err
 	}
 
 	// Validate BidMin if present
@@ -159,8 +156,10 @@ func (a *AMMBid) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Get LP token issue for validation
 	// Reference: rippled AMMBid.cpp preclaim lines 137-160
-	lptCurrency := GenerateAMMLPTCurrency(amm.Asset.Currency, amm.Asset2.Currency)
-	ammAccountAddr, _ := encodeAccountID(amm.Account)
+	// Use lpTokens.issue() for comparison, matching rippled exactly:
+	//   bidMin->issue() != lpTokens.issue()
+	lptCurrency := lpTokens.Currency
+	lptIssuer := lpTokens.Issuer
 
 	// Get bid amounts from transaction
 	bidMin := zeroAmount(tx.Asset{})
@@ -169,20 +168,28 @@ func (a *AMMBid) Apply(ctx *tx.ApplyContext) tx.Result {
 	if a.BidMin != nil {
 		bidMin = *a.BidMin
 		// Validate that BidMin is LP tokens (not regular IOU)
-		if bidMin.Currency != lptCurrency || bidMin.Issuer != ammAccountAddr {
+		// Reference: rippled AMMBid.cpp preclaim line 141:
+		//   if (bidMin->issue() != lpTokens.issue())
+		if bidMin.Currency != lptCurrency || bidMin.Issuer != lptIssuer {
 			return tx.TemBAD_AMM_TOKENS
 		}
-		if isGreater(bidMin, lpTokens) || isGreater(bidMin, lptAMMBalance) {
+		// Reference: rippled AMMBid.cpp preclaim line 146:
+		//   if (*bidMin > lpTokens || *bidMin >= lpTokensBalance)
+		if isGreater(bidMin, lpTokens) || isGreaterOrEqual(bidMin, lptAMMBalance) {
 			return tx.TecAMM_INVALID_TOKENS
 		}
 	}
 	if a.BidMax != nil {
 		bidMax = *a.BidMax
 		// Validate that BidMax is LP tokens (not regular IOU)
-		if bidMax.Currency != lptCurrency || bidMax.Issuer != ammAccountAddr {
+		// Reference: rippled AMMBid.cpp preclaim line 156:
+		//   if (bidMax->issue() != lpTokens.issue())
+		if bidMax.Currency != lptCurrency || bidMax.Issuer != lptIssuer {
 			return tx.TemBAD_AMM_TOKENS
 		}
-		if isGreater(bidMax, lpTokens) || isGreater(bidMax, lptAMMBalance) {
+		// Reference: rippled AMMBid.cpp preclaim line 161:
+		//   if (*bidMax > lpTokens || *bidMax >= lpTokensBalance)
+		if isGreater(bidMax, lpTokens) || isGreaterOrEqual(bidMax, lptAMMBalance) {
 			return tx.TecAMM_INVALID_TOKENS
 		}
 	}
@@ -322,7 +329,7 @@ func (a *AMMBid) Apply(ctx *tx.ApplyContext) tx.Result {
 		// Reference: rippled AMMBid.cpp:355-360 — accountSend(account_, previousOwner, refund)
 		if !refund.IsZero() {
 			refundWithIssue := state.NewIssuedAmountFromValue(
-				refund.Mantissa(), refund.Exponent(), lptCurrency, ammAccountAddr)
+				refund.Mantissa(), refund.Exponent(), lptCurrency, lptIssuer)
 			if r := transferLPTokens(ctx.View, accountID, amm.AuctionSlot.Account, amm.Account, refundWithIssue); r != tx.TesSUCCESS {
 				return r
 			}
@@ -337,7 +344,7 @@ func (a *AMMBid) Apply(ctx *tx.ApplyContext) tx.Result {
 	}
 	if !burn.IsZero() {
 		burnWithIssue := state.NewIssuedAmountFromValue(
-			burn.Mantissa(), burn.Exponent(), lptCurrency, ammAccountAddr)
+			burn.Mantissa(), burn.Exponent(), lptCurrency, lptIssuer)
 		if r := redeemLPTokens(ctx.View, accountID, amm.Account, burnWithIssue); r != tx.TesSUCCESS {
 			return r
 		}

@@ -70,15 +70,15 @@ func IsIndividualFrozen(view LedgerView, accountID [20]byte, asset Asset) bool {
 		return false
 	}
 
-	// Check if the issuer has frozen the account's side
-	// The issuer is on the opposite side of the account in the trustline
-	accountIsLow := state.CompareAccountIDsForLine(accountID, issuerID) < 0
-	if accountIsLow {
-		// Account is low, issuer is high - check if high side froze low side
-		return (rs.Flags & state.LsfLowFreeze) != 0
+	// Check if the issuer has frozen the trust line.
+	// Reference: rippled View.cpp isFrozen() line 264:
+	//   sle->isFlag((issuer > account) ? lsfHighFreeze : lsfLowFreeze)
+	// The freeze flag is on the ISSUER's side of the trust line.
+	issuerIsHigh := state.CompareAccountIDsForLine(issuerID, accountID) > 0
+	if issuerIsHigh {
+		return (rs.Flags & state.LsfHighFreeze) != 0
 	}
-	// Account is high, issuer is low - check if low side froze high side
-	return (rs.Flags & state.LsfHighFreeze) != 0
+	return (rs.Flags & state.LsfLowFreeze) != 0
 }
 
 // IsGlobalFrozen checks if an issuer has globally frozen assets.
