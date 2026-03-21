@@ -332,13 +332,17 @@ func (a *AMMDeposit) Apply(ctx *tx.ApplyContext) tx.Result {
 		if checkBalance {
 			isXRP := amtAsset.Currency == "" || amtAsset.Currency == "XRP"
 			if isXRP {
-				// Check XRP liquid balance including reserve for LP trustline
+				// Check XRP liquid balance including reserve for LP trustline.
+				// In rippled, this runs in preclaim (before fee deduction). Use
+				// PriorBalance to match rippled's preclaim behavior.
 				// Reference: rippled AMMDeposit.cpp preclaim balance lambda lines 220-231
-				extraReserve := 0
+				extraOwner := uint64(0)
 				if !lptExists {
-					extraReserve = 1
+					extraOwner = 1
 				}
-				xrpLiquid := xrpLiquidBalanceWithReserves(ctx.View, accountID, extraReserve, ctx.Config.ReserveBase, ctx.Config.ReserveIncrement)
+				priorBal := ctx.PriorBalance(a.GetCommon().Fee)
+				reserve := ctx.Config.ReserveBase + uint64(ctx.Account.OwnerCount+uint32(extraOwner))*ctx.Config.ReserveIncrement
+				xrpLiquid := int64(priorBal) - int64(reserve)
 				if xrpLiquid < amt.Drops() {
 					if lptExists {
 						return TecUNFUNDED_AMM
@@ -397,8 +401,10 @@ func (a *AMMDeposit) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Reference: rippled AMMDeposit.cpp preclaim lines 353-362
 	lpTokensHeld := ammLPHolds(ctx.View, amm, accountID)
 	if lpTokensHeld.IsZero() {
-		xrpLiquid := xrpLiquidBalanceWithReserves(ctx.View, accountID, 1, ctx.Config.ReserveBase, ctx.Config.ReserveIncrement)
-		if xrpLiquid <= 0 {
+		// Use PriorBalance to match rippled's preclaim (before fee deduction).
+		priorBal := ctx.PriorBalance(a.GetCommon().Fee)
+		reserve := ctx.Config.ReserveBase + uint64(ctx.Account.OwnerCount+1)*ctx.Config.ReserveIncrement
+		if priorBal < reserve {
 			return TecINSUF_RESERVE_LINE
 		}
 	}

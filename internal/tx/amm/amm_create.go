@@ -158,8 +158,13 @@ func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	// Check reserve for LP token trustline
 	// Reference: rippled AMMCreate.cpp line 145-151
-	// The account needs enough XRP for the reserve after creating the LP trustline
-	xrpLiquid := xrpLiquidBalanceWithReserves(ctx.View, accountID, 1, ctx.Config.ReserveBase, ctx.Config.ReserveIncrement)
+	// In rippled, this check runs in preclaim (before fee deduction). In our engine,
+	// Apply() runs after the fee is deducted. Use PriorBalance to match rippled's
+	// preclaim behavior.
+	priorBalance := ctx.PriorBalance(a.GetCommon().Fee)
+	ownerCount := ctx.Account.OwnerCount
+	reserveNeeded := ctx.Config.ReserveBase + uint64(ownerCount+1)*ctx.Config.ReserveIncrement
+	xrpLiquid := int64(priorBalance) - int64(reserveNeeded)
 	if xrpLiquid <= 0 {
 		return TecINSUF_RESERVE_LINE
 	}
