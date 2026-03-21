@@ -22,8 +22,8 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/ledger/state"
 	jtx "github.com/LeJamon/goXRPLd/internal/testing"
 	"github.com/LeJamon/goXRPLd/internal/tx"
-	"github.com/LeJamon/goXRPLd/internal/tx/amm"
 	_ "github.com/LeJamon/goXRPLd/internal/tx/all"
+	"github.com/LeJamon/goXRPLd/internal/tx/amm"
 	"github.com/LeJamon/goXRPLd/internal/tx/trustset"
 	"github.com/LeJamon/goXRPLd/internal/txq"
 )
@@ -293,10 +293,10 @@ type initFeeConfig struct {
 }
 
 var txqInitFeeLookup = map[string]initFeeConfig{
-	"multi tx per account":       {BaseFee: 10, ReserveBase: 200, ReserveIncrement: 50, ApplyAfterStep: 257},
-	"In-flight balance checks":   {BaseFee: 10, ReserveBase: 200, ReserveIncrement: 50, ApplyAfterStep: 257},
-	"unexpected balance change":  {BaseFee: 10, ReserveBase: 200, ReserveIncrement: 50, ApplyAfterStep: 257},
-	"Zero reference fee":         {BaseFee: 0, ReserveBase: 0, ReserveIncrement: 0, ApplyAfterStep: 257},
+	"multi tx per account":      {BaseFee: 10, ReserveBase: 200, ReserveIncrement: 50, ApplyAfterStep: 257},
+	"In-flight balance checks":  {BaseFee: 10, ReserveBase: 200, ReserveIncrement: 50, ApplyAfterStep: 257},
+	"unexpected balance change": {BaseFee: 10, ReserveBase: 200, ReserveIncrement: 50, ApplyAfterStep: 257},
+	"Zero reference fee":        {BaseFee: 0, ReserveBase: 0, ReserveIncrement: 0, ApplyAfterStep: 257},
 }
 
 // txqTimeLeapLookup maps TxQ fixture test case names to the step indices
@@ -313,10 +313,10 @@ var txqTimeLeapLookup = map[string][]int{
 	"zero transaction fee": {2, 4},
 	"scaling":              {150, 151, 152, 153, 203},
 	// initFee pattern: 255 close steps + 2 tx steps + 1 time-leap close at step 257
-	"multi tx per account":       {257},
-	"In-flight balance checks":   {257},
-	"unexpected balance change":  {257},
-	"Zero reference fee":         {257},
+	"multi tx per account":      {257},
+	"In-flight balance checks":  {257},
+	"unexpected balance change": {257},
+	"Zero reference fee":        {257},
 }
 
 // RunFixture loads and executes a single fixture file.
@@ -1539,8 +1539,8 @@ func prescanAMMAddresses(steps []Step) (map[string]bool, []ammPair, map[string]b
 	// Special addresses that should never be remapped.
 	specialAddrs := map[string]bool{
 		"rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh": true, // genesis/root
-		"rrrrrrrrrrrrrrrrrrrrrhoLvTp":         true, // ACCOUNT_ZERO
-		"rrrrrrrrrrrrrrrrrrrrBZbvji":          true, // ACCOUNT_ONE / NaN account
+		"rrrrrrrrrrrrrrrrrrrrrhoLvTp":        true, // ACCOUNT_ZERO
+		"rrrrrrrrrrrrrrrrrrrrBZbvji":         true, // ACCOUNT_ONE / NaN account
 	}
 
 	for _, step := range steps {
