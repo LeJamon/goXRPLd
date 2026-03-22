@@ -52,10 +52,7 @@ func (m *AccountChannelsMethod) Handle(ctx *types.RpcContext, params json.RawMes
 	)
 	if err != nil {
 		if err.Error() == "account not found" {
-			return nil, &types.RpcError{
-				Code:    types.RpcACT_NOT_FOUND,
-				Message: "Account not found.",
-			}
+			return nil, types.RpcErrorActNotFound("Account not found.")
 		}
 		// Handle malformed destination_account address
 		if len(err.Error()) > 32 && err.Error()[:32] == "invalid destination_account addr" {

@@ -360,17 +360,14 @@ func (m *LedgerEntryMethod) Handle(ctx *types.RpcContext, params json.RawMessage
 	}
 
 	if !keySet {
-		return nil, types.RpcErrorInvalidParams("Must specify object to look up")
+		return nil, types.RpcErrorUnknownOption("Must specify object to look up")
 	}
 
 	// Get ledger entry
 	result, err := types.Services.Ledger.GetLedgerEntry(entryKey, ledgerIndex)
 	if err != nil {
 		if err.Error() == "entry not found" {
-			return nil, &types.RpcError{
-				Code:    21,
-				Message: "Requested ledger entry not found.",
-			}
+			return nil, types.RpcErrorEntryNotFound("Requested ledger entry not found.")
 		}
 		return nil, types.RpcErrorInternal("Failed to get ledger entry: " + err.Error())
 	}

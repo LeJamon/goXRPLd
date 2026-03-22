@@ -108,10 +108,7 @@ func (m *AMMInfoMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (i
 	// Get the AMM entry
 	ammEntry, err := types.Services.Ledger.GetLedgerEntry(ammKey, ledgerIndex)
 	if err != nil {
-		return nil, &types.RpcError{
-			Code:    19,
-			Message: "AMM not found",
-		}
+		return nil, types.RpcErrorActNotFound("AMM not found")
 	}
 
 	// Decode the AMM entry

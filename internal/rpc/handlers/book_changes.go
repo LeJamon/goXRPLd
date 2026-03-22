@@ -62,6 +62,16 @@ func (m *BookChangesMethod) Handle(ctx *types.RpcContext, params json.RawMessage
 
 	targetLedger, err := types.Services.Ledger.GetLedgerBySequence(ledgerSeq)
 	if err != nil {
+		// For the current (open) ledger, return empty changes since no
+		// transactions have been finalized yet.
+		li := request.LedgerIndex.String()
+		if li == "current" || li == "" {
+			return map[string]interface{}{
+				"type":         "bookChanges",
+				"ledger_index": ledgerSeq,
+				"changes":      []interface{}{},
+			}, nil
+		}
 		return nil, types.RpcErrorLgrNotFound("Ledger not found")
 	}
 

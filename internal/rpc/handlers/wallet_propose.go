@@ -10,6 +10,7 @@ import (
 	addresscodec "github.com/LeJamon/goXRPLd/codec/addresscodec"
 	"github.com/LeJamon/goXRPLd/crypto/common"
 	"github.com/LeJamon/goXRPLd/crypto/ed25519"
+	"github.com/LeJamon/goXRPLd/crypto/rfc1751"
 	"github.com/LeJamon/goXRPLd/crypto/secp256k1"
 	"github.com/LeJamon/goXRPLd/internal/rpc/types"
 )
@@ -151,12 +152,14 @@ func (m *WalletProposeMethod) Handle(ctx *types.RpcContext, params json.RawMessa
 		return nil, types.RpcErrorInternal("Failed to encode public key: " + err.Error())
 	}
 
+	// Encode seed as RFC-1751 human-readable words (master_key)
+	masterKey, _ := rfc1751.SeedToEnglish(entropy)
+
 	// Add passphrase warning matching rippled logic
 	// rippled skips warning if passphrase equals any seed encoding
 	seedHexStr := strings.ToUpper(hex.EncodeToString(entropy))
 	if passphraseUsed {
-		// TODO: add master_key (RFC1751) comparison when rfc1751 dictionary is complete
-		if request.Passphrase != encodedSeed && request.Passphrase != seedHexStr {
+		if request.Passphrase != encodedSeed && request.Passphrase != seedHexStr && request.Passphrase != masterKey {
 			entropyBits := estimateEntropy(request.Passphrase)
 			if entropyBits < 80.0 {
 				warning = "This wallet was generated using a user-supplied passphrase that has low entropy and is vulnerable to brute-force attacks."
@@ -168,9 +171,9 @@ func (m *WalletProposeMethod) Handle(ctx *types.RpcContext, params json.RawMessa
 
 	// Build response matching rippled format
 	response := map[string]interface{}{
-		"account_id": accountID,
-		"key_type":   keyType,
-		// TODO: "master_key" (RFC1751 encoding) — requires rfc1751 dictionary to be complete
+		"account_id":      accountID,
+		"key_type":        keyType,
+		"master_key":      masterKey,
 		"master_seed":     encodedSeed,
 		"master_seed_hex": seedHexStr,
 		"public_key":      encodedPublicKey,

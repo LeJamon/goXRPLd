@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/hex"
 	"encoding/json"
 
 	"github.com/LeJamon/goXRPLd/internal/rpc/types"
@@ -40,6 +41,14 @@ func (m *BookOffersMethod) Handle(ctx *types.RpcContext, params json.RawMessage)
 	takerPays, err := ParseAmountFromJSON(request.TakerPays)
 	if err != nil {
 		return nil, types.RpcErrorInvalidParams("Invalid taker_pays: " + err.Error())
+	}
+
+	// Validate currencies (rippled rejects non-standard currency codes)
+	if rpcErr := validateCurrency(takerPays.Currency); rpcErr != nil {
+		return nil, rpcErr
+	}
+	if rpcErr := validateCurrency(takerGets.Currency); rpcErr != nil {
+		return nil, rpcErr
 	}
 
 	// Determine ledger index to use
@@ -102,4 +111,22 @@ func ParseAmountFromJSON(data json.RawMessage) (types.Amount, error) {
 		Issuer:   iouAmount.Issuer,
 		Value:    iouAmount.Value,
 	}, nil
+}
+
+// validateCurrency checks that a currency code is valid per rippled rules:
+// empty or "XRP" (native), exactly 3 characters (ISO), or exactly 40 hex characters.
+// Reference: rippled UintTypes.cpp to_currency()
+func validateCurrency(currency string) *types.RpcError {
+	if currency == "" || currency == "XRP" {
+		return nil
+	}
+	if len(currency) == 3 {
+		return nil
+	}
+	if len(currency) == 40 {
+		if _, err := hex.DecodeString(currency); err == nil {
+			return nil
+		}
+	}
+	return types.RpcErrorSrcCurMalformed("Source currency is malformed.")
 }
