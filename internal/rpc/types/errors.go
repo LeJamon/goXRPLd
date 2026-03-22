@@ -278,3 +278,33 @@ func RpcErrorNotImpl() *RpcError {
 func RpcErrorOracleMalformed() *RpcError {
 	return NewRpcError(RpcORACLE_MALFORMED, "oracleMalformed", "oracleMalformed", "Oracle request is malformed.")
 }
+
+// RpcErrorEntryNotFound returns an error when a ledger entry is not found
+// (matches rippled "entryNotFound", code 21).
+func RpcErrorEntryNotFound(message string) *RpcError {
+	return NewRpcError(RpcACT_CHANNELS, "entryNotFound", "entryNotFound", message)
+}
+
+// RpcErrorUnknownOption returns an error when no valid selector is provided
+// (matches rippled "unknownOption", code -1).
+func RpcErrorUnknownOption(message string) *RpcError {
+	return NewRpcError(RpcUNKNOWN, "unknownOption", "unknownOption", message)
+}
+
+// RpcErrorSrcActMissing returns an error when the source account is not provided
+// (matches rippled rpcSRC_ACT_MISSING, code 51, token "srcActMissing").
+func RpcErrorSrcActMissing(message string) *RpcError {
+	return NewRpcError(RpcSRC_ACT_NOT_FOUND, "srcActMissing", "srcActMissing", message)
+}
+
+// RpcErrorSrcCurMalformed returns an error when a source currency is malformed
+// (matches rippled "srcCurMalformed").
+func RpcErrorSrcCurMalformed(message string) *RpcError {
+	return NewRpcError(RpcUNKNOWN, "srcCurMalformed", "srcCurMalformed", message)
+}
+
+// RpcErrorDstActNotFound returns an error when the destination account is not found
+// (matches rippled rpcDST_ACT_NOT_FOUND, code 52, token "dstActNotFound").
+func RpcErrorDstActNotFound(message string) *RpcError {
+	return NewRpcError(RpcDST_ACT_NOT_FOUND, "dstActNotFound", "dstActNotFound", message)
+}

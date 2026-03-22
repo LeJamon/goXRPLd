@@ -101,10 +101,7 @@ func (m *AccountInfoMethod) Handle(ctx *types.RpcContext, params json.RawMessage
 	info, err := types.Services.Ledger.GetAccountInfo(request.Account, ledgerIndex)
 	if err != nil {
 		if err.Error() == "account not found" {
-			return nil, &types.RpcError{
-				Code:    19,
-				Message: "Account not found.",
-			}
+			return nil, types.RpcErrorActNotFound("Account not found.")
 		}
 		return nil, types.RpcErrorInternal("Failed to get account info: " + err.Error())
 	}

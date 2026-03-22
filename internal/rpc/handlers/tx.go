@@ -48,7 +48,7 @@ func (m *TxMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (interf
 	// Parse the transaction hash
 	txHashBytes, err := hex.DecodeString(request.Transaction)
 	if err != nil || len(txHashBytes) != 32 {
-		return nil, types.RpcErrorInvalidParams("Invalid transaction hash")
+		return nil, types.RpcErrorNotImpl()
 	}
 
 	var txHash [32]byte

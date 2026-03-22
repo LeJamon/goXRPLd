@@ -8,6 +8,7 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/rpc/types"
 	"github.com/LeJamon/goXRPLd/internal/tx/payment"
 	"github.com/LeJamon/goXRPLd/internal/tx/payment/pathfinder"
+	"github.com/LeJamon/goXRPLd/keylet"
 )
 
 // ripplePathFindRequest represents the ripple_path_find RPC request params.
@@ -52,8 +53,7 @@ func (m *RipplePathFindMethod) Handle(ctx *types.RpcContext, params json.RawMess
 
 	// Validate required fields
 	if request.SourceAccount == "" {
-		return nil, types.NewRpcError(types.RpcINVALID_PARAMS, "invalidParams", "invalidParams",
-			"Missing field 'source_account'")
+		return nil, types.RpcErrorSrcActMissing("Source account not provided.")
 	}
 	if request.DestinationAccount == "" {
 		return nil, types.NewRpcError(types.RpcINVALID_PARAMS, "invalidParams", "invalidParams",
@@ -108,6 +108,15 @@ func (m *RipplePathFindMethod) Handle(ctx *types.RpcContext, params json.RawMess
 	if err != nil {
 		return nil, types.NewRpcError(types.RpcNO_CURRENT, "noCurrent", "noCurrent",
 			"No closed ledger available")
+	}
+
+	// Check destination account exists for non-XRP destination amounts.
+	// Reference: rippled PathRequest.cpp lines 199-206
+	if !dstAmount.IsNative() {
+		exists, _ := view.Exists(keylet.Account(dstAccount))
+		if !exists {
+			return nil, types.RpcErrorActNotFound("Destination account not found.")
+		}
 	}
 
 	// Run pathfinding
