@@ -343,8 +343,11 @@ func RunFixture(t *testing.T, fixturePath string) {
 		t.Fatalf("Failed to parse fixture %s: %v", fixturePath, err)
 	}
 
-	// Detect TxQ suites by fixture path
-	isTxQSuite := strings.Contains(fixturePath, "/TxQ")
+	// Detect TxQ suites by fixture path.
+	// Transaction_ordering also needs the real TxQ for fee escalation
+	// to correctly limit how many queued transactions get applied.
+	isTxQSuite := strings.Contains(fixturePath, "/TxQ") ||
+		strings.Contains(fixturePath, "/Transaction_ordering")
 
 	// Look up per-fixture MinimumTxnInLedgerStandalone
 	var minTxn uint32
