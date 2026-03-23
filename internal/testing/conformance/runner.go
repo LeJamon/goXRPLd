@@ -405,7 +405,7 @@ func RunFixture(t *testing.T, fixturePath string) {
 			}
 			r.setupEnv(*envCfg)
 			for _, prereq := range chain {
-				r.replaySteps(prereq.Steps)
+				r.replaySteps(prereq.Steps, prereq.DependsOn != "")
 			}
 		} else {
 			// Chain broken — fall back to defaults
@@ -526,20 +526,53 @@ func loadDependsOnChain(t *testing.T, fixturePath string, firstDep string) []Fix
 // replaySteps executes fixture steps silently (without asserting TER codes
 // or post-state). This is used to establish prerequisite ledger state for
 // continuation fixtures.
-func (r *runner) replaySteps(steps []Step) {
-	// Skip steps that belong to a prior rippled env scope. When a fixture
-	// captures both tail steps from the old scope (tx/close) and setup
-	// steps for the new scope (fund), replaying the old-scope steps
-	// advances the ledger sequence unnecessarily, causing accounts to get
-	// higher-than-expected starting sequences (tefPAST_SEQ).
+func (r *runner) replaySteps(steps []Step, isContinuation bool) {
+	// Determine the start index for replay.
 	//
-	// Detect the scope boundary: the first fund or env_reset step marks
-	// the beginning of the current scope. Everything before it is from the
-	// prior scope and should be skipped.
-	startIdx := findScopeBoundary(steps)
+	// For root fixtures (isContinuation=false): skip steps from a prior
+	// env scope. When a fixture has tx/close steps followed by fund steps,
+	// the tx/close steps are remnants from the old scope. The fund steps
+	// mark the beginning of the current scope.
+	//
+	// For continuation fixtures (isContinuation=true, has depends_on):
+	// the tx steps at the beginning ARE the current scope's content —
+	// they extend the predecessor's state. Replay from the beginning.
+	// Trailing fund steps may set up the next scope (env reset + re-fund),
+	// which is fine — the next fixture in the chain expects that state.
+	startIdx := 0
+	if !isContinuation {
+		startIdx = findScopeBoundary(steps)
+	}
 
+	hadReplayTx := false
 	for i := startIdx; i < len(steps); i++ {
 		step := steps[i]
+
+		// For continuation fixtures, detect scope boundary: when fund
+		// steps re-create already-existing accounts after tx steps,
+		// reset the env (matching the main execution loop behavior).
+		if isContinuation && step.Op == "fund" && hadReplayTx && step.Address != "" {
+			// Check by account name first, then by address
+			var foundAcc *jtx.Account
+			if acc, exists := r.accounts[step.Account]; exists {
+				foundAcc = acc
+			} else {
+				// Also check by address (accounts may be registered by address)
+				for _, acc := range r.accounts {
+					if acc.Address == step.Address {
+						foundAcc = acc
+						break
+					}
+				}
+			}
+			if foundAcc != nil && r.env.Exists(foundAcc) {
+				r.accounts = make(map[string]*jtx.Account)
+				r.ammAddrMap = make(map[string]string)
+				r.setupEnv(r.lastEnvCfg)
+				hadReplayTx = false
+			}
+		}
+
 		switch step.Op {
 		case "fund":
 			r.execFund(i, step)
@@ -548,6 +581,7 @@ func (r *runner) replaySteps(steps []Step) {
 		case "close":
 			r.execClose(i, step)
 		case "tx":
+			hadReplayTx = true
 			r.replayTx(step)
 		case "retry":
 			// Retry ops are post-close observations of queued txns.
@@ -1151,12 +1185,36 @@ func (r *runner) execModifyState(stepIdx int, step Step) {
 			r.t.Fatalf("Step %d (modify_state): unknown account %q", stepIdx, ms.Account)
 		}
 	} else {
-		// No account specified — find the first non-master registered account.
-		masterAddr := "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"
-		for _, a := range r.accounts {
-			if a.Address != masterAddr {
-				acc = a
-				break
+		// No account specified — find the account from the most recent
+		// preceding tx step. This correctly targets the account whose
+		// directory was just modified (e.g., after TicketCreate fills it).
+		for i := stepIdx - 1; i >= 0; i-- {
+			s := r.fixtureSteps[i]
+			if s.Op == "tx" && s.TxJSON != nil {
+				var txj map[string]interface{}
+				if json.Unmarshal(s.TxJSON, &txj) == nil {
+					if addr, ok := txj["Account"].(string); ok && addr != "" {
+						for _, a := range r.accounts {
+							if a.Address == addr {
+								acc = a
+								break
+							}
+						}
+						if acc != nil {
+							break
+						}
+					}
+				}
+			}
+		}
+		// Fallback: first non-master account
+		if acc == nil {
+			masterAddr := "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"
+			for _, a := range r.accounts {
+				if a.Address != masterAddr {
+					acc = a
+					break
+				}
 			}
 		}
 		if acc == nil {
