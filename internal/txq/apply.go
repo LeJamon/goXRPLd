@@ -217,8 +217,11 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 	}
 
 	// Check per-account limit (unless replacing).
-	// Reference: TxQ.cpp:425-447
-	if replacingCandidate == nil && exists && uint32(acctTxCount) >= q.config.MaximumTxnPerAccount {
+	// Reference: TxQ.cpp:419-447 (canBeHeld)
+	// Note: rippled uses getTxnCount() (TOTAL count including stale) for the
+	// per-account limit, not the relevant count. This ensures stale transactions
+	// still count toward the limit.
+	if replacingCandidate == nil && exists && uint32(aq.Count()) >= q.config.MaximumTxnPerAccount {
 		// Allow if this fills the next sequence gap in the account's queue.
 		nextSeq := q.getNextQueuableSeq(aq, acctSeq)
 		if !seqProxy.IsTicket && seqProxy.Value == nextSeq {
