@@ -553,10 +553,12 @@ func computeConsequences(txn tx.Transaction, seqProxy SeqProxy) TxConsequences {
 		cons.FollowingSeq = seqProxy
 	} else {
 		nextSeq := seqProxy.Value + 1
-		// TicketCreate consumes TicketCount additional sequences.
-		// Reference: TicketCreate.cpp makeTxConsequences
+		// TicketCreate consumes TicketCount sequences (including the tx itself).
+		// Reference: TicketCreate.cpp makeTxConsequences returns
+		// TxConsequences{tx, ticketCount}, and followingSeq() does
+		// seqProx.advanceBy(sequencesConsumed) = seq + ticketCount.
 		if tc, ok := txn.(*ticket.TicketCreate); ok && tc.TicketCount > 0 {
-			nextSeq = seqProxy.Value + 1 + tc.TicketCount
+			nextSeq = seqProxy.Value + tc.TicketCount
 		}
 		cons.FollowingSeq = NewSeqProxySequence(nextSeq)
 	}
