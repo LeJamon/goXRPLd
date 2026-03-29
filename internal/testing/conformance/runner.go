@@ -267,13 +267,13 @@ type ammPair struct {
 // rippled makeConfig() pattern where each test can override specific
 // transaction_queue section values.
 type txqTestConfig struct {
-	MinTxn                        uint32  // minimum_txn_in_ledger_standalone (always set)
-	LedgersInQueue                *uint32 // nil = use makeConfig default (2)
-	QueueSizeMin                  *uint32 // nil = use makeConfig default (2)
-	MaximumTxnPerAccount          *uint32 // nil = use rippled default (10)
+	MinTxn                         uint32  // minimum_txn_in_ledger_standalone (always set)
+	LedgersInQueue                 *uint32 // nil = use makeConfig default (2)
+	QueueSizeMin                   *uint32 // nil = use makeConfig default (2)
+	MaximumTxnPerAccount           *uint32 // nil = use rippled default (10)
 	NormalConsensusIncreasePercent *uint32 // nil = use makeConfig default (0)
-	SlowConsensusDecreasePercent  *uint32 // nil = use rippled default (50)
-	TargetTxnInLedger             *uint32 // nil = use rippled default (256)
+	SlowConsensusDecreasePercent   *uint32 // nil = use rippled default (50)
+	TargetTxnInLedger              *uint32 // nil = use rippled default (256)
 }
 
 // Helper to create *uint32 from a literal.
@@ -284,23 +284,23 @@ func u32(v uint32) *uint32 { return &v }
 // Each test's makeConfig overrides are faithfully transcribed here.
 var txqConfigLookup = map[string]txqTestConfig{
 	// Default makeConfig tests (only minimum_txn_in_ledger_standalone differs)
-	"queue sequence":                               {MinTxn: 3},
-	"queue ticket":                                 {MinTxn: 3},
-	"queue tec":                                    {MinTxn: 2},
-	"local tx retry":                               {MinTxn: 2},
-	"last ledger sequence":                         {MinTxn: 2},
-	"zero transaction fee":                         {MinTxn: 2},
-	"queued tx fails":                              {MinTxn: 2},
-	"multi tx per account":                         {MinTxn: 3},
-	"tie breaking":                                 {MinTxn: 4},
-	"acct tx id":                                   {MinTxn: 1},
-	"maximum tx":                                   {MinTxn: 2},
-	"unexpected balance change":                    {MinTxn: 3},
-	"blockers sequence":                            {MinTxn: 3},
-	"blockers ticket":                              {MinTxn: 3},
-	"In-flight balance checks":                     {MinTxn: 3},
-	"acct in queue but empty":                      {MinTxn: 3},
-	"Autofilled sequence should account for TxQ":   {MinTxn: 6},
+	"queue sequence":            {MinTxn: 3},
+	"queue ticket":              {MinTxn: 3},
+	"queue tec":                 {MinTxn: 2},
+	"local tx retry":            {MinTxn: 2},
+	"last ledger sequence":      {MinTxn: 2},
+	"zero transaction fee":      {MinTxn: 2},
+	"queued tx fails":           {MinTxn: 2},
+	"multi tx per account":      {MinTxn: 3},
+	"tie breaking":              {MinTxn: 4},
+	"acct tx id":                {MinTxn: 1},
+	"maximum tx":                {MinTxn: 2},
+	"unexpected balance change": {MinTxn: 3},
+	"blockers sequence":         {MinTxn: 3},
+	"blockers ticket":           {MinTxn: 3},
+	"In-flight balance checks":  {MinTxn: 3},
+	"acct in queue but empty":   {MinTxn: 3},
+	"Autofilled sequence should account for TxQ": {MinTxn: 6},
 	"account info":                                 {MinTxn: 3},
 	"server info":                                  {MinTxn: 3},
 	"server subscribe":                             {MinTxn: 3},
@@ -334,11 +334,11 @@ var txqConfigLookup = map[string]txqTestConfig{
 		MaximumTxnPerAccount: u32(30),
 	},
 	"scaling": {
-		MinTxn:                        3,
-		MaximumTxnPerAccount:          u32(200),
+		MinTxn:                         3,
+		MaximumTxnPerAccount:           u32(200),
 		NormalConsensusIncreasePercent: u32(25),
-		SlowConsensusDecreasePercent:  u32(50),
-		TargetTxnInLedger:             u32(10),
+		SlowConsensusDecreasePercent:   u32(50),
+		TargetTxnInLedger:              u32(10),
 	},
 	"Re-execute preflight": {
 		MinTxn:               1,
