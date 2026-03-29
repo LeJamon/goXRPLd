@@ -34,9 +34,19 @@ func (bi *BookIndex) Build() {
 	}
 	bi.built = true
 
-	// Walk all ledger entries looking for offers
+	// Walk all ledger entries looking for offers.
+	// The recover() safety net ensures that if any ledger entry causes a panic
+	// during parsing (e.g., IOUAmount overflow from malformed data), the entry
+	// is skipped rather than crashing the entire RPC handler goroutine.
 	seen := make(map[[2]payment.Issue]bool)
-	_ = bi.ledger.ForEach(func(key [32]byte, data []byte) bool {
+	_ = bi.ledger.ForEach(func(key [32]byte, data []byte) (cont bool) {
+		defer func() {
+			if r := recover(); r != nil {
+				// Skip this entry — malformed data should not crash the server
+				cont = true
+			}
+		}()
+
 		offer, err := state.ParseLedgerOffer(data)
 		if err != nil {
 			return true // not an offer, continue

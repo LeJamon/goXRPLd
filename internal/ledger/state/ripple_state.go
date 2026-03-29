@@ -263,6 +263,24 @@ func ParseIOUAmountBinary(data []byte) (Amount, error) {
 		mantissa = -mantissa
 	}
 
+	// Validate bounds before calling NewIssuedAmountFromValue, which panics
+	// on overflow (matching rippled's Throw<std::overflow_error>). When parsing
+	// binary data from the ledger, a panic would crash the server. Return an
+	// error instead for out-of-range values that normalization cannot fix.
+	//
+	// The raw 54-bit mantissa can be up to ~1.8e16. Normalization divides by 10
+	// until mantissa <= MaxMantissa (9.999e15), incrementing exponent each time.
+	// If mantissa > MaxMantissa and exponent >= MaxExponent, normalization would
+	// need to increment exponent past MaxExponent, causing overflow. Similarly,
+	// if exponent already exceeds MaxExponent, it will always overflow.
+	absMantissa := mantissa
+	if absMantissa < 0 {
+		absMantissa = -absMantissa
+	}
+	if absMantissa != 0 && (exponent > MaxExponent || (exponent >= MaxExponent && absMantissa > MaxMantissa)) {
+		return Amount{}, fmt.Errorf("IOU amount overflow: mantissa %d exponent %d exceeds representable range", mantissa, exponent)
+	}
+
 	return NewIssuedAmountFromValue(mantissa, exponent, currency, issuer), nil
 }
 
