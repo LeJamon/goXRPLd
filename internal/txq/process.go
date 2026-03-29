@@ -84,6 +84,15 @@ func (q *TxQ) SetMaxSize(maxSize uint32) {
 	q.maxSize = &maxSize
 }
 
+// ResetMaxSize resets the maximum queue size to nil (no limit).
+// This matches rippled's initial state where maxSize_ is std::nullopt
+// before the first processClosedLedger call.
+func (q *TxQ) ResetMaxSize() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.maxSize = nil
+}
+
 // GetConfig returns the queue configuration.
 func (q *TxQ) GetConfig() Config {
 	return q.config

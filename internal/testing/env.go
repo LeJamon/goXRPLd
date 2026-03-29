@@ -292,6 +292,17 @@ func (e *TestEnv) SetBypassTxQ(bypass bool) {
 	e.bypassTxQ = bypass
 }
 
+// ResetTxQMaxSize resets the TxQ's maxSize to nil (no limit).
+// This matches rippled's initial state where maxSize_ is std::nullopt
+// before the first user-initiated processClosedLedger call. In rippled,
+// the genesis close (startGenesisLedger) does NOT call processClosedLedger,
+// so maxSize_ remains nullopt until the first env.close() in the test.
+func (e *TestEnv) ResetTxQMaxSize() {
+	if e.txQueue != nil {
+		e.txQueue.ResetMaxSize()
+	}
+}
+
 // SetBaseFee changes the base fee for subsequent transactions.
 // Used to apply post-initFee() fee changes in conformance tests.
 func (e *TestEnv) SetBaseFee(baseFee uint64) {

@@ -217,8 +217,11 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 	}
 
 	// Check per-account limit (unless replacing).
-	// Reference: TxQ.cpp:425-447
-	if replacingCandidate == nil && exists && uint32(acctTxCount) >= q.config.MaximumTxnPerAccount {
+	// Reference: TxQ.cpp:419-447 (canBeHeld)
+	// Note: rippled uses getTxnCount() (TOTAL count including stale) for the
+	// per-account limit, not the relevant count. This ensures stale transactions
+	// still count toward the limit.
+	if replacingCandidate == nil && exists && uint32(aq.Count()) >= q.config.MaximumTxnPerAccount {
 		// Allow if this fills the next sequence gap in the account's queue.
 		nextSeq := q.getNextQueuableSeq(aq, acctSeq)
 		if !seqProxy.IsTicket && seqProxy.Value == nextSeq {
@@ -282,10 +285,11 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 					}
 				} else {
 					// The tx goes after existing entries.
-					// Must follow the last queued sequence.
-					nextSeq := q.getNextQueuableSeq(aq, acctSeq)
-					if seqProxy.Value != nextSeq {
-						if seqProxy.Value < nextSeq {
+					// Must follow the PREVIOUS entry's followingSeq.
+					// Reference: TxQ.cpp:1031-1040 (prevIter->second.consequences().followingSeq())
+					prevFollowingSeq := prevTx.Consequences.FollowingSeq.Value
+					if seqProxy.Value != prevFollowingSeq {
+						if seqProxy.Value < prevFollowingSeq {
 							return ApplyResult{Result: tx.TefPAST_SEQ, Applied: false}
 						}
 						// Gap not bridged by queued txns.
@@ -507,25 +511,51 @@ func (q *TxQ) tryClearAccountQueue(
 	return &ApplyResult{Result: result, Applied: false}
 }
 
-// getNextQueuableSeq returns the next sequence number that can be queued for an account.
+// getNextQueuableSeq returns the next sequence that can be queued for an account.
+// It finds the FIRST gap in the sequence chain, not the max following sequence.
+// Reference: rippled TxQ::nextQueuableSeqImpl (TxQ.cpp:1622-1666)
 func (q *TxQ) getNextQueuableSeq(aq *AccountQueue, acctSeq uint32) uint32 {
 	if aq == nil || aq.Empty() {
 		return acctSeq
 	}
 
-	// Find the highest sequence-based transaction
-	maxSeq := acctSeq
-	for seqProxy, c := range aq.Transactions {
-		if !seqProxy.IsTicket {
-			// Use the following sequence based on consequences
-			followingSeq := c.Consequences.FollowingSeq.Value
-			if followingSeq > maxSeq {
-				maxSeq = followingSeq
+	acctSeqProx := NewSeqProxySequence(acctSeq)
+
+	// Get all sequence-based transactions sorted by SeqProxy.
+	sorted := aq.GetSortedCandidates()
+
+	// Find the first relevant sequence-based transaction (>= acctSeqProx).
+	startIdx := -1
+	for i, c := range sorted {
+		if !c.SeqProxy.IsTicket && !c.SeqProxy.Less(acctSeqProx) {
+			if c.SeqProxy == acctSeqProx {
+				startIdx = i
 			}
+			break
 		}
 	}
 
-	return maxSeq
+	// If acctSeqProx is not in the queue, return acctSeq (first gap is at front).
+	if startIdx < 0 {
+		return acctSeq
+	}
+
+	// Walk through consecutive sequence-based transactions to find the first gap.
+	attempt := sorted[startIdx].Consequences.FollowingSeq.Value
+	for i := startIdx + 1; i < len(sorted); i++ {
+		sp := sorted[i].SeqProxy
+		if sp.IsTicket {
+			continue
+		}
+		if sp.Less(acctSeqProx) {
+			continue // Skip stale
+		}
+		if attempt < sp.Value {
+			break // Found a gap
+		}
+		attempt = sorted[i].Consequences.FollowingSeq.Value
+	}
+	return attempt
 }
 
 // canBeQueued returns true if the result code indicates the transaction might succeed later.
@@ -553,10 +583,12 @@ func computeConsequences(txn tx.Transaction, seqProxy SeqProxy) TxConsequences {
 		cons.FollowingSeq = seqProxy
 	} else {
 		nextSeq := seqProxy.Value + 1
-		// TicketCreate consumes TicketCount additional sequences.
-		// Reference: TicketCreate.cpp makeTxConsequences
+		// TicketCreate consumes TicketCount sequences (including the tx itself).
+		// Reference: TicketCreate.cpp makeTxConsequences returns
+		// TxConsequences{tx, ticketCount}, and followingSeq() does
+		// seqProx.advanceBy(sequencesConsumed) = seq + ticketCount.
 		if tc, ok := txn.(*ticket.TicketCreate); ok && tc.TicketCount > 0 {
-			nextSeq = seqProxy.Value + 1 + tc.TicketCount
+			nextSeq = seqProxy.Value + tc.TicketCount
 		}
 		cons.FollowingSeq = NewSeqProxySequence(nextSeq)
 	}

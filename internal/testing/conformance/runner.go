@@ -181,9 +181,15 @@ type runner struct {
 	// Set to true for TxQ test suites (TxQPosNegFlows, TxQMetaInfo).
 	enableTxQ bool
 
-	// txqMinTxn overrides MinimumTxnInLedgerStandalone per fixture.
-	// Set from the fixture's testcase name using txqMinTxnLookup.
-	txqMinTxn uint32
+	// txqCfg holds the full per-fixture TxQ configuration overrides.
+	// Set from the fixture's testcase name using txqConfigLookup.
+	txqCfg txqTestConfig
+
+	// directApplySteps is a set of step indices where tx steps should
+	// bypass TxQ and apply directly to the open ledger. This handles
+	// rippled tests that use openLedger().modify() to apply transactions
+	// without TxQ routing.
+	directApplySteps map[int]bool
 
 	// lastEnvCfg stores the most recent env config for implicit scope resets.
 	lastEnvCfg EnvConfig
@@ -256,45 +262,99 @@ type ammPair struct {
 	currency string
 }
 
-// txqMinTxnLookup maps TxQ fixture test case names to their
-// minimum_txn_in_ledger_standalone values from rippled TxQ_test.cpp.
-var txqMinTxnLookup = map[string]uint32{
-	"queue sequence":                               3,
-	"queue ticket":                                 3,
-	"queue tec":                                    2,
-	"local tx retry":                               2,
-	"last ledger sequence":                         2,
-	"zero transaction fee":                         2,
-	"queued tx fails":                              2,
-	"multi tx per account":                         3,
-	"tie breaking":                                 4,
-	"acct tx id":                                   1,
-	"maximum tx":                                   2,
-	"unexpected balance change":                    3,
-	"blockers sequence":                            3,
-	"blockers ticket":                              3,
-	"In-flight balance checks":                     3,
-	"acct in queue but empty":                      3,
-	"expiration replacement":                       1,
-	"full queue gap handling":                      1,
-	"Autofilled sequence should account for TxQ":   6,
-	"account info":                                 3,
-	"server info":                                  3,
-	"server subscribe":                             3,
-	"clear queued acct txs":                        3,
-	"scaling":                                      3,
-	"Sequence in queue and open ledger":            3,
-	"Ticket in queue and open ledger":              3,
-	"Re-execute preflight":                         1,
-	"Queue full drop penalty":                      5,
-	"Cancel queued offers":                         5,
-	"Zero reference fee":                           3,
-	"consequences":                                 2,
-	"fail in preclaim":                             2,
-	"straightfoward positive case":                 3,
-	"replace middle tx with enough to clear queue": 3,
-	"replace last tx with enough to clear queue":   3,
-	"clear queue failure (load)":                   3,
+// txqTestConfig holds the per-fixture TxQ configuration overrides.
+// Fields are pointers so nil means "use default". This matches the
+// rippled makeConfig() pattern where each test can override specific
+// transaction_queue section values.
+type txqTestConfig struct {
+	MinTxn                        uint32  // minimum_txn_in_ledger_standalone (always set)
+	LedgersInQueue                *uint32 // nil = use makeConfig default (2)
+	QueueSizeMin                  *uint32 // nil = use makeConfig default (2)
+	MaximumTxnPerAccount          *uint32 // nil = use rippled default (10)
+	NormalConsensusIncreasePercent *uint32 // nil = use makeConfig default (0)
+	SlowConsensusDecreasePercent  *uint32 // nil = use rippled default (50)
+	TargetTxnInLedger             *uint32 // nil = use rippled default (256)
+}
+
+// Helper to create *uint32 from a literal.
+func u32(v uint32) *uint32 { return &v }
+
+// txqConfigLookup maps TxQ fixture test case names to their full
+// TxQ configuration from rippled TxQ_test.cpp makeConfig() calls.
+// Each test's makeConfig overrides are faithfully transcribed here.
+var txqConfigLookup = map[string]txqTestConfig{
+	// Default makeConfig tests (only minimum_txn_in_ledger_standalone differs)
+	"queue sequence":                               {MinTxn: 3},
+	"queue ticket":                                 {MinTxn: 3},
+	"queue tec":                                    {MinTxn: 2},
+	"local tx retry":                               {MinTxn: 2},
+	"last ledger sequence":                         {MinTxn: 2},
+	"zero transaction fee":                         {MinTxn: 2},
+	"queued tx fails":                              {MinTxn: 2},
+	"multi tx per account":                         {MinTxn: 3},
+	"tie breaking":                                 {MinTxn: 4},
+	"acct tx id":                                   {MinTxn: 1},
+	"maximum tx":                                   {MinTxn: 2},
+	"unexpected balance change":                    {MinTxn: 3},
+	"blockers sequence":                            {MinTxn: 3},
+	"blockers ticket":                              {MinTxn: 3},
+	"In-flight balance checks":                     {MinTxn: 3},
+	"acct in queue but empty":                      {MinTxn: 3},
+	"Autofilled sequence should account for TxQ":   {MinTxn: 6},
+	"account info":                                 {MinTxn: 3},
+	"server info":                                  {MinTxn: 3},
+	"server subscribe":                             {MinTxn: 3},
+	"clear queued acct txs":                        {MinTxn: 3},
+	"Sequence in queue and open ledger":            {MinTxn: 3},
+	"Ticket in queue and open ledger":              {MinTxn: 3},
+	"Cancel queued offers":                         {MinTxn: 5},
+	"Zero reference fee":                           {MinTxn: 3},
+	"consequences":                                 {MinTxn: 2},
+	"fail in preclaim":                             {MinTxn: 2},
+	"straightfoward positive case":                 {MinTxn: 3},
+	"replace middle tx with enough to clear queue": {MinTxn: 3},
+	"replace last tx with enough to clear queue":   {MinTxn: 3},
+	"clear queue failure (load)":                   {MinTxn: 3},
+
+	// Tests with non-default TxQ config overrides from rippled makeConfig()
+	"expiration replacement": {
+		MinTxn:               1,
+		LedgersInQueue:       u32(10),
+		MaximumTxnPerAccount: u32(20),
+	},
+	"full queue gap handling": {
+		MinTxn:               1,
+		LedgersInQueue:       u32(10),
+		MaximumTxnPerAccount: u32(11),
+	},
+	"Queue full drop penalty": {
+		MinTxn:               5,
+		LedgersInQueue:       u32(5),
+		QueueSizeMin:         u32(50),
+		MaximumTxnPerAccount: u32(30),
+	},
+	"scaling": {
+		MinTxn:                        3,
+		MaximumTxnPerAccount:          u32(200),
+		NormalConsensusIncreasePercent: u32(25),
+		SlowConsensusDecreasePercent:  u32(50),
+		TargetTxnInLedger:             u32(10),
+	},
+	"Re-execute preflight": {
+		MinTxn:               1,
+		LedgersInQueue:       u32(5),
+		MaximumTxnPerAccount: u32(10),
+	},
+}
+
+// txqDirectApplyLookup maps TxQ fixture test case names to step indices
+// where the tx should bypass TxQ and apply directly to the open ledger.
+// This handles rippled tests that use openLedger().modify() to apply
+// transactions without TxQ routing.
+// Reference: TxQ_test.cpp testInLedgerSeq / testInLedgerTicket
+var txqDirectApplyLookup = map[string][]int{
+	"Sequence in queue and open ledger": {5},
+	"Ticket in queue and open ledger":   {5},
 }
 
 // txqInitFeeConfig maps TxQ fixture test case names that use initFee()
@@ -316,7 +376,11 @@ var txqInitFeeLookup = map[string]initFeeConfig{
 	"multi tx per account":      {BaseFee: 10, ReserveBase: 200, ReserveIncrement: 50, ApplyAfterStep: 257},
 	"In-flight balance checks":  {BaseFee: 10, ReserveBase: 200, ReserveIncrement: 50, ApplyAfterStep: 257},
 	"unexpected balance change": {BaseFee: 10, ReserveBase: 200, ReserveIncrement: 50, ApplyAfterStep: 257},
-	"Zero reference fee":        {BaseFee: 0, ReserveBase: 0, ReserveIncrement: 0, ApplyAfterStep: 257},
+	// Zero reference fee: the fee vote sets baseFee=0 at the flag ledger
+	// (around step 254). Steps 255-256 are tx steps that need baseFee=0
+	// to apply correctly. Apply immediately after the last close before
+	// the first tx step, not after the time-leap close at step 257.
+	"Zero reference fee": {BaseFee: 0, ReserveBase: 0, ReserveIncrement: 0, ApplyAfterStep: 254},
 }
 
 // feeVoteConfig describes the post-vote fee configuration for fixtures that
@@ -378,13 +442,13 @@ func RunFixture(t *testing.T, fixturePath string) {
 	isTxQSuite := strings.Contains(fixturePath, "/TxQ") ||
 		strings.Contains(fixturePath, "/Transaction_ordering")
 
-	// Look up per-fixture MinimumTxnInLedgerStandalone
-	var minTxn uint32
+	// Look up per-fixture TxQ configuration
+	var txqCfg txqTestConfig
 	if isTxQSuite {
-		if v, ok := txqMinTxnLookup[fixture.Testcase]; ok {
-			minTxn = v
+		if cfg, ok := txqConfigLookup[fixture.Testcase]; ok {
+			txqCfg = cfg
 		} else {
-			minTxn = 3 // default fallback
+			txqCfg = txqTestConfig{MinTxn: 3} // default fallback
 		}
 	}
 
@@ -396,6 +460,17 @@ func RunFixture(t *testing.T, fixturePath string) {
 		if indices, ok := txqTimeLeapLookup[fixture.Testcase]; ok {
 			for _, idx := range indices {
 				timeLeapSet[idx] = true
+			}
+		}
+	}
+
+	// Build direct-apply step index set for tests that use
+	// openLedger().modify() to bypass TxQ
+	directApplySet := make(map[int]bool)
+	if isTxQSuite {
+		if indices, ok := txqDirectApplyLookup[fixture.Testcase]; ok {
+			for _, idx := range indices {
+				directApplySet[idx] = true
 			}
 		}
 	}
@@ -419,7 +494,8 @@ func RunFixture(t *testing.T, fixturePath string) {
 		t:                    t,
 		accounts:             make(map[string]*jtx.Account),
 		enableTxQ:            isTxQSuite,
-		txqMinTxn:            minTxn,
+		txqCfg:               txqCfg,
+		directApplySteps:     directApplySet,
 		ammAddrMap:           make(map[string]string),
 		fixtureAMMAddrs:      fixtureAddrs,
 		fixtureAMMPairs:      fixturePairs,
@@ -708,21 +784,40 @@ func (r *runner) setupEnv(cfg EnvConfig) {
 
 	// Enable TxQ if this is a TxQ test suite. TxQ must be created with the
 	// test env so Submit() routes through fee escalation and queuing.
-	// Use per-fixture MinimumTxnInLedgerStandalone from txqMinTxnLookup.
+	// Use per-fixture TxQ config from txqConfigLookup.
 	//
-	// These config values match rippled's test makeConfig() in envconfig.cpp:
+	// The base config values match rippled's test makeConfig() in envconfig.cpp:
 	//   ledgers_in_queue = 2
 	//   minimum_queue_size = 2
 	//   normal_consensus_increase_percent = 0
 	//   retry_sequence_percent = 25
-	// The default StandaloneConfig() uses different values (20, 2000, 20)
-	// which causes fee escalation and queue sizing to diverge from rippled.
+	// Individual tests can override these via txqConfigLookup entries.
 	if r.enableTxQ {
 		txqCfg := txq.StandaloneConfig()
-		txqCfg.MinimumTxnInLedgerStandalone = r.txqMinTxn
+		txqCfg.MinimumTxnInLedgerStandalone = r.txqCfg.MinTxn
+		// Apply makeConfig defaults (matching rippled envconfig.cpp)
 		txqCfg.LedgersInQueue = 2
 		txqCfg.QueueSizeMin = 2
 		txqCfg.NormalConsensusIncreasePercent = 0
+		// Apply per-test overrides from txqConfigLookup
+		if r.txqCfg.LedgersInQueue != nil {
+			txqCfg.LedgersInQueue = *r.txqCfg.LedgersInQueue
+		}
+		if r.txqCfg.QueueSizeMin != nil {
+			txqCfg.QueueSizeMin = *r.txqCfg.QueueSizeMin
+		}
+		if r.txqCfg.MaximumTxnPerAccount != nil {
+			txqCfg.MaximumTxnPerAccount = *r.txqCfg.MaximumTxnPerAccount
+		}
+		if r.txqCfg.NormalConsensusIncreasePercent != nil {
+			txqCfg.NormalConsensusIncreasePercent = *r.txqCfg.NormalConsensusIncreasePercent
+		}
+		if r.txqCfg.SlowConsensusDecreasePercent != nil {
+			txqCfg.SlowConsensusDecreasePercent = *r.txqCfg.SlowConsensusDecreasePercent
+		}
+		if r.txqCfg.TargetTxnInLedger != nil {
+			txqCfg.TargetTxnInLedger = *r.txqCfg.TargetTxnInLedger
+		}
 		r.env = jtx.NewTestEnvWithTxQAndConfig(r.t, txqCfg, genCfg)
 	} else {
 		r.env = jtx.NewTestEnvWithConfig(r.t, genCfg)
@@ -747,6 +842,16 @@ func (r *runner) setupEnv(cfg EnvConfig) {
 	r.env.SetTime(rippleEpoch)
 	r.env.Close()
 	r.env.SetTime(rippleEpoch)
+
+	// Reset TxQ maxSize to nil after the initial close. In rippled,
+	// startGenesisLedger() does NOT call TxQ::processClosedLedger, so
+	// maxSize_ remains std::nullopt until the first user env.close().
+	// Our Close() above triggers ProcessClosedLedger which prematurely
+	// sets maxSize. Resetting it ensures the queue starts unlimited,
+	// matching rippled's behavior where the first "real" close sets it.
+	if r.enableTxQ {
+		r.env.ResetTxQMaxSize()
+	}
 
 	// For non-TxQ suites, disable open-ledger fee adequacy checks by default.
 	// Many fixture tx_blobs use a fee lower than the tx-type-specific minimum
@@ -939,6 +1044,14 @@ func (r *runner) execTx(stepIdx int, step Step) {
 	if step.ExpectTER == "telINSUF_FEE_P" {
 		r.env.SetOpenLedger(true)
 		defer r.env.SetOpenLedger(false)
+	}
+
+	// Some rippled tests use openLedger().modify() to apply transactions
+	// directly to the open ledger, bypassing TxQ. The fixture captures
+	// these as normal "tx" steps. Temporarily bypass TxQ for these steps.
+	if r.directApplySteps[stepIdx] {
+		r.env.SetBypassTxQ(true)
+		defer r.env.SetBypassTxQ(false)
 	}
 
 	result := r.env.Submit(parsed)
