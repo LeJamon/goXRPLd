@@ -113,9 +113,21 @@ type TestEnv struct {
 	// Reference: rippled BuildLedger.cpp applyTransactions()
 	replayOnClose bool
 
-	// openLedgerTxns tracks all transactions submitted to the current
-	// open ledger. Used by the replay-on-close mechanism. Reset on Close().
-	openLedgerTxns []tx.Transaction
+	// openLedgerSetupTxns tracks fund/trust setup transactions submitted
+	// to the current open ledger. Applied first during replay (in submission
+	// order) to ensure prerequisites (accounts, trust lines) exist before
+	// user transactions are replayed in canonical order.
+	openLedgerSetupTxns []tx.Transaction
+
+	// openLedgerUserTxns tracks fixture/user transactions submitted to the
+	// current open ledger. Applied second during replay in canonical sorted
+	// order (sortCanonicalSalted), matching rippled's CanonicalTXSet.
+	openLedgerUserTxns []tx.Transaction
+
+	// inSetupMode indicates whether the current transactions are setup
+	// operations (fund/trust). When true, transactions are routed to
+	// openLedgerSetupTxns; when false, to openLedgerUserTxns.
+	inSetupMode bool
 
 	// lastClosedLedger stores the most recent closed ledger, used as the
 	// parent for replay-on-close. Updated in Close().

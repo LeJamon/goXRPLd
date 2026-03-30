@@ -15,7 +15,6 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/tx"
 	"github.com/LeJamon/goXRPLd/internal/txq"
 	"github.com/LeJamon/goXRPLd/keylet"
-	"github.com/LeJamon/goXRPLd/shamap"
 )
 
 // Close closes the current ledger and advances to a new one.
@@ -97,7 +96,8 @@ func (e *TestEnv) Close() {
 	e.currentSeq++
 
 	// Reset the open-ledger transaction counters for the new ledger.
-	e.openLedgerTxns = nil
+	e.openLedgerSetupTxns = nil
+	e.openLedgerUserTxns = nil
 	e.txInLedger = 0
 	e.closingTxTotal = 0
 	e.closingFeeLevels = nil
@@ -165,7 +165,8 @@ func (e *TestEnv) CloseWithTimeLeap() {
 	}
 	e.ledger = newLedger
 	e.currentSeq++
-	e.openLedgerTxns = nil
+	e.openLedgerSetupTxns = nil
+	e.openLedgerUserTxns = nil
 	e.txInLedger = 0
 	e.closingTxTotal = 0
 	e.closingFeeLevels = nil
@@ -193,23 +194,23 @@ func (e *TestEnv) closeWithReplay() {
 	// Advance time
 	e.clock.Advance(10 * time.Second)
 
-	// Collect all transactions to replay:
-	// 1. Transactions submitted during this open ledger
+	// Collect user transactions to replay:
+	// 1. User transactions submitted during this open ledger
 	// 2. Held transactions from previous ledgers (terPRE_SEQ etc)
-	var allTxns []tx.Transaction
-	allTxns = append(allTxns, e.openLedgerTxns...)
+	var userTxns []tx.Transaction
+	userTxns = append(userTxns, e.openLedgerUserTxns...)
 	for _, held := range e.heldTxns {
-		allTxns = append(allTxns, held...)
+		userTxns = append(userTxns, held...)
 	}
 
 	// Clear held transactions -- they will be re-held if they still fail
 	e.heldTxns = nil
 
-	// Sort transactions in canonical order using the SHAMap-salted ordering
-	// that matches rippled's CanonicalTXSet. The salt is the SHAMap root hash
-	// of the transaction set, which XORs with account IDs to produce the sort key.
-	// Reference: rippled CanonicalTXSet.cpp, RCLConsensus.cpp
-	sortCanonicalSalted(allTxns)
+	// Sort user transactions using the SHAMap-salted canonical ordering.
+	// This matches rippled's CanonicalTXSet for ledgers where ALL user
+	// transactions come from fixture tx_blobs (identical hashes to rippled).
+	// Setup transactions are excluded from sorting but included in the salt.
+	sortCanonicalSalted(userTxns, e.openLedgerSetupTxns)
 
 	// Create a fresh open ledger from the last closed ledger (parent).
 	// This discards all state changes from the immediate applies.
@@ -224,54 +225,30 @@ func (e *TestEnv) closeWithReplay() {
 	e.closingTxTotal = 0
 	e.closingFeeLevels = nil
 
-	// Apply all transactions with retry passes, matching rippled's
-	// applyTransactions() in BuildLedger.cpp.
-	// Multiple passes are needed because:
-	// - A batch in pass 1 may create objects (Check, Ticket) that
-	//   a standalone transaction needs
-	// - A payment in pass 1 may advance sequences for a later transaction
 	const maxRetryPasses = 5  // LEDGER_RETRY_PASSES in rippled
 	const maxTotalPasses = 10 // LEDGER_TOTAL_PASSES in rippled
 
-	remaining := allTxns
-	certainRetry := true
+	// ── Phase 1: Apply setup transactions in submission order ──
+	// Fund/trust transactions must be applied first to ensure accounts and
+	// trust lines exist before user transactions are replayed. These are
+	// applied in the order they were submitted (not canonical sorted)
+	// because goXRPL's setup transactions produce different hashes than
+	// rippled's (different amounts, different reimbursement mechanism).
+	e.applyWithRetry(e.openLedgerSetupTxns, maxRetryPasses, maxTotalPasses)
 
-	for pass := 0; pass < maxTotalPasses && len(remaining) > 0; pass++ {
-		var retry []tx.Transaction
-		changes := 0
-
-		for _, txn := range remaining {
-			result := e.applyForReplay(txn)
-
-			switch {
-			case result.IsApplied():
-				// Transaction was applied to ledger (tesSUCCESS or tec).
-				// In rippled's applyTransaction(), applied results return
-				// Success and are erased from the canonical set -- NOT retried.
-				// Retrying an applied transaction would cause double fee
-				// charging and state corruption.
-				// Reference: rippled apply.cpp applyTransaction() line 260-275
-				changes++
-			case isRetryable(result):
-				// Transaction may succeed later (terPRE_SEQ etc)
-				retry = append(retry, txn)
-			default:
-				// Permanent failure (tef, tem, tel) -- drop the transaction
-			}
-		}
-
-		remaining = retry
-
-		// A non-retry pass made no changes
-		if changes == 0 && !certainRetry {
-			break
-		}
-
-		// Stop retry passes if no progress
-		if changes == 0 || pass >= maxRetryPasses {
-			certainRetry = false
-		}
+	// Apply queued fee reimbursements between phases.
+	// Trust setup reimburses fees via direct ledger mutation (not a real
+	// transaction). This must be applied after setup replay so the
+	// reimbursement becomes part of the closed ledger state.
+	for _, acc := range e.pendingReimbursements {
+		e.ReimburseFeeDirect(acc)
 	}
+	e.pendingReimbursements = nil
+
+	// ── Phase 2: Apply user transactions in canonical sorted order ──
+	// Fixture transactions are applied in CanonicalTXSet order with retry
+	// passes, matching rippled's applyTransactions() in BuildLedger.cpp.
+	remaining := e.applyWithRetry(userTxns, maxRetryPasses, maxTotalPasses)
 
 	// Any remaining transactions that still failed go back into the held
 	// map for retry in the next ledger.
@@ -279,17 +256,6 @@ func (e *TestEnv) closeWithReplay() {
 		accountAddr := txn.GetCommon().Account
 		e.addHeldTransaction(accountAddr, txn)
 	}
-
-	// Apply queued fee reimbursements after replay but before closing.
-	// This ensures the balance adjustments become part of the closed ledger
-	// state, surviving future replays that rebuild from lastClosedLedger.
-	// In rippled, setup operations (trust) use apply() whose state changes
-	// persist through close without replay; our replay discards direct
-	// modifications, so we bake the reimbursement into the replayed state.
-	for _, acc := range e.pendingReimbursements {
-		e.ReimburseFeeDirect(acc)
-	}
-	e.pendingReimbursements = nil
 
 	// Close the replayed ledger
 	if err := e.ledger.Close(e.clock.Now(), 0); err != nil {
@@ -321,16 +287,54 @@ func (e *TestEnv) closeWithReplay() {
 	e.currentSeq++
 
 	// Reset transaction tracking for the new open ledger
-	e.openLedgerTxns = nil
+	e.openLedgerSetupTxns = nil
+	e.openLedgerUserTxns = nil
 	e.txInLedger = 0
 	e.closingTxTotal = 0
 	e.closingFeeLevels = nil
 
 	// Update TxQ metrics if applicable
-	// (Not typically used together with replay, but handle for completeness)
 	if e.txQueue != nil {
 		e.drainQueue()
 	}
+}
+
+
+// applyWithRetry applies a set of transactions with multi-pass retry logic,
+// matching rippled's applyTransactions() in BuildLedger.cpp. Returns any
+// transactions that still failed after all retry passes.
+func (e *TestEnv) applyWithRetry(txns []tx.Transaction, maxRetryPasses, maxTotalPasses int) []tx.Transaction {
+	remaining := txns
+	certainRetry := true
+
+	for pass := 0; pass < maxTotalPasses && len(remaining) > 0; pass++ {
+		var retry []tx.Transaction
+		changes := 0
+
+		for _, txn := range remaining {
+			result := e.applyForReplay(txn)
+
+			switch {
+			case result.IsApplied():
+				changes++
+			case isRetryable(result):
+				retry = append(retry, txn)
+			default:
+				// Permanent failure (tef, tem, tel) -- drop
+			}
+		}
+
+		remaining = retry
+
+		if changes == 0 && !certainRetry {
+			break
+		}
+		if changes == 0 || pass >= maxRetryPasses {
+			certainRetry = false
+		}
+	}
+
+	return remaining
 }
 
 // CloseAt closes ledgers until the ledger reaches the target sequence.
@@ -440,7 +444,11 @@ func (e *TestEnv) applyDirect(txn tx.Transaction) TxResult {
 	// Reference: rippled's open ledger tx map only contains applied txns.
 	if e.replayOnClose {
 		if applyResult.Result.IsApplied() || isRetryable(applyResult.Result) {
-			e.openLedgerTxns = append(e.openLedgerTxns, txn)
+			if e.inSetupMode {
+				e.openLedgerSetupTxns = append(e.openLedgerSetupTxns, txn)
+			} else {
+				e.openLedgerUserTxns = append(e.openLedgerUserTxns, txn)
+			}
 		}
 
 		// For retryable results (terPRE_SEQ etc), also hold the transaction
@@ -731,7 +739,7 @@ func sortCanonical(txns []tx.Transaction) {
 // accountKey = accountID XOR salt. The salt is the SHAMap root hash built from
 // the transaction set, matching rippled's RCLConsensus.cpp onClose().
 // Reference: rippled CanonicalTXSet.cpp, internal/ledger/service/canonical_txset.go
-func sortCanonicalSalted(txns []tx.Transaction) {
+func sortCanonicalSalted(txns []tx.Transaction, extraSaltTxns ...[]tx.Transaction) {
 	if len(txns) <= 1 {
 		return
 	}
@@ -779,17 +787,34 @@ func sortCanonicalSalted(txns []tx.Transaction) {
 		}
 	}
 
-	// Compute salt: SHAMap root hash of all transactions.
-	// Matches rippled: builds a SHAMap of type TRANSACTION with each tx blob
-	// keyed by its hash, then returns the root hash.
-	txMap, _ := shamap.New(shamap.TypeTransaction)
+	// Compute salt: SHAMap root hash of the transaction set.
+	// Matches rippled's CanonicalTXSet salt (RCLConsensus.cpp onClose).
+	// We compute the tree hash manually instead of using the SHAMap struct
+	// because the SHAMap's Hash() returns stale cached values after insertion.
+	//
+	// The transaction SHAMap uses leaf hash = SHA512Half(TXN\0 + blob),
+	// which equals the transaction hash (the key). Inner nodes use
+	// SHA512Half(MIN\0 + 16 × child_hash).
+	hashes := make([][32]byte, 0, len(entries))
 	for _, e := range entries {
-		if len(e.blob) > 0 {
-			_ = txMap.PutWithNodeType(e.hash, e.blob, shamap.NodeTypeTransactionNoMeta)
+		hashes = append(hashes, e.hash)
+	}
+	// Include extra transactions (e.g., setup txns) in the salt computation.
+	// In rippled, the salt is the SHAMap root hash of ALL open-ledger transactions,
+	// including fund/trust setup. The extraSaltTxns parameter allows callers to
+	// include these additional transactions so the sort order matches rippled's.
+	// Reference: rippled RCLConsensus.cpp onClose() — builds SHAMap from ALL txs.
+	for _, extra := range extraSaltTxns {
+		for _, txn := range extra {
+			h, err := tx.ComputeTransactionHash(txn)
+			if err == nil {
+				hashes = append(hashes, h)
+			}
 		}
 	}
-	salt, _ := txMap.Hash()
+	salt := computeTxSetHash(hashes)
 
+	// Debug: show salt and tx ordering
 	// Pre-compute account keys: accountID XOR salt (32 bytes).
 	// Mirrors rippled CanonicalTXSet::accountKey(): copy 20-byte account into
 	// 32-byte uint256 (zero-padded), then XOR with full 32-byte salt.
@@ -825,6 +850,109 @@ func sortCanonicalSalted(txns []tx.Transaction) {
 		sorted[i] = entries[se.idx].txn
 	}
 	copy(txns, sorted)
+}
+
+// computeTxSetHash computes the SHAMap root hash for a set of transaction
+// hashes, matching rippled's SHAMap(TypeTransaction) behavior. Each hash is
+// both the item key and the leaf hash (since SHA512Half(TXN\0+data) = txHash).
+// The tree uses 16-ary branching on key nibbles. Inner node hash =
+// SHA512Half(MIN\0 + 16 × child_hash), where empty children contribute zeros.
+// Reference: rippled SHAMapTxLeafNode::updateHash(), SHAMapInnerNode::updateHash()
+// txSetTreeNode represents a node in the 16-ary radix tree for computing
+// the SHAMap root hash of a transaction set.
+type txSetTreeNode struct {
+	isLeaf   bool
+	hash     [32]byte               // leaf: tx hash; inner: computed
+	children [16]*txSetTreeNode     // inner only
+}
+
+func computeTxSetHash(hashes [][32]byte) [32]byte {
+	if len(hashes) == 0 {
+		return [32]byte{}
+	}
+
+	// Insert all hashes into a 16-ary radix tree
+	root := &txSetTreeNode{}
+
+	for _, h := range hashes {
+		insertIntoTree(root, h, 0)
+	}
+
+	// Compute hashes bottom-up
+	computeTreeHash(root)
+	return root.hash
+}
+
+// insertIntoTree inserts a leaf hash into the radix tree at the given depth.
+func insertIntoTree(node *txSetTreeNode, h [32]byte, depth int) {
+	if depth >= 64 { // 32 bytes × 2 nibbles = 64 levels max
+		return
+	}
+
+	nibble := getNibble(h, depth)
+
+	if node.children[nibble] == nil {
+		// Empty slot — place leaf here
+		node.children[nibble] = &txSetTreeNode{isLeaf: true, hash: h}
+		return
+	}
+
+	child := node.children[nibble]
+	if child.isLeaf {
+		if child.hash == h {
+			return // duplicate
+		}
+		// Collision — split: create inner node, re-insert both
+		inner := &txSetTreeNode{}
+		insertIntoTree(inner, child.hash, depth+1)
+		insertIntoTree(inner, h, depth+1)
+		node.children[nibble] = inner
+		return
+	}
+
+	// Existing inner node — recurse
+	insertIntoTree(child, h, depth+1)
+}
+
+// computeTreeHash recursively computes inner node hashes (post-order).
+// Leaf hashes are already set (= transaction hash).
+// Inner hash = SHA512Half(MIN\0 + 16 × child_hash).
+func computeTreeHash(node *txSetTreeNode) {
+	if node.isLeaf {
+		return // leaf hash is already the tx hash
+	}
+
+	// Compute children first
+	for i := 0; i < 16; i++ {
+		if node.children[i] != nil {
+			computeTreeHash(node.children[i])
+		}
+	}
+
+	// Inner node hash: MIN\0 prefix + 16 child hashes
+	minPrefix := [4]byte{'M', 'I', 'N', 0x00}
+	h := sha512.New()
+	h.Write(minPrefix[:])
+	for i := 0; i < 16; i++ {
+		if node.children[i] != nil {
+			childHash := node.children[i].hash
+			h.Write(childHash[:])
+		} else {
+			h.Write(make([]byte, 32)) // zero hash for empty slot
+		}
+	}
+	full := h.Sum(nil)
+	copy(node.hash[:], full[:32])
+}
+
+// getNibble returns the nibble (4-bit value) at the given position in a hash.
+// Position 0 is the high nibble of byte 0, position 1 is the low nibble, etc.
+func getNibble(h [32]byte, pos int) int {
+	byteIdx := pos / 2
+	if pos%2 == 0 {
+		return int(h[byteIdx] >> 4)
+	}
+	return int(h[byteIdx] & 0x0F)
 }
 
 // canonicalSeq returns the effective sequence number for canonical ordering.
@@ -1112,6 +1240,14 @@ func (e *TestEnv) EnableOpenLedgerReplay() {
 // IsReplayEnabled returns whether open-ledger replay is enabled.
 func (e *TestEnv) IsReplayEnabled() bool {
 	return e.replayOnClose
+}
+
+// SetInSetupMode controls whether subsequent transactions are tagged as
+// setup (fund/trust) or user (fixture) for replay purposes. Setup
+// transactions are replayed first in submission order; user transactions
+// are replayed second in canonical sorted order.
+func (e *TestEnv) SetInSetupMode(setup bool) {
+	e.inSetupMode = setup
 }
 
 // QueueReimbursement queues an account for fee reimbursement during the next
