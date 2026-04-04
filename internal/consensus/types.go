@@ -187,6 +187,11 @@ type Validation struct {
 
 	// LoadFee is the validator's current load-based fee.
 	LoadFee uint32
+
+	// SigningData holds the canonical serialized fields (excluding sfSigningPubKey
+	// and sfSignature) for signature verification. Populated by parseSTValidation
+	// for inbound validations; nil for self-built outbound ones.
+	SigningData []byte
 }
 
 // DisputedTx represents a transaction that validators disagree on.
