@@ -263,27 +263,8 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 
 			// canBeHeld check (per-account limit).
 			// Reference: TxQ.cpp:980-988 → canBeHeld (TxQ.cpp:383-447)
-			if replacingCandidate == nil && uint32(aq.Count()) >= q.config.MaximumTxnPerAccount {
-				// Allow if this fills the next sequence gap in the account's queue.
-				nextSeq := q.getNextQueuableSeq(aq, acctSeq)
-				if !seqProxy.IsTicket && seqProxy.Value == nextSeq {
-					// Check if there's a subsequent sequence-based tx in the queue
-					// that this would connect to (i.e., a real gap, not just appending).
-					// Reference: TxQ.cpp:440-444 upper_bound(nextQueuable)
-					hasLaterSeq := false
-					for sp := range aq.Transactions {
-						if !sp.IsTicket && sp.Value > seqProxy.Value {
-							hasLaterSeq = true
-							break
-						}
-					}
-					if !hasLaterSeq {
-						return ApplyResult{Result: tx.TelCAN_NOT_QUEUE_FULL, Applied: false}
-					}
-					// Real gap fill — allow it
-				} else {
-					return ApplyResult{Result: tx.TelCAN_NOT_QUEUE_FULL, Applied: false}
-				}
+			if full, result := q.canBeHeld(aq, replacingCandidate, seqProxy, acctSeq); full {
+				return result
 			}
 		}
 
@@ -431,23 +412,9 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 
 	// If multiTxn was not needed, we still need canBeHeld checks.
 	// Reference: TxQ.cpp:1227-1238
-	if !requiresMultiTxn {
-		if replacingCandidate == nil && exists && uint32(aq.Count()) >= q.config.MaximumTxnPerAccount {
-			nextSeq := q.getNextQueuableSeq(aq, acctSeq)
-			if !seqProxy.IsTicket && seqProxy.Value == nextSeq {
-				hasLaterSeq := false
-				for sp := range aq.Transactions {
-					if !sp.IsTicket && sp.Value > seqProxy.Value {
-						hasLaterSeq = true
-						break
-					}
-				}
-				if !hasLaterSeq {
-					return ApplyResult{Result: tx.TelCAN_NOT_QUEUE_FULL, Applied: false}
-				}
-			} else {
-				return ApplyResult{Result: tx.TelCAN_NOT_QUEUE_FULL, Applied: false}
-			}
+	if !requiresMultiTxn && exists {
+		if full, result := q.canBeHeld(aq, replacingCandidate, seqProxy, acctSeq); full {
+			return result
 		}
 	}
 
@@ -643,6 +610,36 @@ func (q *TxQ) tryClearAccountQueue(
 		q.erase(c)
 	}
 	return &ApplyResult{Result: result, Applied: false}
+}
+
+// canBeHeld checks whether the account queue can accept a new transaction
+// without exceeding the per-account limit. Returns (true, result) when the
+// transaction should be rejected, (false, _) when it can proceed.
+// Reference: rippled TxQ.cpp:383-447 (canBeHeld)
+func (q *TxQ) canBeHeld(aq *AccountQueue, replacingCandidate *Candidate, seqProxy SeqProxy, acctSeq uint32) (bool, ApplyResult) {
+	if replacingCandidate != nil || uint32(aq.Count()) < q.config.MaximumTxnPerAccount {
+		return false, ApplyResult{}
+	}
+	// Allow if this fills the next sequence gap in the account's queue.
+	nextSeq := q.getNextQueuableSeq(aq, acctSeq)
+	if !seqProxy.IsTicket && seqProxy.Value == nextSeq {
+		// Check if there's a subsequent sequence-based tx in the queue
+		// that this would connect to (i.e., a real gap, not just appending).
+		// Reference: TxQ.cpp:440-444 upper_bound(nextQueuable)
+		hasLaterSeq := false
+		for sp := range aq.Transactions {
+			if !sp.IsTicket && sp.Value > seqProxy.Value {
+				hasLaterSeq = true
+				break
+			}
+		}
+		if !hasLaterSeq {
+			return true, ApplyResult{Result: tx.TelCAN_NOT_QUEUE_FULL, Applied: false}
+		}
+		// Real gap fill — allow it
+		return false, ApplyResult{}
+	}
+	return true, ApplyResult{Result: tx.TelCAN_NOT_QUEUE_FULL, Applied: false}
 }
 
 // getNextQueuableSeq returns the next sequence that can be queued for an account.

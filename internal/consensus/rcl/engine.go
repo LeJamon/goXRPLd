@@ -1069,7 +1069,7 @@ func (e *Engine) acceptLedger(result consensus.Result) {
 	priorClose := e.prevLedger.CloseTime()
 	closeTime := effCloseTime(rawCloseTime, resolution, priorClose)
 
-	slog.Info("acceptLedger close time",
+	slog.Debug("acceptLedger close time",
 		"seq", e.prevLedger.Seq()+1,
 		"mode", e.mode,
 		"raw_ct", rawCloseTime.Unix()-946684800,

@@ -1167,14 +1167,12 @@ func (c *testTxQApplyContext) ApplyTransaction(txn tx.Transaction) (tx.Result, b
 }
 
 func (c *testTxQApplyContext) PreclaimTransaction(txn tx.Transaction, account [20]byte, adjustedBalance uint64, adjustedSeq uint32) tx.Result {
-	// Simulate rippled's multiTxn preclaim path (TxQ.cpp:1167-1170).
+	// Simplified simulation of rippled's multiTxn preclaim path (TxQ.cpp:1167-1170).
 	// rippled creates a modified view with adjusted balance and sequence,
-	// then runs preclaim(). The most common failure is terINSUF_FEE_B when
-	// the adjusted balance is less than the transaction fee.
-	//
-	// We run a simplified check: if the adjusted balance is less than the fee,
-	// return terINSUF_FEE_B. This matches the checkFee portion of preclaim
-	// which is the primary check that differs with an adjusted view.
+	// then runs a full preclaim(). We only check the checkFee portion here
+	// (terINSUF_FEE_B when adjusted balance < fee), which is the primary
+	// check that differs with an adjusted view. Other preclaim failures
+	// (e.g., tecINSUFFICIENT_RESERVE) are not yet simulated.
 	// Reference: rippled Transactor::checkFee (Transactor.cpp line ~310)
 	common := txn.GetCommon()
 	if common == nil {
