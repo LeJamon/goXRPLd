@@ -23,7 +23,7 @@ var skipTests = map[string]string{
 	// parentHash than rippled, the collision addresses don't match and the
 	// test cannot work. The underlying AMMCreate collision detection is
 	// tested via unit tests instead.
-	"app/AMM/Failed_pseudo-account_allocation_tecDUPLICATE":       "parentHash-dependent pseudo-account collision",
+	"app/AMM/Failed_pseudo-account_allocation_tecDUPLICATE":         "parentHash-dependent pseudo-account collision",
 	"app/AMM/Failed_pseudo-account_allocation_terADDRESS_COLLISION": "parentHash-dependent pseudo-account collision",
 }
 

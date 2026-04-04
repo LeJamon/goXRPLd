@@ -27,6 +27,7 @@ func (m *mockEngine) Mode() consensus.Mode                      { return consens
 func (m *mockEngine) Phase() consensus.Phase                    { return consensus.PhaseOpen }
 func (m *mockEngine) IsProposing() bool                         { return false }
 func (m *mockEngine) Timing() consensus.Timing                  { return consensus.DefaultTiming() }
+func (m *mockEngine) GetLastCloseInfo() (int, time.Duration)    { return 0, 0 }
 func (m *mockEngine) OnLedger(consensus.LedgerID, []byte) error { return nil }
 
 func (m *mockEngine) OnProposal(p *consensus.Proposal) error {

@@ -265,7 +265,6 @@ type runner struct {
 	// already been applied in the current scope. Reset on env_reset and
 	// scope boundaries.
 	feeVoteApplied bool
-
 }
 
 // ammPair associates an LP token issuer with its currency code.
@@ -524,21 +523,21 @@ func RunFixture(t *testing.T, fixturePath string) {
 	}
 
 	r := &runner{
-		t:                    t,
-		accounts:             make(map[string]*jtx.Account),
-		enableTxQ:            isTxQSuite,
-		enableReplay:         needsReplayOnClose(fixture.Suite, fixture.Testcase),
-		txqCfg:               txqCfg,
-		directApplySteps:     directApplySet,
-		ammAddrMap:           make(map[string]string),
-		fixtureAMMAddrs:      fixtureAddrs,
-		fixtureAMMPairs:      fixturePairs,
+		t:                         t,
+		accounts:                  make(map[string]*jtx.Account),
+		enableTxQ:                 isTxQSuite,
+		enableReplay:              needsReplayOnClose(fixture.Suite, fixture.Testcase),
+		txqCfg:                    txqCfg,
+		directApplySteps:          directApplySet,
+		ammAddrMap:                make(map[string]string),
+		fixtureAMMAddrs:           fixtureAddrs,
+		fixtureAMMPairs:           fixturePairs,
 		fixtureUnfundedAddrs:      unfundedAddrs,
 		fixtureNonAMMAccountAddrs: nonAMMAcctAddrs,
-		fixtureSteps:         fixture.Steps,
-		timeLeapSteps:        timeLeapSet,
-		initFee:              initFee,
-		feeVote:              feeVote,
+		fixtureSteps:              fixture.Steps,
+		timeLeapSteps:             timeLeapSet,
+		initFee:                   initFee,
+		feeVote:                   feeVote,
 	}
 
 	// If this fixture depends on a predecessor, build the dependency chain

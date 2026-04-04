@@ -367,11 +367,9 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 			// then calls preclaim(). If preclaim fails (!likelyToClaimFee),
 			// the transaction is rejected with preclaim's TER code.
 			if potentialTotalSpend > 0 || seqProxy.Value != acctSeq {
-				adjustedBalance := balance
+				var adjustedBalance uint64
 				if potentialTotalSpend <= balance {
 					adjustedBalance = balance - potentialTotalSpend
-				} else {
-					adjustedBalance = 0
 				}
 				// The sequence should be set to the tx's sequence (if seq-based)
 				// or the nextQueuableSeq (if ticket-based).

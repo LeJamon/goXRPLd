@@ -299,7 +299,6 @@ func (e *TestEnv) closeWithReplay() {
 	}
 }
 
-
 // applyWithRetry applies a set of transactions with multi-pass retry logic,
 // matching rippled's applyTransactions() in BuildLedger.cpp. Returns any
 // transactions that still failed after all retry passes.
@@ -862,8 +861,8 @@ func sortCanonicalSalted(txns []tx.Transaction, extraSaltTxns ...[]tx.Transactio
 // the SHAMap root hash of a transaction set.
 type txSetTreeNode struct {
 	isLeaf   bool
-	hash     [32]byte               // leaf: tx hash; inner: computed
-	children [16]*txSetTreeNode     // inner only
+	hash     [32]byte           // leaf: tx hash; inner: computed
+	children [16]*txSetTreeNode // inner only
 }
 
 func computeTxSetHash(hashes [][32]byte) [32]byte {
