@@ -187,6 +187,9 @@ func (e *TestEnv) HasNoRipple(account, counterparty *Account, currency string) b
 }
 
 // Seq returns the current sequence number for an account.
+// It fatals if the account does not exist, matching rippled's Env which throws
+// when querying a non-existent account. Use SeqOrDefault for auto-fill paths
+// where the account may not exist yet.
 func (e *TestEnv) Seq(acc *Account) uint32 {
 	e.t.Helper()
 
@@ -197,20 +200,54 @@ func (e *TestEnv) Seq(acc *Account) uint32 {
 	exists, err := e.ledger.Exists(accountKey)
 	if err != nil {
 		e.t.Fatalf("Failed to check account existence: %v", err)
-		return 1
+		return 0
 	}
 	if !exists {
-		return 1 // Default sequence for new accounts
+		e.t.Fatalf("Seq: account %s does not exist", acc.Name)
+		return 0 // unreachable
 	}
 
 	// Read account data
 	data, err := e.ledger.Read(accountKey)
 	if err != nil {
 		e.t.Fatalf("Failed to read account: %v", err)
-		return 1
+		return 0
 	}
 
 	// Parse account root to get sequence
+	accountRoot, err := state.ParseAccountRootFromBytes(data)
+	if err != nil {
+		e.t.Fatalf("Failed to parse account data: %v", err)
+		return 0
+	}
+
+	return accountRoot.Sequence
+}
+
+// SeqOrDefault returns the current sequence number for an account, or 1 if
+// the account does not exist. This is useful for auto-fill paths where the
+// account may not have been created yet (e.g., the Payment that creates it
+// is the one being submitted).
+func (e *TestEnv) SeqOrDefault(acc *Account) uint32 {
+	e.t.Helper()
+
+	accountKey := keylet.Account(acc.ID)
+
+	exists, err := e.ledger.Exists(accountKey)
+	if err != nil {
+		e.t.Fatalf("Failed to check account existence: %v", err)
+		return 1
+	}
+	if !exists {
+		return 1 // Default sequence for new accounts
+	}
+
+	data, err := e.ledger.Read(accountKey)
+	if err != nil {
+		e.t.Fatalf("Failed to read account: %v", err)
+		return 1
+	}
+
 	accountRoot, err := state.ParseAccountRootFromBytes(data)
 	if err != nil {
 		e.t.Fatalf("Failed to parse account data: %v", err)
@@ -389,12 +426,15 @@ func (e *TestEnv) OpenLedgerFee(customBaseFee uint64) uint64 {
 	return feeLevel.ToDrops(customBaseFee) + 1
 }
 
-// OwnerCount returns the owner count for an account (0 if account doesn't exist).
+// OwnerCount returns the owner count for an account.
+// It fatals if the account does not exist, matching rippled's Env which throws
+// when querying a non-existent account.
 // Reference: rippled's Env::ownerCount(account) in Env.h
 func (e *TestEnv) OwnerCount(acc *Account) uint32 {
 	e.t.Helper()
 	info := e.AccountInfo(acc)
 	if info == nil {
+		e.t.Fatalf("OwnerCount: account %s does not exist", acc.Name)
 		return 0
 	}
 	return info.OwnerCount
