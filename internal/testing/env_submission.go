@@ -191,7 +191,7 @@ func (e *TestEnv) CloseWithTimeLeap() {
 func (e *TestEnv) closeWithReplay() {
 	e.t.Helper()
 
-	// Advance time
+	// Advance time (matching Close() behavior)
 	e.clock.Advance(10 * time.Second)
 
 	// Collect ALL transactions to replay in submission order:
@@ -399,7 +399,12 @@ func (e *TestEnv) Submit(transaction interface{}) TxResult {
 func (e *TestEnv) applyDirect(txn tx.Transaction) TxResult {
 	e.t.Helper()
 
-	parentCloseTime := uint32(e.clock.Now().Unix() - 946684800)
+	// Use the ledger's stored ParentCloseTime, not the clock.
+	// This matches rippled where parentCloseTime is derived from the
+	// parent ledger's closeTime (OpenView.cpp line 106), not from the
+	// network time. Using the ledger header ensures consistency between
+	// initial apply and replay-on-close.
+	parentCloseTime := uint32(e.ledger.ParentCloseTime().Unix() - 946684800)
 	engineConfig := tx.EngineConfig{
 		BaseFee:                   e.baseFee,
 		ReserveBase:               e.reserveBase,
@@ -664,11 +669,10 @@ func (e *TestEnv) drainQueue() {
 // from preclaim are not applied (matching rippled's retry pass behavior).
 // Returns the result code. The transaction is applied to the current e.ledger.
 func (e *TestEnv) applyForReplay(txn tx.Transaction, certainRetry bool) tx.Result {
-	// Use the clock for ParentCloseTime, matching applyDirect().
-	// Both paths must use the same time source so that time-dependent
-	// checks (e.g., EscrowCreate FinishAfter) produce the same result
-	// during initial apply and during replay.
-	parentCloseTime := uint32(e.clock.Now().Unix() - 946684800)
+	// Use the ledger's stored ParentCloseTime, matching applyDirect().
+	// Both paths use the ledger header so time-dependent checks produce
+	// the same result during initial apply and during replay.
+	parentCloseTime := uint32(e.ledger.ParentCloseTime().Unix() - 946684800)
 	engineConfig := tx.EngineConfig{
 		BaseFee:                   e.baseFee,
 		ReserveBase:               e.reserveBase,

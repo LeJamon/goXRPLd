@@ -899,11 +899,7 @@ func (r *runner) setupEnv(cfg EnvConfig) {
 	// Set the clock to epoch-10s so that after Close()'s 10s advance, the
 	// clock lands at exactly the Ripple epoch and the LCL gets closeTime=epoch
 	// (ripple time 0). This matches rippled's startGenesisLedger which creates
-	// LCL seq=2 with closeTime=0. Without this, Close() would advance past
-	// epoch, creating a desync between the LCL closeTime and the clock that
-	// causes replay-on-close to use a different ParentCloseTime than the
-	// initial apply (e.g., EscrowCreate FinishAfter=1 would get
-	// tecNO_PERMISSION during replay but not during initial apply).
+	// LCL seq=2 with closeTime=0.
 	r.env.SetTime(rippleEpoch.Add(-10 * time.Second))
 	r.env.Close()
 
