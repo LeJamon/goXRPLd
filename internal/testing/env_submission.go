@@ -1395,14 +1395,6 @@ func (e *TestEnv) SetInSetupMode(setup bool) {
 	e.inSetupMode = setup
 }
 
-// QueueReimbursement queues an account for fee reimbursement during the next
-// closeWithReplay. The reimbursement is applied after transaction replay but
-// before the ledger is finalized, so it becomes part of the closed ledger
-// state and survives future replays.
-func (e *TestEnv) QueueReimbursement(acc *Account) {
-	e.pendingReimbursements = append(e.pendingReimbursements, acc)
-}
-
 // SubmitPseudo submits a pseudo-transaction (EnableAmendment, SetFee, UNLModify)
 // directly to the engine. Pseudo-transactions bypass account lookup, sequence
 // auto-fill, fee deduction, and signature verification.

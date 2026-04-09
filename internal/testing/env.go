@@ -140,12 +140,6 @@ type TestEnv struct {
 	// parent for replay-on-close. Updated in Close().
 	lastClosedLedger *ledger.Ledger
 
-	// pendingReimbursements tracks accounts whose trust-line fee should be
-	// reimbursed. Applied inside closeWithReplay() (after transaction replay,
-	// before ledger.Close()) so the adjustment is part of the closed ledger
-	// state and survives future replays.
-	pendingReimbursements []*Account
-
 	// nextCloseSalt overrides the canonical sort salt for the next closeWithReplay.
 	// Set from the fixture's tx_set_hash field to match rippled's exact ordering.
 	// Cleared after use.
