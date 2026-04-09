@@ -49,6 +49,17 @@ type Appliable interface {
 	Apply(ctx *ApplyContext) Result
 }
 
+// Preclaimer is implemented by transaction types that need additional
+// stateful validation beyond the engine's common preclaim checks.
+// Preclaim runs AFTER the engine's sequence/fee/signature checks and
+// BEFORE doApply. Results from Preclaim are subject to the TapRETRY
+// gate: tec codes are NOT applied when TapRETRY is set, allowing the
+// transaction to be retried on the next pass.
+// Reference: rippled applySteps.h — PreclaimResult.likelyToClaimFee
+type Preclaimer interface {
+	Preclaim(config EngineConfig) Result
+}
+
 // TecApplier is implemented by transaction types that need to apply side-effects
 // even when returning a tec result code. In rippled, tecEXPIRED is special-cased
 // to re-apply expired credential deletions after the view is reset.

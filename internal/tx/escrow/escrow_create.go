@@ -119,33 +119,15 @@ func (e *EscrowCreate) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(e)
 }
 
-// Apply applies an EscrowCreate transaction
-// Reference: rippled Escrow.cpp EscrowCreate::doApply()
-func (e *EscrowCreate) Apply(ctx *tx.ApplyContext) tx.Result {
-	ctx.Log.Trace("escrow create apply",
-		"account", e.Account,
-		"destination", e.Destination,
-		"amount", e.Amount,
-		"finishAfter", e.FinishAfter,
-		"cancelAfter", e.CancelAfter,
-	)
-
-	rules := ctx.Rules()
-	closeTime := ctx.Config.ParentCloseTime
-
-	// Non-XRP amounts require featureTokenEscrow.
-	// Reference: rippled Escrow.cpp preflight lines 131-148
-	if !e.Amount.IsNative() && !rules.Enabled(amendment.FeatureTokenEscrow) {
-		return tx.TemBAD_AMOUNT
-	}
-
-	// Amendment-gated preflight: fix1571 requires FinishAfter or Condition
-	// Reference: rippled Escrow.cpp:160-167
-	if rules.Enabled(amendment.FeatureFix1571) {
-		if e.FinishAfter == nil && (e.Condition == nil || *e.Condition == "") {
-			return tx.TemMALFORMED
-		}
-	}
+// Preclaim performs stateful validation for EscrowCreate before doApply.
+// Time checks are here so that the engine's TapRETRY gate can suppress
+// tec results during retry passes, matching rippled's likelyToClaimFee
+// semantics. Without this, replay-on-close would apply tecNO_PERMISSION
+// on the final pass even though the initial apply succeeded.
+// Reference: rippled Escrow.cpp EscrowCreate::doApply() lines 457-489
+func (e *EscrowCreate) Preclaim(config tx.EngineConfig) tx.Result {
+	rules := config.GetRules()
+	closeTime := config.ParentCloseTime
 
 	// Time validation against parent close time
 	// Reference: rippled Escrow.cpp:457-489
@@ -164,6 +146,36 @@ func (e *EscrowCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 		if e.FinishAfter != nil && closeTime >= *e.FinishAfter {
 			return tx.TecNO_PERMISSION
+		}
+	}
+
+	return tx.TesSUCCESS
+}
+
+// Apply applies an EscrowCreate transaction
+// Reference: rippled Escrow.cpp EscrowCreate::doApply()
+func (e *EscrowCreate) Apply(ctx *tx.ApplyContext) tx.Result {
+	ctx.Log.Trace("escrow create apply",
+		"account", e.Account,
+		"destination", e.Destination,
+		"amount", e.Amount,
+		"finishAfter", e.FinishAfter,
+		"cancelAfter", e.CancelAfter,
+	)
+
+	rules := ctx.Rules()
+
+	// Non-XRP amounts require featureTokenEscrow.
+	// Reference: rippled Escrow.cpp preflight lines 131-148
+	if !e.Amount.IsNative() && !rules.Enabled(amendment.FeatureTokenEscrow) {
+		return tx.TemBAD_AMOUNT
+	}
+
+	// Amendment-gated preflight: fix1571 requires FinishAfter or Condition
+	// Reference: rippled Escrow.cpp:160-167
+	if rules.Enabled(amendment.FeatureFix1571) {
+		if e.FinishAfter == nil && (e.Condition == nil || *e.Condition == "") {
+			return tx.TemMALFORMED
 		}
 	}
 

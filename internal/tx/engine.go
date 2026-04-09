@@ -207,6 +207,15 @@ type EngineConfig struct {
 	Logger xrpllog.Logger
 }
 
+// GetRules returns the amendment rules, falling back to AllSupportedRules if nil.
+// This is the same fallback used by Engine.rules() and ApplyContext.Rules().
+func (c EngineConfig) GetRules() *amendment.Rules {
+	if c.Rules != nil {
+		return c.Rules
+	}
+	return amendment.AllSupportedRules()
+}
+
 // LedgerView provides read/write access to ledger state
 type LedgerView interface {
 	// Read reads a ledger entry
@@ -1352,6 +1361,19 @@ func (e *Engine) preclaim(tx Transaction, txHash [32]byte) Result {
 	// authorization (account existence, master key, regular key), not crypto.
 	if bsp, ok := tx.(BatchSignerProvider); ok {
 		if result := e.checkBatchSign(bsp.GetBatchSigners()); result != TesSUCCESS {
+			return result
+		}
+	}
+
+	// Step 7: Transaction-specific preclaim checks.
+	// These run after all common preclaim checks and are subject to the
+	// TapRETRY gate in Apply(). tec results from preclaim are NOT applied
+	// when TapRETRY is set (likelyToClaimFee = false), matching rippled's
+	// PreclaimResult semantics.
+	// Reference: rippled applySteps.h — invoke_preclaim dispatches to
+	// the transaction type's static preclaim() method.
+	if preclaimer, ok := tx.(Preclaimer); ok {
+		if result := preclaimer.Preclaim(e.config); result != TesSUCCESS {
 			return result
 		}
 	}

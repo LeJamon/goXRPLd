@@ -896,15 +896,16 @@ func (r *runner) setupEnv(cfg EnvConfig) {
 	// We need the extra close to reach open(seq=3) so that accounts created
 	// with DeletableAccounts get initial sequence=3 (matching fixture blobs).
 	//
-	// The clock must start at the Ripple epoch (Jan 1, 2000) BEFORE the close,
-	// and be RESET to epoch AFTER the close. This is because:
-	// - rippled's startGenesisLedger creates LCL seq=2 with closeTime=0
-	// - rippled's ManualTimeKeeper is then set to LCL.closeTime = 0
-	// - goXRPL derives ParentCloseTime from the clock, so the clock must
-	//   be at epoch 0 when fixtures start, matching rippled's timeKeeper=0
-	r.env.SetTime(rippleEpoch)
+	// Set the clock to epoch-10s so that after Close()'s 10s advance, the
+	// clock lands at exactly the Ripple epoch and the LCL gets closeTime=epoch
+	// (ripple time 0). This matches rippled's startGenesisLedger which creates
+	// LCL seq=2 with closeTime=0. Without this, Close() would advance past
+	// epoch, creating a desync between the LCL closeTime and the clock that
+	// causes replay-on-close to use a different ParentCloseTime than the
+	// initial apply (e.g., EscrowCreate FinishAfter=1 would get
+	// tecNO_PERMISSION during replay but not during initial apply).
+	r.env.SetTime(rippleEpoch.Add(-10 * time.Second))
 	r.env.Close()
-	r.env.SetTime(rippleEpoch)
 
 	// Reset TxQ maxSize to nil after the initial close. In rippled,
 	// startGenesisLedger() does NOT call TxQ::processClosedLedger, so

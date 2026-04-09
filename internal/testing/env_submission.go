@@ -194,23 +194,25 @@ func (e *TestEnv) closeWithReplay() {
 	// Advance time
 	e.clock.Advance(10 * time.Second)
 
-	// Collect user transactions to replay:
-	// 1. User transactions submitted during this open ledger
-	// 2. Held transactions from previous ledgers (terPRE_SEQ etc)
-	var userTxns []tx.Transaction
-	userTxns = append(userTxns, e.openLedgerUserTxns...)
+	// Collect ALL transactions to replay in submission order:
+	// setup txns first (fund, trust, reimbursement), then user txns (fixture),
+	// then held transactions from previous ledgers.
+	// Submission order preserves dependencies (e.g., TrustSet before Payment).
+	//
+	// Note: rippled applies all txns in canonical (SHAMap-salted) order via
+	// buildLedger(). We use submission order because goXRPL's setup txns have
+	// different hashes than rippled's, making the canonical salt impossible to
+	// match. Submission order produces the correct closed-ledger state for
+	// most cases because the retry mechanism handles ordering-dependent failures.
+	var allTxns []tx.Transaction
+	allTxns = append(allTxns, e.openLedgerSetupTxns...)
+	allTxns = append(allTxns, e.openLedgerUserTxns...)
 	for _, held := range e.heldTxns {
-		userTxns = append(userTxns, held...)
+		allTxns = append(allTxns, held...)
 	}
 
 	// Clear held transactions -- they will be re-held if they still fail
 	e.heldTxns = nil
-
-	// Sort user transactions using the SHAMap-salted canonical ordering.
-	// This matches rippled's CanonicalTXSet for ledgers where ALL user
-	// transactions come from fixture tx_blobs (identical hashes to rippled).
-	// Setup transactions are excluded from sorting but included in the salt.
-	sortCanonicalSalted(userTxns, e.openLedgerSetupTxns)
 
 	// Create a fresh open ledger from the last closed ledger (parent).
 	// This discards all state changes from the immediate applies.
@@ -228,18 +230,9 @@ func (e *TestEnv) closeWithReplay() {
 	const maxRetryPasses = 1 // LEDGER_RETRY_PASSES in rippled (OpenLedger.h line 44)
 	const maxTotalPasses = 3 // LEDGER_TOTAL_PASSES in rippled (OpenLedger.h line 40)
 
-	// ── Phase 1: Apply setup transactions in submission order ──
-	// Fund/trust transactions must be applied first to ensure accounts and
-	// trust lines exist before user transactions are replayed. These are
-	// applied in the order they were submitted (not canonical sorted)
-	// because goXRPL's setup transactions produce different hashes than
-	// rippled's (different amounts, different reimbursement mechanism).
-	e.applyWithRetry(e.openLedgerSetupTxns, maxRetryPasses, maxTotalPasses)
-
-	// ── Phase 2: Apply user transactions in canonical sorted order ──
-	// Fixture transactions are applied in CanonicalTXSet order with retry
-	// passes, matching rippled's applyTransactions() in BuildLedger.cpp.
-	remaining := e.applyWithRetry(userTxns, maxRetryPasses, maxTotalPasses)
+	// Apply all transactions with retry passes.
+	// Setup and user txns are in a single list in submission order.
+	remaining := e.applyWithRetry(allTxns, maxRetryPasses, maxTotalPasses)
 
 	// Any remaining transactions that still failed go back into the held
 	// map for retry in the next ledger.
@@ -671,15 +664,11 @@ func (e *TestEnv) drainQueue() {
 // from preclaim are not applied (matching rippled's retry pass behavior).
 // Returns the result code. The transaction is applied to the current e.ledger.
 func (e *TestEnv) applyForReplay(txn tx.Transaction, certainRetry bool) tx.Result {
-	// Use the parent ledger's close time, not the current clock.
-	// During replay, the clock has already been advanced for the new ledger,
-	// but ParentCloseTime must reflect the PARENT's close time.
-	var parentCloseTime uint32
-	if e.lastClosedLedger != nil {
-		parentCloseTime = uint32(e.lastClosedLedger.CloseTime().Unix() - 946684800)
-	} else {
-		parentCloseTime = uint32(e.clock.Now().Unix() - 946684800)
-	}
+	// Use the clock for ParentCloseTime, matching applyDirect().
+	// Both paths must use the same time source so that time-dependent
+	// checks (e.g., EscrowCreate FinishAfter) produce the same result
+	// during initial apply and during replay.
+	parentCloseTime := uint32(e.clock.Now().Unix() - 946684800)
 	engineConfig := tx.EngineConfig{
 		BaseFee:                   e.baseFee,
 		ReserveBase:               e.reserveBase,
