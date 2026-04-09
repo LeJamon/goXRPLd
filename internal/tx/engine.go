@@ -132,6 +132,17 @@ func (l *engineSignerListLookup) GetAccountInfo(account string) (flags uint32, r
 	return accountRoot.Flags, accountRoot.RegularKey, nil
 }
 
+// ApplyFlags controls transaction application behavior during consensus.
+// Reference: rippled ApplyView.h ApplyFlags enum
+type ApplyFlags uint32
+
+const (
+	TapNONE      ApplyFlags = 0x00
+	TapFAIL_HARD ApplyFlags = 0x10  // Local tx with fail_hard flag
+	TapRETRY     ApplyFlags = 0x20  // Not the tx's last pass — tec from preclaim is not applied
+	TapUNLIMITED ApplyFlags = 0x400 // Privileged source
+)
+
 // EngineConfig holds configuration for the transaction engine
 type EngineConfig struct {
 	// BaseFee is the current base fee in drops
@@ -183,6 +194,13 @@ type EngineConfig struct {
 	// Reference: rippled Transactor.cpp checkFee — "Only check fee is
 	// sufficient when the ledger is open."
 	OpenLedger bool
+
+	// ApplyFlags controls transaction application behavior.
+	// TapRETRY means this is not the tx's last pass: tec results from
+	// preclaim are not applied (likelyToClaimFee = false), allowing the
+	// tx to be retried on the next pass.
+	// Reference: rippled Transactor.cpp / BuildLedger.cpp
+	ApplyFlags ApplyFlags
 
 	// Logger is the logger to use for this engine instance.
 	// If nil, xrpllog.Discard() is used — safe for tests and zero-value construction.
@@ -491,6 +509,19 @@ func (e *Engine) Apply(tx Transaction) ApplyResult {
 			"txHash", hex.EncodeToString(txHash[:]),
 			"ter", result.String(),
 		)
+		return ApplyResult{
+			Result:  result,
+			Applied: false,
+			Message: result.Message(),
+		}
+	}
+
+	// likelyToClaimFee gate: when TapRETRY is set, tec results from
+	// preclaim are NOT applied (no fee, no sequence consumed). The tx
+	// stays in the retry queue for the next pass where TapRETRY is cleared.
+	// Reference: rippled applySteps.h PreclaimResult —
+	//   likelyToClaimFee = tesSUCCESS || (isTecClaim && !tapRETRY)
+	if result.IsTec() && (e.config.ApplyFlags&TapRETRY) != 0 {
 		return ApplyResult{
 			Result:  result,
 			Applied: false,

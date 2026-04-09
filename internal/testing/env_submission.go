@@ -225,8 +225,8 @@ func (e *TestEnv) closeWithReplay() {
 	e.closingTxTotal = 0
 	e.closingFeeLevels = nil
 
-	const maxRetryPasses = 5  // LEDGER_RETRY_PASSES in rippled
-	const maxTotalPasses = 10 // LEDGER_TOTAL_PASSES in rippled
+	const maxRetryPasses = 1 // LEDGER_RETRY_PASSES in rippled (OpenLedger.h line 44)
+	const maxTotalPasses = 3 // LEDGER_TOTAL_PASSES in rippled (OpenLedger.h line 40)
 
 	// ── Phase 1: Apply setup transactions in submission order ──
 	// Fund/trust transactions must be applied first to ensure accounts and
@@ -302,6 +302,12 @@ func (e *TestEnv) closeWithReplay() {
 // applyWithRetry applies a set of transactions with multi-pass retry logic,
 // matching rippled's applyTransactions() in BuildLedger.cpp. Returns any
 // transactions that still failed after all retry passes.
+//
+// During retry passes (certainRetry=true), TapRETRY is set so that tec
+// results from preclaim are NOT applied (likelyToClaimFee=false). On the
+// final pass (certainRetry=false), TapRETRY is cleared so tec results
+// ARE applied (fee consumed, sequence advanced).
+// Reference: rippled BuildLedger.cpp lines 98-178
 func (e *TestEnv) applyWithRetry(txns []tx.Transaction, maxRetryPasses, maxTotalPasses int) []tx.Transaction {
 	remaining := txns
 	certainRetry := true
@@ -311,15 +317,17 @@ func (e *TestEnv) applyWithRetry(txns []tx.Transaction, maxRetryPasses, maxTotal
 		changes := 0
 
 		for _, txn := range remaining {
-			result := e.applyForReplay(txn)
+			result := e.applyForReplay(txn, certainRetry)
 
 			switch {
 			case result.IsApplied():
 				changes++
-			case isRetryable(result):
+			case isRetryable(result) || result.IsTec():
+				// ter codes and non-applied tec codes (from TapRETRY)
+				// are kept for retry on the next pass.
 				retry = append(retry, txn)
 			default:
-				// Permanent failure (tef, tem, tel) -- drop
+				// Permanent failure (tef, tem, tel) — drop
 			}
 		}
 
@@ -668,9 +676,10 @@ func (e *TestEnv) drainQueue() {
 }
 
 // applyForReplay applies a single transaction during the replay-on-close
-// process. Returns the result code. The transaction is applied to the
-// current e.ledger.
-func (e *TestEnv) applyForReplay(txn tx.Transaction) tx.Result {
+// process. When certainRetry is true, TapRETRY is set so that tec results
+// from preclaim are not applied (matching rippled's retry pass behavior).
+// Returns the result code. The transaction is applied to the current e.ledger.
+func (e *TestEnv) applyForReplay(txn tx.Transaction, certainRetry bool) tx.Result {
 	// Use the parent ledger's close time, not the current clock.
 	// During replay, the clock has already been advanced for the new ledger,
 	// but ParentCloseTime must reflect the PARENT's close time.
@@ -691,6 +700,9 @@ func (e *TestEnv) applyForReplay(txn tx.Transaction) tx.Result {
 		NetworkID:                 e.networkID,
 		ParentHash:                e.ledger.ParentHash(),
 		OpenLedger:                e.openLedger,
+	}
+	if certainRetry {
+		engineConfig.ApplyFlags = tx.TapRETRY
 	}
 
 	engine := tx.NewEngine(e.ledger, engineConfig)
