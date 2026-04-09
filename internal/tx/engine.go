@@ -132,6 +132,17 @@ func (l *engineSignerListLookup) GetAccountInfo(account string) (flags uint32, r
 	return accountRoot.Flags, accountRoot.RegularKey, nil
 }
 
+// ApplyFlags controls transaction application behavior during consensus.
+// Reference: rippled ApplyView.h ApplyFlags enum
+type ApplyFlags uint32
+
+const (
+	TapNONE      ApplyFlags = 0x00
+	TapFAIL_HARD ApplyFlags = 0x10  // Local tx with fail_hard flag
+	TapRETRY     ApplyFlags = 0x20  // Not the tx's last pass — tec from preclaim is not applied
+	TapUNLIMITED ApplyFlags = 0x400 // Privileged source
+)
+
 // EngineConfig holds configuration for the transaction engine
 type EngineConfig struct {
 	// BaseFee is the current base fee in drops
@@ -183,6 +194,13 @@ type EngineConfig struct {
 	// Reference: rippled Transactor.cpp checkFee — "Only check fee is
 	// sufficient when the ledger is open."
 	OpenLedger bool
+
+	// ApplyFlags controls transaction application behavior.
+	// TapRETRY means this is not the tx's last pass: tec results from
+	// preclaim are not applied (likelyToClaimFee = false), allowing the
+	// tx to be retried on the next pass.
+	// Reference: rippled Transactor.cpp / BuildLedger.cpp
+	ApplyFlags ApplyFlags
 
 	// Logger is the logger to use for this engine instance.
 	// If nil, xrpllog.Discard() is used — safe for tests and zero-value construction.
@@ -491,6 +509,19 @@ func (e *Engine) Apply(tx Transaction) ApplyResult {
 			"txHash", hex.EncodeToString(txHash[:]),
 			"ter", result.String(),
 		)
+		return ApplyResult{
+			Result:  result,
+			Applied: false,
+			Message: result.Message(),
+		}
+	}
+
+	// likelyToClaimFee gate: when TapRETRY is set, tec results from
+	// preclaim are NOT applied (no fee, no sequence consumed). The tx
+	// stays in the retry queue for the next pass where TapRETRY is cleared.
+	// Reference: rippled applySteps.h PreclaimResult —
+	//   likelyToClaimFee = tesSUCCESS || (isTecClaim && !tapRETRY)
+	if result.IsTec() && (e.config.ApplyFlags&TapRETRY) != 0 {
 		return ApplyResult{
 			Result:  result,
 			Applied: false,
@@ -1939,9 +1970,94 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 		invEntries := table.CollectEntries()
 		txDeclaredFee := parseTxDeclaredFee(tx, fee)
 		if violation := invariants.CheckInvariants(wrapTxForInvariants(tx), invariants.Result(result), fee, txDeclaredFee, invEntries, table, e.rules()); violation != nil {
-			// First violation: charge fee but revert all state changes (tecINVARIANT_FAILED).
-			// Reference: rippled — first pass returns tec, second would return tef.
+			// Invariant violation: discard all doApply() side effects and apply only
+			// fee deduction + sequence increment, just like the tec recovery path.
+			// Reference: rippled Transactor::apply() lines 1224-1238 — on tecINVARIANT_FAILED,
+			// calls reset(fee) which discards the sandbox, then re-applies fee/seq only.
 			_ = violation // logged in future via journal
+
+			// Don't call table.Apply() — discard all transaction effects.
+			// Create a fresh tecTable for fee-only changes.
+			invTecTable := NewApplyStateTable(e.view, txHash, e.config.LedgerSequence, e.rules())
+
+			// Consume ticket through invTecTable if needed.
+			if isTicket {
+				ticketKey := keylet.Ticket(accountID, *common.TicketSequence)
+				ownerDirKey := keylet.OwnerDir(accountID)
+				var ticketOwnerNode uint64
+				if ticketData, ticketErr := invTecTable.Read(ticketKey); ticketErr == nil && ticketData != nil {
+					ticketOwnerNode = state.GetOwnerNode(ticketData)
+				}
+				state.DirRemove(invTecTable, ownerDirKey, ticketOwnerNode, ticketKey.Key, true)
+				if err := invTecTable.Erase(ticketKey); err != nil {
+					return TefINTERNAL
+				}
+			}
+
+			// Restore account to original state, then apply only fee/sequence.
+			invAccount, invErr := state.ParseAccountRoot(originalAccountData)
+			if invErr != nil {
+				return TefINTERNAL
+			}
+			if !isDelegated {
+				invAccount.Balance -= fee
+			}
+			if !isTicket && common.Sequence != nil {
+				invAccount.Sequence = *common.Sequence + 1
+			}
+			if isTicket && invAccount.OwnerCount > 0 {
+				invAccount.OwnerCount--
+			}
+			if isTicket && invAccount.TicketCount > 0 {
+				invAccount.TicketCount--
+			}
+			invAccount.PreviousTxnID = txHash
+			invAccount.PreviousTxnLgrSeq = e.config.LedgerSequence
+			{
+				var zeroHash [32]byte
+				if invAccount.AccountTxnID != zeroHash {
+					invAccount.AccountTxnID = txHash
+				}
+			}
+
+			invUpdatedData, invSerErr := state.SerializeAccountRoot(invAccount)
+			if invSerErr != nil {
+				return TefINTERNAL
+			}
+			if err := invTecTable.Update(accountKey, invUpdatedData); err != nil {
+				return TefINTERNAL
+			}
+
+			// For delegated transactions, deduct the fee from the delegate.
+			if isDelegated {
+				delegateID, _ := state.DecodeAccountID(common.Delegate)
+				delegateAccountKey := keylet.Account(delegateID)
+				delegateAccountData, delegateReadErr := e.view.Read(delegateAccountKey)
+				if delegateReadErr != nil || delegateAccountData == nil {
+					return TefINTERNAL
+				}
+				delegateAccount, delegateParseErr := state.ParseAccountRoot(delegateAccountData)
+				if delegateParseErr != nil {
+					return TefINTERNAL
+				}
+				delegateAccount.Balance -= fee
+				delegateAccount.PreviousTxnID = txHash
+				delegateAccount.PreviousTxnLgrSeq = e.config.LedgerSequence
+				delegateData, delegateSerErr := state.SerializeAccountRoot(delegateAccount)
+				if delegateSerErr != nil {
+					return TefINTERNAL
+				}
+				if err := invTecTable.Update(delegateAccountKey, delegateData); err != nil {
+					return TefINTERNAL
+				}
+			}
+
+			generatedMeta, applyErr := invTecTable.Apply()
+			if applyErr != nil {
+				return TefINTERNAL
+			}
+			metadata.AffectedNodes = generatedMeta.AffectedNodes
+
 			return TecINVARIANT_FAILED
 		}
 	}
