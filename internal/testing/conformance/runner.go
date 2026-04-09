@@ -896,11 +896,15 @@ func (r *runner) setupEnv(cfg EnvConfig) {
 	// We need the extra close to reach open(seq=3) so that accounts created
 	// with DeletableAccounts get initial sequence=3 (matching fixture blobs).
 	//
-	// Set the clock to epoch-10s so that after Close()'s 10s advance, the
+	// Set the clock so that after Close()'s resolution-based advance, the
 	// clock lands at exactly the Ripple epoch and the LCL gets closeTime=epoch
 	// (ripple time 0). This matches rippled's startGenesisLedger which creates
 	// LCL seq=2 with closeTime=0.
-	r.env.SetTime(rippleEpoch.Add(-10 * time.Second))
+	setupResolution := time.Duration(r.env.Ledger().CloseTimeResolution()) * time.Second
+	if setupResolution == 0 {
+		setupResolution = 10 * time.Second
+	}
+	r.env.SetTime(rippleEpoch.Add(-setupResolution))
 	r.env.Close()
 
 	// Reset TxQ maxSize to nil after the initial close. In rippled,
@@ -1013,11 +1017,15 @@ func (r *runner) execTrust(stepIdx int, step Step) {
 // provides the exact close time, eliminating the need for time calibration.
 func (r *runner) execClose(stepIdx int, step Step) {
 	if step.CloseTime != nil {
-		// v2 fixture: set clock so that after Close()'s 10s advance,
-		// the resulting close time matches the fixture's close_time.
+		// v2 fixture: set clock so that after Close()'s resolution-based advance
+		// (default 10s), the resulting close time matches the fixture's close_time.
 		// close_time is in seconds since Ripple epoch (Jan 1, 2000).
 		targetTime := rippleEpoch.Add(time.Duration(*step.CloseTime) * time.Second)
-		r.env.SetTime(targetTime.Add(-10 * time.Second))
+		resolution := time.Duration(r.env.Ledger().CloseTimeResolution()) * time.Second
+		if resolution == 0 {
+			resolution = 10 * time.Second
+		}
+		r.env.SetTime(targetTime.Add(-resolution))
 	}
 	// Use time-leap close if this step index is in the time-leap set.
 	// Time-leap closes reset TxQ fee metrics (txnsExpected) back toward

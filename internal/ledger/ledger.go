@@ -242,6 +242,15 @@ func (l *Ledger) ParentCloseTime() time.Time {
 	return l.header.ParentCloseTime
 }
 
+// CloseTimeResolution returns the ledger's close time resolution in seconds.
+// This value determines the granularity of close time rounding (typically 10s for genesis).
+// Reference: rippled LedgerTiming.h, Env.cpp:126
+func (l *Ledger) CloseTimeResolution() uint32 {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.header.CloseTimeResolution
+}
+
 // TotalDrops returns the total XRP in existence
 func (l *Ledger) TotalDrops() uint64 {
 	l.mu.RLock()

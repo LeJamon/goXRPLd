@@ -38,8 +38,13 @@ func (e *TestEnv) Close() {
 	// matching rippled's closed ledger tx map behavior.
 	closingTxCount := e.closingTxTotal
 
-	// Advance time
-	e.clock.Advance(10 * time.Second)
+	// Round closeTime up to next resolution boundary, matching rippled.
+	// Reference: rippled Env.cpp:126 — closeTime += resolution - 1s
+	resolution := time.Duration(e.ledger.CloseTimeResolution()) * time.Second
+	if resolution == 0 {
+		resolution = 10 * time.Second // fallback for genesis
+	}
+	e.clock.Advance(resolution)
 
 	// Close current ledger
 	if err := e.ledger.Close(e.clock.Now(), 0); err != nil {
@@ -126,7 +131,12 @@ func (e *TestEnv) CloseWithTimeLeap() {
 	e.t.Helper()
 
 	closingTxCount := e.closingTxTotal
-	e.clock.Advance(10 * time.Second)
+	// Round closeTime up to next resolution boundary, matching rippled.
+	resolution := time.Duration(e.ledger.CloseTimeResolution()) * time.Second
+	if resolution == 0 {
+		resolution = 10 * time.Second
+	}
+	e.clock.Advance(resolution)
 
 	if err := e.ledger.Close(e.clock.Now(), 0); err != nil {
 		e.t.Fatalf("Failed to close ledger: %v", err)
@@ -192,7 +202,12 @@ func (e *TestEnv) closeWithReplay() {
 	e.t.Helper()
 
 	// Advance time (matching Close() behavior)
-	e.clock.Advance(10 * time.Second)
+	// Round closeTime up to next resolution boundary, matching rippled.
+	resolution := time.Duration(e.ledger.CloseTimeResolution()) * time.Second
+	if resolution == 0 {
+		resolution = 10 * time.Second
+	}
+	e.clock.Advance(resolution)
 
 	// Collect ALL transactions to replay in submission order:
 	// setup txns first (fund, trust, reimbursement), then user txns (fixture),
