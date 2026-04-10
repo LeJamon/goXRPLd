@@ -21,7 +21,6 @@ func (e *TestEnv) Trust(acc *Account, amount tx.Amount) {
 	ts.Sequence = &seq
 
 	if acc.PublicKey != nil {
-		ts.SetFlags(ts.GetFlags() | tx.TfFullyCanonicalSig)
 		e.SignWith(ts, acc)
 	}
 
@@ -463,9 +462,7 @@ func (e *TestEnv) ReimburseWithPayment(acc *Account) {
 	if e.networkID > 1024 {
 		p.NetworkID = &e.networkID
 	}
-	// Always sign for stable tx hashes (canonical sort salt)
 	if master.PublicKey != nil {
-		p.SetFlags(tx.TfFullyCanonicalSig)
 		e.SignWith(p, master)
 	}
 
