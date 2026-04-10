@@ -243,13 +243,12 @@ func (e *TestEnv) closeWithReplay() {
 		allTxns = append(allTxns, held...)
 	}
 
-	// Sort using fixture-recorded canonical salt if available.
-	// This matches rippled's exact transaction ordering during replay.
-	// Without a fixture salt, transactions are applied in submission order.
-	if e.nextCloseSalt != nil {
-		sortCanonicalWithSalt(allTxns, *e.nextCloseSalt)
-		e.nextCloseSalt = nil
-	}
+	// Sort all transactions using SHAMap-salted canonical ordering.
+	// The salt is the SHAMap root hash of all transaction hashes,
+	// matching rippled's CanonicalTXSet (RCLConsensus.cpp onClose).
+	// Setup tx hashes match rippled's (same keys, no tfFullyCanonicalSig),
+	// so the computed salt produces the correct ordering.
+	sortCanonicalSalted(allTxns)
 
 	// Clear held transactions -- they will be re-held if they still fail
 	e.heldTxns = nil
