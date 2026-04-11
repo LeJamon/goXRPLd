@@ -508,7 +508,7 @@ func RunFixture(t *testing.T, fixturePath string) {
 		t:                         t,
 		accounts:                  make(map[string]*jtx.Account),
 		enableTxQ:                 isTxQSuite,
-		enableReplay:              true, // Always replay — matches rippled consensus
+		enableReplay:              !isTxQSuite, // TxQ suites need direct close for correct fee metrics
 		txqCfg:                    txqCfg,
 		directApplySteps:          directApplySet,
 		ammAddrMap:                make(map[string]string),
