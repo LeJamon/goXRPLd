@@ -73,13 +73,35 @@ func (e *TestEnv) SignWith(txn tx.Transaction, signer *Account) tx.Transaction {
 	common := txn.GetCommon()
 	common.SigningPubKey = hex.EncodeToString(signer.PublicKey)
 
+	if !e.VerifySignatures {
+		// When signature verification is disabled, use a dummy signature
+		// matching rippled's autofill_sig() behavior (Env.cpp line 649):
+		//   jv[jss::TxnSignature] = "00";
+		// This ensures identical binary serialization and tx hashes.
+		common.TxnSignature = "00"
+	} else {
+		sig, err := tx.SignTransaction(txn, privateKeyHex(signer))
+		if err != nil {
+			e.t.Fatalf("Failed to sign transaction: %v", err)
+		}
+		common.TxnSignature = sig
+	}
+
+	return txn
+}
+
+// signReal always computes a real cryptographic signature, regardless of
+// VerifySignatures. Used by SubmitSigned/SubmitSignedWith which submit
+// with verification enabled and need actual valid signatures.
+func (e *TestEnv) signReal(txn tx.Transaction, signer *Account) {
+	e.t.Helper()
+	common := txn.GetCommon()
+	common.SigningPubKey = hex.EncodeToString(signer.PublicKey)
 	sig, err := tx.SignTransaction(txn, privateKeyHex(signer))
 	if err != nil {
 		e.t.Fatalf("Failed to sign transaction: %v", err)
 	}
 	common.TxnSignature = sig
-
-	return txn
 }
 
 // SubmitSigned signs the transaction with the account's own key and submits
@@ -103,7 +125,7 @@ func (e *TestEnv) SubmitSigned(transaction interface{}) TxResult {
 
 	// Auto-fill BEFORE signing, since sequence/fee are part of the signed payload.
 	e.autoFillForSigning(txn)
-	e.SignWith(txn, acc)
+	e.signReal(txn, acc) // Always use real signature for verified submission
 	return e.submitWithSigVerification(txn)
 }
 
@@ -121,7 +143,7 @@ func (e *TestEnv) SubmitSignedWith(transaction interface{}, signer *Account) TxR
 
 	// Auto-fill BEFORE signing, since sequence/fee are part of the signed payload.
 	e.autoFillForSigning(txn)
-	e.SignWith(txn, signer)
+	e.signReal(txn, signer) // Always use real signature for verified submission
 	return e.submitWithSigVerification(txn)
 }
 
