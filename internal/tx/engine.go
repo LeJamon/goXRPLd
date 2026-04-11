@@ -553,8 +553,26 @@ func (e *Engine) Apply(tx Transaction) ApplyResult {
 
 	metadata.TransactionResult = result
 
+	// Determine if the transaction is applied.
+	// In rippled (Transactor.cpp:1108): applied = isTesSuccess(result).
+	// For specific tec codes without tapRETRY (tecOVERSIZE, tecKILLED,
+	// tecINCOMPLETE, tecEXPIRED, or isTecClaimHardFail), applied is
+	// set to true (line 1215). With tapRETRY set, regular tec codes
+	// are NOT applied — they return Retry for the next pass.
+	// Reference: rippled Transactor.cpp operator() lines 1108-1216
+	applied := result.IsApplied()
+	if result.IsTec() && (e.config.ApplyFlags&TapRETRY) != 0 {
+		// Retry pass: tec results are NOT applied. The doApply tec
+		// recovery already committed fee+sequence to the table, but we
+		// DON'T count this as applied so the conformance runner retries.
+		// Note: the fee IS consumed (matching rippled where tec from
+		// doApply still consumes fee even with tapRETRY, but the tx is
+		// returned as Retry, not Success).
+		applied = false
+	}
+
 	// Record fee as destroyed and assign TransactionIndex
-	if result.IsApplied() {
+	if applied {
 		e.view.AdjustDropsDestroyed(drops.XRPAmount(fee))
 		metadata.TransactionIndex = e.txCount
 		e.txCount++
@@ -563,13 +581,13 @@ func (e *Engine) Apply(tx Transaction) ApplyResult {
 	e.logger.Debug("apply result",
 		"txHash", hex.EncodeToString(txHash[:]),
 		"ter", result.String(),
-		"applied", result.IsApplied(),
+		"applied", applied,
 		"fee", fee,
 	)
 
 	return ApplyResult{
 		Result:   result,
-		Applied:  result.IsApplied(),
+		Applied:  applied,
 		Fee:      fee,
 		Metadata: metadata,
 		Message:  result.Message(),
@@ -1753,8 +1771,17 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 	// Reference: rippled Transactor.cpp — tec codes claim the fee but discard
 	// the apply sandbox, then selectively re-apply specific cleanup operations
 	// (offer removal for tecOVERSIZE/tecKILLED, credential deletion for tecEXPIRED).
-	// We use a fresh ApplyStateTable (tecTable) to track all tec-specific changes
-	// so that proper metadata (PreviousFields, FinalFields, DeletedNode) is generated.
+	//
+	// When TapRETRY is set, regular tec results are NOT applied (no fee, no
+	// sequence consumed). The tx stays in the retry queue. This matches rippled
+	// where applied=isTesSuccess(result)=false with tapRETRY, so ctx_ is never
+	// committed. Only isTecClaimHardFail codes (tec without tapRETRY) commit.
+	// Reference: rippled Transactor.cpp lines 1108-1216
+	if result.IsTec() && (e.config.ApplyFlags&TapRETRY) != 0 {
+		// Retry pass: discard all changes, don't commit fee/sequence.
+		// The transaction will be retried on the next pass without TapRETRY.
+		return result
+	}
 	if result.IsTec() {
 		txTypeName := tx.TxType().String()
 		// For tecOVERSIZE and tecKILLED: collect deleted offers from the table

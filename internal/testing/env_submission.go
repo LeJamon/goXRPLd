@@ -246,8 +246,6 @@ func (e *TestEnv) closeWithReplay() {
 	// Sort all transactions using SHAMap-salted canonical ordering.
 	// The salt is the SHAMap root hash of all transaction hashes,
 	// matching rippled's CanonicalTXSet (RCLConsensus.cpp onClose).
-	// Setup tx hashes match rippled's (same keys, no tfFullyCanonicalSig),
-	// so the computed salt produces the correct ordering.
 	sortCanonicalSalted(allTxns)
 
 	// Clear held transactions -- they will be re-held if they still fail
@@ -361,10 +359,10 @@ func (e *TestEnv) applyWithRetry(txns []tx.Transaction, maxRetryPasses, maxTotal
 		changes := 0
 
 		for _, txn := range remaining {
-			result := e.applyForReplay(txn, certainRetry)
+			result, applied := e.applyForReplay(txn, certainRetry)
 
 			switch {
-			case result.IsApplied():
+			case applied:
 				changes++
 			case isRetryable(result) || result.IsTec():
 				// ter codes and non-applied tec codes (from TapRETRY)
@@ -726,9 +724,9 @@ func (e *TestEnv) drainQueue() {
 
 // applyForReplay applies a single transaction during the replay-on-close
 // process. When certainRetry is true, TapRETRY is set so that tec results
-// from preclaim are not applied (matching rippled's retry pass behavior).
-// Returns the result code. The transaction is applied to the current e.ledger.
-func (e *TestEnv) applyForReplay(txn tx.Transaction, certainRetry bool) tx.Result {
+// are not applied (matching rippled's retry pass behavior).
+// Returns the result code and whether the transaction was actually applied.
+func (e *TestEnv) applyForReplay(txn tx.Transaction, certainRetry bool) (tx.Result, bool) {
 	// Use the ledger's stored ParentCloseTime, matching applyDirect().
 	// Both paths use the ledger header so time-dependent checks produce
 	// the same result during initial apply and during replay.
@@ -752,7 +750,7 @@ func (e *TestEnv) applyForReplay(txn tx.Transaction, certainRetry bool) tx.Resul
 	engine := tx.NewEngine(e.ledger, engineConfig)
 	applyResult := engine.Apply(txn)
 
-	if applyResult.Result.IsApplied() {
+	if applyResult.Applied {
 		e.txInLedger++
 		e.closingTxTotal++
 		if counter, ok := txn.(innerTxCounter); ok {
@@ -760,7 +758,7 @@ func (e *TestEnv) applyForReplay(txn tx.Transaction, certainRetry bool) tx.Resul
 		}
 	}
 
-	return applyResult.Result
+	return applyResult.Result, applyResult.Applied
 }
 
 // sortCanonical sorts transactions in canonical order matching rippled's
@@ -911,7 +909,6 @@ func sortCanonicalSalted(txns []tx.Transaction, extraSaltTxns ...[]tx.Transactio
 		}
 	}
 	salt := computeTxSetHash(hashes)
-
 	applyCanonicalSort(txns, entries, salt)
 }
 
