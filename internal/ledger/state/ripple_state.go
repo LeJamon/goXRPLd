@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 
 	binarycodec "github.com/LeJamon/goXRPLd/codec/binarycodec"
@@ -282,6 +283,46 @@ func ParseIOUAmountBinary(data []byte) (Amount, error) {
 	}
 
 	return NewIssuedAmountFromValue(mantissa, exponent, currency, issuer), nil
+}
+
+// ParseMPTAmountBinary parses an MPT amount from 33 bytes of binary data.
+// Format: 1 byte header + 8 bytes value + 24 bytes issuance ID.
+// Header byte: bit 0x40 = positive sign (0x60 positive, 0x20 zero, 0x00 negative).
+// Value: 8-byte big-endian int64 (unsigned magnitude).
+// Issuance ID: 24-byte MPT issuance ID (4 bytes sequence + 20 bytes issuer account).
+func ParseMPTAmountBinary(data []byte) (Amount, error) {
+	if len(data) != 33 {
+		return Amount{}, errors.New("invalid MPT amount length: expected 33 bytes")
+	}
+
+	header := data[0]
+	positive := (header & 0x40) != 0
+
+	// Parse 8-byte value as big-endian uint64
+	msb := binary.BigEndian.Uint32(data[1:5])
+	lsb := binary.BigEndian.Uint32(data[5:9])
+	msbBig := new(big.Int).SetUint64(uint64(msb))
+	lsbBig := new(big.Int).SetUint64(uint64(lsb))
+	shifted := new(big.Int).Lsh(msbBig, 32)
+	num := new(big.Int).Or(shifted, lsbBig)
+
+	value := num.Int64()
+	if !positive {
+		value = -value
+	}
+
+	// Parse 24-byte issuance ID (hex-encoded, uppercase)
+	issuanceID := strings.ToUpper(hex.EncodeToString(data[9:33]))
+
+	// Build Amount directly to set the private mptIssuanceID field.
+	iouVal := NewIOUAmountValue(value, 0)
+	raw := value
+	return Amount{
+		iou:           iouVal,
+		Native:        false,
+		mptRaw:        &raw,
+		mptIssuanceID: issuanceID,
+	}, nil
 }
 
 // serializeAmount serializes an Amount to a map suitable for binarycodec.Encode
