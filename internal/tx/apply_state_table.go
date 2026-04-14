@@ -791,7 +791,15 @@ func getLedgerEntryType(data []byte) string {
 			}
 			length := int(data[offset])
 			offset++
-			if length > 192 {
+			if length > 240 {
+				// 3-byte range (241-254): length 12481-918744
+				if offset+1 >= len(data) {
+					return "Unknown"
+				}
+				length = 12481 + ((length-241)<<16 | int(data[offset])<<8 | int(data[offset+1]))
+				offset += 2
+			} else if length > 192 {
+				// 2-byte range (193-240): length 193-12480
 				if offset >= len(data) {
 					return "Unknown"
 				}
@@ -806,7 +814,15 @@ func getLedgerEntryType(data []byte) string {
 			}
 			length := int(data[offset])
 			offset++
-			if length > 192 {
+			if length > 240 {
+				// 3-byte range (241-254): length 12481-918744
+				if offset+1 >= len(data) {
+					return "Unknown"
+				}
+				length = 12481 + ((length-241)<<16 | int(data[offset])<<8 | int(data[offset+1]))
+				offset += 2
+			} else if length > 192 {
+				// 2-byte range (193-240): length 193-12480
 				if offset >= len(data) {
 					return "Unknown"
 				}
