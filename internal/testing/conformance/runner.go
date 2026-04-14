@@ -412,8 +412,9 @@ type feeVoteConfig struct {
 // fee-voting mechanism, reducing reserves from genesis values (200 XRP) to
 // test config values (200 drops).
 var feeVoteLookup = map[string]feeVoteConfig{
-	"ripple.app.PayChan/Account Delete": {BaseFee: 10, ReserveBase: 200, ReserveIncrement: 50, FlagLedgerSeq: 256},
-	"ripple.app.AMM/Auto Delete":        {BaseFee: 10, ReserveBase: 200, ReserveIncrement: 50, FlagLedgerSeq: 257},
+	"ripple.app.PayChan/Account Delete":        {BaseFee: 10, ReserveBase: 10_000_000, ReserveIncrement: 2_000_000, FlagLedgerSeq: 256},
+	"ripple.app.AMM/Auto Delete":               {BaseFee: 10, ReserveBase: 10_000_000, ReserveIncrement: 2_000_000, FlagLedgerSeq: 257},
+	"ripple.app.AccountDelete/Resurrection":    {BaseFee: 10, ReserveBase: 10_000_000, ReserveIncrement: 2_000_000, FlagLedgerSeq: 256},
 }
 
 // txqTimeLeapLookup maps TxQ fixture test case names to the step indices

@@ -79,6 +79,16 @@ func (a *AccountDelete) CalculateBaseFee(view tx.LedgerView, config tx.EngineCon
 
 func (a *AccountDelete) Flatten() (map[string]any, error) { return tx.ReflectFlatten(a) }
 
+// ApplyOnTec implements TecApplier. When tecEXPIRED is returned, this re-runs
+// credential expiration deletion against the engine's view so the side-effects
+// (credential deletion, owner count adjustment) persist even though the tx
+// sandbox is rolled back for tec results.
+// Reference: rippled Transactor.cpp - tecEXPIRED re-applies removeExpiredCredentials
+func (a *AccountDelete) ApplyOnTec(ctx *tx.ApplyContext) tx.Result {
+	adRemoveExpiredCredentials(ctx, a.CredentialIDs)
+	return tx.TecEXPIRED
+}
+
 func (a *AccountDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("account delete apply",
 		"account", a.Account,
@@ -393,6 +403,16 @@ func adValidateCredentials(ctx *tx.ApplyContext, credentialIDs []string) tx.Resu
 }
 
 func adVerifyDepositPreauth(ctx *tx.ApplyContext, credentialIDs []string, src, dst [20]byte, da *state.AccountRoot) tx.Result {
+	// Remove expired credentials first, before any deposit auth checks.
+	// Reference: rippled verifyDepositPreauth() in CredentialHelpers.cpp
+	// calls credentials::removeExpired() at the top, which deletes expired
+	// credential SLEs and adjusts owner counts even on tec results.
+	if len(credentialIDs) > 0 {
+		if adRemoveExpiredCredentials(ctx, credentialIDs) {
+			return tx.TecEXPIRED
+		}
+	}
+
 	if (da.Flags & state.LsfDepositAuth) == 0 {
 		return tx.TesSUCCESS
 	}
@@ -406,6 +426,41 @@ func adVerifyDepositPreauth(ctx *tx.ApplyContext, credentialIDs []string, src, d
 		return adAuthorizedDepositPreauth(ctx, credentialIDs, dst)
 	}
 	return tx.TecNO_PERMISSION
+}
+
+// adRemoveExpiredCredentials checks for expired credentials and deletes them.
+// Returns true if any credentials were expired.
+// Reference: rippled credentials::removeExpired() in CredentialHelpers.cpp
+func adRemoveExpiredCredentials(ctx *tx.ApplyContext, credentialIDs []string) bool {
+	closeTime := ctx.Config.ParentCloseTime
+	anyExpired := false
+
+	for _, idHex := range credentialIDs {
+		credIDBytes, err := hex.DecodeString(idHex)
+		if err != nil || len(credIDBytes) != 32 {
+			continue
+		}
+		var credID [32]byte
+		copy(credID[:], credIDBytes)
+
+		credKey := keylet.CredentialByID(credID)
+		credData, err := ctx.View.Read(credKey)
+		if err != nil || credData == nil {
+			continue
+		}
+
+		cred, err := credential.ParseCredentialEntry(credData)
+		if err != nil {
+			continue
+		}
+
+		if cred.Expiration != nil && closeTime > *cred.Expiration {
+			_ = credential.DeleteSLE(ctx.View, credKey, cred)
+			anyExpired = true
+		}
+	}
+
+	return anyExpired
 }
 
 func adAuthorizedDepositPreauth(ctx *tx.ApplyContext, credentialIDs []string, dst [20]byte) tx.Result {
