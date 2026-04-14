@@ -780,10 +780,15 @@ func getLedgerEntryType(data []byte) string {
 		case 5: // Hash256
 			offset += 32
 		case 6: // Amount
-			if offset < len(data) && (data[offset]&0x80) == 0 {
-				offset += 8 // XRP
-			} else {
+			if offset >= len(data) {
+				return "Unknown"
+			}
+			if (data[offset] & 0x80) != 0 {
 				offset += 48 // IOU
+			} else if (data[offset] & 0x20) != 0 {
+				offset += 33 // MPT (1 header + 8 value + 24 issuance ID)
+			} else {
+				offset += 8 // XRP
 			}
 		case 7: // Blob (variable length)
 			if offset >= len(data) {
