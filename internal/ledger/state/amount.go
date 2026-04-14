@@ -337,6 +337,21 @@ func NewMPTAmountDirect(value int64, currency, issuer string) Amount {
 	}
 }
 
+// NewMPTAmountWithIssuanceID creates an MPT amount with the issuance ID set.
+// This ensures IsMPT() returns true and MPTIssuanceID() returns the hex ID.
+// The issuer should be the r-address of the MPT issuer.
+func NewMPTAmountWithIssuanceID(value int64, issuer, mptIssuanceID string) Amount {
+	iouVal := NewIOUAmountValue(value, 0)
+	raw := value
+	return Amount{
+		iou:           iouVal,
+		Issuer:        issuer,
+		Native:        false,
+		mptRaw:        &raw,
+		mptIssuanceID: strings.ToUpper(mptIssuanceID),
+	}
+}
+
 // MPTRaw returns the raw int64 value for MPT amounts, if available.
 // Returns (value, true) for MPT amounts, (0, false) for other amounts.
 func (a Amount) MPTRaw() (int64, bool) {

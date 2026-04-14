@@ -97,10 +97,27 @@ func (e *EscrowCancel) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TefINTERNAL
 	}
 
+	isXRP := escrowEntry.IsXRP
+
+	// Token preclaim validation (IOU/MPT)
+	// Reference: rippled Escrow.cpp EscrowCancel::preclaim() lines 1269-1295
+	if !isXRP && rules.Enabled(amendment.FeatureTokenEscrow) {
+		escrowAmount := reconstructAmountFromEscrow(escrowEntry)
+		if escrowAmount.IsMPT() {
+			if result := escrowCancelPreclaimMPT(ctx.View, escrowEntry.Account, escrowAmount); result != tx.TesSUCCESS {
+				return result
+			}
+		} else if escrowAmount.Issuer != "" {
+			if result := escrowCancelPreclaimIOU(ctx.View, escrowEntry.Account, escrowAmount); result != tx.TesSUCCESS {
+				return result
+			}
+		}
+	}
+
 	closeTime := ctx.Config.ParentCloseTime
 
 	// Time validation — cancel is only allowed after CancelAfter time
-	// Reference: rippled Escrow.cpp preclaim() lines 1310-1329
+	// Reference: rippled Escrow.cpp doApply() lines 1310-1329
 	if rules.Enabled(amendment.FeatureFix1571) {
 		// fix1571: must have CancelAfter set, and close time must be past it
 		if escrowEntry.CancelAfter == 0 {
@@ -116,52 +133,147 @@ func (e *EscrowCancel) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 	}
 
-	// Return the escrowed amount to the owner and decrement owner count.
-	// When the canceller IS the owner, modify ctx.Account directly
-	// (because the engine writes ctx.Account back after Apply, which would
-	// overwrite any separate table updates for the same account).
-	ownerIsSelf := ownerID == ctx.AccountID
-	if ownerIsSelf {
-		ctx.Account.Balance += escrowEntry.Amount
-		if ctx.Account.OwnerCount > 0 {
-			ctx.Account.OwnerCount--
-		}
-	} else {
-		ownerKey := keylet.Account(ownerID)
-		ownerData, err := ctx.View.Read(ownerKey)
-		if err != nil {
-			ctx.Log.Error("escrow cancel: failed to read owner account", "error", err)
-			return tx.TefINTERNAL
-		}
-
-		ownerAccount, err := state.ParseAccountRoot(ownerData)
-		if err != nil {
-			ctx.Log.Error("escrow cancel: failed to parse owner account", "error", err)
-			return tx.TefINTERNAL
-		}
-
-		ownerAccount.Balance += escrowEntry.Amount
-		if ownerAccount.OwnerCount > 0 {
-			ownerAccount.OwnerCount--
-		}
-
-		if result := ctx.UpdateAccountRoot(ownerID, ownerAccount); result != tx.TesSUCCESS {
-			return result
-		}
-	}
-
 	// Remove escrow from owner directory
-	// Reference: rippled Escrow.cpp doApply() lines 1350-1360
+	// Reference: rippled Escrow.cpp doApply() lines 1333-1342
 	ownerDirKey := keylet.OwnerDir(escrowEntry.Account)
 	state.DirRemove(ctx.View, ownerDirKey, escrowEntry.OwnerNode, escrowKey.Key, false)
 
 	// Remove escrow from destination directory (if cross-account)
+	// Reference: rippled Escrow.cpp doApply() lines 1345-1356
 	if escrowEntry.HasDestNode {
 		destDirKey := keylet.OwnerDir(escrowEntry.DestinationID)
 		state.DirRemove(ctx.View, destDirKey, escrowEntry.DestinationNode, escrowKey.Key, false)
 	}
 
-	// Delete the escrow - deletion tracked automatically by ApplyStateTable
+	// Return the escrowed amount to the owner.
+	// When the canceller IS the owner, modify ctx.Account directly
+	// (because the engine writes ctx.Account back after Apply, which would
+	// overwrite any separate table updates for the same account).
+	ownerIsSelf := ownerID == ctx.AccountID
+
+	if isXRP {
+		// XRP: add balance directly
+		// Reference: rippled Escrow.cpp doApply() line 1363
+		if ownerIsSelf {
+			ctx.Account.Balance += escrowEntry.Amount
+		} else {
+			ownerKey := keylet.Account(ownerID)
+			ownerData, err := ctx.View.Read(ownerKey)
+			if err != nil {
+				ctx.Log.Error("escrow cancel: failed to read owner account", "error", err)
+				return tx.TefINTERNAL
+			}
+
+			ownerAccount, err := state.ParseAccountRoot(ownerData)
+			if err != nil {
+				ctx.Log.Error("escrow cancel: failed to parse owner account", "error", err)
+				return tx.TefINTERNAL
+			}
+
+			ownerAccount.Balance += escrowEntry.Amount
+			if result := ctx.UpdateAccountRoot(ownerID, ownerAccount); result != tx.TesSUCCESS {
+				return result
+			}
+		}
+	} else {
+		// IOU or MPT token escrow cancel
+		// Reference: rippled Escrow.cpp doApply() lines 1364-1398
+		if !rules.Enabled(amendment.FeatureTokenEscrow) {
+			return tx.TemDISABLED
+		}
+
+		escrowAmount := reconstructAmountFromEscrow(escrowEntry)
+
+		// createAsset = true when the escrow creator is the one canceling.
+		// This allows trust line / MPToken creation if needed.
+		// Reference: rippled line 1370: bool const createAsset = account == account_;
+		createAsset := escrowEntry.Account == ctx.AccountID
+
+		if escrowAmount.IsMPT() {
+			// MPT cancel: return tokens to sender (sender == receiver == escrow creator).
+			// parityRate means no transfer fee on cancel.
+			// Reference: rippled line 1371-1387 (escrowUnlockApplyHelper<MPTIssue>)
+			mptRaw, _ := escrowAmount.MPTRaw()
+			finalAmount := uint64(mptRaw)
+
+			// Get dest (= owner) balance and ownerCount for reserve check
+			var ownerBalance uint64
+			var ownerOwnerCount uint32
+			if ownerIsSelf {
+				ownerBalance = ctx.Account.Balance
+				ownerOwnerCount = ctx.Account.OwnerCount
+			} else {
+				ownerData, _ := ctx.View.Read(keylet.Account(ownerID))
+				ownerAccount, _ := state.ParseAccountRoot(ownerData)
+				if ownerAccount != nil {
+					ownerBalance = ownerAccount.Balance
+					ownerOwnerCount = ownerAccount.OwnerCount
+				}
+			}
+
+			if result := escrowUnlockMPT(
+				ctx.View,
+				escrowEntry.Account, escrowEntry.Account, // sender == receiver (cancel returns to creator)
+				finalAmount,
+				escrowAmount.MPTIssuanceID(),
+				createAsset,
+				ownerBalance,
+				ownerOwnerCount,
+				escrowEntry.Account,
+				ctx.Config.ReserveBase, ctx.Config.ReserveIncrement,
+			); result != tx.TesSUCCESS {
+				return result
+			}
+		} else {
+			// IOU cancel: return tokens to sender (sender == receiver == escrow creator).
+			// parityRate means no transfer fee on cancel.
+			// Reference: rippled line 1371-1387 (escrowUnlockApplyHelper<Issue>)
+			var ownerBalance uint64
+			var ownerOwnerCount uint32
+			if ownerIsSelf {
+				ownerBalance = ctx.Account.Balance
+				ownerOwnerCount = ctx.Account.OwnerCount
+			} else {
+				ownerData, _ := ctx.View.Read(keylet.Account(ownerID))
+				ownerAccount, _ := state.ParseAccountRoot(ownerData)
+				if ownerAccount != nil {
+					ownerBalance = ownerAccount.Balance
+					ownerOwnerCount = ownerAccount.OwnerCount
+				}
+			}
+
+			if result := escrowUnlockIOU(
+				ctx.View,
+				parityRate,
+				ownerBalance,
+				ownerOwnerCount,
+				escrowEntry.Account, // destID
+				escrowAmount,
+				escrowEntry.Account, escrowEntry.Account, // senderID == receiverID (cancel returns to creator)
+				createAsset,
+				ctx.Config.ReserveBase, ctx.Config.ReserveIncrement,
+			); result != tx.TesSUCCESS {
+				return result
+			}
+		}
+
+		// Remove escrow from issuer's owner directory, if present
+		// Reference: rippled Escrow.cpp doApply() lines 1389-1398
+		if escrowEntry.HasIssuerNode {
+			issuerID, err := state.DecodeAccountID(escrowAmount.Issuer)
+			if err == nil {
+				issuerDirKey := keylet.OwnerDir(issuerID)
+				state.DirRemove(ctx.View, issuerDirKey, escrowEntry.IssuerNode, escrowKey.Key, false)
+			}
+		}
+	}
+
+	// Decrement owner count
+	// Reference: rippled Escrow.cpp doApply() line 1401
+	adjustOwnerCount(ctx, ownerID, -1)
+
+	// Delete the escrow
+	// Reference: rippled Escrow.cpp doApply() line 1405
 	if err := ctx.View.Erase(escrowKey); err != nil {
 		ctx.Log.Error("escrow cancel: failed to erase escrow", "error", err)
 		return tx.TefINTERNAL

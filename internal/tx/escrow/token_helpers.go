@@ -877,14 +877,15 @@ func reconstructAmountFromEscrow(escrow *state.EscrowData) tx.Amount {
 	}
 
 	if escrow.MPTIssuanceID != "" {
-		// MPT amount
+		// MPT amount — extract issuer r-address from the issuance ID (last 20 bytes)
 		var raw int64
 		if escrow.MPTAmount != nil {
 			raw = *escrow.MPTAmount
 		} else if escrow.IOUAmount != nil {
 			raw = escrow.IOUAmount.IOU().Mantissa()
 		}
-		return state.NewMPTAmountDirect(raw, "", "")
+		issuer := mptIssuerFromIssuanceID(escrow.MPTIssuanceID)
+		return state.NewMPTAmountWithIssuanceID(raw, issuer, escrow.MPTIssuanceID)
 	}
 
 	// IOU amount
@@ -893,6 +894,22 @@ func reconstructAmountFromEscrow(escrow *state.EscrowData) tx.Amount {
 	}
 
 	return tx.NewXRPAmount(0)
+}
+
+// mptIssuerFromIssuanceID extracts the issuer r-address from a hex-encoded
+// MPTIssuanceID (24 bytes = 4-byte sequence + 20-byte account).
+func mptIssuerFromIssuanceID(hexID string) string {
+	idBytes, err := hex.DecodeString(hexID)
+	if err != nil || len(idBytes) < 24 {
+		return ""
+	}
+	var accountID [20]byte
+	copy(accountID[:], idBytes[4:24])
+	addr, err := state.EncodeAccountID(accountID)
+	if err != nil {
+		return ""
+	}
+	return addr
 }
 
 // ---------------------------------------------------------------------------
