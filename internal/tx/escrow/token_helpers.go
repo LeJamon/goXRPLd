@@ -98,7 +98,12 @@ func escrowCreatePreclaimIOU(view tx.LedgerView, accountID, destID [20]byte, amo
 		return tx.TecINSUFFICIENT_FUNDS
 	}
 
-	// TODO: canAdd / precision check (tecPRECISION_LOSS)
+	// Precision loss check: if the spendable amount and escrow amount differ
+	// so much in magnitude that IOU addition loses the smaller value, reject.
+	// Reference: rippled Escrow.cpp line 275: if (!canAdd(spendableAmount, amount))
+	if !canAddIOUAmounts(spendable, amount) {
+		return tx.TecPRECISION_LOSS
+	}
 
 	return tx.TesSUCCESS
 }
@@ -1470,4 +1475,73 @@ func computeMPTTransferFee(
 	}
 
 	return originalAmount, originalAmount
+}
+
+// canAddIOUAmounts checks whether adding two IOU amounts would lose unacceptable
+// precision due to the mantissa/exponent representation of IOU values.
+// Reference: rippled STAmount.cpp canAdd() lines 527-588 (IOU case, lines 557-565)
+//
+// The check works by round-tripping through IOU add/sub (which can lose precision)
+// and then measuring the relative error:
+//
+//	lhs = ((a - b) + b) / a - 1
+//	rhs = ((b - a) + a) / b - 1
+//	return |lhs| + |rhs| <= 1e-4
+func canAddIOUAmounts(a, b tx.Amount) bool {
+	// If either is zero, addition is always safe
+	if a.IsZero() || b.IsZero() {
+		return true
+	}
+
+	// Perform (a - b) + b using IOU precision (this is where precision loss occurs)
+	aMinusB, _ := a.Sub(b)
+	roundTripA, _ := aMinusB.Add(b)
+
+	// Perform (b - a) + a using IOU precision
+	bMinusA, _ := b.Sub(a)
+	roundTripB, _ := bMinusA.Add(a)
+
+	// Convert to big.Rat for exact division and comparison
+	ratA := iouAmountToRat(a)
+	ratB := iouAmountToRat(b)
+	ratRTA := iouAmountToRat(roundTripA)
+	ratRTB := iouAmountToRat(roundTripB)
+
+	// one = 1
+	one := new(big.Rat).SetInt64(1)
+
+	// lhs = roundTripA / a - 1
+	lhs := new(big.Rat).Quo(ratRTA, ratA)
+	lhs.Sub(lhs, one)
+
+	// rhs = roundTripB / b - 1
+	rhs := new(big.Rat).Quo(ratRTB, ratB)
+	rhs.Sub(rhs, one)
+
+	// |lhs| + |rhs|
+	lhs.Abs(lhs)
+	rhs.Abs(rhs)
+	total := new(big.Rat).Add(lhs, rhs)
+
+	// maxLoss = 1e-4 (IOUAmount{1, -4})
+	maxLoss := new(big.Rat).SetFrac64(1, 10000)
+
+	return total.Cmp(maxLoss) <= 0
+}
+
+// iouAmountToRat converts an IOU Amount to a big.Rat for exact arithmetic.
+// Returns mantissa * 10^exponent as a rational number.
+func iouAmountToRat(a tx.Amount) *big.Rat {
+	mantissa := a.Mantissa()
+	exponent := a.Exponent()
+
+	r := new(big.Rat).SetInt64(mantissa)
+	if exponent > 0 {
+		scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exponent)), nil)
+		r.Mul(r, new(big.Rat).SetInt(scale))
+	} else if exponent < 0 {
+		scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-exponent)), nil)
+		r.Quo(r, new(big.Rat).SetInt(scale))
+	}
+	return r
 }
