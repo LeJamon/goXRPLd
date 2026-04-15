@@ -80,8 +80,8 @@ func TestIOUEscrow_Enablement(t *testing.T) {
 			escrow.EscrowCreate(alice, bob, 0).
 				IOUAmount(usd(1000, gw)).
 				Condition(escrow.TestCondition1).
-				FinishTime(env.Now().Add(1*time.Second)).
-				Fee(baseFee*150).
+				FinishTime(env.Now().Add(1 * time.Second)).
+				Fee(baseFee * 150).
 				Build())
 		jtx.RequireTxSuccess(t, result)
 		env.Close()
@@ -91,7 +91,7 @@ func TestIOUEscrow_Enablement(t *testing.T) {
 			escrow.EscrowFinish(bob, alice, seq1).
 				Condition(escrow.TestCondition1).
 				Fulfillment(escrow.TestFulfillment1).
-				Fee(baseFee*150).
+				Fee(baseFee * 150).
 				Build())
 		jtx.RequireTxSuccess(t, result)
 		env.Close()
@@ -102,9 +102,9 @@ func TestIOUEscrow_Enablement(t *testing.T) {
 			escrow.EscrowCreate(alice, bob, 0).
 				IOUAmount(usd(1000, gw)).
 				Condition(escrow.TestCondition2).
-				FinishTime(env.Now().Add(1*time.Second)).
-				CancelTime(env.Now().Add(2*time.Second)).
-				Fee(baseFee*150).
+				FinishTime(env.Now().Add(1 * time.Second)).
+				CancelTime(env.Now().Add(2 * time.Second)).
+				Fee(baseFee * 150).
 				Build())
 		jtx.RequireTxSuccess(t, result)
 		env.Close()
@@ -112,7 +112,7 @@ func TestIOUEscrow_Enablement(t *testing.T) {
 		// Cancel escrow: should succeed
 		result = env.Submit(
 			escrow.EscrowCancel(bob, alice, seq2).
-				Fee(baseFee*150).
+				Fee(baseFee * 150).
 				Build())
 		jtx.RequireTxSuccess(t, result)
 		env.Close()
@@ -152,8 +152,8 @@ func TestIOUEscrow_Enablement(t *testing.T) {
 			escrow.EscrowCreate(alice, bob, 0).
 				IOUAmount(usd(1000, gw)).
 				Condition(escrow.TestCondition1).
-				FinishTime(env.Now().Add(1*time.Second)).
-				Fee(baseFee*150).
+				FinishTime(env.Now().Add(1 * time.Second)).
+				Fee(baseFee * 150).
 				Build())
 		jtx.RequireTxFail(t, result, "temBAD_AMOUNT")
 		env.Close()
@@ -169,7 +169,7 @@ func TestIOUEscrow_Enablement(t *testing.T) {
 			escrow.EscrowFinish(bob, alice, seq1).
 				Condition(escrow.TestCondition1).
 				Fulfillment(escrow.TestFulfillment1).
-				Fee(baseFee*150).
+				Fee(baseFee * 150).
 				Build())
 		jtx.RequireTxFail(t, result, "tecNO_TARGET")
 		env.Close()
@@ -195,8 +195,8 @@ func TestIOUEscrow_AllowLockingFlag(t *testing.T) {
 		escrow.EscrowCreate(alice, bob, 0).
 			IOUAmount(usd(1000, gw)).
 			Condition(escrow.TestCondition1).
-			FinishTime(env.Now().Add(1*time.Second)).
-			Fee(baseFee*150).
+			FinishTime(env.Now().Add(1 * time.Second)).
+			Fee(baseFee * 150).
 			Build())
 	jtx.RequireTxSuccess(t, result)
 	env.Close()
@@ -206,8 +206,8 @@ func TestIOUEscrow_AllowLockingFlag(t *testing.T) {
 	result = env.Submit(
 		escrow.EscrowCreate(alice, bob, 0).
 			IOUAmount(usd(1000, gw)).
-			FinishTime(env.Now().Add(1*time.Second)).
-			CancelTime(env.Now().Add(3*time.Second)).
+			FinishTime(env.Now().Add(1 * time.Second)).
+			CancelTime(env.Now().Add(3 * time.Second)).
 			Build())
 	jtx.RequireTxSuccess(t, result)
 	env.Close()
@@ -225,8 +225,8 @@ func TestIOUEscrow_AllowLockingFlag(t *testing.T) {
 		escrow.EscrowCreate(alice, bob, 0).
 			IOUAmount(usd(1000, gw)).
 			Condition(escrow.TestCondition1).
-			FinishTime(env.Now().Add(1*time.Second)).
-			Fee(baseFee*150).
+			FinishTime(env.Now().Add(1 * time.Second)).
+			Fee(baseFee * 150).
 			Build())
 	jtx.RequireTxFail(t, result, "tecNO_PERMISSION")
 	env.Close()
@@ -236,7 +236,7 @@ func TestIOUEscrow_AllowLockingFlag(t *testing.T) {
 		escrow.EscrowFinish(bob, alice, seq1).
 			Condition(escrow.TestCondition1).
 			Fulfillment(escrow.TestFulfillment1).
-			Fee(baseFee*150).
+			Fee(baseFee * 150).
 			Build())
 	jtx.RequireTxSuccess(t, result)
 	env.Close()
@@ -268,8 +268,8 @@ func TestIOUEscrow_CreatePreclaim(t *testing.T) {
 			escrow.EscrowCreate(gw, alice, 0).
 				IOUAmount(usd(1, gw)).
 				Condition(escrow.TestCondition1).
-				FinishTime(env.Now().Add(1*time.Second)).
-				Fee(baseFee*150).
+				FinishTime(env.Now().Add(1 * time.Second)).
+				Fee(baseFee * 150).
 				Build())
 		jtx.RequireTxFail(t, result, "tecNO_PERMISSION")
 		env.Close()
@@ -302,8 +302,8 @@ func TestIOUEscrow_CreatePreclaim(t *testing.T) {
 			escrow.EscrowCreate(gw, alice, 0).
 				IOUAmount(usd(1, gw)).
 				Condition(escrow.TestCondition1).
-				FinishTime(env.Now().Add(1*time.Second)).
-				Fee(baseFee*150).
+				FinishTime(env.Now().Add(1 * time.Second)).
+				Fee(baseFee * 150).
 				Build())
 		jtx.RequireTxFail(t, result, "tecNO_PERMISSION")
 		env.Close()
@@ -328,8 +328,8 @@ func TestIOUEscrow_CreatePreclaim(t *testing.T) {
 			escrow.EscrowCreate(alice, bob, 0).
 				IOUAmount(usd(1, gw)).
 				Condition(escrow.TestCondition1).
-				FinishTime(env.Now().Add(1*time.Second)).
-				Fee(baseFee*150).
+				FinishTime(env.Now().Add(1 * time.Second)).
+				Fee(baseFee * 150).
 				Build())
 		jtx.RequireTxFail(t, result, "tecNO_LINE")
 		env.Close()
@@ -358,8 +358,8 @@ func TestIOUEscrow_CreatePreclaim(t *testing.T) {
 			escrow.EscrowCreate(alice, bob, 0).
 				IOUAmount(usd(1, gw)).
 				Condition(escrow.TestCondition1).
-				FinishTime(env.Now().Add(1*time.Second)).
-				Fee(baseFee*150).
+				FinishTime(env.Now().Add(1 * time.Second)).
+				Fee(baseFee * 150).
 				Build())
 		jtx.RequireTxFail(t, result, "tecINSUFFICIENT_FUNDS")
 		env.Close()
@@ -396,8 +396,8 @@ func TestIOUEscrow_CreatePreclaim(t *testing.T) {
 			escrow.EscrowCreate(alice, bob, 0).
 				IOUAmount(usd(10001, gw)).
 				Condition(escrow.TestCondition1).
-				FinishTime(env.Now().Add(1*time.Second)).
-				Fee(baseFee*150).
+				FinishTime(env.Now().Add(1 * time.Second)).
+				Fee(baseFee * 150).
 				Build())
 		jtx.RequireTxFail(t, result, "tecINSUFFICIENT_FUNDS")
 		env.Close()
@@ -439,8 +439,8 @@ func TestIOUEscrow_CreatePreclaim(t *testing.T) {
 			escrow.EscrowCreate(alice, bob, 0).
 				IOUAmount(usd(1, gw)).
 				Condition(escrow.TestCondition1).
-				FinishTime(env.Now().Add(1*time.Second)).
-				Fee(baseFee*150).
+				FinishTime(env.Now().Add(1 * time.Second)).
+				Fee(baseFee * 150).
 				Build())
 		jtx.RequireTxFail(t, result, "tecFROZEN")
 		env.Close()
@@ -482,8 +482,8 @@ func TestIOUEscrow_CreatePreclaim(t *testing.T) {
 			escrow.EscrowCreate(alice, bob, 0).
 				IOUAmount(usd(1, gw)).
 				Condition(escrow.TestCondition1).
-				FinishTime(env.Now().Add(1*time.Second)).
-				Fee(baseFee*150).
+				FinishTime(env.Now().Add(1 * time.Second)).
+				Fee(baseFee * 150).
 				Build())
 		jtx.RequireTxFail(t, result, "tecFROZEN")
 		env.Close()
@@ -510,8 +510,8 @@ func TestIOUEscrow_FinishBasic(t *testing.T) {
 		escrow.EscrowCreate(alice, bob, 0).
 			IOUAmount(usd(1000, gw)).
 			Condition(escrow.TestCondition1).
-			FinishTime(env.Now().Add(1*time.Second)).
-			Fee(baseFee*150).
+			FinishTime(env.Now().Add(1 * time.Second)).
+			Fee(baseFee * 150).
 			Build())
 	jtx.RequireTxSuccess(t, result)
 	env.Close()
@@ -529,7 +529,7 @@ func TestIOUEscrow_FinishBasic(t *testing.T) {
 		escrow.EscrowFinish(bob, alice, seq1).
 			Condition(escrow.TestCondition1).
 			Fulfillment(escrow.TestFulfillment1).
-			Fee(baseFee*150).
+			Fee(baseFee * 150).
 			Build())
 	jtx.RequireTxSuccess(t, result)
 	env.Close()
@@ -561,9 +561,9 @@ func TestIOUEscrow_CancelBasic(t *testing.T) {
 		escrow.EscrowCreate(alice, bob, 0).
 			IOUAmount(usd(1000, gw)).
 			Condition(escrow.TestCondition2).
-			FinishTime(env.Now().Add(1*time.Second)).
-			CancelTime(env.Now().Add(2*time.Second)).
-			Fee(baseFee*150).
+			FinishTime(env.Now().Add(1 * time.Second)).
+			CancelTime(env.Now().Add(2 * time.Second)).
+			Fee(baseFee * 150).
 			Build())
 	jtx.RequireTxSuccess(t, result)
 	env.Close()
@@ -611,8 +611,8 @@ func TestIOUEscrow_CreatePreflight(t *testing.T) {
 			escrow.EscrowCreate(alice, bob, 0).
 				IOUAmount(tx.NewIssuedAmountFromFloat64(-1, "USD", gw.Address)).
 				Condition(escrow.TestCondition1).
-				FinishTime(env.Now().Add(1*time.Second)).
-				Fee(baseFee*150).
+				FinishTime(env.Now().Add(1 * time.Second)).
+				Fee(baseFee * 150).
 				Build())
 		jtx.RequireTxFail(t, result, "temBAD_AMOUNT")
 		env.Close()
@@ -632,8 +632,8 @@ func TestIOUEscrow_CreatePreflight(t *testing.T) {
 			escrow.EscrowCreate(alice, bob, 0).
 				IOUAmount(tx.NewIssuedAmountFromFloat64(1, "XRP", gw.Address)).
 				Condition(escrow.TestCondition1).
-				FinishTime(env.Now().Add(1*time.Second)).
-				Fee(baseFee*150).
+				FinishTime(env.Now().Add(1 * time.Second)).
+				Fee(baseFee * 150).
 				Build())
 		jtx.RequireTxFail(t, result, "temBAD_CURRENCY")
 		env.Close()
@@ -656,8 +656,8 @@ func TestIOUEscrow_SelfEscrow(t *testing.T) {
 		escrow.EscrowCreate(alice, alice, 0).
 			IOUAmount(usd(100, gw)).
 			Condition(escrow.TestCondition1).
-			FinishTime(env.Now().Add(1*time.Second)).
-			Fee(baseFee*150).
+			FinishTime(env.Now().Add(1 * time.Second)).
+			Fee(baseFee * 150).
 			Build())
 	jtx.RequireTxSuccess(t, result)
 	env.Close()
@@ -671,7 +671,7 @@ func TestIOUEscrow_SelfEscrow(t *testing.T) {
 		escrow.EscrowFinish(alice, alice, seq).
 			Condition(escrow.TestCondition1).
 			Fulfillment(escrow.TestFulfillment1).
-			Fee(baseFee*150).
+			Fee(baseFee * 150).
 			Build())
 	jtx.RequireTxSuccess(t, result)
 	env.Close()
@@ -697,8 +697,8 @@ func TestIOUEscrow_MultipleEscrows(t *testing.T) {
 		escrow.EscrowCreate(alice, bob, 0).
 			IOUAmount(usd(500, gw)).
 			Condition(escrow.TestCondition1).
-			FinishTime(env.Now().Add(1*time.Second)).
-			Fee(baseFee*150).
+			FinishTime(env.Now().Add(1 * time.Second)).
+			Fee(baseFee * 150).
 			Build())
 	jtx.RequireTxSuccess(t, result)
 	env.Close()
@@ -709,9 +709,9 @@ func TestIOUEscrow_MultipleEscrows(t *testing.T) {
 		escrow.EscrowCreate(alice, bob, 0).
 			IOUAmount(usd(300, gw)).
 			Condition(escrow.TestCondition2).
-			FinishTime(env.Now().Add(1*time.Second)).
-			CancelTime(env.Now().Add(3*time.Second)).
-			Fee(baseFee*150).
+			FinishTime(env.Now().Add(1 * time.Second)).
+			CancelTime(env.Now().Add(3 * time.Second)).
+			Fee(baseFee * 150).
 			Build())
 	jtx.RequireTxSuccess(t, result)
 	env.Close()
@@ -725,7 +725,7 @@ func TestIOUEscrow_MultipleEscrows(t *testing.T) {
 		escrow.EscrowFinish(bob, alice, seq1).
 			Condition(escrow.TestCondition1).
 			Fulfillment(escrow.TestFulfillment1).
-			Fee(baseFee*150).
+			Fee(baseFee * 150).
 			Build())
 	jtx.RequireTxSuccess(t, result)
 	env.Close()

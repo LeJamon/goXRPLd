@@ -446,7 +446,7 @@ func serializeEscrow(txn *EscrowCreate, ownerID, destID [20]byte, sequence uint3
 			mptValue = fmt.Sprintf("%d", raw)
 		}
 		amountVal = map[string]any{
-			"value":            mptValue,
+			"value":           mptValue,
 			"mpt_issuance_id": txn.Amount.MPTIssuanceID(),
 		}
 	} else {
