@@ -72,6 +72,11 @@ type LedgerProvider interface {
 	GetAccountStateNode(ledgerHash []byte, nodeID []byte) ([]byte, error)
 	// GetTransactionNode returns a transaction tree node.
 	GetTransactionNode(ledgerHash []byte, nodeID []byte) ([]byte, error)
+	// GetProofPath returns a SHAMap proof path for the given key.
+	// mapType selects the account-state or transaction tree.
+	GetProofPath(ledgerHash []byte, key []byte, mapType message.LedgerMapType) (header []byte, path [][]byte, err error)
+	// GetReplayDelta returns the ledger header and all transactions for a ledger.
+	GetReplayDelta(ledgerHash []byte) (header []byte, transactions [][]byte, err error)
 }
 
 // LedgerSyncHandler handles ledger synchronization messages.
@@ -82,8 +87,9 @@ type LedgerSyncHandler struct {
 	requests map[uint64]*LedgerRequest
 
 	// Request callbacks
-	onLedgerData func(ctx context.Context, peerID PeerID, data *message.LedgerData)
-	onProofPath  func(ctx context.Context, peerID PeerID, response *message.ProofPathResponse)
+	onLedgerData  func(ctx context.Context, peerID PeerID, data *message.LedgerData)
+	onProofPath   func(ctx context.Context, peerID PeerID, response *message.ProofPathResponse)
+	onReplayDelta func(ctx context.Context, peerID PeerID, response *message.ReplayDeltaResponse)
 
 	// Data provider for responding to requests
 	provider LedgerProvider
@@ -115,6 +121,13 @@ func (h *LedgerSyncHandler) SetProofPathCallback(fn func(ctx context.Context, pe
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.onProofPath = fn
+}
+
+// SetReplayDeltaCallback sets the callback for incoming replay deltas.
+func (h *LedgerSyncHandler) SetReplayDeltaCallback(fn func(ctx context.Context, peerID PeerID, response *message.ReplayDeltaResponse)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.onReplayDelta = fn
 }
 
 // SetProvider sets the ledger data provider for responding to requests.
@@ -211,8 +224,41 @@ func (h *LedgerSyncHandler) handleLedgerData(ctx context.Context, peerID PeerID,
 }
 
 // handleProofPathRequest handles proof path requests.
+// Reference: rippled LedgerReplayMsgHandler.cpp processProofPathRequest
 func (h *LedgerSyncHandler) handleProofPathRequest(ctx context.Context, peerID PeerID, req *message.ProofPathRequest) error {
-	// TODO: Implement proof path generation
+	h.mu.RLock()
+	provider := h.provider
+	h.mu.RUnlock()
+
+	if provider == nil {
+		return nil
+	}
+
+	response := &message.ProofPathResponse{
+		Key:        req.Key,
+		LedgerHash: req.LedgerHash,
+		MapType:    req.MapType,
+	}
+
+	header, path, err := provider.GetProofPath(req.LedgerHash, req.Key, req.MapType)
+	if err != nil {
+		response.Error = message.ReplyErrorNoLedger
+	} else {
+		response.LedgerHeader = header
+		response.Path = path
+	}
+
+	if h.events != nil {
+		encoded, err := message.Encode(response)
+		if err == nil {
+			h.events <- Event{
+				Type:    EventLedgerResponse,
+				PeerID:  peerID,
+				Payload: encoded,
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -230,14 +276,52 @@ func (h *LedgerSyncHandler) handleProofPathResponse(ctx context.Context, peerID 
 }
 
 // handleReplayDeltaRequest handles replay delta requests.
+// Reference: rippled LedgerReplayMsgHandler.cpp processReplayDeltaRequest
 func (h *LedgerSyncHandler) handleReplayDeltaRequest(ctx context.Context, peerID PeerID, req *message.ReplayDeltaRequest) error {
-	// TODO: Implement replay delta generation
+	h.mu.RLock()
+	provider := h.provider
+	h.mu.RUnlock()
+
+	if provider == nil {
+		return nil
+	}
+
+	response := &message.ReplayDeltaResponse{
+		LedgerHash: req.LedgerHash,
+	}
+
+	header, transactions, err := provider.GetReplayDelta(req.LedgerHash)
+	if err != nil {
+		response.Error = message.ReplyErrorNoLedger
+	} else {
+		response.LedgerHeader = header
+		response.Transactions = transactions
+	}
+
+	if h.events != nil {
+		encoded, err := message.Encode(response)
+		if err == nil {
+			h.events <- Event{
+				Type:    EventLedgerResponse,
+				PeerID:  peerID,
+				Payload: encoded,
+			}
+		}
+	}
+
 	return nil
 }
 
 // handleReplayDeltaResponse handles replay delta responses.
 func (h *LedgerSyncHandler) handleReplayDeltaResponse(ctx context.Context, peerID PeerID, resp *message.ReplayDeltaResponse) error {
-	// TODO: Process replay delta
+	h.mu.RLock()
+	callback := h.onReplayDelta
+	h.mu.RUnlock()
+
+	if callback != nil {
+		callback(ctx, peerID, resp)
+	}
+
 	return nil
 }
 

@@ -502,7 +502,6 @@ func (o *Overlay) performMaintenance() {
 
 // handleSquelch is called by the relay system when a peer should be squelched.
 func (o *Overlay) handleSquelch(validator []byte, peerID PeerID, squelch bool, duration time.Duration) {
-	// Send squelch message to peer
 	o.peersMu.RLock()
 	peer, exists := o.peers[peerID]
 	o.peersMu.RUnlock()
@@ -511,8 +510,23 @@ func (o *Overlay) handleSquelch(validator []byte, peerID PeerID, squelch bool, d
 		return
 	}
 
-	// TODO: Build and send squelch message
-	_ = peer
+	msg := &message.Squelch{
+		Squelch:         squelch,
+		ValidatorPubKey: validator,
+		SquelchDuration: uint32(duration.Seconds()),
+	}
+
+	encoded, err := message.Encode(msg)
+	if err != nil {
+		return
+	}
+
+	wireMsg, err := message.BuildWireMessage(message.TypeSquelch, encoded)
+	if err != nil {
+		return
+	}
+
+	peer.Send(wireMsg)
 }
 
 // Connect initiates an outbound connection to the specified address.
