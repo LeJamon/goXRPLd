@@ -2314,6 +2314,17 @@ func (e *Engine) doApply(tx Transaction, metadata *Metadata, txHash [32]byte) Re
 				}
 			}
 
+			// Second invariant check on fee-only state.
+			// Reference: rippled Transactor.cpp lines 1234-1238
+			// If fee-only state also violates invariants, escalate to tefINVARIANT_FAILED
+			// and do NOT apply anything (transaction is completely rejected).
+			{
+				invEntries2 := invTecTable.CollectEntries()
+				if violation2 := invariants.CheckInvariants(wrapTxForInvariants(tx), invariants.Result(TecINVARIANT_FAILED), fee, txDeclaredFee, invEntries2, invTecTable, e.rules()); violation2 != nil {
+					return TefINVARIANT_FAILED
+				}
+			}
+
 			generatedMeta, applyErr := invTecTable.Apply()
 			if applyErr != nil {
 				return TefINTERNAL
