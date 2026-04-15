@@ -28,7 +28,9 @@ func FromRippleTime(rippleTime uint32) time.Time {
 type EscrowCreateBuilder struct {
 	from        *testing.Account
 	to          *testing.Account
-	amount      int64 // XRP in drops
+	amount      int64      // XRP in drops
+	iouAmount   *tx.Amount // IOU amount (nil = XRP)
+	mptAmount   *tx.Amount // MPT amount (nil = not MPT)
 	finishAfter *uint32
 	cancelAfter *uint32
 	condition   []byte
@@ -120,9 +122,28 @@ func (b *EscrowCreateBuilder) Flags(flags uint32) *EscrowCreateBuilder {
 	return b
 }
 
+// IOUAmount sets an IOU amount for token escrow.
+func (b *EscrowCreateBuilder) IOUAmount(amount tx.Amount) *EscrowCreateBuilder {
+	b.iouAmount = &amount
+	return b
+}
+
+// MPTAmount sets an MPT amount for token escrow.
+func (b *EscrowCreateBuilder) MPTAmount(amount tx.Amount) *EscrowCreateBuilder {
+	b.mptAmount = &amount
+	return b
+}
+
 // Build constructs the EscrowCreate transaction.
 func (b *EscrowCreateBuilder) Build() tx.Transaction {
-	amount := tx.NewXRPAmount(b.amount)
+	var amount tx.Amount
+	if b.mptAmount != nil {
+		amount = *b.mptAmount
+	} else if b.iouAmount != nil {
+		amount = *b.iouAmount
+	} else {
+		amount = tx.NewXRPAmount(b.amount)
+	}
 	e := escrowtx.NewEscrowCreate(b.from.Address, b.to.Address, amount)
 	e.Fee = fmt.Sprintf("%d", b.fee)
 

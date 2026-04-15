@@ -167,6 +167,23 @@ func (e *EscrowFinish) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TefINTERNAL
 	}
 
+	isXRP := escrowEntry.IsXRP
+
+	// Token escrow preclaim
+	// Reference: rippled EscrowFinish::preclaim() lines 760-793
+	if !isXRP && rules.Enabled(amendment.FeatureTokenEscrow) {
+		escrowAmount := reconstructAmountFromEscrow(escrowEntry)
+		if escrowEntry.MPTIssuanceID != "" {
+			if result := escrowFinishPreclaimMPT(ctx.View, escrowEntry.DestinationID, escrowAmount); result != tx.TesSUCCESS {
+				return result
+			}
+		} else if escrowAmount.Issuer != "" {
+			if result := escrowFinishPreclaimIOU(ctx.View, escrowEntry.DestinationID, escrowAmount); result != tx.TesSUCCESS {
+				return result
+			}
+		}
+	}
+
 	closeTime := ctx.Config.ParentCloseTime
 
 	// --- doApply: Time validation ---
@@ -277,36 +294,143 @@ func (e *EscrowFinish) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 	}
 
-	// Transfer the escrowed amount to destination
-	destAccount.Balance += escrowEntry.Amount
+	// Remove escrow from owner directory
+	// Reference: rippled Escrow.cpp doApply() lines 1120-1129
+	ownerDirKey := keylet.OwnerDir(escrowEntry.Account)
+	state.DirRemove(ctx.View, ownerDirKey, escrowEntry.OwnerNode, escrowKey.Key, false)
 
-	// Write destination back (only if it's a separate account from the finisher)
+	// Remove escrow from destination directory (if cross-account)
+	// Reference: rippled Escrow.cpp doApply() lines 1132-1140
+	if escrowEntry.HasDestNode {
+		destDirKey := keylet.OwnerDir(escrowEntry.DestinationID)
+		state.DirRemove(ctx.View, destDirKey, escrowEntry.DestinationNode, escrowKey.Key, false)
+	}
+
+	// Transfer the escrowed amount to destination
+	// Reference: rippled Escrow.cpp doApply() lines 1142-1184
+	if isXRP {
+		// XRP: credit destination balance
+		destAccount.Balance += escrowEntry.Amount
+	} else {
+		if !rules.Enabled(amendment.FeatureTokenEscrow) {
+			return tx.TemDISABLED
+		}
+
+		escrowAmount := reconstructAmountFromEscrow(escrowEntry)
+		lockedRate := uint32(0)
+		if escrowEntry.HasTransferRate {
+			lockedRate = escrowEntry.TransferRate
+		}
+		if lockedRate == 0 {
+			lockedRate = parityRate
+		}
+
+		// createAsset = destination is the tx submitter (they can create trust line for themselves)
+		// Reference: rippled Escrow.cpp line 1155: bool const createAsset = destID == account_;
+		createAsset := escrowEntry.DestinationID == ctx.AccountID
+
+		if escrowEntry.MPTIssuanceID != "" {
+			// MPT unlock
+			// Reference: rippled Escrow.cpp escrowUnlockApplyHelper<MPTIssue> lines 944-1012
+			mptHexID := escrowEntry.MPTIssuanceID
+
+			// Get the raw amount
+			var originalAmount uint64
+			if escrowEntry.MPTAmount != nil {
+				originalAmount = uint64(*escrowEntry.MPTAmount)
+			} else if raw, ok := escrowAmount.MPTRaw(); ok {
+				originalAmount = uint64(raw)
+			} else {
+				originalAmount = uint64(escrowAmount.IOU().Mantissa())
+			}
+
+			// Compute transfer fee
+			_, finalAmount := computeMPTTransferFee(
+				ctx.View,
+				lockedRate,
+				mptHexID,
+				escrowEntry.Account,
+				escrowEntry.DestinationID,
+				originalAmount,
+			)
+
+			if result := escrowUnlockMPT(
+				ctx.View,
+				escrowEntry.Account,
+				escrowEntry.DestinationID,
+				finalAmount,
+				mptHexID,
+				createAsset,
+				destAccount.Balance,
+				destAccount.OwnerCount,
+				escrowEntry.DestinationID,
+				ctx.Config.ReserveBase,
+				ctx.Config.ReserveIncrement,
+			); result != tx.TesSUCCESS {
+				return result
+			}
+		} else {
+			// IOU unlock
+			// Reference: rippled Escrow.cpp escrowUnlockApplyHelper<Issue> lines 809-942
+			if result := escrowUnlockIOU(
+				ctx.View,
+				lockedRate,
+				destAccount.Balance,
+				destAccount.OwnerCount,
+				escrowEntry.DestinationID,
+				escrowAmount,
+				escrowEntry.Account,
+				escrowEntry.DestinationID,
+				createAsset,
+				ctx.Config.ReserveBase,
+				ctx.Config.ReserveIncrement,
+			); result != tx.TesSUCCESS {
+				return result
+			}
+		}
+
+		// Remove escrow from issuer's owner directory
+		// Reference: rippled Escrow.cpp doApply() lines 1174-1183
+		if escrowEntry.HasIssuerNode {
+			issuerID, issuerErr := state.DecodeAccountID(escrowAmount.Issuer)
+			if issuerErr == nil {
+				issuerDirKey := keylet.OwnerDir(issuerID)
+				state.DirRemove(ctx.View, issuerDirKey, escrowEntry.IssuerNode, escrowKey.Key, false)
+			}
+		}
+	}
+
+	// When destIsSelf, the unlock functions (escrowUnlockMPT/escrowUnlockIOU)
+	// may create new objects (MPToken or trust line) and adjust the
+	// destination's OwnerCount through the view. Since destAccount is
+	// ctx.Account (the same in-memory object the engine writes back), we must
+	// re-synchronize it with the view so that the OwnerCount update is not
+	// lost when the engine writes ctx.Account back.
+	if destIsSelf && !isXRP {
+		if updatedData, readErr := ctx.View.Read(destKey); readErr == nil && updatedData != nil {
+			if updatedAcct, parseErr := state.ParseAccountRoot(updatedData); parseErr == nil {
+				ctx.Account.OwnerCount = updatedAcct.OwnerCount
+			}
+		}
+	}
+
+	// Write destination account back
+	// Reference: rippled Escrow.cpp doApply() line 1186: ctx_.view().update(sled);
 	if !destIsSelf {
 		if result := ctx.UpdateAccountRoot(escrowEntry.DestinationID, destAccount); result != tx.TesSUCCESS {
 			return result
 		}
 	}
 
-	// Remove escrow from owner directory
-	// Reference: rippled Escrow.cpp doApply() lines 1130-1140
-	ownerDirKey := keylet.OwnerDir(escrowEntry.Account)
-	state.DirRemove(ctx.View, ownerDirKey, escrowEntry.OwnerNode, escrowKey.Key, false)
-
-	// Remove escrow from destination directory (if cross-account)
-	if escrowEntry.HasDestNode {
-		destDirKey := keylet.OwnerDir(escrowEntry.DestinationID)
-		state.DirRemove(ctx.View, destDirKey, escrowEntry.DestinationNode, escrowKey.Key, false)
-	}
-
 	// Delete the escrow
+	// Reference: rippled Escrow.cpp doApply() line 1194: ctx_.view().erase(slep);
 	if err := ctx.View.Erase(escrowKey); err != nil {
 		ctx.Log.Error("escrow finish: failed to erase escrow", "error", err)
 		return tx.TefINTERNAL
 	}
 
 	// Decrement OwnerCount for escrow owner only.
-	// Note: rippled does NOT adjust destination's OwnerCount for XRP escrows.
-	// Reference: rippled Escrow.cpp:1188-1190
+	// Reference: rippled Escrow.cpp doApply() lines 1188-1191
 	adjustOwnerCount(ctx, ownerID, -1)
 
 	return tx.TesSUCCESS

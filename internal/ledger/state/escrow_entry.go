@@ -9,8 +9,11 @@ import (
 type EscrowData struct {
 	Account         [20]byte
 	DestinationID   [20]byte
-	Amount          uint64 // XRP drops (only valid when IsXRP is true)
-	IsXRP           bool   // true if the escrow Amount is XRP, false if IOU
+	Amount          uint64  // XRP drops (only valid when IsXRP is true)
+	IsXRP           bool    // true if the escrow Amount is XRP
+	IOUAmount       *Amount // non-nil for IOU escrows (the full Amount with currency/issuer)
+	MPTAmount       *int64  // non-nil for MPT escrows (raw int64 value)
+	MPTIssuanceID   string  // hex-encoded MPT issuance ID (set when MPT)
 	Condition       string
 	CancelAfter     uint32
 	FinishAfter     uint32
@@ -21,6 +24,10 @@ type EscrowData struct {
 	OwnerNode       uint64
 	DestinationNode uint64
 	HasDestNode     bool
+	IssuerNode      uint64
+	HasIssuerNode   bool
+	TransferRate    uint32
+	HasTransferRate bool
 	Flags           uint32
 }
 
@@ -75,6 +82,9 @@ func ParseEscrow(data []byte) (*EscrowData, error) {
 			case 3: // SourceTag
 				escrow.SourceTag = value
 				escrow.HasSourceTag = true
+			case 11: // TransferRate
+				escrow.TransferRate = value
+				escrow.HasTransferRate = true
 			case 14: // DestinationTag
 				escrow.DestinationTag = value
 				escrow.HasDestTag = true
@@ -96,27 +106,60 @@ func ParseEscrow(data []byte) (*EscrowData, error) {
 			case 9: // DestinationNode (nth=9 per definitions.json)
 				escrow.DestinationNode = value
 				escrow.HasDestNode = true
+			case 27: // IssuerNode
+				escrow.IssuerNode = value
+				escrow.HasIssuerNode = true
 			}
 
 		case FieldTypeAmount:
-			if offset+8 > len(data) {
+			if offset >= len(data) {
 				return escrow, nil
 			}
-			rawAmount := binary.BigEndian.Uint64(data[offset : offset+8])
-			// Bit 63 (top bit) distinguishes XRP from IOU amounts:
-			// 0 = XRP (8 bytes total), 1 = IOU (48 bytes: 8 + 20 currency + 20 issuer)
-			isIOU := rawAmount&0x8000000000000000 != 0
-			if isIOU {
-				// IOU amount: skip 48 bytes total (8 already accounted + 40 more)
+			firstByte := data[offset]
+			// Detection order (matches binary codec):
+			// 1. bit 0x80 set -> IOU (48 bytes)
+			// 2. bit 0x20 set -> MPT (33 bytes)
+			// 3. otherwise   -> XRP (8 bytes)
+			if (firstByte & 0x80) != 0 {
+				// IOU amount: 48 bytes (8 value + 20 currency + 20 issuer)
 				if offset+48 > len(data) {
 					return escrow, nil
 				}
+				if fieldCode == 1 { // sfAmount
+					amt, err := ParseIOUAmountBinary(data[offset : offset+48])
+					if err == nil {
+						escrow.IOUAmount = &amt
+						// IsXRP stays false (default)
+					}
+				}
 				offset += 48
-				// IsXRP stays false (default)
+			} else if (firstByte & 0x20) != 0 {
+				// MPT amount: 33 bytes (1 header + 8 value + 24 issuance ID)
+				if offset+33 > len(data) {
+					return escrow, nil
+				}
+				if fieldCode == 1 { // sfAmount
+					mptAmt, err := ParseMPTAmountBinary(data[offset : offset+33])
+					if err == nil {
+						escrow.IOUAmount = &mptAmt
+						if raw, ok := mptAmt.MPTRaw(); ok {
+							escrow.MPTAmount = &raw
+						}
+						escrow.MPTIssuanceID = mptAmt.MPTIssuanceID()
+						// IsXRP stays false (default)
+					}
+				}
+				offset += 33
 			} else {
-				// XRP amount: strip the sign bit (bit 62) to get drops
-				escrow.Amount = rawAmount & 0x3FFFFFFFFFFFFFFF
-				escrow.IsXRP = true
+				// XRP amount: 8 bytes
+				if offset+8 > len(data) {
+					return escrow, nil
+				}
+				rawAmount := binary.BigEndian.Uint64(data[offset : offset+8])
+				if fieldCode == 1 { // sfAmount
+					escrow.Amount = rawAmount & 0x3FFFFFFFFFFFFFFF
+					escrow.IsXRP = true
+				}
 				offset += 8
 			}
 
