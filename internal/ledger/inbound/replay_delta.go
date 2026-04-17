@@ -319,6 +319,18 @@ func (r *ReplayDelta) verifyAndBuild(resp *message.ReplayDeltaResponse) error {
 	return nil
 }
 
+// AdvanceCreatedForTest is a test-only hook that rewinds the
+// acquisition's start time by `delta`, simulating timer expiry without
+// sleeping. Production code paths never invoke it (and never should);
+// it lives in this file rather than a *_test.go because it must be
+// importable from sibling packages' tests (router-level fallback
+// integration tests in internal/consensus/adaptor).
+func (r *ReplayDelta) AdvanceCreatedForTest(delta time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.created = r.created.Add(-delta)
+}
+
 // parentStateSnapshot returns an immutable snapshot of the parent state
 // map, or an empty state map if there is no parent (test scenarios).
 func (r *ReplayDelta) parentStateSnapshot() (*shamap.SHAMap, error) {
