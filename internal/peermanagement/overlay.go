@@ -654,6 +654,16 @@ func (o *Overlay) Connect(addr string) error {
 }
 
 // Broadcast sends a message to all connected peers.
+//
+// TODO(reduce-relay): For mtVALIDATION/mtPROPOSE_LEDGER specifically, the
+// outbound path must consult Peer.ExpireSquelch(validatorPubKey) and skip
+// peers that have squelched the originating validator. Today this Broadcast
+// is validator-key-blind (raw bytes only), so the per-peer squelch state
+// added in handleSquelch is enforced for inbound state changes only.
+// Wiring requires either a BroadcastFromValidator(key, msg) variant or a
+// higher-level relay path that decodes the proposal/validation to extract
+// the pubkey before fanout. See rippled PeerImp.cpp:240-256 for the
+// reference filter.
 func (o *Overlay) Broadcast(msg []byte) error {
 	o.peersMu.RLock()
 	defer o.peersMu.RUnlock()
