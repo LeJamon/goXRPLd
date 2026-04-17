@@ -389,6 +389,17 @@ func (o *Overlay) onMessageReceived(evt Event) {
 		return
 	}
 
+	// Serve mtREPLAY_DELTA_REQ from the local ledger sync handler. Mirrors
+	// rippled's PeerImp::onMessage(TMReplayDeltaRequest) which delegates to
+	// LedgerReplayMsgHandler::processReplayDeltaRequest. The request is
+	// addressed at us — responses (if any) are pushed back via the events
+	// channel as EventLedgerResponse. We do not forward inbound requests to
+	// external consumers; only the internal handler answers them.
+	if msgType == message.TypeReplayDeltaReq {
+		o.handleReplayDeltaRequest(evt)
+		return
+	}
+
 	slog.Debug("Message received", "t", "Overlay", "type", msgType.String(), "peer", evt.PeerID, "size", len(evt.Payload))
 
 	// Forward to external consumers
@@ -400,6 +411,33 @@ func (o *Overlay) onMessageReceived(evt Event) {
 	}:
 	default:
 		slog.Warn("Message dropped: channel full", "t", "Overlay", "type", msgType.String())
+	}
+}
+
+// handleReplayDeltaRequest decodes an inbound mtREPLAY_DELTA_REQ frame and
+// routes it to the local LedgerSyncHandler. Decode failures are logged and
+// dropped silently — a malformed request from a peer should not crash the
+// dispatch loop.
+//
+// TODO(p2p): the production code currently never calls
+// LedgerSyncHandler.SetProvider, so this handler will short-circuit with no
+// response until the ledger service is wired through. The wiring point
+// should call o.ledgerSync.SetProvider(adapter) once an adapter that
+// implements LedgerProvider over internal/ledger/service is available
+// (importing internal/ledger from this package is a layering violation, so
+// the adapter must live with the wiring code, not here).
+func (o *Overlay) handleReplayDeltaRequest(evt Event) {
+	decoded, err := message.Decode(message.TypeReplayDeltaReq, evt.Payload)
+	if err != nil {
+		slog.Debug("ReplayDeltaRequest decode failed", "t", "Overlay", "peer", evt.PeerID, "err", err)
+		return
+	}
+	req, ok := decoded.(*message.ReplayDeltaRequest)
+	if !ok {
+		return
+	}
+	if err := o.ledgerSync.HandleMessage(o.ctx, evt.PeerID, req); err != nil {
+		slog.Debug("ReplayDeltaRequest handler error", "t", "Overlay", "peer", evt.PeerID, "err", err)
 	}
 }
 
