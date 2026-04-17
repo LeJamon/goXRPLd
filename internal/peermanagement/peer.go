@@ -63,6 +63,14 @@ type Peer struct {
 	score   *PeerScore
 	traffic *TrafficCounter
 
+	// squelchMap tracks per-validator squelch expiry deadlines. Outgoing
+	// validation/proposal messages originating from a squelched validator
+	// must not be relayed to this peer until the deadline passes.
+	// Mirrors rippled's `Squelch` (see overlay/Squelch.h). The key is the
+	// validator's public key bytes as a string for use as a map key.
+	squelchMu  sync.RWMutex
+	squelchMap map[string]time.Time
+
 	createdAt time.Time
 	closeCh   chan struct{}
 	closed    atomic.Bool
@@ -89,17 +97,18 @@ func DefaultPeerConfig() PeerConfig {
 // NewPeer creates a new peer.
 func NewPeer(id PeerID, endpoint Endpoint, inbound bool, identity *Identity, events chan<- Event) *Peer {
 	return &Peer{
-		id:        id,
-		endpoint:  endpoint,
-		inbound:   inbound,
-		identity:  identity,
-		state:     PeerStateDisconnected,
-		send:      make(chan []byte, DefaultSendBufferSize),
-		events:    events,
-		score:     NewPeerScore(),
-		traffic:   NewTrafficCounter(),
-		createdAt: time.Now(),
-		closeCh:   make(chan struct{}),
+		id:         id,
+		endpoint:   endpoint,
+		inbound:    inbound,
+		identity:   identity,
+		state:      PeerStateDisconnected,
+		send:       make(chan []byte, DefaultSendBufferSize),
+		events:     events,
+		score:      NewPeerScore(),
+		traffic:    NewTrafficCounter(),
+		squelchMap: make(map[string]time.Time),
+		createdAt:  time.Now(),
+		closeCh:    make(chan struct{}),
 	}
 }
 
@@ -393,6 +402,57 @@ func (p *Peer) pingLoop(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// AddSquelch records a squelch instruction received from this peer for the
+// given validator. Mirrors rippled's `Squelch::addSquelch`: returns false
+// (and removes any prior squelch) when duration is outside the allowed
+// [MinUnsquelchExpire, MaxUnsquelchExpirePeers] range.
+func (p *Peer) AddSquelch(validator []byte, duration time.Duration) bool {
+	if duration < MinUnsquelchExpire || duration > MaxUnsquelchExpirePeers {
+		p.RemoveSquelch(validator)
+		return false
+	}
+	p.squelchMu.Lock()
+	p.squelchMap[string(validator)] = time.Now().Add(duration)
+	p.squelchMu.Unlock()
+	return true
+}
+
+// RemoveSquelch deletes any squelch entry for the given validator.
+// Mirrors rippled's `Squelch::removeSquelch`.
+func (p *Peer) RemoveSquelch(validator []byte) {
+	p.squelchMu.Lock()
+	delete(p.squelchMap, string(validator))
+	p.squelchMu.Unlock()
+}
+
+// ExpireSquelch reports whether a message originating from `validator`
+// may be relayed to this peer. Returns true when there is no squelch or
+// the existing squelch has expired (and clears the expired entry); false
+// when an active squelch is in effect. Mirrors rippled's
+// `Squelch::expireSquelch`.
+func (p *Peer) ExpireSquelch(validator []byte) bool {
+	key := string(validator)
+
+	p.squelchMu.RLock()
+	deadline, ok := p.squelchMap[key]
+	p.squelchMu.RUnlock()
+
+	if !ok {
+		return true
+	}
+	if deadline.After(time.Now()) {
+		return false
+	}
+
+	// Squelch expired — remove and allow.
+	p.squelchMu.Lock()
+	if d, stillThere := p.squelchMap[key]; stillThere && !d.After(time.Now()) {
+		delete(p.squelchMap, key)
+	}
+	p.squelchMu.Unlock()
+	return true
 }
 
 // Send queues data to be sent to the peer.

@@ -381,6 +381,14 @@ func (o *Overlay) onMessageReceived(evt Event) {
 		return
 	}
 
+	// Handle TMSquelch at the transport level — update per-peer squelch
+	// state and do not forward to external consumers. Mirrors rippled's
+	// PeerImp::onMessage(TMSquelch).
+	if msgType == message.TypeSquelch {
+		o.handleSquelchMessage(evt)
+		return
+	}
+
 	slog.Debug("Message received", "t", "Overlay", "type", msgType.String(), "peer", evt.PeerID, "size", len(evt.Payload))
 
 	// Forward to external consumers
@@ -392,6 +400,36 @@ func (o *Overlay) onMessageReceived(evt Event) {
 	}:
 	default:
 		slog.Warn("Message dropped: channel full", "t", "Overlay", "type", msgType.String())
+	}
+}
+
+// handleSquelchMessage processes an inbound TMSquelch from a peer and
+// updates the per-peer validator squelch table.
+func (o *Overlay) handleSquelchMessage(evt Event) {
+	decoded, err := message.Decode(message.TypeSquelch, evt.Payload)
+	if err != nil {
+		slog.Debug("Squelch decode failed", "t", "Overlay", "peer", evt.PeerID, "err", err)
+		return
+	}
+	sq, ok := decoded.(*message.Squelch)
+	if !ok || len(sq.ValidatorPubKey) == 0 {
+		return
+	}
+
+	o.peersMu.RLock()
+	peer, exists := o.peers[evt.PeerID]
+	o.peersMu.RUnlock()
+	if !exists {
+		return
+	}
+
+	if !sq.Squelch {
+		peer.RemoveSquelch(sq.ValidatorPubKey)
+		return
+	}
+	duration := time.Duration(sq.SquelchDuration) * time.Second
+	if !peer.AddSquelch(sq.ValidatorPubKey, duration) {
+		slog.Debug("Squelch ignored: invalid duration", "t", "Overlay", "peer", evt.PeerID, "duration", sq.SquelchDuration)
 	}
 }
 
@@ -500,9 +538,11 @@ func (o *Overlay) performMaintenance() {
 	o.ledgerSync.CleanupExpiredRequests()
 }
 
-// handleSquelch is called by the relay system when a peer should be squelched.
+// handleSquelch is called by the relay system when a peer should be squelched
+// or unsquelched for a given validator. It constructs a TMSquelch message and
+// delivers it to the specific peer (unicast — see rippled's
+// OverlayImpl::squelch in src/xrpld/overlay/detail/OverlayImpl.cpp).
 func (o *Overlay) handleSquelch(validator []byte, peerID PeerID, squelch bool, duration time.Duration) {
-	// Send squelch message to peer
 	o.peersMu.RLock()
 	peer, exists := o.peers[peerID]
 	o.peersMu.RUnlock()
@@ -511,8 +551,29 @@ func (o *Overlay) handleSquelch(validator []byte, peerID PeerID, squelch bool, d
 		return
 	}
 
-	// TODO: Build and send squelch message
-	_ = peer
+	msg := &message.Squelch{
+		Squelch:         squelch,
+		ValidatorPubKey: validator,
+	}
+	if squelch {
+		// rippled stores the duration as seconds in TMSquelch.
+		msg.SquelchDuration = uint32(duration / time.Second)
+	}
+
+	encoded, err := message.Encode(msg)
+	if err != nil {
+		slog.Warn("Squelch encode failed", "t", "Overlay", "peer", peerID, "err", err)
+		return
+	}
+	frame, err := message.BuildWireMessage(message.TypeSquelch, encoded)
+	if err != nil {
+		slog.Warn("Squelch frame build failed", "t", "Overlay", "peer", peerID, "err", err)
+		return
+	}
+
+	if err := peer.Send(frame); err != nil {
+		slog.Info("Squelch send failed", "t", "Overlay", "peer", peerID, "err", err)
+	}
 }
 
 // Connect initiates an outbound connection to the specified address.

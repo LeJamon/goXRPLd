@@ -1,24 +1,13 @@
 package peermanagement
 
 import (
-	"math/rand"
+	"math/rand/v2"
 	"sync"
 	"time"
 )
 
-// Reduce-relay constants.
-const (
-	MinUnsquelchExpire        = 300 * time.Second
-	MaxUnsquelchExpireDefault = 600 * time.Second
-	SquelchPerPeer            = 10 * time.Second
-	MaxUnsquelchExpirePeers   = 3600 * time.Second
-	Idled                     = 8 * time.Second
-	MinMessageThreshold       = 19
-	MaxMessageThreshold       = 20
-	MaxSelectedPeers          = 5
-	WaitOnBootup              = 10 * time.Minute
-	MaxTxQueueSize            = 10000
-)
+// Reduce-relay constants live in reduce_relay_common.go
+// (mirroring rippled's ReduceRelayCommon.h).
 
 // RelayPeerState represents the state of a peer in the reduce-relay system.
 type RelayPeerState int
@@ -157,6 +146,7 @@ func (s *ValidatorSlot) selectPeers(validator []byte, now time.Time) {
 	rand.Shuffle(len(candidates), func(i, j int) {
 		candidates[i], candidates[j] = candidates[j], candidates[i]
 	})
+	// math/rand/v2 is auto-seeded.
 
 	selected := make(map[PeerID]struct{})
 	for i := 0; i < s.maxSelectedPeers && i < len(candidates); i++ {
@@ -257,7 +247,9 @@ func (s *ValidatorSlot) getSquelchDuration(numPeers int) time.Duration {
 	minSecs := int(MinUnsquelchExpire.Seconds())
 	maxSecs := int(maxDuration.Seconds())
 
-	return time.Duration(minSecs+rand.Intn(maxSecs-minSecs+1)) * time.Second
+	// rand_int(min, max) in rippled is inclusive on both ends; mirror that
+	// with IntN(span+1).
+	return time.Duration(minSecs+rand.IntN(maxSecs-minSecs+1)) * time.Second
 }
 
 // Relay manages reduce-relay for all validators.
