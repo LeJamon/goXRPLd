@@ -564,15 +564,19 @@ func (h *LedgerSyncHandler) handleReplayDeltaResponse(_ context.Context, peerID 
 			"t", "LedgerSync", "peer", peerID, "err", err)
 		return nil
 	}
-	h.pushEvent(EventReplayDeltaReceived, peerID, encoded)
+	h.pushReceivedEvent(EventReplayDeltaReceived, peerID, encoded)
 	return nil
 }
 
-// pushEvent best-effort delivers an event onto the handler's event channel
-// using the same non-blocking pattern as sendReplayDeltaResponse and
-// sendProofPathResponse: a full channel results in a warn-level drop log
-// rather than a deadlock on the dispatch path.
-func (h *LedgerSyncHandler) pushEvent(eventType EventType, peerID PeerID, payload []byte) {
+// pushReceivedEvent best-effort delivers an INBOUND event (one we received
+// from a peer and are surfacing to downstream consumers) onto the handler's
+// event channel. Distinct from sendReplayDeltaResponse / sendProofPathResponse
+// which encode + emit OUTBOUND EventLedgerResponse events to be shipped to
+// peers — those responsibilities (encoding the wire form, choosing the egress
+// event type) must not be folded into this helper. Same non-blocking
+// select-default pattern: a full channel yields a warn-level drop, never a
+// deadlock on the dispatch path.
+func (h *LedgerSyncHandler) pushReceivedEvent(eventType EventType, peerID PeerID, payload []byte) {
 	if h.events == nil {
 		return
 	}
