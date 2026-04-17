@@ -76,6 +76,12 @@ func NewFromConfig(
 		return nil, fmt.Errorf("create overlay: %w", err)
 	}
 
+	// Wire the read-side LedgerProvider so the overlay's ledger-sync handler
+	// can answer mtREPLAY_DELTA_REQ / mtPROOF_PATH_REQ / mtGET_LEDGER from
+	// peers. peermanagement is forbidden from importing internal/ledger, so
+	// the adapter must be installed here, where both layers are reachable.
+	overlay.LedgerSync().SetProvider(NewLedgerProvider(ledgerSvc))
+
 	// Create validator identity (nil if not a validator)
 	var identity *ValidatorIdentity
 	if appCfg.ValidationSeed != "" {

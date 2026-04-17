@@ -44,6 +44,11 @@ type Overlay struct {
 	cancel context.CancelFunc
 }
 
+// LedgerSync returns the overlay's ledger-sync handler so callers in a
+// higher layer (e.g., consensus startup) can wire a LedgerProvider that
+// imports internal/ledger packages — which this layer cannot.
+func (o *Overlay) LedgerSync() *LedgerSyncHandler { return o.ledgerSync }
+
 // New creates a new Overlay with the provided options.
 func New(opts ...Option) (*Overlay, error) {
 	cfg := DefaultConfig()
@@ -440,15 +445,10 @@ func (o *Overlay) onMessageReceived(evt Event) {
 // dispatchReplayDeltaRequest decodes an inbound mtREPLAY_DELTA_REQ frame and
 // routes it to the local LedgerSyncHandler. Decode failures are logged and
 // dropped silently — a malformed request from a peer should not crash the
-// dispatch loop.
-//
-// TODO(p2p): the production code currently never calls
-// LedgerSyncHandler.SetProvider, so this handler will short-circuit with no
-// response until the ledger service is wired through. The wiring point
-// should call o.ledgerSync.SetProvider(adapter) once an adapter that
-// implements LedgerProvider over internal/ledger/service is available
-// (importing internal/ledger from this package is a layering violation, so
-// the adapter must live with the wiring code, not here).
+// dispatch loop. The handler answers via the configured LedgerProvider, which
+// is wired at startup by the consensus adaptor (see
+// internal/consensus/adaptor.NewLedgerProvider) — that layer can import
+// internal/ledger, which this package cannot.
 func (o *Overlay) dispatchReplayDeltaRequest(evt Event) {
 	decoded, err := message.Decode(message.TypeReplayDeltaReq, evt.Payload)
 	if err != nil {
@@ -497,15 +497,10 @@ func (o *Overlay) dispatchReplayDeltaResponse(evt Event) {
 // dispatchProofPathRequest decodes an inbound mtPROOF_PATH_REQ frame and
 // routes it to the local LedgerSyncHandler. Decode failures are logged
 // and dropped silently — a malformed request from a peer should not
-// crash the dispatch loop.
-//
-// TODO(p2p): the production code currently never calls
-// LedgerSyncHandler.SetProvider, so this handler will short-circuit with
-// no response until the ledger service is wired through. The wiring
-// point should call o.ledgerSync.SetProvider(adapter) once an adapter
-// that implements LedgerProvider over internal/ledger/service is
-// available (importing internal/ledger from this package is a layering
-// violation, so the adapter must live with the wiring code, not here).
+// crash the dispatch loop. The handler answers via the configured
+// LedgerProvider, which is wired at startup by the consensus adaptor
+// (see internal/consensus/adaptor.NewLedgerProvider) — that layer can
+// import internal/ledger, which this package cannot.
 func (o *Overlay) dispatchProofPathRequest(evt Event) {
 	decoded, err := message.Decode(message.TypeProofPathReq, evt.Payload)
 	if err != nil {

@@ -293,6 +293,17 @@ func (l *Ledger) IsClosed() bool {
 	return l.state == StateClosed || l.state == StateValidated
 }
 
+// IsImmutable reports whether the ledger has been closed and its SHAMaps
+// frozen. Mirrors rippled's Ledger::isImmutable() (Ledger.h:278), which
+// gates ledger-replay/proof-path serving (see
+// LedgerReplayMsgHandler::processReplayDeltaRequest at
+// LedgerReplayMsgHandler.cpp:197). A closed ledger has its state and tx
+// SHAMaps marked immutable in Close(); IsImmutable is therefore equivalent
+// to IsClosed for this implementation.
+func (l *Ledger) IsImmutable() bool {
+	return l.IsClosed()
+}
+
 // IsValidated returns true if the ledger is validated
 func (l *Ledger) IsValidated() bool {
 	l.mu.RLock()

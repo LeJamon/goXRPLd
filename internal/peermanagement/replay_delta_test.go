@@ -49,11 +49,16 @@ func fixedHash() []byte {
 
 // drainReplayDeltaResponse pulls the first EventLedgerResponse off the
 // channel, decodes its payload as a ReplayDeltaResponse, and returns it.
-// The channel must contain exactly one event: tests fail if it is empty.
+// Uses select+default rather than a len() snapshot so a not-yet-emitted
+// event surfaces as a test failure deterministically.
 func drainReplayDeltaResponse(t *testing.T, events chan Event) *message.ReplayDeltaResponse {
 	t.Helper()
-	require.Equal(t, 1, len(events), "expected exactly one event on the channel")
-	evt := <-events
+	var evt Event
+	select {
+	case evt = <-events:
+	default:
+		t.Fatal("expected an event on the channel, got none")
+	}
 	require.Equal(t, EventLedgerResponse, evt.Type)
 	decoded, err := message.Decode(message.TypeReplayDeltaResponse, evt.Payload)
 	require.NoError(t, err)
