@@ -14,7 +14,6 @@ import (
 	"github.com/LeJamon/goXRPLd/crypto/common"
 	"github.com/LeJamon/goXRPLd/drops"
 	"github.com/LeJamon/goXRPLd/internal/ledger"
-	"github.com/LeJamon/goXRPLd/internal/ledger/genesis"
 	"github.com/LeJamon/goXRPLd/internal/ledger/header"
 	"github.com/LeJamon/goXRPLd/internal/peermanagement/message"
 	"github.com/LeJamon/goXRPLd/protocol"
@@ -215,16 +214,25 @@ func (r *ReplayDelta) verifyAndBuild(resp *message.ReplayDeltaResponse) error {
 	}
 
 	// Mirror rippled :228 — check the header hash before any tx work.
-	hdr, err := header.DeserializeHeader(resp.LedgerHeader, false)
-	if err != nil {
-		return fmt.Errorf("deserialize header: %w", err)
+	// Hash the on-the-wire header bytes directly with the LWR prefix
+	// rather than going through the parsed struct: the parse-then-hash
+	// path passes through xrplEpochToTime which collapses an epoch of 0
+	// (the XRPL ripple epoch) into a Go zero time, defeating the
+	// reverse arithmetic CalculateLedgerHash relies on. The byte-level
+	// hash is what rippled computes on the sender side and is the only
+	// invariant guaranteed to round-trip.
+	advertised, ok := toHash32(resp.LedgerHash)
+	if !ok {
+		return fmt.Errorf("bad hash length: %d", len(resp.LedgerHash))
 	}
-	computed := genesis.CalculateLedgerHash(*hdr)
-	var advertised [32]byte
-	copy(advertised[:], resp.LedgerHash)
+	computed := common.Sha512Half(protocol.HashPrefixLedgerMaster.Bytes(), resp.LedgerHeader)
 	if computed != advertised {
 		return fmt.Errorf("header hash mismatch: computed %x advertised %x",
 			computed[:8], advertised[:8])
+	}
+	hdr, err := header.DeserializeHeader(resp.LedgerHeader, false)
+	if err != nil {
+		return fmt.Errorf("deserialize header: %w", err)
 	}
 	hdr.Hash = computed
 
@@ -345,6 +353,17 @@ func (r *ReplayDelta) parentStateSnapshot() (*shamap.SHAMap, error) {
 		return nil, err
 	}
 	return snap, nil
+}
+
+// toHash32 returns h as [32]byte iff len(h) == 32. The bool return
+// distinguishes a wrong-length input from an all-zero hash.
+func toHash32(h []byte) ([32]byte, bool) {
+	var out [32]byte
+	if len(h) != len(out) {
+		return out, false
+	}
+	copy(out[:], h)
+	return out, true
 }
 
 // splitTxWithMetaBlob extracts (txBytes, metaBytes) from a SHAMapItem

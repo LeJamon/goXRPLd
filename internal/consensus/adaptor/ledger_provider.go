@@ -13,6 +13,7 @@ import (
 	"fmt"
 
 	"github.com/LeJamon/goXRPLd/internal/ledger"
+	"github.com/LeJamon/goXRPLd/internal/ledger/header"
 	"github.com/LeJamon/goXRPLd/internal/ledger/service"
 	"github.com/LeJamon/goXRPLd/internal/peermanagement"
 	"github.com/LeJamon/goXRPLd/internal/peermanagement/message"
@@ -123,7 +124,16 @@ func (p *LedgerProvider) GetReplayDelta(ledgerHash []byte) ([]byte, [][]byte, er
 		return nil, nil, nil
 	}
 
-	header := l.SerializeHeader()
+	// Mirror rippled's `addRaw(info, s)` at LedgerReplayMsgHandler.cpp:207
+	// which leaves includeHash at its default (false). The receiver
+	// recomputes the hash from the body and matches it against the
+	// ledger_hash field of the response — including the hash here would
+	// shift every subsequent byte and break that recompute.
+	hdr := l.Header()
+	headerBytes, hdrErr := header.AddRaw(hdr, false)
+	if hdrErr != nil {
+		return nil, nil, fmt.Errorf("serialize header: %w", hdrErr)
+	}
 
 	txMap, err := l.TxMapSnapshot()
 	if err != nil {
@@ -139,7 +149,7 @@ func (p *LedgerProvider) GetReplayDelta(ledgerHash []byte) ([]byte, [][]byte, er
 		return nil, nil, fmt.Errorf("iterate tx map: %w", err)
 	}
 
-	return header, leaves, nil
+	return headerBytes, leaves, nil
 }
 
 // GetProofPath serves an mtPROOF_PATH_REQ. Mirrors rippled's

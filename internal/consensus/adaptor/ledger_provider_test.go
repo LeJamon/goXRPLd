@@ -8,6 +8,7 @@ import (
 	"github.com/LeJamon/goXRPLd/drops"
 	"github.com/LeJamon/goXRPLd/internal/ledger"
 	"github.com/LeJamon/goXRPLd/internal/ledger/genesis"
+	"github.com/LeJamon/goXRPLd/internal/ledger/header"
 	"github.com/LeJamon/goXRPLd/internal/peermanagement"
 	"github.com/LeJamon/goXRPLd/internal/peermanagement/message"
 	"github.com/stretchr/testify/assert"
@@ -121,10 +122,14 @@ func TestLedgerProvider_GetReplayDelta_ImmutableLedger(t *testing.T) {
 	provider := newLedgerProviderForTest(lookup)
 
 	hash := closed.Hash()
-	header, leaves, err := provider.GetReplayDelta(hash[:])
+	headerBytes, leaves, err := provider.GetReplayDelta(hash[:])
 	require.NoError(t, err)
-	assert.Equal(t, closed.SerializeHeader(), header,
-		"serialized header must match Ledger.SerializeHeader")
+	// Mirror rippled's `addRaw(info, s)` (includeHash=false) at
+	// LedgerReplayMsgHandler.cpp:207 — the hash is conveyed via the
+	// ledger_hash field of the response, not appended to the header
+	// body. Including it would defeat the receiver's hash recompute.
+	assert.Len(t, headerBytes, header.SizeBase,
+		"serve-side replay-delta header must use hash-less encoding")
 	require.Len(t, leaves, len(txs),
 		"all tx leaves must be returned")
 

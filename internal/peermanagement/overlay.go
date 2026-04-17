@@ -49,6 +49,18 @@ type Overlay struct {
 // imports internal/ledger packages — which this layer cannot.
 func (o *Overlay) LedgerSync() *LedgerSyncHandler { return o.ledgerSync }
 
+// ListenAddr returns the resolved address the overlay is accepting
+// connections on, or the empty string if no listener is bound. Useful
+// when the overlay was configured with port 0 (ephemeral) and the
+// caller needs the actual port to drive a peer connection — e.g.,
+// integration tests that wire two overlays together on localhost.
+func (o *Overlay) ListenAddr() string {
+	if o.listener == nil {
+		return ""
+	}
+	return o.listener.Addr().String()
+}
+
 // New creates a new Overlay with the provided options.
 func New(opts ...Option) (*Overlay, error) {
 	cfg := DefaultConfig()
