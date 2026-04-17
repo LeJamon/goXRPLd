@@ -264,16 +264,15 @@ func (h *LedgerSyncHandler) handleProofPathResponse(ctx context.Context, peerID 
 // The encoded response is pushed onto the events channel as
 // EventLedgerResponse so the overlay can ship it to the requesting peer
 // (mirrors handleGetLedger).
-func (h *LedgerSyncHandler) handleReplayDeltaRequest(ctx context.Context, peerID PeerID, req *message.ReplayDeltaRequest) error {
-	_ = ctx
-
+func (h *LedgerSyncHandler) handleReplayDeltaRequest(_ context.Context, peerID PeerID, req *message.ReplayDeltaRequest) error {
 	// Validate ledger_hash length first — this check is independent of any
 	// configured provider, matching the rippled ordering.
 	if len(req.LedgerHash) != 32 {
-		return h.sendReplayDeltaResponse(peerID, &message.ReplayDeltaResponse{
+		h.sendReplayDeltaResponse(peerID, &message.ReplayDeltaResponse{
 			LedgerHash: req.LedgerHash,
 			Error:      message.ReplyErrorBadRequest,
 		})
+		return nil
 	}
 
 	h.mu.RLock()
@@ -287,10 +286,11 @@ func (h *LedgerSyncHandler) handleReplayDeltaRequest(ctx context.Context, peerID
 
 	header, txLeaves, err := provider.GetReplayDelta(req.LedgerHash)
 	if err != nil || len(header) == 0 {
-		return h.sendReplayDeltaResponse(peerID, &message.ReplayDeltaResponse{
+		h.sendReplayDeltaResponse(peerID, &message.ReplayDeltaResponse{
 			LedgerHash: req.LedgerHash,
 			Error:      message.ReplyErrorNoLedger,
 		})
+		return nil
 	}
 
 	// Defensive size cap: refuse to encode a response above our ceiling.
@@ -305,38 +305,41 @@ func (h *LedgerSyncHandler) handleReplayDeltaRequest(ctx context.Context, peerID
 			"size", total,
 			"limit", MaxReplayDeltaResponseBytes,
 		)
-		return h.sendReplayDeltaResponse(peerID, &message.ReplayDeltaResponse{
+		h.sendReplayDeltaResponse(peerID, &message.ReplayDeltaResponse{
 			LedgerHash: req.LedgerHash,
 			Error:      message.ReplyErrorBadRequest,
 		})
+		return nil
 	}
 
-	return h.sendReplayDeltaResponse(peerID, &message.ReplayDeltaResponse{
+	h.sendReplayDeltaResponse(peerID, &message.ReplayDeltaResponse{
 		LedgerHash:   req.LedgerHash,
 		LedgerHeader: header,
 		Transactions: txLeaves,
 	})
+	return nil
 }
 
-// sendReplayDeltaResponse encodes the response and pushes it onto the
-// events channel for the overlay to deliver. Returns nil on a full or nil
-// channel — callers treat send failures as best-effort, mirroring
-// handleGetLedger which silently drops when the channel is unavailable.
-func (h *LedgerSyncHandler) sendReplayDeltaResponse(peerID PeerID, resp *message.ReplayDeltaResponse) error {
+// sendReplayDeltaResponse encodes the response and best-effort delivers
+// it onto the events channel for the overlay to ship to the requesting
+// peer. Drops the response (with a warn log) if the events channel is
+// full — same non-blocking pattern as Overlay.onMessageReceived, to keep
+// a slow consumer from deadlocking the message dispatch path.
+func (h *LedgerSyncHandler) sendReplayDeltaResponse(peerID PeerID, resp *message.ReplayDeltaResponse) {
 	if h.events == nil {
-		return nil
+		return
 	}
 	encoded, err := message.Encode(resp)
 	if err != nil {
 		slog.Warn("ReplayDelta encode failed", "t", "LedgerSync", "peer", peerID, "err", err)
-		return nil
+		return
 	}
-	h.events <- Event{
-		Type:    EventLedgerResponse,
-		PeerID:  peerID,
-		Payload: encoded,
+	select {
+	case h.events <- Event{Type: EventLedgerResponse, PeerID: peerID, Payload: encoded}:
+	default:
+		slog.Warn("ReplayDelta response dropped: events channel full",
+			"t", "LedgerSync", "peer", peerID, "bytes", len(encoded))
 	}
-	return nil
 }
 
 // handleReplayDeltaResponse handles replay delta responses.

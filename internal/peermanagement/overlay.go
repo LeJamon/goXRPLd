@@ -396,7 +396,7 @@ func (o *Overlay) onMessageReceived(evt Event) {
 	// channel as EventLedgerResponse. We do not forward inbound requests to
 	// external consumers; only the internal handler answers them.
 	if msgType == message.TypeReplayDeltaReq {
-		o.handleReplayDeltaRequest(evt)
+		o.dispatchReplayDeltaRequest(evt)
 		return
 	}
 
@@ -414,7 +414,7 @@ func (o *Overlay) onMessageReceived(evt Event) {
 	}
 }
 
-// handleReplayDeltaRequest decodes an inbound mtREPLAY_DELTA_REQ frame and
+// dispatchReplayDeltaRequest decodes an inbound mtREPLAY_DELTA_REQ frame and
 // routes it to the local LedgerSyncHandler. Decode failures are logged and
 // dropped silently — a malformed request from a peer should not crash the
 // dispatch loop.
@@ -426,7 +426,7 @@ func (o *Overlay) onMessageReceived(evt Event) {
 // implements LedgerProvider over internal/ledger/service is available
 // (importing internal/ledger from this package is a layering violation, so
 // the adapter must live with the wiring code, not here).
-func (o *Overlay) handleReplayDeltaRequest(evt Event) {
+func (o *Overlay) dispatchReplayDeltaRequest(evt Event) {
 	decoded, err := message.Decode(message.TypeReplayDeltaReq, evt.Payload)
 	if err != nil {
 		slog.Debug("ReplayDeltaRequest decode failed", "t", "Overlay", "peer", evt.PeerID, "err", err)
