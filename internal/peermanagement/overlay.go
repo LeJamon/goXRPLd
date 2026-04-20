@@ -49,6 +49,26 @@ type Overlay struct {
 // imports internal/ledger packages — which this layer cannot.
 func (o *Overlay) LedgerSync() *LedgerSyncHandler { return o.ledgerSync }
 
+// PeerSupports reports whether the peer identified by peerID has
+// advertised support for the given protocol feature via its handshake
+// headers. Returns false when the peer is unknown, the handshake has
+// not completed, or the feature was not negotiated. Used by higher
+// layers (e.g., consensus catchup) to avoid issuing feature-gated
+// requests to peers that would silently drop them.
+func (o *Overlay) PeerSupports(peerID PeerID, f Feature) bool {
+	o.peersMu.RLock()
+	peer, ok := o.peers[peerID]
+	o.peersMu.RUnlock()
+	if !ok {
+		return false
+	}
+	caps := peer.Capabilities()
+	if caps == nil {
+		return false
+	}
+	return caps.HasFeature(f)
+}
+
 // ListenAddr returns the resolved address the overlay is accepting
 // connections on, or the empty string if no listener is bound. Useful
 // when the overlay was configured with port 0 (ephemeral) and the
@@ -314,9 +334,16 @@ func (o *Overlay) performInboundHandshake(ctx context.Context, peer *Peer, tlsCo
 	}
 	req.Body.Close()
 
-	// Store the buffered reader on the peer for the readLoop
+	// Capture the peer's advertised protocol features from the handshake
+	// request headers so downstream code can query e.g. whether this peer
+	// supports ledger-replay before issuing a replay-delta request.
+	caps := NewPeerCapabilities()
+	caps.Features = ParseProtocolCtlFeatures(req.Header)
+
+	// Store the buffered reader + capabilities on the peer for the readLoop
 	peer.mu.Lock()
 	peer.bufReader = bufReader
+	peer.capabilities = caps
 	peer.mu.Unlock()
 
 	// Build and send response

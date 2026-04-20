@@ -28,9 +28,14 @@ import (
 // fell back to legacy" assertions.
 type recordingSender struct {
 	noopSender
-	mu                 sync.Mutex
-	replayDeltaCalls   []replayDeltaCall
-	legacyBaseCalls    []legacyBaseCall
+	mu               sync.Mutex
+	replayDeltaCalls []replayDeltaCall
+	legacyBaseCalls  []legacyBaseCall
+	// peerSupportsReplay controls the handshake-feature answer. Defaults
+	// to true so existing tests continue to exercise the "peer advertises
+	// ledger-replay" path without extra setup; tests that want to cover
+	// the no-support fallback flip this to false.
+	peerSupportsReplay bool
 }
 
 type replayDeltaCall struct {
@@ -74,6 +79,16 @@ func (s *recordingSender) legacyCalls() []legacyBaseCall {
 	return out
 }
 
+// PeerSupportsReplay returns the configured handshake-feature answer.
+// Overrides the noopSender default (false) so tests that set up the
+// recordingSender without extra configuration still exercise the
+// replay-delta-preferred path.
+func (s *recordingSender) PeerSupportsReplay(uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.peerSupportsReplay
+}
+
 // newRecordingAdaptor wires a fresh adaptor against the supplied service
 // with our recordingSender installed. The validator identity is reused
 // from the test helper because the router doesn't need a specific key.
@@ -81,7 +96,7 @@ func newRecordingAdaptor(t *testing.T, svc *service.Service) (*Adaptor, *recordi
 	t.Helper()
 	identity, err := NewValidatorIdentity("snoPBrXtMeMyMHUVTgbuqAfg1SUTb")
 	require.NoError(t, err)
-	rs := &recordingSender{}
+	rs := &recordingSender{peerSupportsReplay: true}
 	a := New(Config{
 		LedgerService: svc,
 		Sender:        rs,
@@ -262,6 +277,34 @@ func TestRouter_NoParent_FallsBackToLegacy(t *testing.T) {
 	assert.Equal(t, uint64(7), calls[0].peerID)
 	assert.NotNil(t, r.inboundLedger)
 	assert.Nil(t, r.inboundReplayDelta)
+}
+
+// TestRouter_PeerDoesNotSupportReplay_FallsBackToLegacy verifies that
+// when the peer did NOT advertise the ledger-replay protocol feature
+// during handshake, the router takes the legacy mtGET_LEDGER path even
+// if we have a local parent. Mirrors the policy behind
+// LedgerDeltaAcquire::trigger skipping peers without
+// ProtocolFeature::LedgerReplay.
+func TestRouter_PeerDoesNotSupportReplay_FallsBackToLegacy(t *testing.T) {
+	r, _, rs, svc := makeRouter(t)
+	parent := svc.GetClosedLedger()
+	require.NotNil(t, parent)
+
+	// Peer didn't advertise ledger-replay in its handshake headers.
+	rs.mu.Lock()
+	rs.peerSupportsReplay = false
+	rs.mu.Unlock()
+
+	target := [32]byte{0xCD}
+	r.startLedgerAcquisition(parent.Sequence()+1, target, 11)
+
+	assert.Empty(t, rs.replayCalls(), "must not issue replay-delta to peer that doesn't support it")
+	calls := rs.legacyCalls()
+	require.Len(t, calls, 1, "legacy fallback must run")
+	assert.Equal(t, target, calls[0].hash)
+	assert.Equal(t, uint64(11), calls[0].peerID)
+	assert.Nil(t, r.inboundReplayDelta, "replay-delta must not be armed")
+	assert.NotNil(t, r.inboundLedger, "legacy acquisition must be armed")
 }
 
 // TestRouter_ReplayDeltaResponse_Routed verifies that an inbound

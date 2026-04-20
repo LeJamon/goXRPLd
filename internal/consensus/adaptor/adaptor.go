@@ -37,6 +37,12 @@ type NetworkSender interface {
 	RequestReplayDelta(peerID uint64, hash [32]byte) error
 	RequestStateNodes(peerID uint64, ledgerHash [32]byte, nodeIDs [][]byte) error
 	SendToPeer(peerID uint64, frame []byte) error
+	// PeerSupportsReplay reports whether the peer identified by peerID
+	// advertised the ledger-replay feature during handshake. Used by
+	// the catchup policy to skip replay-delta requests against peers
+	// that would silently drop them. Returns false conservatively when
+	// the peer is unknown or the handshake has not completed.
+	PeerSupportsReplay(peerID uint64) bool
 }
 
 // noopSender is a no-op NetworkSender for standalone or test use.
@@ -53,6 +59,7 @@ func (n *noopSender) RequestLedgerBaseFromPeer(uint64, [32]byte, uint32) error {
 func (n *noopSender) RequestReplayDelta(uint64, [32]byte) error                { return nil }
 func (n *noopSender) RequestStateNodes(uint64, [32]byte, [][]byte) error       { return nil }
 func (n *noopSender) SendToPeer(uint64, []byte) error                          { return nil }
+func (n *noopSender) PeerSupportsReplay(uint64) bool                           { return false }
 
 // Compile-time interface check.
 var _ consensus.Adaptor = (*Adaptor)(nil)
@@ -183,6 +190,13 @@ func (a *Adaptor) EngineConfigForReplay(parent *ledger.Ledger) tx.EngineConfig {
 		return tx.EngineConfig{}
 	}
 	return a.ledgerService.EngineConfigForReplay(parent)
+}
+
+// PeerSupportsReplay reports whether the peer advertised the ledger-replay
+// protocol feature during handshake. Delegates to the NetworkSender so the
+// same decision applies to both real overlay peers and test doubles.
+func (a *Adaptor) PeerSupportsReplay(peerID uint64) bool {
+	return a.sender.PeerSupportsReplay(peerID)
 }
 
 // GetParentLedgerForReplay returns the validated ledger at seq-1, which is

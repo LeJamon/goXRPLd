@@ -264,8 +264,13 @@ func (p *Peer) performHandshake(ctx context.Context, tlsConn *tls.Conn) error {
 	}
 	resp.Body.Close()
 
+	// Capture the peer's advertised protocol features from the handshake
+	// response headers so downstream code can query e.g. whether this peer
+	// supports ledger-replay before issuing a replay-delta request.
+	caps := NewPeerCapabilities()
+	caps.Features = ParseProtocolCtlFeatures(resp.Header)
 	p.mu.Lock()
-	p.capabilities = NewPeerCapabilities()
+	p.capabilities = caps
 	p.mu.Unlock()
 
 	return nil

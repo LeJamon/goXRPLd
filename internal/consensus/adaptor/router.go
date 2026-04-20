@@ -399,7 +399,7 @@ func (r *Router) startLedgerAcquisition(seq uint32, hash [32]byte, peerID uint64
 	}
 
 	parent := r.adaptor.GetParentLedgerForReplay(seq)
-	if parent != nil {
+	if parent != nil && r.adaptor.PeerSupportsReplay(peerID) {
 		if err := r.startReplayDeltaAcquisition(seq, hash, peerID, parent); err == nil {
 			return
 		}

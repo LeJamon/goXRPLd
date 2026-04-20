@@ -105,6 +105,13 @@ func (s *OverlaySender) RequestLedgerBaseFromPeer(peerID uint64, hash [32]byte, 
 	return s.overlay.Send(peermanagement.PeerID(peerID), frame)
 }
 
+// PeerSupportsReplay reports whether the peer advertised the ledger-replay
+// feature via the X-Protocol-Ctl handshake header. False when the peer is
+// unknown, the handshake hasn't completed, or the peer opted out.
+func (s *OverlaySender) PeerSupportsReplay(peerID uint64) bool {
+	return s.overlay.PeerSupports(peermanagement.PeerID(peerID), peermanagement.FeatureLedgerReplay)
+}
+
 // RequestReplayDelta asks a specific peer for a fast-catchup replay delta
 // (header + every tx blob, in tx-map order) for the given ledger hash.
 // Mirrors rippled's LedgerDeltaAcquire::trigger which sends a
