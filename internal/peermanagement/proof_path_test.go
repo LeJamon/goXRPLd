@@ -1,6 +1,7 @@
 package peermanagement
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -56,14 +57,18 @@ func fixedKey() []byte {
 }
 
 // drainProofPathResponse pulls the first EventLedgerResponse off the
-// channel, decodes its payload as a ProofPathResponse, and returns it.
-// The channel must contain exactly one event: tests fail if it is empty.
+// channel, decodes its wire-framed payload (6-byte header + protobuf
+// body) as a ProofPathResponse, and returns it. The channel must
+// contain exactly one event: tests fail if it is empty.
 func drainProofPathResponse(t *testing.T, events chan Event) *message.ProofPathResponse {
 	t.Helper()
 	require.Equal(t, 1, len(events), "expected exactly one event on the channel")
 	evt := <-events
 	require.Equal(t, EventLedgerResponse, evt.Type)
-	decoded, err := message.Decode(message.TypeProofPathResponse, evt.Payload)
+	header, body, err := message.ReadMessage(bytes.NewReader(evt.Payload))
+	require.NoError(t, err, "event payload must be a valid wire frame")
+	require.Equal(t, message.TypeProofPathResponse, header.MessageType)
+	decoded, err := message.Decode(message.TypeProofPathResponse, body)
 	require.NoError(t, err)
 	resp, ok := decoded.(*message.ProofPathResponse)
 	require.True(t, ok, "decoded payload must be *message.ProofPathResponse")

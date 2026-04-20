@@ -239,15 +239,24 @@ func (h *LedgerSyncHandler) handleGetLedger(ctx context.Context, peerID PeerID, 
 		}
 	}
 
-	// Send response via events channel
+	// Send response via events channel. We ship the fully-framed wire
+	// message (6-byte header + protobuf body) so Overlay.onLedgerResponse
+	// can hand it straight to the peer's send queue without having to
+	// know the message type. Matches the handlePing round-trip in
+	// overlay.go which also writes through BuildWireMessage.
 	if h.events != nil && len(response.Nodes) > 0 {
 		encoded, err := message.Encode(response)
-		if err == nil {
-			h.events <- Event{
-				Type:    EventLedgerResponse,
-				PeerID:  peerID,
-				Payload: encoded,
-			}
+		if err != nil {
+			return nil
+		}
+		frame, err := message.BuildWireMessage(message.TypeLedgerData, encoded)
+		if err != nil {
+			return nil
+		}
+		h.events <- Event{
+			Type:    EventLedgerResponse,
+			PeerID:  peerID,
+			Payload: frame,
 		}
 	}
 
@@ -359,10 +368,16 @@ func (h *LedgerSyncHandler) handleProofPathRequest(_ context.Context, peerID Pee
 	return nil
 }
 
-// sendProofPathResponse encodes the response and best-effort delivers it
-// onto the events channel for the overlay to ship to the requesting peer.
-// Drops the response (with a warn log) if the events channel is full —
-// same non-blocking pattern as sendReplayDeltaResponse.
+// sendProofPathResponse encodes the response, wraps it in the XRPL
+// wire-frame header (6-byte type/size envelope), and best-effort delivers
+// it onto the events channel for the overlay to ship to the requesting
+// peer. Drops the response (with a warn log) if the events channel is
+// full — same non-blocking pattern as sendReplayDeltaResponse.
+//
+// The wire-frame wrap lives here (not in the overlay) so the Event
+// payload is a fully-formed frame that Overlay.onLedgerResponse can
+// hand straight to the peer's send queue. Mirrors the handlePing
+// round-trip in overlay.go, which also writes through BuildWireMessage.
 func (h *LedgerSyncHandler) sendProofPathResponse(peerID PeerID, resp *message.ProofPathResponse) {
 	if h.events == nil {
 		return
@@ -372,11 +387,16 @@ func (h *LedgerSyncHandler) sendProofPathResponse(peerID PeerID, resp *message.P
 		slog.Warn("ProofPath encode failed", "t", "LedgerSync", "peer", peerID, "err", err)
 		return
 	}
+	frame, err := message.BuildWireMessage(message.TypeProofPathResponse, encoded)
+	if err != nil {
+		slog.Warn("ProofPath frame build failed", "t", "LedgerSync", "peer", peerID, "err", err)
+		return
+	}
 	select {
-	case h.events <- Event{Type: EventLedgerResponse, PeerID: peerID, Payload: encoded}:
+	case h.events <- Event{Type: EventLedgerResponse, PeerID: peerID, Payload: frame}:
 	default:
 		slog.Warn("ProofPath response dropped: events channel full",
-			"t", "LedgerSync", "peer", peerID, "bytes", len(encoded))
+			"t", "LedgerSync", "peer", peerID, "bytes", len(frame))
 	}
 }
 
@@ -453,11 +473,19 @@ func (h *LedgerSyncHandler) handleReplayDeltaRequest(_ context.Context, peerID P
 	return nil
 }
 
-// sendReplayDeltaResponse encodes the response and best-effort delivers
+// sendReplayDeltaResponse encodes the response, wraps it in the XRPL
+// wire-frame header (6-byte type/size envelope), and best-effort delivers
 // it onto the events channel for the overlay to ship to the requesting
 // peer. Drops the response (with a warn log) if the events channel is
 // full — same non-blocking pattern as Overlay.onMessageReceived, to keep
 // a slow consumer from deadlocking the message dispatch path.
+//
+// The wire-frame wrap lives here (not in the overlay) so the Event
+// payload is a fully-formed frame that Overlay.onLedgerResponse can
+// hand straight to the peer's send queue. Without the wire header the
+// peer on the other end parses the first 6 protobuf bytes as a garbage
+// frame header and stalls reading the phantom payload — the regression
+// this commit fixes.
 func (h *LedgerSyncHandler) sendReplayDeltaResponse(peerID PeerID, resp *message.ReplayDeltaResponse) {
 	if h.events == nil {
 		return
@@ -467,11 +495,16 @@ func (h *LedgerSyncHandler) sendReplayDeltaResponse(peerID PeerID, resp *message
 		slog.Warn("ReplayDelta encode failed", "t", "LedgerSync", "peer", peerID, "err", err)
 		return
 	}
+	frame, err := message.BuildWireMessage(message.TypeReplayDeltaResponse, encoded)
+	if err != nil {
+		slog.Warn("ReplayDelta frame build failed", "t", "LedgerSync", "peer", peerID, "err", err)
+		return
+	}
 	select {
-	case h.events <- Event{Type: EventLedgerResponse, PeerID: peerID, Payload: encoded}:
+	case h.events <- Event{Type: EventLedgerResponse, PeerID: peerID, Payload: frame}:
 	default:
 		slog.Warn("ReplayDelta response dropped: events channel full",
-			"t", "LedgerSync", "peer", peerID, "bytes", len(encoded))
+			"t", "LedgerSync", "peer", peerID, "bytes", len(frame))
 	}
 }
 

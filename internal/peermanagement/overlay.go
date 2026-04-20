@@ -558,6 +558,13 @@ func (o *Overlay) onEndpointsReceived(evt Event) {
 	}
 }
 
+// onLedgerResponse ships an already-wire-framed ledger-sync response
+// (produced by LedgerSyncHandler.send*Response) to the requesting peer.
+// The payload MUST be a full wire frame (6-byte header + protobuf body)
+// — see sendReplayDeltaResponse for the contract. Shipping a bare
+// protobuf here caused B to parse the first 6 body bytes as a garbage
+// wire header and stall for the phantom payload, which was the
+// post-handshake I/O regression fixed alongside this comment.
 func (o *Overlay) onLedgerResponse(evt Event) {
 	o.Send(evt.PeerID, evt.Payload)
 }

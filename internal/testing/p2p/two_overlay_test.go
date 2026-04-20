@@ -7,6 +7,7 @@
 package p2p
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/LeJamon/goXRPLd/codec/binarycodec"
 	"github.com/LeJamon/goXRPLd/crypto/common"
 	"github.com/LeJamon/goXRPLd/drops"
+	"github.com/LeJamon/goXRPLd/internal/consensus/adaptor"
 	"github.com/LeJamon/goXRPLd/internal/ledger"
 	"github.com/LeJamon/goXRPLd/internal/ledger/genesis"
 	"github.com/LeJamon/goXRPLd/internal/ledger/header"
@@ -207,12 +209,6 @@ func waitForPeers(t *testing.T, a, b *peermanagement.Overlay, timeout time.Durat
 // can complete the XRPL TLS+HTTP handshake against each other on
 // localhost. This is the canary that confirms the transport stack
 // (TLS 1.2 + HTTP upgrade + shared-value derivation) works end-to-end.
-//
-// Per-message wire round-trips are covered by
-// TestSingleOverlay_ReplayDelta_HandlerRoundTrip below, which exercises
-// the full request → handler → provider → response path in-process so
-// the test doesn't depend on the bufio/TLS interaction that can stall
-// small-packet readLoop reads in the back-to-back loopback case.
 func TestTwoOverlay_HandshakeAndConnect(t *testing.T) {
 	if testing.Short() {
 		t.Skip("two-overlay handshake is heavyweight; skipped in -short mode")
@@ -236,6 +232,183 @@ func TestTwoOverlay_HandshakeAndConnect(t *testing.T) {
 	require.Len(t, infosB, 1, "B must see exactly one outbound peer")
 	assert.True(t, infosA[0].Inbound, "A's view of B must be inbound")
 	assert.False(t, infosB[0].Inbound, "B's view of A must be outbound")
+}
+
+// TestTwoOverlay_PostHandshakeSendReceive verifies that after the XRPL
+// TLS+HTTP handshake completes between two real Overlay instances, an
+// application-layer wire frame sent by one side is observed by the
+// other side's readLoop. This is the minimal smoke test for peer-to-peer
+// I/O after handshake. The heavier-framing regression test — which
+// caught the missing wire-header bug on the ledger-sync reply path —
+// is TestTwoOverlay_ReplayDelta_RoundTrip below.
+func TestTwoOverlay_PostHandshakeSendReceive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("two-overlay send/receive is heavyweight; skipped in -short mode")
+	}
+
+	a, cancelA := startOverlay(t)
+	defer cancelA()
+	defer a.Stop()
+
+	b, cancelB := startOverlay(t)
+	defer cancelB()
+	defer b.Stop()
+
+	require.NoError(t, b.Connect(a.ListenAddr()),
+		"two overlays must complete the XRPL TLS+HTTP handshake")
+	waitForPeers(t, a, b, 5*time.Second)
+
+	// Find the peer-id of B as seen by A (the inbound peer on A). We
+	// send from A -> B (A initiates the send, B's readLoop must
+	// surface it on Messages()).
+	infosA := a.Peers()
+	require.Len(t, infosA, 1)
+	targetPeerID := infosA[0].ID
+
+	// Build a minimal Ping frame. Ping is the smallest valid wire
+	// frame and is treated as ordinary application traffic at the
+	// framing layer.
+	ping := &message.Ping{PType: message.PingTypePing, Seq: 0xDEADBEEF}
+	encoded, err := message.Encode(ping)
+	require.NoError(t, err)
+	frame, err := message.BuildWireMessage(message.TypePing, encoded)
+	require.NoError(t, err)
+
+	require.NoError(t, a.Send(targetPeerID, frame),
+		"A.Send must enqueue the frame to B")
+
+	// Wait for B's inbound traffic counter to tick, which proves
+	// B's readLoop actually parsed a frame off the wire. (B's overlay
+	// intercepts mtPING internally and does not forward it to the
+	// external Messages() channel, so we can't wait on Messages()
+	// alone for the simplest possible frame.)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, info := range b.Peers() {
+			if info.MessagesIn > 0 {
+				return // success: a frame crossed the wire and was decoded
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Diagnostic dump: enumerate both sides' peer state so the
+	// failure message tells us whether the bytes left A's writeLoop
+	// or never reached B's readLoop.
+	var diag string
+	for _, info := range a.Peers() {
+		diag += "  A.peer: id=" + formatPeerID(info.ID) +
+			" state=" + info.State.String() +
+			" in=" + formatUint(info.MessagesIn) +
+			" out=" + formatUint(info.MessagesOut) + "\n"
+	}
+	for _, info := range b.Peers() {
+		diag += "  B.peer: id=" + formatPeerID(info.ID) +
+			" state=" + info.State.String() +
+			" in=" + formatUint(info.MessagesIn) +
+			" out=" + formatUint(info.MessagesOut) + "\n"
+	}
+	t.Fatalf("B never observed the PING frame A sent after handshake\n%s", diag)
+}
+
+func formatPeerID(id peermanagement.PeerID) string { return formatUint(uint64(id)) }
+
+// TestTwoOverlay_ReplayDelta_RoundTrip drives a full wire round-trip of
+// mtREPLAY_DELTA_REQUEST → mtREPLAY_DELTA_RESPONSE between two real
+// Overlay instances. This covers: A holds an immutable ledger via a
+// real LedgerProvider; B asks A for it; A's ledger-sync handler
+// answers; B's consensus router verifies the response and adopts the
+// derived ledger.
+//
+// This test can only pass if the overlay transport actually delivers
+// non-trivial frames end-to-end after handshake. It is the regression
+// test for the missing-wire-header bug on LedgerSyncHandler's reply
+// path: sendReplayDeltaResponse used to ship bare protobuf bytes onto
+// the events channel, which Overlay.onLedgerResponse handed straight
+// to peer.Send — leaving the receiver to parse the first 6 protobuf
+// bytes as a garbage frame header and stall forever on the phantom
+// payload. See sendReplayDeltaResponse in ledgersync.go.
+func TestTwoOverlay_ReplayDelta_RoundTrip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("two-overlay replay-delta is heavyweight; skipped in -short mode")
+	}
+
+	parent, child := makeImmutableLedger(t, 3)
+	lookup := &inMemoryLookup{byHash: map[[32]byte]*ledger.Ledger{
+		parent.Hash(): parent,
+		child.Hash():  child,
+	}}
+
+	a, cancelA := startOverlay(t)
+	defer cancelA()
+	defer a.Stop()
+
+	b, cancelB := startOverlay(t)
+	defer cancelB()
+	defer b.Stop()
+
+	// Wire the provider onto A's ledger-sync handler so A can answer
+	// replay-delta requests from a real on-the-wire peer.
+	a.LedgerSync().SetProvider(&lookupProvider{lookup: lookup})
+
+	require.NoError(t, b.Connect(a.ListenAddr()),
+		"two overlays must complete the XRPL TLS+HTTP handshake")
+	waitForPeers(t, a, b, 5*time.Second)
+
+	// B's view of A (outbound peer on B).
+	infosB := b.Peers()
+	require.Len(t, infosB, 1)
+	peerAOnB := infosB[0].ID
+
+	// B sends the replay-delta request to A over the wire.
+	sender := adaptor.NewOverlaySender(b)
+	hash := child.Hash()
+	require.NoError(t, sender.RequestReplayDelta(uint64(peerAOnB), hash),
+		"B must be able to send a replay-delta request to A")
+
+	// The response is delivered to B via its Messages() channel.
+	var resp *message.ReplayDeltaResponse
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+
+Loop:
+	for {
+		select {
+		case msg := <-b.Messages():
+			if message.MessageType(msg.Type) != message.TypeReplayDeltaResponse {
+				continue
+			}
+			decoded, err := message.Decode(message.TypeReplayDeltaResponse, msg.Payload)
+			require.NoError(t, err)
+			resp = decoded.(*message.ReplayDeltaResponse)
+			break Loop
+		case <-timer.C:
+			t.Fatal("B never received the replay-delta response from A over the wire")
+		}
+	}
+
+	// Verify the round-tripped response reconstructs the exact ledger.
+	rd := inbound.NewReplayDelta(hash, uint64(peerAOnB), parent, nil)
+	require.NoError(t, rd.GotResponse(resp))
+	got, err := rd.Result()
+	require.NoError(t, err)
+	assert.Equal(t, child.Hash(), got.Hash(),
+		"the derived ledger hash must byte-match A's source ledger")
+	assert.Equal(t, child.Sequence(), got.Sequence())
+}
+
+func formatUint(v uint64) string {
+	if v == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	i := len(buf)
+	for v > 0 {
+		i--
+		buf[i] = byte('0' + v%10)
+		v /= 10
+	}
+	return string(buf[i:])
 }
 
 // TestSingleOverlay_ReplayDelta_HandlerRoundTrip drives the request →
@@ -277,7 +450,14 @@ func TestSingleOverlay_ReplayDelta_HandlerRoundTrip(t *testing.T) {
 	select {
 	case evt := <-events:
 		require.Equal(t, peermanagement.EventLedgerResponse, evt.Type)
-		decoded, err := message.Decode(message.TypeReplayDeltaResponse, evt.Payload)
+		// The handler now wire-frames its responses (6-byte header +
+		// protobuf body) so the overlay's onLedgerResponse can hand the
+		// payload straight to the peer's send queue without needing to
+		// know the message type. See LedgerSyncHandler.sendReplayDeltaResponse.
+		hdr, body, err := message.ReadMessage(bytes.NewReader(evt.Payload))
+		require.NoError(t, err, "event payload must be a valid wire frame")
+		require.Equal(t, message.TypeReplayDeltaResponse, hdr.MessageType)
+		decoded, err := message.Decode(message.TypeReplayDeltaResponse, body)
 		require.NoError(t, err)
 		resp = decoded.(*message.ReplayDeltaResponse)
 	case <-time.After(2 * time.Second):

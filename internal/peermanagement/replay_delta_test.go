@@ -1,6 +1,7 @@
 package peermanagement
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -48,9 +49,10 @@ func fixedHash() []byte {
 }
 
 // drainReplayDeltaResponse pulls the first EventLedgerResponse off the
-// channel, decodes its payload as a ReplayDeltaResponse, and returns it.
-// Uses select+default rather than a len() snapshot so a not-yet-emitted
-// event surfaces as a test failure deterministically.
+// channel, decodes its wire-framed payload (6-byte header + protobuf
+// body) as a ReplayDeltaResponse, and returns it. Uses select+default
+// rather than a len() snapshot so a not-yet-emitted event surfaces as
+// a test failure deterministically.
 func drainReplayDeltaResponse(t *testing.T, events chan Event) *message.ReplayDeltaResponse {
 	t.Helper()
 	var evt Event
@@ -60,7 +62,10 @@ func drainReplayDeltaResponse(t *testing.T, events chan Event) *message.ReplayDe
 		t.Fatal("expected an event on the channel, got none")
 	}
 	require.Equal(t, EventLedgerResponse, evt.Type)
-	decoded, err := message.Decode(message.TypeReplayDeltaResponse, evt.Payload)
+	header, body, err := message.ReadMessage(bytes.NewReader(evt.Payload))
+	require.NoError(t, err, "event payload must be a valid wire frame")
+	require.Equal(t, message.TypeReplayDeltaResponse, header.MessageType)
+	decoded, err := message.Decode(message.TypeReplayDeltaResponse, body)
 	require.NoError(t, err)
 	resp, ok := decoded.(*message.ReplayDeltaResponse)
 	require.True(t, ok, "decoded payload must be *message.ReplayDeltaResponse")
