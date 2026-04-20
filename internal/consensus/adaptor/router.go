@@ -605,19 +605,26 @@ func (r *Router) adoptVerifiedLedger(l *ledger.Ledger) error {
 	return nil
 }
 
-// checkBehind compares the peer's ledger seq to ours and handles
-// catch-up. When we're within 1 ledger of the peer and not yet in Full
-// mode, transitions to Full to start consensus. When we're behind by
-// more than 1 seq, arms an acquisition for the peer's tip.
+// checkBehind decides what to do based on how far behind a peer
+// reports. Two outcomes:
 //
-// Scope note (Gap 7): fires acquisition for only the single
-// peer-advertised tip. A true range-based walk would fan out across
-// every missing seq between ourLCL+1 and peerSeq via header.ParentHash
-// (mirroring rippled's LedgerReplayer backward chain). The Replayer
-// coordinator supports concurrent in-flight acquisitions, so the
-// backward-walk policy is a follow-up; this function handles the
-// common one-step-behind case and chains forward as new status changes
-// arrive.
+//   - peerSeq <= ourSeq+1: we're caught up. If still in Tracking and
+//     our LCL hash matches peers' majority, transition to Full.
+//     Otherwise stay in Tracking — the hash-mismatch branch in
+//     handleStatusChange will have already fired the right acquisition.
+//   - peerSeq > ourSeq+1: we're behind by more than one ledger. Arm a
+//     single acquisition for the peer's tip. Subsequent status changes
+//     from peers will chain more acquisitions forward as we adopt each
+//     ledger and ourSeq advances.
+//
+// Only one acquisition fires per call. A faster "range walk" that
+// issues concurrent requests for every seq between ourLCL+1 and
+// peerSeq would need the intermediate ledger hashes, which we don't
+// know until each acquired header reveals its ParentHash. Rippled's
+// LedgerReplayer does that backward chain; we rely on forward status
+// gossip instead. Replayer already supports concurrent in-flight
+// acquisitions, so switching to backward-walk later is a localized
+// change in this function.
 func (r *Router) checkBehind(peerSeq uint32, peerHash [32]byte, peerID uint64) {
 	svc := r.adaptor.LedgerService()
 	if svc == nil {

@@ -180,7 +180,16 @@ func (e *Engine) startRoundLocked(round consensus.RoundID, proposing bool) error
 	e.ourTxSet = nil
 	e.haveCloseTimeConsensus = false
 	e.closeTimeAvalancheState = avalancheInit
-	e.roundStartTime = e.adaptor.Now()
+	// Internal duration metric — use the wall clock. Do NOT use
+	// adaptor.Now() here: adaptor.Now returns time.Now().Add(closeOffset),
+	// where closeOffset drifts as AdjustCloseTime pulls us toward the
+	// network's average close time. The consumers of roundStartTime
+	// measure elapsed wall time via time.Since (prevRoundTime,
+	// phaseEstablish timeout, convergePercent weighting). Mixing
+	// offset-adjusted captures with wall-clock-subtracted reads
+	// produces -closeOffset as the measured duration — exactly the
+	// negative-converge-time artifact visible in server_info.last_close.
+	e.roundStartTime = time.Now()
 
 	// Set phase
 	e.setPhase(consensus.PhaseOpen)
