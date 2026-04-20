@@ -112,6 +112,15 @@ func (s *OverlaySender) PeerSupportsReplay(peerID uint64) bool {
 	return s.overlay.PeerSupports(peermanagement.PeerID(peerID), peermanagement.FeatureLedgerReplay)
 }
 
+// IncPeerBadData forwards to Overlay.IncPeerBadData. Called by the
+// consensus router via Adaptor.IncPeerBadData when it detects malformed
+// or invalid data from a peer (e.g., replay-delta verification
+// failures, ledger-data hash/root mismatches). Safe no-op for unknown
+// peers.
+func (s *OverlaySender) IncPeerBadData(peerID uint64, reason string) {
+	s.overlay.IncPeerBadData(peermanagement.PeerID(peerID), reason)
+}
+
 // RequestReplayDelta asks a specific peer for a fast-catchup replay delta
 // (header + every tx blob, in tx-map order) for the given ledger hash.
 // Mirrors rippled's LedgerDeltaAcquire::trigger which sends a

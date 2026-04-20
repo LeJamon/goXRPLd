@@ -116,7 +116,8 @@ func TestReplayDeltaRequest_BadHashLength(t *testing.T) {
 
 	short := []byte{0x01, 0x02, 0x03}
 	err := h.HandleMessage(context.Background(), PeerID(1), &message.ReplayDeltaRequest{LedgerHash: short})
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrPeerBadRequest,
+		"malformed ledger hash must be signaled as ErrPeerBadRequest so the dispatcher can charge the peer")
 
 	resp := drainReplayDeltaResponse(t, events)
 	assert.Equal(t, message.ReplyErrorBadRequest, resp.Error)

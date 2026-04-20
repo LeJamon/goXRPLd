@@ -470,6 +470,7 @@ func (r *Router) handleReplayDeltaResponse(msg *peermanagement.InboundMessage) {
 	decoded, err := message.Decode(message.TypeReplayDeltaResponse, msg.Payload)
 	if err != nil {
 		r.logger.Debug("failed to decode replay delta response", "error", err, "peer", msg.PeerID)
+		r.adaptor.IncPeerBadData(uint64(msg.PeerID), "replay-delta-resp-decode")
 		return
 	}
 	resp, ok := decoded.(*message.ReplayDeltaResponse)
@@ -505,6 +506,7 @@ func (r *Router) handleReplayDeltaResponse(msg *peermanagement.InboundMessage) {
 			"peer", peerID,
 			"error", err,
 		)
+		r.adaptor.IncPeerBadData(peerID, "replay-delta-verify")
 		r.startLedgerAcquisitionLegacy(seq, hash, peerID)
 		return
 	}
@@ -530,6 +532,7 @@ func (r *Router) handleReplayDeltaResponse(msg *peermanagement.InboundMessage) {
 			"peer", peerID,
 			"error", err,
 		)
+		r.adaptor.IncPeerBadData(peerID, "replay-delta-apply")
 		r.startLedgerAcquisitionLegacy(seq, hash, peerID)
 		return
 	}
@@ -654,6 +657,7 @@ func (r *Router) handleLedgerData(msg *peermanagement.InboundMessage) {
 	decoded, err := message.Decode(message.TypeLedgerData, msg.Payload)
 	if err != nil {
 		r.logger.Warn("failed to decode ledger_data", "error", err, "peer", msg.PeerID)
+		r.adaptor.IncPeerBadData(uint64(msg.PeerID), "ledger-data-decode")
 		return
 	}
 	ld, ok := decoded.(*message.LedgerData)
@@ -738,6 +742,7 @@ func (r *Router) handleInboundLedgerData(ld *message.LedgerData) bool {
 		}
 		if err := il.GotBase(ld.Nodes); err != nil {
 			r.logger.Warn("inbound ledger: GotBase failed, falling back", "error", err)
+			r.adaptor.IncPeerBadData(il.PeerID(), "ledger-data-base")
 			r.inboundLedger = nil
 			return false
 		}
@@ -760,6 +765,7 @@ func (r *Router) handleInboundLedgerData(ld *message.LedgerData) bool {
 		// Phase 2: Got state tree nodes
 		if err := il.GotStateNodes(ld.Nodes); err != nil {
 			r.logger.Warn("inbound ledger: GotStateNodes failed", "error", err)
+			r.adaptor.IncPeerBadData(il.PeerID(), "ledger-data-state")
 			return true
 		}
 

@@ -25,6 +25,13 @@ var (
 	// no leaf in the selected map. The handler responds with
 	// ReplyErrorNoNode.
 	ErrKeyNotFound = errors.New("key not found in ledger map")
+	// ErrPeerBadRequest is returned by LedgerSyncHandler.HandleMessage
+	// when the inbound request was malformed (e.g. bad field lengths,
+	// invalid enum values) and we replied with ReplyErrorBadRequest. The
+	// overlay dispatcher uses it to attribute the failure to the
+	// originating peer via IncPeerBadData. Mirrors rippled's
+	// fee.update(feeInvalidData) path for reBAD_REQUEST replies.
+	ErrPeerBadRequest = errors.New("peer sent bad request")
 )
 
 // LedgerDataType represents the type of ledger data being requested.
@@ -309,7 +316,7 @@ func (h *LedgerSyncHandler) handleProofPathRequest(_ context.Context, peerID Pee
 			MapType:    req.MapType,
 			Error:      message.ReplyErrorBadRequest,
 		})
-		return nil
+		return ErrPeerBadRequest
 	}
 
 	h.mu.RLock()
@@ -349,6 +356,9 @@ func (h *LedgerSyncHandler) handleProofPathRequest(_ context.Context, peerID Pee
 			"peer", peerID,
 			"err", err,
 		)
+		// Provider returned an unexpected error; we reply with
+		// reBAD_REQUEST but the fault is ours, not the peer's, so do
+		// not signal ErrPeerBadRequest here.
 		h.sendProofPathResponse(peerID, &message.ProofPathResponse{
 			Key:        req.Key,
 			LedgerHash: req.LedgerHash,
@@ -425,7 +435,7 @@ func (h *LedgerSyncHandler) handleReplayDeltaRequest(_ context.Context, peerID P
 			LedgerHash: req.LedgerHash,
 			Error:      message.ReplyErrorBadRequest,
 		})
-		return nil
+		return ErrPeerBadRequest
 	}
 
 	h.mu.RLock()

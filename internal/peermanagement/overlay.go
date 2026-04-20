@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -15,6 +16,15 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/peermanagement/message"
 	"golang.org/x/sync/errgroup"
 )
+
+// EvictBadDataThreshold is the cumulative invalid-data count at which
+// the overlay disconnects a peer. Rippled uses a fee-based sliding
+// window driven by feeInvalidData and the node's load balance; we use a
+// hard count because we don't have the surrounding fee/load model. 16
+// tolerates transient protocol hiccups (e.g., a few malformed
+// compression frames from a flaky peer) while promptly evicting
+// sustained offenders.
+const EvictBadDataThreshold = 16
 
 // Overlay is the central orchestrator for XRPL peer-to-peer networking.
 // It manages peer connections, discovery, message routing, and the reduce-relay system.
@@ -48,6 +58,28 @@ type Overlay struct {
 // higher layer (e.g., consensus startup) can wire a LedgerProvider that
 // imports internal/ledger packages — which this layer cannot.
 func (o *Overlay) LedgerSync() *LedgerSyncHandler { return o.ledgerSync }
+
+// IncPeerBadData records an invalid-data event attributed to the peer
+// with the given PeerID. Returns the new cumulative count, or 0 when
+// the peer is unknown (gracefully no-ops). Exposed so higher layers
+// that can't import *Peer directly — e.g., the consensus router, which
+// only sees PeerID via InboundMessage — can still charge a peer for
+// malformed/invalid payloads. `reason` is a short stable label for
+// diagnostic logging; it's forwarded to Peer.IncBadData.
+//
+// Use this as the single surface for higher-layer charge-backs: the
+// peermanagement package already increments inline for events it
+// detects itself (e.g., AddSquelch) so callers outside this package
+// only need to cover the cases they detect themselves.
+func (o *Overlay) IncPeerBadData(peerID PeerID, reason string) uint32 {
+	o.peersMu.RLock()
+	peer, ok := o.peers[peerID]
+	o.peersMu.RUnlock()
+	if !ok {
+		return 0
+	}
+	return peer.IncBadData(reason)
+}
 
 // PeerSupports reports whether the peer identified by peerID has
 // advertised support for the given protocol feature via its handshake
@@ -488,6 +520,7 @@ func (o *Overlay) dispatchReplayDeltaRequest(evt Event) {
 	decoded, err := message.Decode(message.TypeReplayDeltaReq, evt.Payload)
 	if err != nil {
 		slog.Debug("ReplayDeltaRequest decode failed", "t", "Overlay", "peer", evt.PeerID, "err", err)
+		o.IncPeerBadData(evt.PeerID, "replay-delta-req-decode")
 		return
 	}
 	req, ok := decoded.(*message.ReplayDeltaRequest)
@@ -496,6 +529,9 @@ func (o *Overlay) dispatchReplayDeltaRequest(evt Event) {
 	}
 	if err := o.ledgerSync.HandleMessage(o.ctx, evt.PeerID, req); err != nil {
 		slog.Debug("ReplayDeltaRequest handler error", "t", "Overlay", "peer", evt.PeerID, "err", err)
+		if errors.Is(err, ErrPeerBadRequest) {
+			o.IncPeerBadData(evt.PeerID, "replay-delta-req-bad")
+		}
 	}
 }
 
@@ -510,6 +546,7 @@ func (o *Overlay) dispatchProofPathRequest(evt Event) {
 	decoded, err := message.Decode(message.TypeProofPathReq, evt.Payload)
 	if err != nil {
 		slog.Debug("ProofPathRequest decode failed", "t", "Overlay", "peer", evt.PeerID, "err", err)
+		o.IncPeerBadData(evt.PeerID, "proof-path-req-decode")
 		return
 	}
 	req, ok := decoded.(*message.ProofPathRequest)
@@ -518,6 +555,9 @@ func (o *Overlay) dispatchProofPathRequest(evt Event) {
 	}
 	if err := o.ledgerSync.HandleMessage(o.ctx, evt.PeerID, req); err != nil {
 		slog.Debug("ProofPathRequest handler error", "t", "Overlay", "peer", evt.PeerID, "err", err)
+		if errors.Is(err, ErrPeerBadRequest) {
+			o.IncPeerBadData(evt.PeerID, "proof-path-req-bad")
+		}
 	}
 }
 
@@ -661,6 +701,50 @@ func (o *Overlay) maintenanceLoop(ctx context.Context) error {
 func (o *Overlay) performMaintenance() {
 	// Cleanup expired ledger requests
 	o.ledgerSync.CleanupExpiredRequests()
+	// Evict peers that have accumulated enough bad-data events to cross
+	// the threshold. Runs here (not inline in IncBadData) so the
+	// disconnect happens off any hot receive path and so a single tick
+	// can evict multiple offenders found since the last pass.
+	o.evictBadDataPeers()
+}
+
+// evictBadDataPeers disconnects peers whose cumulative invalid-data
+// count has reached EvictBadDataThreshold. Mirrors rippled's behavior
+// of dropping peers that have been charged enough feeInvalidData to
+// exhaust their balance. Must be safe to call with the peer map locked
+// for read only — we collect offenders under RLock, then disconnect
+// them after releasing the lock to avoid holding it across Close().
+func (o *Overlay) evictBadDataPeers() {
+	type offender struct {
+		id    PeerID
+		peer  *Peer
+		count uint32
+	}
+	var toEvict []offender
+
+	o.peersMu.RLock()
+	for id, peer := range o.peers {
+		if n := peer.BadDataCount(); n >= EvictBadDataThreshold {
+			toEvict = append(toEvict, offender{id: id, peer: peer, count: n})
+		}
+	}
+	o.peersMu.RUnlock()
+
+	for _, off := range toEvict {
+		slog.Info("Evicting peer for bad data",
+			"t", "Overlay",
+			"peer", off.id,
+			"count", off.count,
+			"threshold", EvictBadDataThreshold,
+			"endpoint", off.peer.Endpoint().String(),
+		)
+		// Close first so the peer's run goroutine exits and its
+		// removePeer callback fires; defensively remove here too so a
+		// caller-driven test path (no running goroutine) still sees the
+		// peer gone after this function returns.
+		off.peer.Close()
+		o.removePeer(off.id)
+	}
 }
 
 // handleSquelch is called by the relay system when a peer should be squelched

@@ -208,7 +208,10 @@ func TestBroadcastFromValidator_SkipsSquelchedPeers(t *testing.T) {
 
 // TestPeerAddSquelch_RejectsInvalidDuration verifies that AddSquelch
 // rejects out-of-range durations and clears any prior squelch (matching
-// rippled Squelch::addSquelch semantics).
+// rippled Squelch::addSquelch semantics). Also verifies that each
+// rejection records a bad-data event against the peer — the rejection
+// is the moment we know the remote peer sent protocol-invalid data, so
+// it is the natural (and only) place to attribute it.
 func TestPeerAddSquelch_RejectsInvalidDuration(t *testing.T) {
 	id, err := NewIdentity()
 	require.NoError(t, err)
@@ -219,8 +222,10 @@ func TestPeerAddSquelch_RejectsInvalidDuration(t *testing.T) {
 
 	validator := []byte("V2")
 
-	// Set a valid squelch first.
+	// Set a valid squelch first — no bad-data expected for the happy path.
 	require.True(t, peer.AddSquelch(validator, MinUnsquelchExpire))
+	require.Equal(t, uint32(0), peer.BadDataCount(),
+		"valid AddSquelch must not record a bad-data event")
 
 	// Now try a too-short duration: must return false and remove the entry.
 	tooShort := MinUnsquelchExpire - time.Second
@@ -230,8 +235,14 @@ func TestPeerAddSquelch_RejectsInvalidDuration(t *testing.T) {
 	assert.True(t, peer.ExpireSquelch(validator),
 		"prior squelch should have been cleared by the rejected AddSquelch")
 
+	assert.Equal(t, uint32(1), peer.BadDataCount(),
+		"rejected too-short duration must record exactly one bad-data event")
+
 	// Try a too-long duration.
 	tooLong := MaxUnsquelchExpirePeers + time.Second
 	assert.False(t, peer.AddSquelch(validator, tooLong),
 		"duration above MaxUnsquelchExpirePeers must be rejected")
+
+	assert.Equal(t, uint32(2), peer.BadDataCount(),
+		"rejected too-long duration must record a second bad-data event")
 }

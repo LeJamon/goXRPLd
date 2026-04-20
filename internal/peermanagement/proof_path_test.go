@@ -140,7 +140,8 @@ func TestProofPathRequest_BadKeyLength(t *testing.T) {
 		LedgerHash: hash,
 		MapType:    message.LedgerMapTransaction,
 	})
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrPeerBadRequest,
+		"malformed request must be signaled as ErrPeerBadRequest so the dispatcher can charge the peer")
 
 	resp := drainProofPathResponse(t, events)
 	assert.Equal(t, message.ReplyErrorBadRequest, resp.Error)
@@ -171,7 +172,8 @@ func TestProofPathRequest_BadHashLength(t *testing.T) {
 		LedgerHash: shortHash,
 		MapType:    message.LedgerMapAccountState,
 	})
-	require.NoError(t, err)
+	require.ErrorIs(t, err, ErrPeerBadRequest,
+		"malformed ledger hash must be signaled as ErrPeerBadRequest")
 
 	resp := drainProofPathResponse(t, events)
 	assert.Equal(t, message.ReplyErrorBadRequest, resp.Error)
@@ -205,7 +207,8 @@ func TestProofPathRequest_BadType(t *testing.T) {
 				LedgerHash: hash,
 				MapType:    badType,
 			})
-			require.NoError(t, err)
+			require.ErrorIs(t, err, ErrPeerBadRequest,
+				"invalid map type must be signaled as ErrPeerBadRequest")
 
 			resp := drainProofPathResponse(t, events)
 			assert.Equal(t, message.ReplyErrorBadRequest, resp.Error)

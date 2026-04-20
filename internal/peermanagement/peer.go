@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"sync"
@@ -74,6 +75,13 @@ type Peer struct {
 	createdAt time.Time
 	closeCh   chan struct{}
 	closed    atomic.Bool
+
+	// badData is a monotonic counter of invalid-data events attributed to
+	// this peer (malformed responses, failed verifications, out-of-range
+	// protocol values, etc.). Mirrors rippled's fee.update(feeInvalidData)
+	// accumulator at a coarser granularity. Incremented via IncBadData and
+	// read by the maintenance loop for eviction decisions.
+	badData atomic.Uint32
 }
 
 // PeerConfig holds peer connection configuration.
@@ -413,9 +421,16 @@ func (p *Peer) pingLoop(ctx context.Context) error {
 // given validator. Mirrors rippled's `Squelch::addSquelch`: returns false
 // (and removes any prior squelch) when duration is outside the allowed
 // [MinUnsquelchExpire, MaxUnsquelchExpirePeers] range.
+//
+// An out-of-range duration is treated as a bad-data event attributed to
+// the peer — rippled's equivalent path charges feeInvalidData. We keep
+// the increment here (the only place the duration is checked) so callers
+// in the overlay message layer don't need a separate "did we reject it"
+// branch and so the counter can never miss a rejection.
 func (p *Peer) AddSquelch(validator []byte, duration time.Duration) bool {
 	if duration < MinUnsquelchExpire || duration > MaxUnsquelchExpirePeers {
 		p.RemoveSquelch(validator)
+		p.IncBadData("squelch-duration")
 		return false
 	}
 	p.squelchMu.Lock()
@@ -423,6 +438,23 @@ func (p *Peer) AddSquelch(validator []byte, duration time.Duration) bool {
 	p.squelchMu.Unlock()
 	return true
 }
+
+// IncBadData records an invalid-data event attributed to this peer and
+// returns the new cumulative count. `reason` is a short stable label
+// used for diagnostic logging (e.g., "replay-delta-verify",
+// "squelch-duration", "ledger-data-hash").
+func (p *Peer) IncBadData(reason string) uint32 {
+	n := p.badData.Add(1)
+	slog.Debug("peer bad data",
+		"t", "Peer", "peer", p.id, "reason", reason, "count", n,
+		"endpoint", p.endpoint.String(),
+	)
+	return n
+}
+
+// BadDataCount returns the cumulative invalid-data count for this peer.
+// Thread-safe.
+func (p *Peer) BadDataCount() uint32 { return p.badData.Load() }
 
 // RemoveSquelch deletes any squelch entry for the given validator.
 // Mirrors rippled's `Squelch::removeSquelch`.

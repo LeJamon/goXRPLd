@@ -43,6 +43,12 @@ type NetworkSender interface {
 	// that would silently drop them. Returns false conservatively when
 	// the peer is unknown or the handshake has not completed.
 	PeerSupportsReplay(peerID uint64) bool
+	// IncPeerBadData attributes a malformed/invalid-data event to the
+	// peer so the overlay can charge it toward the eviction threshold.
+	// Called by the consensus router when verification of a peer-sent
+	// response (replay delta, ledger data, etc.) fails. Safe no-op for
+	// unknown peers. `reason` is a short stable label for logs.
+	IncPeerBadData(peerID uint64, reason string)
 }
 
 // noopSender is a no-op NetworkSender for standalone or test use.
@@ -60,6 +66,7 @@ func (n *noopSender) RequestReplayDelta(uint64, [32]byte) error                {
 func (n *noopSender) RequestStateNodes(uint64, [32]byte, [][]byte) error       { return nil }
 func (n *noopSender) SendToPeer(uint64, []byte) error                          { return nil }
 func (n *noopSender) PeerSupportsReplay(uint64) bool                           { return false }
+func (n *noopSender) IncPeerBadData(uint64, string)                            {}
 
 // Compile-time interface check.
 var _ consensus.Adaptor = (*Adaptor)(nil)
@@ -197,6 +204,15 @@ func (a *Adaptor) EngineConfigForReplay(parent *ledger.Ledger) tx.EngineConfig {
 // same decision applies to both real overlay peers and test doubles.
 func (a *Adaptor) PeerSupportsReplay(peerID uint64) bool {
 	return a.sender.PeerSupportsReplay(peerID)
+}
+
+// IncPeerBadData attributes an invalid-data event to the peer via the
+// underlying network sender so the overlay can charge it toward the
+// eviction threshold. See NetworkSender.IncPeerBadData. Kept as a
+// thin delegator so Router can call through the adaptor rather than
+// reaching into the overlay directly.
+func (a *Adaptor) IncPeerBadData(peerID uint64, reason string) {
+	a.sender.IncPeerBadData(peerID, reason)
 }
 
 // GetParentLedgerForReplay returns the validated ledger at seq-1, which is
