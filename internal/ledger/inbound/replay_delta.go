@@ -72,11 +72,12 @@ type ReplayDelta struct {
 	created time.Time
 	logger  *slog.Logger
 
-	mu     sync.Mutex
-	state  State
-	err    error
-	result *ledger.Ledger
-	txs    []DecodedTx
+	mu      sync.Mutex
+	state   State
+	err     error
+	result  *ledger.Ledger // pre-apply: parent state carried through
+	derived *ledger.Ledger // post-apply: state map re-derived by the engine
+	txs     []DecodedTx
 }
 
 // NewReplayDelta creates a ReplayDelta acquisition for the ledger
@@ -152,11 +153,21 @@ func (r *ReplayDelta) IsTimedOut() bool {
 
 // Result returns the ledger reconstructed from the verified delta. Only
 // valid after IsComplete() returns true.
+//
+// If Apply has been called successfully, Result returns the DERIVED ledger
+// (verified header + verified tx map + engine-derived state map). Otherwise
+// it returns the ledger with the parent's state map unchanged — safe for
+// inspection but NOT safe to feed to consensus without running Apply first.
+// Callers that need the canonical post-state should call Apply directly and
+// use its return value.
 func (r *ReplayDelta) Result() (*ledger.Ledger, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.state != StateComplete {
 		return nil, fmt.Errorf("replay delta not complete (state=%d)", r.state)
+	}
+	if r.derived != nil {
+		return r.derived, nil
 	}
 	return r.result, nil
 }
@@ -534,6 +545,11 @@ func (r *ReplayDelta) Apply(engineCfg tx.EngineConfig) (*ledger.Ledger, error) {
 		"hash", hex.EncodeToString(hdr.Hash[:8]),
 		"txs", len(r.txs),
 	)
+
+	// Cache the derived ledger so subsequent Result() calls return it
+	// instead of the pre-apply (stale state) ledger. Eliminates the
+	// footgun where a caller forgets to use Apply's return value.
+	r.derived = child
 	return child, nil
 }
 
