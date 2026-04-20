@@ -378,11 +378,16 @@ func (o *Overlay) performInboundHandshake(ctx context.Context, peer *Peer, tlsCo
 	peer.capabilities = caps
 	peer.mu.Unlock()
 
-	// Build and send response
+	// Build and send response. Advertise our supported features so the
+	// peer knows what to send (and what to accept from) us.
 	cfg := HandshakeConfig{
-		UserAgent:   o.cfg.UserAgent,
-		NetworkID:   o.cfg.NetworkID,
-		CrawlPublic: false,
+		UserAgent:           o.cfg.UserAgent,
+		NetworkID:           o.cfg.NetworkID,
+		CrawlPublic:         false,
+		EnableLedgerReplay:  o.cfg.EnableLedgerReplay,
+		EnableCompression:   o.cfg.EnableCompression,
+		EnableVPReduceRelay: o.cfg.EnableReduceRelay,
+		EnableTxReduceRelay: o.cfg.EnableReduceRelay,
 	}
 
 	resp := BuildHandshakeResponse(o.identity, sharedValue, cfg)
@@ -805,9 +810,13 @@ func (o *Overlay) Connect(addr string) error {
 	peerID := PeerID(o.nextID.Add(1))
 	peer := NewPeer(peerID, endpoint, false, o.identity, o.events)
 	peer.handshakeCfg = HandshakeConfig{
-		UserAgent:   o.cfg.UserAgent,
-		NetworkID:   o.cfg.NetworkID,
-		CrawlPublic: false,
+		UserAgent:           o.cfg.UserAgent,
+		NetworkID:           o.cfg.NetworkID,
+		CrawlPublic:         false,
+		EnableLedgerReplay:  o.cfg.EnableLedgerReplay,
+		EnableCompression:   o.cfg.EnableCompression,
+		EnableVPReduceRelay: o.cfg.EnableReduceRelay,
+		EnableTxReduceRelay: o.cfg.EnableReduceRelay,
 	}
 
 	o.events <- Event{

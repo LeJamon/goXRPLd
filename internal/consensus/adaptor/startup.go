@@ -174,6 +174,10 @@ func OverlayOptionsFromConfig(appCfg *config.Config) []peermanagement.Option {
 	// Compression
 	opts = append(opts, peermanagement.WithCompression(appCfg.Compression))
 
+	// Ledger replay (Phase B server + Phase B client). The toml toggle
+	// is a 0/1 int to match rippled's [ledger_replay] stanza semantics.
+	opts = append(opts, peermanagement.WithLedgerReplay(appCfg.LedgerReplay != 0))
+
 	return opts
 }
 

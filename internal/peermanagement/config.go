@@ -57,9 +57,12 @@ type Config struct {
 	MessageBufferSize int
 	SendBufferSize    int
 
-	// Features
-	EnableReduceRelay bool
-	EnableCompression bool
+	// Features — advertised via X-Protocol-Ctl during handshake so
+	// peers know which optional protocol extensions we speak. Matches
+	// rippled's compr / vprr / txrr / ledgerreplay feature toggles.
+	EnableReduceRelay  bool
+	EnableCompression  bool
+	EnableLedgerReplay bool
 
 	// Clock function for testing
 	Clock func() time.Time
@@ -83,8 +86,9 @@ func DefaultConfig() Config {
 		MessageBufferSize: DefaultMessageBufferSize,
 		SendBufferSize:    DefaultSendBufferSize,
 
-		EnableReduceRelay: true,
-		EnableCompression: true,
+		EnableReduceRelay:  true,
+		EnableCompression:  true,
+		EnableLedgerReplay: true,
 
 		Clock: time.Now,
 	}
@@ -195,6 +199,16 @@ func WithReduceRelay(enabled bool) Option {
 func WithCompression(enabled bool) Option {
 	return func(c *Config) {
 		c.EnableCompression = enabled
+	}
+}
+
+// WithLedgerReplay enables or disables the ledgerreplay X-Protocol-Ctl
+// feature. When disabled we won't advertise replay support, so peers
+// won't offer us mtREPLAY_DELTA_RESPONSE and won't accept replay
+// requests from us — the catchup path falls back to legacy GetLedger.
+func WithLedgerReplay(enabled bool) Option {
+	return func(c *Config) {
+		c.EnableLedgerReplay = enabled
 	}
 }
 

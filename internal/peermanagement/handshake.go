@@ -52,14 +52,26 @@ type HandshakeConfig struct {
 	UserAgent   string
 	NetworkID   uint32
 	CrawlPublic bool
+
+	// Protocol feature toggles advertised via X-Protocol-Ctl. Rippled
+	// peers gate feature-specific requests (mtREPLAY_DELTA_REQUEST,
+	// mtTRANSACTIONS batch relay, LZ4 compression) on the handshake
+	// advertisement — if we don't tell peers we support a feature, they
+	// won't send it to us and they won't accept it from us. Matches
+	// rippled's Handshake.cpp / peerFeatureEnabled.
+	EnableLedgerReplay         bool
+	EnableCompression          bool
+	EnableVPReduceRelay        bool
+	EnableTxReduceRelay        bool
 }
 
 // DefaultHandshakeConfig returns default handshake configuration.
 func DefaultHandshakeConfig() HandshakeConfig {
 	return HandshakeConfig{
-		UserAgent:   "goXRPL/0.1.0",
-		NetworkID:   0,
-		CrawlPublic: false,
+		UserAgent:          "goXRPL/0.1.0",
+		NetworkID:          0,
+		CrawlPublic:        false,
+		EnableLedgerReplay: true, // Phase B wires the server+client paths
 	}
 }
 
@@ -201,6 +213,19 @@ func addHandshakeHeaders(h http.Header, id *Identity, sharedValue []byte, cfg Ha
 	sig, err := id.SignDigest(sharedValue)
 	if err == nil {
 		h.Set(HeaderSessionSignature, base64.StdEncoding.EncodeToString(sig))
+	}
+
+	// Advertise supported protocol features so peers know what to
+	// request from us (and what to accept from us). Without this, our
+	// replay-delta handlers, compression, and reduce-relay relay paths
+	// are silently gated off by any standards-compliant peer.
+	if ctl := MakeFeaturesRequestHeader(
+		cfg.EnableCompression,
+		cfg.EnableLedgerReplay,
+		cfg.EnableTxReduceRelay,
+		cfg.EnableVPReduceRelay,
+	); ctl != "" {
+		h.Set(HeaderProtocolCtl, ctl)
 	}
 }
 
