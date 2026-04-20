@@ -256,7 +256,8 @@ func TestRouter_PrefersReplayDelta(t *testing.T) {
 	assert.Equal(t, uint64(7), calls[0].peerID)
 	assert.Equal(t, target, calls[0].hash)
 	assert.Empty(t, rs.legacyCalls(), "legacy path must not run when replay-delta succeeds at issue")
-	assert.NotNil(t, r.inboundReplayDelta)
+	assert.True(t, r.replayer.Has(target), "coordinator must hold an in-flight acquisition for the target hash")
+	assert.Equal(t, 1, r.replayer.Count())
 }
 
 // TestRouter_NoParent_FallsBackToLegacy verifies the fallback when the
@@ -276,7 +277,7 @@ func TestRouter_NoParent_FallsBackToLegacy(t *testing.T) {
 	assert.Equal(t, target, calls[0].hash)
 	assert.Equal(t, uint64(7), calls[0].peerID)
 	assert.NotNil(t, r.inboundLedger)
-	assert.Nil(t, r.inboundReplayDelta)
+	assert.Equal(t, 0, r.replayer.Count(), "no replay-delta acquisition when no parent is available")
 }
 
 // TestRouter_PeerDoesNotSupportReplay_FallsBackToLegacy verifies that
@@ -303,7 +304,7 @@ func TestRouter_PeerDoesNotSupportReplay_FallsBackToLegacy(t *testing.T) {
 	require.Len(t, calls, 1, "legacy fallback must run")
 	assert.Equal(t, target, calls[0].hash)
 	assert.Equal(t, uint64(11), calls[0].peerID)
-	assert.Nil(t, r.inboundReplayDelta, "replay-delta must not be armed")
+	assert.Equal(t, 0, r.replayer.Count(), "replay-delta must not be armed")
 	assert.NotNil(t, r.inboundLedger, "legacy acquisition must be armed")
 }
 
@@ -334,7 +335,7 @@ func TestRouter_ReplayDeltaResponse_Routed(t *testing.T) {
 		Payload: payload,
 	})
 
-	assert.Nil(t, r.inboundReplayDelta, "successful adoption must clear the active acquisition")
+	assert.Equal(t, 0, r.replayer.Count(), "successful adoption must clear the active acquisition")
 	// Service should have advanced its closed ledger to the verified seq.
 	closed := svc.GetClosedLedger()
 	require.NotNil(t, closed)
@@ -369,7 +370,7 @@ func TestRouter_FallsBackToLegacyOnReplayFailure(t *testing.T) {
 		Payload: payload,
 	})
 
-	assert.Nil(t, r.inboundReplayDelta, "failed verification must clear the replay state")
+	assert.Equal(t, 0, r.replayer.Count(), "failed verification must clear the replay state")
 	require.Len(t, rs.legacyCalls(), 1, "router must fall back to the legacy path")
 	assert.Equal(t, target, rs.legacyCalls()[0].hash)
 	assert.NotNil(t, r.inboundLedger)
@@ -396,7 +397,7 @@ func TestRouter_MaintenanceTick_TimeoutFallback(t *testing.T) {
 	clock.Advance(time.Hour)
 
 	r.maintenanceTick()
-	assert.Nil(t, r.inboundReplayDelta, "tick must clear the timed-out acquisition")
+	assert.Equal(t, 0, r.replayer.Count(), "tick must clear the timed-out acquisition")
 	require.Len(t, rs.legacyCalls(), 1, "tick must re-issue via the legacy path")
 }
 
@@ -435,7 +436,7 @@ func TestRouter_ReplayDeltaApply_AdoptsDerivedLedger(t *testing.T) {
 		Payload: payload,
 	})
 
-	require.Nil(t, r.inboundReplayDelta, "successful adoption must clear the active acquisition")
+	require.Equal(t, 0, r.replayer.Count(), "successful adoption must clear the active acquisition")
 	closed := svc.GetClosedLedger()
 	require.NotNil(t, closed)
 	assert.Equal(t, expectedHash, closed.Hash(),
@@ -485,12 +486,60 @@ func TestRouter_ReplayDeltaApply_StateMismatchFallsBack(t *testing.T) {
 		Payload: payload,
 	})
 
-	assert.Nil(t, r.inboundReplayDelta,
+	assert.Equal(t, 0, r.replayer.Count(),
 		"failed Apply must clear the replay state")
 	require.Len(t, rs.legacyCalls(), 1,
 		"router must fall back to the legacy path on state-map mismatch")
 	assert.Equal(t, tampered, rs.legacyCalls()[0].hash)
 	assert.NotNil(t, r.inboundLedger, "legacy acquisition must be armed for retry")
+}
+
+// TestRouter_ConcurrentAcquisitions_RouteCorrectly verifies that two
+// in-flight replay-delta acquisitions for distinct ledger hashes route
+// their responses independently. Reversing the response delivery order
+// must not cross-pollinate state: the response for hash A advances
+// ONLY acquisition A, and the response for hash B advances ONLY
+// acquisition B. This is the headline coordinator guarantee from
+// Gap 7 — proof that the single-slot field removal behaves correctly
+// under concurrency.
+func TestRouter_ConcurrentAcquisitions_RouteCorrectly(t *testing.T) {
+	r, _, _, svc := makeRouter(t)
+
+	// Two distinct targets against the SAME parent (seq N+1). For the
+	// happy-path adoption we use the empty-closed successor helper,
+	// which is deterministic; the SECOND acquisition is armed against
+	// a synthetic hash so we can watch its state stay at WantBase
+	// while the first completes.
+	parent := svc.GetClosedLedger()
+	require.NotNil(t, parent)
+
+	resp, realHash, seq := buildEmptyClosedSuccessorResponse(t, svc)
+	otherHash := [32]byte{0xDE, 0xAD, 0xBE, 0xEF}
+
+	require.NoError(t, r.startReplayDeltaAcquisition(seq, realHash, 7, parent))
+	require.NoError(t, r.startReplayDeltaAcquisition(seq, otherHash, 9, parent))
+	require.Equal(t, 2, r.replayer.Count(), "both acquisitions must be in flight")
+
+	// Deliver the response for the SECOND-armed hash first. The router
+	// must route by hash, not by insertion order.
+	payload, err := message.Encode(resp)
+	require.NoError(t, err)
+	r.handleMessage(&peermanagement.InboundMessage{
+		PeerID:  7,
+		Type:    uint16(message.TypeReplayDeltaResponse),
+		Payload: payload,
+	})
+
+	// After dispatch: realHash is completed+adopted, otherHash remains
+	// in-flight (nobody responded for it).
+	assert.False(t, r.replayer.Has(realHash), "successful adoption clears the matching slot")
+	assert.True(t, r.replayer.Has(otherHash), "unrelated acquisition must not be cleared")
+	assert.Equal(t, 1, r.replayer.Count())
+
+	// Closed ledger advanced to the verified successor.
+	closed := svc.GetClosedLedger()
+	require.NotNil(t, closed)
+	assert.Equal(t, realHash, closed.Hash())
 }
 
 // TestRouter_IgnoresUnsolicitedReplayDeltaResponse verifies that a
@@ -503,7 +552,7 @@ func TestRouter_IgnoresUnsolicitedReplayDeltaResponse(t *testing.T) {
 	require.NoError(t, err)
 
 	// No active acquisition yet.
-	require.Nil(t, r.inboundReplayDelta)
+	require.Equal(t, 0, r.replayer.Count())
 
 	r.handleMessage(&peermanagement.InboundMessage{
 		PeerID:  7,
@@ -511,6 +560,6 @@ func TestRouter_IgnoresUnsolicitedReplayDeltaResponse(t *testing.T) {
 		Payload: payload,
 	})
 
-	assert.Nil(t, r.inboundReplayDelta, "unsolicited response must not arm the verifier")
+	assert.Equal(t, 0, r.replayer.Count(), "unsolicited response must not arm the verifier")
 }
 

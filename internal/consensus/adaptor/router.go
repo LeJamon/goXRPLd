@@ -1,7 +1,6 @@
 package adaptor
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -41,45 +40,40 @@ type Router struct {
 	peersMu    sync.RWMutex
 	peerStates map[peermanagement.PeerID]*peerLedgerState
 
-	// Active inbound ledger acquisition (nil when not acquiring).
-	// Mutually exclusive with inboundReplayDelta — only one acquisition
-	// strategy runs at a time per Router (single-goroutine handleMessage
-	// keeps that invariant trivially).
+	// Active legacy inbound ledger acquisition (nil when not acquiring).
+	// Only one legacy acquisition runs at a time; the single-goroutine
+	// handleMessage loop keeps that invariant trivially. Orthogonal to
+	// replayer — a legacy acquisition and any number of replay-delta
+	// acquisitions can coexist.
 	inboundLedger *inbound.Ledger
 
-	// Active inbound replay-delta acquisition (nil when not acquiring).
-	// Started by startReplayDeltaAcquisition; cleared on success, on
-	// verification failure (which falls back to the legacy path), or on
-	// timeout via maintenanceTick.
-	inboundReplayDelta *inbound.ReplayDelta
-
-	// inboundClock is the clock used when arming new inbound acquisitions.
-	// Defaults to the wall clock; tests swap in a FakeClock via
-	// SetInboundClock so they can drive timeouts deterministically.
-	inboundClock inbound.Clock
+	// replayer coordinates concurrent mtREPLAY_DELTA_REQUEST acquisitions
+	// keyed by target ledger hash, under a configurable concurrency cap.
+	// Replaces the single-slot inboundReplayDelta field from Gap 6 so a
+	// catchup burst across many ledgers can parallelize instead of
+	// serializing. Mirrors rippled's LedgerReplayer.
+	replayer *inbound.Replayer
 }
 
 // NewRouter creates a new Router.
 func NewRouter(engine consensus.Engine, adaptor *Adaptor, modeManager *ModeManager, inbox <-chan *peermanagement.InboundMessage) *Router {
+	logger := slog.Default().With("component", "consensus-router")
 	return &Router{
-		engine:       engine,
-		adaptor:      adaptor,
-		modeManager:  modeManager,
-		inbox:        inbox,
-		logger:       slog.Default().With("component", "consensus-router"),
-		peerStates:   make(map[peermanagement.PeerID]*peerLedgerState),
-		inboundClock: inbound.SystemClock,
+		engine:      engine,
+		adaptor:     adaptor,
+		modeManager: modeManager,
+		inbox:       inbox,
+		logger:      logger,
+		peerStates:  make(map[peermanagement.PeerID]*peerLedgerState),
+		replayer:    inbound.NewReplayer(logger, inbound.SystemClock, inbound.DefaultMaxInFlightReplays),
 	}
 }
 
-// SetInboundClock overrides the clock used by new inbound acquisitions.
-// Intended for tests that need to drive timeout behavior deterministically;
-// production callers never invoke this.
+// SetInboundClock overrides the clock used by new inbound replay-delta
+// acquisitions. Intended for tests that need to drive timeout behavior
+// deterministically; production callers never invoke this.
 func (r *Router) SetInboundClock(c inbound.Clock) {
-	if c == nil {
-		c = inbound.SystemClock
-	}
-	r.inboundClock = c
+	r.replayer.SetClock(c)
 }
 
 // Run reads messages from the overlay and dispatches them.
@@ -104,27 +98,24 @@ func (r *Router) Run(ctx context.Context) {
 	}
 }
 
-// maintenanceTick runs out-of-band housekeeping: detect a replay-delta
-// acquisition that has outlived its timeout, abandon it, and re-issue
-// using the legacy header+state path. Sharing the message-loop goroutine
-// keeps the single-writer invariant on inboundReplayDelta intact.
+// maintenanceTick runs out-of-band housekeeping: detect replay-delta
+// acquisitions that have outlived their timeout, abandon each, and
+// re-issue via the legacy header+state path. Sharing the message-loop
+// goroutine keeps a single writer against replayer's in-flight map for
+// the abandon+reissue sequence below (the Replayer's own methods are
+// independently goroutine-safe, but holding to a single writer here
+// means we don't have to reason about a peer response racing the
+// timeout fallback for the same hash).
 func (r *Router) maintenanceTick() {
-	if r.inboundReplayDelta == nil {
-		return
+	for _, entry := range r.replayer.TimedOut() {
+		r.logger.Warn("replay delta acquisition timed out, falling back to legacy",
+			"seq", entry.Seq,
+			"hash", fmt.Sprintf("%x", entry.Hash[:8]),
+			"peer", entry.PeerID,
+		)
+		r.replayer.Abandon(entry.Hash)
+		r.startLedgerAcquisitionLegacy(entry.Seq, entry.Hash, entry.PeerID)
 	}
-	if !r.inboundReplayDelta.IsTimedOut() {
-		return
-	}
-	seq := r.inboundReplayDelta.Seq()
-	hash := r.inboundReplayDelta.Hash()
-	peerID := r.inboundReplayDelta.PeerID()
-	r.logger.Warn("replay delta acquisition timed out, falling back to legacy",
-		"seq", seq,
-		"hash", fmt.Sprintf("%x", hash[:8]),
-		"peer", peerID,
-	)
-	r.inboundReplayDelta = nil
-	r.startLedgerAcquisitionLegacy(seq, hash, peerID)
 }
 
 func (r *Router) handleMessage(msg *peermanagement.InboundMessage) {
@@ -386,15 +377,25 @@ func (r *Router) handleStatusChange(msg *peermanagement.InboundMessage) {
 }
 
 // startLedgerAcquisition picks the best available ledger-acquisition
-// strategy for the given target. When we have the parent ledger locally,
-// the bandwidth-efficient replay-delta protocol is preferred (one request
-// returns header + every tx blob); otherwise we fall back to the legacy
-// mtGET_LEDGER header+state walk. Mirrors rippled's preference for
-// LedgerDeltaAcquire over InboundLedger when the parent is available.
+// strategy for the given target. When we have the parent ledger locally
+// and the peer advertises ledger-replay, the bandwidth-efficient
+// replay-delta protocol is preferred (one request returns header + every
+// tx blob); otherwise we fall back to the legacy mtGET_LEDGER
+// header+state walk. Mirrors rippled's preference for LedgerDeltaAcquire
+// over InboundLedger when the parent is available.
+//
+// This is currently the only driver of startReplayDeltaAcquisition: it
+// handles a single target ledger per call. The Replayer coordinator
+// supports concurrent acquisitions across many hashes, but the policy
+// layer that walks a range (e.g., backward from a peer's tip via
+// ParentHash, à la rippled's LedgerReplayer) is a follow-up item — the
+// Gap 7 deliverable is the coordinator itself and the migration off
+// the single-slot field.
 func (r *Router) startLedgerAcquisition(seq uint32, hash [32]byte, peerID uint64) {
-	// Always defer to an in-flight replay-delta on the same hash to
-	// avoid issuing a duplicate request.
-	if r.inboundReplayDelta != nil && r.inboundReplayDelta.Hash() == hash {
+	// Skip if an acquisition for this exact hash is already in flight —
+	// avoids issuing a duplicate wire request when a second status
+	// change arrives before the first one's response.
+	if r.replayer.Has(hash) {
 		return
 	}
 
@@ -408,22 +409,29 @@ func (r *Router) startLedgerAcquisition(seq uint32, hash [32]byte, peerID uint64
 	r.startLedgerAcquisitionLegacy(seq, hash, peerID)
 }
 
-// startReplayDeltaAcquisition issues a single mtREPLAY_DELTA_REQUEST and
-// arms the InboundReplayDelta state machine to verify the matching
-// response. Mirrors rippled's LedgerDeltaAcquire::trigger.
+// startReplayDeltaAcquisition registers a new acquisition with the
+// Replayer coordinator and issues the corresponding
+// mtREPLAY_DELTA_REQUEST. Mirrors rippled's LedgerDeltaAcquire::trigger.
+//
+// Returns ErrAcquisitionExists if a request for the same hash is
+// already in flight (caller should drop the duplicate), ErrCapacityFull
+// if the coordinator is at cap (caller falls back to legacy), or the
+// wire-send error if the request itself failed (coordinator slot is
+// freed before returning so the caller can retry).
 func (r *Router) startReplayDeltaAcquisition(seq uint32, hash [32]byte, peerID uint64, parent *ledger.Ledger) error {
-	if r.inboundReplayDelta != nil {
-		return errors.New("replay delta acquisition already in progress")
+	rd, err := r.replayer.Acquire(hash, peerID, parent)
+	if err != nil {
+		return err
 	}
+	_ = rd // retained in replayer; HandleResponse retrieves it on reply.
 	r.logger.Info("starting replay delta acquisition",
 		"seq", seq,
 		"hash", fmt.Sprintf("%x", hash[:8]),
 		"peer", peerID,
 	)
-	r.inboundReplayDelta = inbound.NewReplayDeltaWithClock(hash, peerID, parent, r.logger, r.inboundClock)
 	if err := r.adaptor.RequestReplayDelta(peerID, hash); err != nil {
 		r.logger.Warn("failed to request replay delta from peer", "error", err)
-		r.inboundReplayDelta = nil
+		r.replayer.Abandon(hash)
 		return err
 	}
 	return nil
@@ -463,9 +471,12 @@ func (r *Router) startLedgerAcquisitionLegacy(seq uint32, hash [32]byte, peerID 
 }
 
 // handleReplayDeltaResponse verifies an inbound mtREPLAY_DELTA_RESPONSE
-// against the active acquisition and adopts the resulting ledger. On
-// verification failure the active acquisition is abandoned and the
-// legacy path is started for the same target.
+// against its matching in-flight acquisition (routed by ledger hash)
+// and adopts the resulting ledger. On verification or apply failure the
+// acquisition is abandoned and the legacy path is started for the same
+// target. Unsolicited/stale responses (no matching acquisition) are
+// silently dropped — rippled does the same, and it's a normal race
+// when a peer batch-forwards replies after we've already moved on.
 func (r *Router) handleReplayDeltaResponse(msg *peermanagement.InboundMessage) {
 	decoded, err := message.Decode(message.TypeReplayDeltaResponse, msg.Payload)
 	if err != nil {
@@ -478,28 +489,23 @@ func (r *Router) handleReplayDeltaResponse(msg *peermanagement.InboundMessage) {
 		return
 	}
 
-	if r.inboundReplayDelta == nil {
-		r.logger.Debug("replay delta response with no active acquisition", "peer", msg.PeerID)
+	rd, err := r.replayer.HandleResponse(resp)
+	if errors.Is(err, inbound.ErrNoMatchingAcquisition) {
+		// Stale or unsolicited — drop silently without charging the
+		// peer. A misbehaving peer sending genuinely bogus data would
+		// fail its ACTIVE acquisition's verifier (branch below), which
+		// IS attributed via IncPeerBadData.
+		r.logger.Debug("replay delta response with no matching acquisition",
+			"peer", msg.PeerID)
 		return
 	}
-
-	// Reject responses that don't match our active hash — they belong to
-	// a different (or stale) acquisition.
-	expected := r.inboundReplayDelta.Hash()
-	if !bytes.Equal(resp.LedgerHash, expected[:]) {
-		r.logger.Debug("replay delta response for non-active hash; dropping",
-			"peer", msg.PeerID,
-			"got", fmt.Sprintf("%x", resp.LedgerHash),
-			"want", fmt.Sprintf("%x", expected[:8]),
-		)
-		return
-	}
-
-	if err := r.inboundReplayDelta.GotResponse(resp); err != nil {
-		seq := r.inboundReplayDelta.Seq()
-		hash := r.inboundReplayDelta.Hash()
-		peerID := r.inboundReplayDelta.PeerID()
-		r.inboundReplayDelta = nil
+	if err != nil {
+		// Verification failed. rd is still registered in the Replayer so
+		// we can read its provenance before abandoning the slot.
+		seq := rd.Seq()
+		hash := rd.Hash()
+		peerID := rd.PeerID()
+		r.replayer.Abandon(hash)
 		r.logger.Warn("replay delta verification failed; falling back to legacy",
 			"seq", seq,
 			"hash", fmt.Sprintf("%x", hash[:8]),
@@ -518,14 +524,14 @@ func (r *Router) handleReplayDeltaResponse(msg *peermanagement.InboundMessage) {
 	// the only proof we have that our engine doesn't diverge from
 	// rippled. Without this step the adopted ledger would carry the
 	// parent's stale state map, breaking consensus on the next round.
-	parent := r.inboundReplayDelta.Parent()
+	parent := rd.Parent()
 	engineCfg := r.adaptor.EngineConfigForReplay(parent)
-	derived, err := r.inboundReplayDelta.Apply(engineCfg)
+	derived, err := rd.Apply(engineCfg)
 	if err != nil {
-		seq := r.inboundReplayDelta.Seq()
-		hash := r.inboundReplayDelta.Hash()
-		peerID := r.inboundReplayDelta.PeerID()
-		r.inboundReplayDelta = nil
+		seq := rd.Seq()
+		hash := rd.Hash()
+		peerID := rd.PeerID()
+		r.replayer.Abandon(hash)
 		r.logger.Warn("replay delta apply failed; falling back to legacy",
 			"seq", seq,
 			"hash", fmt.Sprintf("%x", hash[:8]),
@@ -536,7 +542,7 @@ func (r *Router) handleReplayDeltaResponse(msg *peermanagement.InboundMessage) {
 		r.startLedgerAcquisitionLegacy(seq, hash, peerID)
 		return
 	}
-	r.inboundReplayDelta = nil
+	r.replayer.Complete(rd.Hash())
 	if err := r.adoptVerifiedLedger(derived); err != nil {
 		r.logger.Warn("failed to adopt replay-delta ledger", "error", err)
 	}
@@ -569,9 +575,20 @@ func (r *Router) adoptVerifiedLedger(l *ledger.Ledger) error {
 	return nil
 }
 
-// checkBehind compares the peer's ledger seq to ours and handles catch-up.
-// When we're within 1 ledger of the peer and not yet in Full mode,
-// transitions to Full to start consensus.
+// checkBehind compares the peer's ledger seq to ours and handles
+// catch-up. When we're within 1 ledger of the peer and not yet in Full
+// mode, transitions to Full to start consensus.
+//
+// Scope note (Gap 7): this function currently fires acquisition for
+// only the single peer-advertised tip. A true range-based walk would
+// fan out across every missing seq between ourLCL+1 and peerSeq, but
+// that requires knowing the intermediate ledger hashes — which we
+// only discover by walking backward from the tip via header.ParentHash
+// (mirroring rippled's LedgerReplayer backward chain). Since the
+// Replayer coordinator now supports concurrent in-flight acquisitions,
+// that backward-walk policy is a follow-up item — landing the
+// coordinator and migrating off the single-slot field is the bounded
+// deliverable for this task.
 func (r *Router) checkBehind(peerSeq uint32, peerHash [32]byte) {
 	svc := r.adaptor.LedgerService()
 	if svc == nil {
