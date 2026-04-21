@@ -982,7 +982,12 @@ func (e *Engine) checkConvergence() {
 		return
 	}
 
-	// Count proposals for each tx set
+	// Count proposals for each tx set. We include ourselves as a
+	// participant when proposing, mirroring rippled's checkConsensus
+	// (agreeing/total both include count_self). Without this, a 3-node
+	// UNL whose threshold uses quorum=3 can never converge: peers
+	// contribute at most 2 trusted proposals, the winning set never
+	// reaches 3, and every round hits LedgerMaxClose (10s timeout).
 	txSetCounts := make(map[consensus.TxSetID]int)
 	trustedProposals := 0
 
@@ -993,12 +998,20 @@ func (e *Engine) checkConvergence() {
 		}
 	}
 
-	// Check if any tx set has enough support
-	quorum := e.adaptor.GetQuorum()
-	threshold := (trustedProposals * e.thresholds.MinConsensusPct) / 100
+	// Add our own position to the count if we're a proposing validator.
+	if e.mode == consensus.ModeProposing && e.ourTxSet != nil {
+		txSetCounts[e.ourTxSet.ID()]++
+		trustedProposals++
+	}
 
-	if threshold < quorum {
-		threshold = quorum
+	// Round-level convergence is a percentage of participants, not a
+	// validation-quorum check. Rippled's LedgerMaster::checkAccept and
+	// round consensus are separate gates — conflating them here pinned
+	// the threshold at validation-quorum (3) even when that exceeded
+	// the available participants. Use pure percentage of participants.
+	threshold := (trustedProposals*e.thresholds.MinConsensusPct + 99) / 100
+	if threshold < 1 {
+		threshold = 1
 	}
 
 	for txSetID, count := range txSetCounts {
