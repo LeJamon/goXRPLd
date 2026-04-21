@@ -133,8 +133,19 @@ type Service struct {
 	// Reference: rippled CanonicalTXSet / retriableTxs
 	pendingTxs []pendingTx
 
-	// EventCallback is called when a ledger is accepted (optional)
+	// EventCallback is called when a ledger becomes validated by consensus.
+	// Fires at quorum-gate time from SetValidatedLedger, not at close time,
+	// so WebSocket subscribers see ledger_index advances in lockstep with
+	// server_info.validated_ledger. Matches rippled's pubLedger semantics.
 	eventCallback EventCallback
+
+	// pendingValidation stashes LedgerAcceptedEvents by ledger hash at
+	// close time so the eventCallback can fire later when the ledger
+	// reaches trusted-validation quorum. Bounded — see pendingValidationMaxLen.
+	pendingValidation map[[32]byte]*LedgerAcceptedEvent
+
+	// pendingValidationOrder tracks insertion order for LRU eviction.
+	pendingValidationOrder [][32]byte
 
 	// hooks provides event callbacks for external subscribers
 	hooks *EventHooks
@@ -155,12 +166,13 @@ func New(cfg Config) (*Service, error) {
 		logger = xrpllog.Discard()
 	}
 	s := &Service{
-		config:        cfg,
-		logger:        logger.Named(xrpllog.PartitionLedger),
-		nodeStore:     cfg.NodeStore,
-		relationalDB:  cfg.RelationalDB,
-		ledgerHistory: make(map[uint32]*ledger.Ledger),
-		txIndex:       make(map[[32]byte]uint32),
+		config:            cfg,
+		logger:            logger.Named(xrpllog.PartitionLedger),
+		nodeStore:         cfg.NodeStore,
+		relationalDB:      cfg.RelationalDB,
+		ledgerHistory:     make(map[uint32]*ledger.Ledger),
+		txIndex:           make(map[[32]byte]uint32),
+		pendingValidation: make(map[[32]byte]*LedgerAcceptedEvent),
 	}
 
 	return s, nil
@@ -1107,13 +1119,18 @@ func (s *Service) AcceptConsensusResult(parent *ledger.Ledger, txBlobs [][]byte,
 		}
 	}
 
+	// In the consensus path we do NOT fire eventCallback at close time —
+	// the ledger isn't yet validated. Stash the event keyed by hash so
+	// SetValidatedLedger can fire it once trusted-validation quorum is
+	// reached, keeping WebSocket ledgerClosed events in lockstep with
+	// server_info.validated_ledger. Rippled publishes both from the
+	// same quorum-gated point (pubLedger / checkAccept).
 	if s.eventCallback != nil {
 		event := &LedgerAcceptedEvent{
 			LedgerInfo:         ledgerInfo,
 			TransactionResults: txResults,
 		}
-		callback := s.eventCallback
-		go callback(event)
+		s.stashPendingValidationLocked(closedLedgerHash, event)
 	}
 
 	s.logger.Info("Consensus ledger accepted",
@@ -1125,19 +1142,80 @@ func (s *Service) AcceptConsensusResult(parent *ledger.Ledger, txBlobs [][]byte,
 	return closedSeq, nil
 }
 
-// SetValidatedLedger marks a ledger as validated by consensus.
-// Called by the consensus adaptor when the validation tracker confirms
-// a ledger has received sufficient validations.
-func (s *Service) SetValidatedLedger(seq uint32) {
+// SetValidatedLedger marks a ledger as validated by consensus and fires
+// any stashed eventCallback for that ledger. Called by the consensus
+// adaptor when the validation tracker confirms a ledger has received
+// trusted-validation quorum.
+//
+// The expectedHash guards against fork scenarios where peers validated
+// a hash different from the one we closed locally at that seq — in that
+// case our local ledger is on the wrong fork and must NOT be flipped
+// to validated. Matches rippled's checkAccept() which works off the
+// validated ledger pointer (hash + seq), not seq alone.
+func (s *Service) SetValidatedLedger(seq uint32, expectedHash [32]byte) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	l, ok := s.ledgerHistory[seq]
 	if !ok {
+		s.mu.Unlock()
+		return
+	}
+	if l.Hash() != expectedHash {
+		s.mu.Unlock()
 		return
 	}
 	_ = l.SetValidated()
 	s.validatedLedger = l
+
+	// Drain any stashed ledger-accepted event for this hash.
+	// Fire on a goroutine (after releasing the lock) so subscriber
+	// callbacks can't deadlock the service mutex.
+	event := s.drainPendingValidationLocked(expectedHash)
+	callback := s.eventCallback
+	s.mu.Unlock()
+
+	if event != nil && callback != nil {
+		go callback(event)
+	}
+}
+
+// pendingValidationMaxLen caps the pending-validation stash so a node
+// that never reaches quorum (misconfigured UNL, network partition) can't
+// leak memory. 16 ledgers ≈ 48s at 3s rounds — larger than any realistic
+// quorum-wait window but small enough to be bounded.
+const pendingValidationMaxLen = 16
+
+// stashPendingValidationLocked stores an accepted event keyed by hash
+// for later eventCallback dispatch once the ledger is fully validated.
+// LRU-evicts the oldest entry if the stash would exceed its cap.
+// Caller must hold s.mu.
+func (s *Service) stashPendingValidationLocked(hash [32]byte, event *LedgerAcceptedEvent) {
+	if _, exists := s.pendingValidation[hash]; !exists {
+		s.pendingValidationOrder = append(s.pendingValidationOrder, hash)
+	}
+	s.pendingValidation[hash] = event
+
+	for len(s.pendingValidationOrder) > pendingValidationMaxLen {
+		oldest := s.pendingValidationOrder[0]
+		s.pendingValidationOrder = s.pendingValidationOrder[1:]
+		delete(s.pendingValidation, oldest)
+	}
+}
+
+// drainPendingValidationLocked removes and returns the stashed event
+// for the given hash, or nil if none exists. Caller must hold s.mu.
+func (s *Service) drainPendingValidationLocked(hash [32]byte) *LedgerAcceptedEvent {
+	event, ok := s.pendingValidation[hash]
+	if !ok {
+		return nil
+	}
+	delete(s.pendingValidation, hash)
+	for i, h := range s.pendingValidationOrder {
+		if h == hash {
+			s.pendingValidationOrder = append(s.pendingValidationOrder[:i], s.pendingValidationOrder[i+1:]...)
+			break
+		}
+	}
+	return event
 }
 
 // NeedsInitialSync returns true if the node hasn't yet adopted a ledger from peers.
@@ -1244,8 +1322,13 @@ func (s *Service) ReAdoptLedgerHeader(h *header.LedgerHeader) error {
 
 	adopted := ledger.NewFromHeader(*h, stateMap, txMap, drops.Fees{})
 
+	// Advance closedLedger to the peer's tip, but do NOT advance
+	// validatedLedger here — peers serve us ledgers they themselves
+	// closed, and "closed" is not "validated". Rippled's LedgerMaster
+	// distinguishes the two, and server_info.validated_ledger is only
+	// set after trusted-validation quorum lands. Leaving validatedLedger
+	// alone lets the quorum gate in SetValidatedLedger do its job.
 	s.closedLedger = adopted
-	s.validatedLedger = adopted
 	s.ledgerHistory[h.LedgerIndex] = adopted
 
 	// Create new open ledger on top
@@ -1283,8 +1366,9 @@ func (s *Service) AdoptLedgerWithState(h *header.LedgerHeader, stateMap *shamap.
 
 	adopted := ledger.NewFromHeader(*h, stateMap, txMap, drops.Fees{})
 
+	// Same reasoning as ReAdoptLedgerHeader: peer-adopted ledgers advance
+	// closedLedger but not validatedLedger. The quorum gate owns that.
 	s.closedLedger = adopted
-	s.validatedLedger = adopted
 	s.ledgerHistory[h.LedgerIndex] = adopted
 	s.needsInitialSync = false
 

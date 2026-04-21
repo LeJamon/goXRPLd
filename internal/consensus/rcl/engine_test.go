@@ -273,6 +273,9 @@ func (a *mockAdaptor) AdjustCloseTime(rawCloseTimes consensus.CloseTimes) {}
 func (a *mockAdaptor) OnConsensusReached(ledger consensus.Ledger, validations []*consensus.Validation) {
 }
 
+func (a *mockAdaptor) OnLedgerFullyValidated(ledgerID consensus.LedgerID, seq uint32) {
+}
+
 func (a *mockAdaptor) OnModeChange(oldMode, newMode consensus.Mode) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

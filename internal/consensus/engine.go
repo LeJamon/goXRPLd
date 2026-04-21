@@ -156,7 +156,21 @@ type Adaptor interface {
 	SetOperatingMode(mode OperatingMode)
 
 	// OnConsensusReached is called when a round completes successfully.
+	// Fires at local-accept time (consensus round resolution). This is
+	// when the closed ledger is stored and pending-tx bookkeeping runs.
+	// It does NOT mean the network has agreed — see OnLedgerFullyValidated.
 	OnConsensusReached(ledger Ledger, validations []*Validation)
+
+	// OnLedgerFullyValidated is called once per ledger the first time
+	// trusted validations for that ledger cross the quorum threshold.
+	// This is the network-agreement gate: server_info.validated_ledger
+	// advances here, not at OnConsensusReached. Mirrors rippled's
+	// LedgerMaster::checkAccept() which only calls setValidLedger()
+	// after verifying trusted-validation count >= quorum.
+	//
+	// Safe to call even when the ledger is not yet in local history —
+	// implementations should no-op or defer rather than fail.
+	OnLedgerFullyValidated(ledgerID LedgerID, seq uint32)
 
 	// OnModeChange is called when consensus mode changes.
 	OnModeChange(oldMode, newMode Mode)

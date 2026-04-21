@@ -26,8 +26,13 @@ type ValidationTracker struct {
 	// freshness is how long validations are considered fresh
 	freshness time.Duration
 
+	// fired records ledgers we've already reported as fully validated,
+	// so the callback fires exactly once per ledger even if more
+	// validations keep arriving after the threshold is crossed.
+	fired map[consensus.LedgerID]struct{}
+
 	// callbacks
-	onFullyValidated func(ledgerID consensus.LedgerID)
+	onFullyValidated func(ledgerID consensus.LedgerID, ledgerSeq uint32)
 }
 
 // NewValidationTracker creates a new validation tracker.
@@ -38,6 +43,7 @@ func NewValidationTracker(quorum int, freshness time.Duration) *ValidationTracke
 		trusted:     make(map[consensus.NodeID]bool),
 		quorum:      quorum,
 		freshness:   freshness,
+		fired:       make(map[consensus.LedgerID]struct{}),
 	}
 }
 
@@ -60,7 +66,10 @@ func (vt *ValidationTracker) SetQuorum(quorum int) {
 }
 
 // SetFullyValidatedCallback sets the callback for when a ledger is fully validated.
-func (vt *ValidationTracker) SetFullyValidatedCallback(fn func(consensus.LedgerID)) {
+// Fired once per ledger the first time trusted-validation count crosses the quorum
+// threshold. Seq is passed alongside the ledger ID so the callee can look up or
+// stamp the ledger without a secondary map lookup.
+func (vt *ValidationTracker) SetFullyValidatedCallback(fn func(ledgerID consensus.LedgerID, ledgerSeq uint32)) {
 	vt.mu.Lock()
 	defer vt.mu.Unlock()
 	vt.onFullyValidated = fn
@@ -98,22 +107,40 @@ func (vt *ValidationTracker) Add(validation *consensus.Validation) bool {
 }
 
 // checkFullValidation checks if a ledger has reached full validation.
+// Fires the callback exactly once per ledger — the first time trusted
+// count crosses the quorum threshold. Subsequent adds for the same
+// ledger are ignored to avoid repeatedly flipping server_info's
+// validated_ledger on every late-arriving peer validation.
+//
+// Zero-quorum edge case (empty UNL): requires at least one tracked
+// validation for the ledger before firing, so we don't spuriously
+// promote a ledger hash we haven't seen any validator sign.
 func (vt *ValidationTracker) checkFullValidation(ledgerID consensus.LedgerID) {
+	if vt.onFullyValidated == nil {
+		return
+	}
+	if _, done := vt.fired[ledgerID]; done {
+		return
+	}
 	ledgerVals, exists := vt.validations[ledgerID]
-	if !exists {
+	if !exists || len(ledgerVals) == 0 {
 		return
 	}
 
-	// Count trusted validations
 	trustedCount := 0
-	for nodeID := range ledgerVals {
+	var sampleSeq uint32
+	for nodeID, v := range ledgerVals {
+		if sampleSeq == 0 {
+			sampleSeq = v.LedgerSeq
+		}
 		if vt.trusted[nodeID] {
 			trustedCount++
 		}
 	}
 
-	if trustedCount >= vt.quorum && vt.onFullyValidated != nil {
-		vt.onFullyValidated(ledgerID)
+	if trustedCount >= vt.quorum {
+		vt.fired[ledgerID] = struct{}{}
+		vt.onFullyValidated(ledgerID, sampleSeq)
 	}
 }
 
@@ -217,12 +244,11 @@ func (vt *ValidationTracker) ExpireOld(minSeq uint32) {
 	vt.mu.Lock()
 	defer vt.mu.Unlock()
 
-	// Remove old ledger validations
 	for ledgerID, ledgerVals := range vt.validations {
-		// Get any validation to check sequence
 		for _, v := range ledgerVals {
 			if v.LedgerSeq < minSeq {
 				delete(vt.validations, ledgerID)
+				delete(vt.fired, ledgerID)
 			}
 			break
 		}
@@ -236,6 +262,7 @@ func (vt *ValidationTracker) Clear() {
 
 	vt.validations = make(map[consensus.LedgerID]map[consensus.NodeID]*consensus.Validation)
 	vt.byNode = make(map[consensus.NodeID]*consensus.Validation)
+	vt.fired = make(map[consensus.LedgerID]struct{})
 }
 
 // Stats returns statistics about tracked validations.

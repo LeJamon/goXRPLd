@@ -85,9 +85,13 @@ func TestValidationTracker_FullyValidated(t *testing.T) {
 
 	ledger1 := consensus.LedgerID{1}
 	var fullyValidatedLedger consensus.LedgerID
+	var fullyValidatedSeq uint32
+	var fireCount int
 
-	vt.SetFullyValidatedCallback(func(id consensus.LedgerID) {
+	vt.SetFullyValidatedCallback(func(id consensus.LedgerID, seq uint32) {
 		fullyValidatedLedger = id
+		fullyValidatedSeq = seq
+		fireCount++
 	})
 
 	// Add validations one by one
@@ -118,9 +122,27 @@ func TestValidationTracker_FullyValidated(t *testing.T) {
 		t.Error("Should be fully validated with quorum")
 	}
 
-	// Callback should have been called
+	// Callback should have been called with the right ledger + seq
 	if fullyValidatedLedger != ledger1 {
 		t.Error("Fully validated callback should have been called")
+	}
+	if fullyValidatedSeq != 100 {
+		t.Errorf("Expected callback seq 100, got %d", fullyValidatedSeq)
+	}
+	if fireCount != 1 {
+		t.Errorf("Callback must fire exactly once on threshold crossing, got %d", fireCount)
+	}
+
+	// Additional validations past the threshold must NOT re-fire the callback.
+	extraNode := nodes[quorum]
+	vt.Add(&consensus.Validation{
+		LedgerID:  ledger1,
+		LedgerSeq: 100,
+		NodeID:    extraNode,
+		SignTime:  time.Now(),
+	})
+	if fireCount != 1 {
+		t.Errorf("Callback must be idempotent, re-fired (count=%d)", fireCount)
 	}
 }
 

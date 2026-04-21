@@ -38,6 +38,12 @@ type Engine struct {
 	// Validation tracking
 	validations map[consensus.NodeID]*consensus.Validation
 
+	// validationTracker accumulates trusted validations across ledgers
+	// and fires the fully-validated callback when quorum is reached.
+	// This is what drives server_info.validated_ledger forward —
+	// mirrors rippled's LedgerMaster::checkAccept quorum gate.
+	validationTracker *ValidationTracker
+
 	// Dispute tracking
 	disputes map[consensus.TxID]*consensus.DisputedTx
 
@@ -127,6 +133,15 @@ func (e *Engine) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to get last closed ledger: %w", err)
 	}
 	e.prevLedger = ledger
+
+	// Wire the validation tracker: trusted set + quorum come from the adaptor,
+	// and its callback drives the adaptor's fully-validated hook which in turn
+	// flips the ledger service's validated_ledger pointer.
+	e.validationTracker = NewValidationTracker(e.adaptor.GetQuorum(), 5*time.Minute)
+	e.validationTracker.SetTrusted(e.adaptor.GetTrustedValidators())
+	e.validationTracker.SetFullyValidatedCallback(func(ledgerID consensus.LedgerID, seq uint32) {
+		e.adaptor.OnLedgerFullyValidated(ledgerID, seq)
+	})
 
 	// Start the main loop
 	e.wg.Add(1)
@@ -331,6 +346,13 @@ func (e *Engine) OnValidation(validation *consensus.Validation) error {
 	// Store validation
 	e.validations[validation.NodeID] = validation
 
+	// Feed into the tracker — this is the gate that advances
+	// server_info.validated_ledger once quorum of trusted
+	// validations accumulates for a given ledger.
+	if e.validationTracker != nil {
+		e.validationTracker.Add(validation)
+	}
+
 	// Emit event
 	e.eventBus.Publish(&consensus.ValidationReceivedEvent{
 		Validation: validation,
@@ -383,8 +405,17 @@ func (e *Engine) OnLedger(id consensus.LedgerID, ledger []byte) error {
 				Seq:        l.Seq() + 1,
 				ParentHash: l.ID(),
 			}
-			e.startRoundLocked(nextRound, false)
-			e.setMode(consensus.ModeSwitchedLedger)
+			// Re-enter consensus with the correct proposing flag for this
+			// node's role. Hardcoding false here would leave a validator
+			// pinned as an observer indefinitely, never emitting the
+			// validations the rest of the network needs for quorum.
+			proposing := e.adaptor.IsValidator() &&
+				e.adaptor.GetOperatingMode() == consensus.OpModeFull
+			e.startRoundLocked(nextRound, proposing)
+			// Same rationale as in handleWrongLedger: don't clobber the
+			// mode startRoundLocked just chose with ModeSwitchedLedger.
+			// That marker is unused for decisions and would mask the
+			// ModeProposing state that closeLedger/sendValidation need.
 		}
 	}
 
@@ -571,6 +602,18 @@ func (e *Engine) checkLedger() {
 			return
 		}
 
+		// Don't switch based on proposals alone — only switch when the
+		// peer's preferred ledger is *fully validated* (has quorum of
+		// trusted validations). Rippled uses its LedgerTrie with
+		// validation support for this; we approximate by consulting
+		// the validation tracker. Proposals pre-validation are just
+		// one of several possible forks; jumping to them on every
+		// round causes the endless "wrongLedger → adopt → wrongLedger"
+		// thrash where a validator never finishes its own round.
+		if e.validationTracker != nil && !e.validationTracker.IsFullyValidated(netLgr) {
+			return
+		}
+
 		// Already targeting this ledger — don't spam
 		if e.mode == consensus.ModeWrongLedger && e.wrongLedgerID == netLgr {
 			return
@@ -696,7 +739,15 @@ func (e *Engine) handleWrongLedger(netLedgerID consensus.LedgerID) {
 		}
 	}
 	if err == nil && newLedger != nil {
-		// Found — restart the round with the correct ledger
+		// Found — restart the round with the correct ledger.
+		//
+		// Previously this hardcoded proposing=false, which permanently
+		// pinned validator nodes in ModeObserving whenever they had to
+		// recover from an LCL divergence. That meant a validator that
+		// briefly fell behind could never resume proposing or emit its
+		// own validations — stuck as a pure follower for the rest of
+		// the session. Restore the normal proposing gate instead, so a
+		// trusted validator in OpModeFull re-enters consensus properly.
 		slog.Info("Switching to network ledger",
 			"seq", newLedger.Seq(),
 			"hash", fmt.Sprintf("%x", netLedgerID[:8]),
@@ -710,8 +761,15 @@ func (e *Engine) handleWrongLedger(netLedgerID consensus.LedgerID) {
 			Seq:        newLedger.Seq() + 1,
 			ParentHash: newLedger.ID(),
 		}
-		e.startRoundLocked(nextRound, false) // observe first round after switch
-		e.setMode(consensus.ModeSwitchedLedger)
+		proposing := e.adaptor.IsValidator() &&
+			e.adaptor.GetOperatingMode() == consensus.OpModeFull
+		e.startRoundLocked(nextRound, proposing)
+		// Do NOT force setMode(ModeSwitchedLedger) afterward — it would
+		// overwrite the ModeProposing that startRoundLocked just set for
+		// a validator node, permanently pinning us as a non-proposer.
+		// ModeSwitchedLedger is purely a cosmetic status marker (nothing
+		// reads it for decisions); preserving the mode startRoundLocked
+		// chose is what actually matters for closeLedger / sendValidation.
 	} else {
 		// Not found — enter wrong ledger mode and request from peers
 		slog.Info("Cannot acquire network ledger, entering wrongLedger mode",
@@ -1346,6 +1404,14 @@ func (e *Engine) sendValidation(ledger consensus.Ledger) {
 	}
 
 	e.adaptor.BroadcastValidation(validation)
+
+	// Our own validation counts toward quorum — feed it to the tracker.
+	// In a 1-validator standalone setup this by itself crosses the threshold
+	// and fires OnLedgerFullyValidated immediately (matching rippled's
+	// standalone_ path where getNeededValidations() returns 0).
+	if e.validationTracker != nil {
+		e.validationTracker.Add(validation)
+	}
 }
 
 // roundCloseTime rounds a close time to the nearest multiple of resolution.

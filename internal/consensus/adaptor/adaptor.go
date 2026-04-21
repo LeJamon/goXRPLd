@@ -513,8 +513,11 @@ func (a *Adaptor) OnConsensusReached(ledger consensus.Ledger, validations []*con
 		})
 	}
 
-	// Mark the ledger as validated in the service
-	a.ledgerService.SetValidatedLedger(ledger.Seq())
+	// NOTE: we intentionally do NOT mark the ledger validated here.
+	// The validated_ledger pointer only advances once trusted-validation
+	// quorum is reached — see OnLedgerFullyValidated, driven by the
+	// engine's ValidationTracker. This matches rippled's checkAccept()
+	// semantics where local consensus != network agreement.
 
 	a.logger.Info("Consensus reached",
 		"ledger_seq", ledger.Seq(),
@@ -525,6 +528,21 @@ func (a *Adaptor) OnConsensusReached(ledger consensus.Ledger, validations []*con
 	if hooks := a.ledgerService.GetEventHooks(); hooks != nil && hooks.OnConsensusPhase != nil {
 		go hooks.OnConsensusPhase("accepted")
 	}
+}
+
+// OnLedgerFullyValidated fires when the engine's ValidationTracker sees
+// trusted-validation quorum for a ledger. We flip the service's
+// validated_ledger only if our stored ledger at that seq has the matching
+// hash — fork safety, matching rippled's checkAccept which operates on
+// the specific ledger pointer, not seq alone.
+func (a *Adaptor) OnLedgerFullyValidated(ledgerID consensus.LedgerID, seq uint32) {
+	var hash [32]byte
+	copy(hash[:], ledgerID[:])
+	a.ledgerService.SetValidatedLedger(seq, hash)
+	a.logger.Info("Ledger fully validated",
+		"seq", seq,
+		"hash", fmt.Sprintf("%x", hash[:8]),
+	)
 }
 
 func (a *Adaptor) OnModeChange(oldMode, newMode consensus.Mode) {
