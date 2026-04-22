@@ -76,10 +76,14 @@ func NewFromConfig(
 		return nil, fmt.Errorf("create overlay: %w", err)
 	}
 
-	// Wire the read-side LedgerProvider so the overlay's ledger-sync handler
-	// can answer mtREPLAY_DELTA_REQ / mtPROOF_PATH_REQ / mtGET_LEDGER from
-	// peers. peermanagement is forbidden from importing internal/ledger, so
-	// the adapter must be installed here, where both layers are reachable.
+	// Wire the read-side LedgerProvider so the overlay's ledger-sync
+	// handler can answer mtREPLAY_DELTA_REQ and mtPROOF_PATH_REQ from
+	// peers. Legacy mtGET_LEDGER is NOT routed through this provider
+	// — the consensus router's handleGetLedger (router.go) answers
+	// mtGET_LEDGER(LedgerInfoBase) requests directly from the ledger
+	// service. peermanagement is forbidden from importing
+	// internal/ledger, so the adapter installed here lets both layers
+	// reach the ledger without breaking that layering boundary.
 	overlay.LedgerSync().SetProvider(NewLedgerProvider(ledgerSvc))
 
 	// Create validator identity (nil if not a validator)

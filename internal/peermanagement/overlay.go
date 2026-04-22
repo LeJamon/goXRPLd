@@ -80,6 +80,8 @@ func BadDataWeight(reason string) int {
 		"proof-path-req-bad",
 		"proof-path-req-unnegotiated",
 		"replay-delta-req-unnegotiated",
+		"replay-delta-resp-unnegotiated",
+		"proof-path-resp-unnegotiated",
 		"squelch-unnegotiated",
 		"proposal-decode",
 		"validation-decode",
@@ -632,13 +634,37 @@ func (o *Overlay) onMessageReceived(evt Event) {
 		return
 	}
 
-	// mtREPLAY_DELTA_RESPONSE is NOT intercepted here. Like every other
-	// peer-originated reply (mtLEDGER_DATA, mtTRANSACTION, mtVALIDATION),
-	// it must reach the consensus router via the overlay's Messages()
-	// channel. The router maintains the matching InboundReplayDelta state
-	// and is the only place that can verify the response and adopt the
-	// resulting ledger. Mirrors rippled's PeerImp dispatching the message
-	// through the same path it dispatches all consensus traffic.
+	// Response-path feature gate. A peer that didn't negotiate
+	// ledgerreplay in handshake shouldn't be sending us
+	// TMReplayDeltaResponse or TMProofPathResponse unsolicited —
+	// rippled PeerImp.cpp:1511-1515 charges feeMalformedRequest and
+	// drops. Gate BEFORE forwarding to the router so a non-negotiated
+	// peer can't wedge the inbound acquisition state with bogus
+	// responses.
+	if msgType == message.TypeReplayDeltaResponse {
+		if !o.peerNegotiatedLedgerReplay(evt.PeerID) {
+			slog.Debug("TMReplayDeltaResponse from peer without ledgerreplay feature; dropping",
+				"t", "Overlay", "peer", evt.PeerID)
+			o.IncPeerBadData(evt.PeerID, "replay-delta-resp-unnegotiated")
+			return
+		}
+	}
+	if msgType == message.TypeProofPathResponse {
+		if !o.peerNegotiatedLedgerReplay(evt.PeerID) {
+			slog.Debug("TMProofPathResponse from peer without ledgerreplay feature; dropping",
+				"t", "Overlay", "peer", evt.PeerID)
+			o.IncPeerBadData(evt.PeerID, "proof-path-resp-unnegotiated")
+			return
+		}
+	}
+
+	// mtREPLAY_DELTA_RESPONSE / mtPROOF_PATH_RESPONSE that pass the
+	// feature gate above reach the consensus router via the overlay's
+	// Messages() channel — like every other peer-originated reply
+	// (mtLEDGER_DATA, mtTRANSACTION, mtVALIDATION). The router owns
+	// the verification + adoption state and is the only place that
+	// can drive it. Mirrors rippled's PeerImp dispatching all
+	// consensus traffic through the same inbound path.
 
 	slog.Debug("Message received", "t", "Overlay", "type", msgType.String(), "peer", evt.PeerID, "size", len(evt.Payload))
 

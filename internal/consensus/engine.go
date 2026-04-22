@@ -176,6 +176,23 @@ type Adaptor interface {
 	// GetQuorum returns the number of validators needed for consensus.
 	GetQuorum() int
 
+	// GetNegativeUNL returns the set of validator NodeIDs currently on
+	// the negative-UNL — the XRPL mechanism for temporarily disabling
+	// unreliable validators without removing them from the UNL. Rippled
+	// keeps this state in the ltNEGATIVE_UNL SLE on every ledger; the
+	// adaptor reads it from the currently-validated ledger.
+	//
+	// Validators on the negative-UNL are still TRUSTED for message
+	// acceptance but are EXCLUDED from quorum counts in
+	// ValidationTracker.checkFullValidation. Returning the set here
+	// lets the engine refresh the tracker on every acceptLedger so a
+	// validator added to (or removed from) the negUNL across a ledger
+	// boundary is correctly excluded (or re-included).
+	//
+	// Returns nil or empty when no negUNL is in effect — the tracker
+	// treats nil as "all trusted validators contribute to quorum".
+	GetNegativeUNL() []NodeID
+
 	// PeerReportedLedgers returns the last-closed ledger hashes that
 	// overlay peers have advertised via statusChange messages. Used
 	// by getNetworkLedger as a fallback signal when peer proposals

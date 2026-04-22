@@ -16,6 +16,8 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/ledger/service"
 	"github.com/LeJamon/goXRPLd/internal/peermanagement/message"
 	"github.com/LeJamon/goXRPLd/internal/tx"
+	"github.com/LeJamon/goXRPLd/internal/tx/pseudo"
+	"github.com/LeJamon/goXRPLd/keylet"
 )
 
 var (
@@ -520,6 +522,58 @@ func (a *Adaptor) GetQuorum() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.quorum
+}
+
+// GetNegativeUNL reads the ltNEGATIVE_UNL SLE from the current validated
+// ledger and returns the NodeIDs of disabled validators. Mirrors
+// rippled's per-ledger NegativeUNL scan; without this the
+// ValidationTracker's negUNL filter (validations.go:SetNegativeUNL)
+// is dead code and a negative-UNL'd validator's vote would still
+// count toward quorum on mainnet.
+//
+// Returns nil when:
+//   - no ledger service is wired (test env);
+//   - no validated ledger yet (pre-sync);
+//   - no NegativeUNL SLE has been created (cluster is healthy);
+//   - the SLE exists but parse fails (logged at warn, treated as empty
+//     so a malformed SLE doesn't lock the tracker).
+func (a *Adaptor) GetNegativeUNL() []consensus.NodeID {
+	if a.ledgerService == nil {
+		return nil
+	}
+	l := a.ledgerService.GetValidatedLedger()
+	if l == nil {
+		return nil
+	}
+	data, err := l.Read(keylet.NegativeUNL())
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	sle, err := pseudo.ParseNegativeUNLSLE(data)
+	if err != nil {
+		a.logger.Warn("failed to parse NegativeUNL SLE; treating as empty",
+			"err", err,
+			"seq", l.Sequence(),
+		)
+		return nil
+	}
+	if len(sle.DisabledValidators) == 0 {
+		return nil
+	}
+	out := make([]consensus.NodeID, 0, len(sle.DisabledValidators))
+	for _, pubKey := range sle.DisabledValidators {
+		if len(pubKey) != 33 {
+			// Silently skip malformed entries rather than failing the
+			// whole lookup. A 32- or 34-byte entry is never going to
+			// match an IsTrusted check anyway; skipping preserves the
+			// rest of the list.
+			continue
+		}
+		var id consensus.NodeID
+		copy(id[:], pubKey)
+		out = append(out, id)
+	}
+	return out
 }
 
 // --- Time operations ---

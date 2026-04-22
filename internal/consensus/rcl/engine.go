@@ -139,6 +139,11 @@ func (e *Engine) Start(ctx context.Context) error {
 	// flips the ledger service's validated_ledger pointer.
 	e.validationTracker = NewValidationTracker(e.adaptor.GetQuorum(), 5*time.Minute)
 	e.validationTracker.SetTrusted(e.adaptor.GetTrustedValidators())
+	// Use the adaptor's network-adjusted clock for freshness checks.
+	// Rippled's Validations::isCurrent uses app_.timeKeeper().closeTime()
+	// — matching here avoids rejecting our own just-signed validation
+	// by the accumulated close-time offset on a skewed node.
+	e.validationTracker.SetNow(e.adaptor.Now)
 	e.validationTracker.SetFullyValidatedCallback(func(ledgerID consensus.LedgerID, seq uint32) {
 		e.adaptor.OnLedgerFullyValidated(ledgerID, seq)
 	})
@@ -1314,15 +1319,21 @@ func (e *Engine) acceptLedger(result consensus.Result) {
 		Timestamp: e.adaptor.Now(),
 	})
 
-	// Emit our own validation only when we were actively proposing this
-	// round. A validator in ModeSwitchedLedger (recovery round) or
-	// ModeObserving has NOT participated in the tx-set selection for
-	// this ledger — emitting a validation for it would publish a
-	// rubber-stamp of the network's output without an independent
-	// vote, which is the behavior rippled deliberately suppresses via
-	// Consensus.h:1107's switchedLedger mode. The gate matches rippled's
-	// proposing-mode check before adaptor_.validate() calls.
-	if e.mode == consensus.ModeProposing {
+	// Emit our validation whenever we're a validator AND we're not on
+	// a confirmed-wrong ledger. Rippled RCLConsensus.cpp:587-594 calls
+	// validate(built, result.txns, proposing) whenever validating_ is
+	// true AND !consensusFail AND canValidateSeq — regardless of mode.
+	// The `proposing` flag is passed INTO validate() and only controls
+	// whether vfFullValidation is set inside the validation, not
+	// whether the validation is sent at all.
+	//
+	// So switchedLedger rounds emit a PARTIAL validation (Full=false):
+	// they attest "I saw this ledger close" without claiming "I drove
+	// the tx-set". Rippled peers rely on partial validations as an
+	// early liveness signal before full quorum materializes. My prior
+	// blanket suppression was stricter than rippled and left recovery
+	// rounds invisible to the network.
+	if e.adaptor.IsValidator() && e.mode != consensus.ModeWrongLedger {
 		e.sendValidation(newLedger)
 	}
 
@@ -1363,6 +1374,12 @@ func (e *Engine) acceptLedger(result consensus.Result) {
 	if e.validationTracker != nil {
 		e.validationTracker.SetTrusted(e.adaptor.GetTrustedValidators())
 		e.validationTracker.SetQuorum(e.adaptor.GetQuorum())
+		// Pull the negative-UNL from the just-accepted ledger so
+		// validations from temporarily-disabled validators are excluded
+		// from quorum. Rippled's checkAccept consults the same SLE per
+		// ledger. Without this call, SetNegativeUNL is unreachable from
+		// production code and the negUNL filter is dead.
+		e.validationTracker.SetNegativeUNL(e.adaptor.GetNegativeUNL())
 		if newLedger.Seq() > 128 {
 			// Keep a small history window so late validations for the
 			// just-accepted ledger still count.
@@ -1564,11 +1581,21 @@ func (e *Engine) determineCloseTime() time.Time {
 }
 
 // sendValidation creates and broadcasts a validation.
+//
+// The Full flag on the emitted validation reflects whether we were
+// actively PROPOSING this round. Rippled sets vfFullValidation iff
+// mode == proposing (RCLConsensus.cpp:849-851); switchedLedger and
+// observing emit the same frame with the bit cleared (partial
+// validation). Partial validations are accepted by peers but don't
+// count toward quorum (LedgerMaster.cpp:886 filters Full=false out of
+// the trusted count).
 func (e *Engine) sendValidation(ledger consensus.Ledger) {
 	nodeID, err := e.adaptor.GetValidatorKey()
 	if err != nil {
 		return
 	}
+
+	full := e.mode == consensus.ModeProposing
 
 	validation := &consensus.Validation{
 		LedgerID:  ledger.ID(),
@@ -1576,7 +1603,7 @@ func (e *Engine) sendValidation(ledger consensus.Ledger) {
 		NodeID:    nodeID,
 		SignTime:  e.adaptor.Now(),
 		SeenTime:  e.adaptor.Now(),
-		Full:      true,
+		Full:      full,
 	}
 
 	// Tie the validation to the tx-set we converged on, so peers can
@@ -1605,10 +1632,13 @@ func (e *Engine) sendValidation(ledger consensus.Ledger) {
 
 	e.adaptor.BroadcastValidation(validation)
 
-	// Our own validation counts toward quorum — feed it to the tracker.
-	// In a 1-validator standalone setup this by itself crosses the threshold
-	// and fires OnLedgerFullyValidated immediately (matching rippled's
-	// standalone_ path where getNeededValidations() returns 0).
+	// Feed our own validation into the tracker. Only Full validations
+	// are accepted by the tracker's Full-gate, so a partial
+	// switchedLedger emission is automatically excluded from our own
+	// quorum view — matching rippled's behavior where switchedLedger
+	// partials don't count toward local checkAccept. In a
+	// 1-validator standalone setup the Full path crosses the
+	// threshold immediately and fires OnLedgerFullyValidated.
 	if e.validationTracker != nil {
 		e.validationTracker.Add(validation)
 	}

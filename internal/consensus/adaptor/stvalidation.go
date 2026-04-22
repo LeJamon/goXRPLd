@@ -303,28 +303,12 @@ func serializeSTValidation(v *consensus.Validation) []byte {
 		buf = binary.BigEndian.AppendUint64(buf, v.ServerVersion)
 	}
 
-	// --- Amount fields (type 6) ---
-
-	// Post-featureXRPFees fee-voting fields (rippled uses AMOUNT-typed
-	// variants once XRPFees is enabled). Encoded as 8-byte XRP amounts
-	// with the native (high-bit-clear) flag. Only emitted when the
-	// corresponding non-zero field is set; the adaptor decides which
-	// pair (legacy UINT vs. AMOUNT) to populate based on the parent
-	// ledger's amendments.
-	if v.BaseFeeDrops != 0 {
-		buf = appendFieldHeader(buf, typeAmount, fieldBaseFeeDrops)
-		buf = appendXRPAmount(buf, v.BaseFeeDrops)
-	}
-	if v.ReserveBaseDrops != 0 {
-		buf = appendFieldHeader(buf, typeAmount, fieldReserveBaseDrops)
-		buf = appendXRPAmount(buf, v.ReserveBaseDrops)
-	}
-	if v.ReserveIncrementDrops != 0 {
-		buf = appendFieldHeader(buf, typeAmount, fieldReserveIncrementDrops)
-		buf = appendXRPAmount(buf, v.ReserveIncrementDrops)
-	}
-
 	// --- Hash256 fields (type 5) ---
+	// Must come BEFORE AMOUNT (type 6) per canonical ascending-type
+	// ordering. Rippled STObject::getSigningHash re-serializes in that
+	// order; a preimage mismatch against rippled peers would cause
+	// signature verification to fail on flag ledgers where AMOUNT
+	// fee-vote fields are present.
 
 	// sfLedgerHash (field 1)
 	buf = appendFieldHeader(buf, typeHash256, fieldLedgerHash)
@@ -349,6 +333,33 @@ func serializeSTValidation(v *consensus.Validation) []byte {
 		buf = append(buf, v.ValidatedHash[:]...)
 	}
 
+	// --- Amount fields (type 6) ---
+	// Emitted AFTER Hash256 per canonical ordering. See note above.
+
+	// Post-featureXRPFees fee-voting fields (rippled uses AMOUNT-typed
+	// variants once XRPFees is enabled). Encoded as 8-byte XRP amounts
+	// with the native (high-bit-clear) flag. The adaptor is
+	// responsible for populating these mutually-exclusively with the
+	// legacy sfBaseFee/sfReserveBase/sfReserveIncrement triple based
+	// on the parent ledger's rules.enabled(featureXRPFees) — see
+	// FeeVoteImpl.cpp:120-192 for rippled's if/else branching. We
+	// keep the non-zero gate here as defense-in-depth: a bug in the
+	// population layer produces a MISSING field (rejected by the
+	// parser's field presence check), not a DOUBLE field (which
+	// would parse but diverge semantically from rippled).
+	if v.BaseFeeDrops != 0 {
+		buf = appendFieldHeader(buf, typeAmount, fieldBaseFeeDrops)
+		buf = appendXRPAmount(buf, v.BaseFeeDrops)
+	}
+	if v.ReserveBaseDrops != 0 {
+		buf = appendFieldHeader(buf, typeAmount, fieldReserveBaseDrops)
+		buf = appendXRPAmount(buf, v.ReserveBaseDrops)
+	}
+	if v.ReserveIncrementDrops != 0 {
+		buf = appendFieldHeader(buf, typeAmount, fieldReserveIncrementDrops)
+		buf = appendXRPAmount(buf, v.ReserveIncrementDrops)
+	}
+
 	// --- Blob/VL fields (type 7) ---
 
 	// sfSigningPubKey (field 3)
@@ -364,12 +375,13 @@ func serializeSTValidation(v *consensus.Validation) []byte {
 
 	// --- Vector256 fields (type 19) ---
 
-	// sfAmendments (field 19, type Vector256) — flag-ledger amendment
-	// vote. Rippled emits this on isVotingLedger (RCLConsensus.cpp:
-	// 886-894); each entry is a 32-byte amendment ID the validator
-	// wishes to signal support for. Encoded as VL(concat(ids)).
-	// Emitted last because Vector256 (type 19) follows typeBlob (7)
-	// in canonical ordering.
+	// sfAmendments — VECTOR256 (type 19) FIELD 3 per rippled
+	// include/xrpl/protocol/detail/sfields.macro:306. Flag-ledger
+	// amendment vote. Rippled emits this on isVotingLedger
+	// (RCLConsensus.cpp:886-894); each entry is a 32-byte amendment
+	// ID the validator wishes to signal support for. Encoded as
+	// VL(concat(ids)). Emitted last because Vector256 (type 19)
+	// follows typeBlob (7) in canonical ordering.
 	if len(v.Amendments) > 0 {
 		buf = appendFieldHeader(buf, typeVector256, fieldAmendments)
 		blob := make([]byte, 0, 32*len(v.Amendments))

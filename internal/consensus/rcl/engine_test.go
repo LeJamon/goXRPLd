@@ -247,6 +247,14 @@ func (a *mockAdaptor) GetQuorum() int {
 	return a.quorum
 }
 
+func (a *mockAdaptor) GetNegativeUNL() []consensus.NodeID {
+	// Test mock: no negative-UNL tracking. Returning nil makes the
+	// tracker treat all trusted validators as contributors to quorum,
+	// which matches the pre-P2.5 behavior and keeps existing tests
+	// unaffected by the new interface.
+	return nil
+}
+
 func (a *mockAdaptor) PeerReportedLedgers() []consensus.LedgerID {
 	return nil
 }
@@ -698,5 +706,133 @@ func TestDefaultConfig(t *testing.T) {
 
 	if config.Thresholds.MaxConsensusPct == 0 {
 		t.Error("MaxConsensusPct should not be zero")
+	}
+}
+
+// TestEngine_WrongLedgerRecovery_ModeSequence pins the behavioral
+// contract added in the round-2 P1.7 fix and tightened in R3.4:
+//
+//  1. A validator in ModeProposing that detects a wrong ledger and
+//     acquires the correct one must enter ModeSwitchedLedger for ONE
+//     round (not ModeProposing), matching rippled Consensus.h:1107.
+//  2. Validation emission in ModeSwitchedLedger is NOT suppressed; the
+//     engine emits a PARTIAL validation (Full=false), matching
+//     rippled RCLConsensus.cpp:587-594 which sends whenever validating_
+//     is true regardless of mode.
+//  3. The NEXT round after a recovery promotes the validator back to
+//     ModeProposing; that round emits a FULL validation.
+//
+// Without this test, a future refactor could silently regress any of
+// the three steps — the behavior is distributed across
+// startRoundLocked's recovering branch, sendValidation's Full flag,
+// and the acceptLedger gate.
+func TestEngine_WrongLedgerRecovery_ModeSequence(t *testing.T) {
+	adaptor := newMockAdaptor()
+	adaptor.validator = true
+	adaptor.opMode = consensus.OpModeFull
+
+	config := DefaultConfig()
+	engine := NewEngine(adaptor, config)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := engine.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer engine.Stop()
+
+	// Initial round: we're proposing.
+	round := consensus.RoundID{Seq: 101, ParentHash: consensus.LedgerID{1}}
+	engine.StartRound(round, true)
+	if mode := engine.Mode(); mode != consensus.ModeProposing {
+		t.Fatalf("initial round mode: want Proposing, got %v", mode)
+	}
+
+	// Simulate wrong-ledger detection: the engine holds e.mu while
+	// calling handleWrongLedger, so we replicate that lock discipline
+	// here. The target is a ledger we pretend was detected via
+	// getNetworkLedger.
+	targetID := consensus.LedgerID{0xAA}
+	targetLedger := &mockLedger{
+		id:        targetID,
+		seq:       101,
+		closeTime: time.Now(),
+	}
+	adaptor.ledgers[targetID] = targetLedger
+
+	engine.mu.Lock()
+	// Step into WrongLedger then immediately receive the target — this
+	// mirrors the OnLedger happy-path at engine.go:OnLedger where we
+	// transition straight through WrongLedger into SwitchedLedger.
+	engine.wrongLedgerID = targetID
+	engine.setMode(consensus.ModeWrongLedger)
+	// Drive the full recovery: handleWrongLedger finds the target
+	// ledger via the adaptor (we seeded it above) and promotes to
+	// switchedLedger via startRoundLocked(recovering=true).
+	engine.handleWrongLedger(targetID)
+	engine.mu.Unlock()
+
+	if mode := engine.Mode(); mode != consensus.ModeSwitchedLedger {
+		t.Fatalf("post-recovery mode: want SwitchedLedger, got %v", mode)
+	}
+
+	// Emit a validation while in SwitchedLedger — expect it to be
+	// broadcast with Full=false (partial).
+	adaptor.mu.Lock()
+	adaptor.validationsBroadcast = nil
+	adaptor.mu.Unlock()
+
+	engine.mu.Lock()
+	engine.sendValidation(&mockLedger{id: consensus.LedgerID{0xAA}, seq: 102})
+	engine.mu.Unlock()
+
+	adaptor.mu.RLock()
+	gotPartial := len(adaptor.validationsBroadcast)
+	var partialFull bool
+	if gotPartial > 0 {
+		partialFull = adaptor.validationsBroadcast[0].Full
+	}
+	adaptor.mu.RUnlock()
+
+	if gotPartial != 1 {
+		t.Fatalf("SwitchedLedger must emit exactly one partial validation, got %d", gotPartial)
+	}
+	if partialFull {
+		t.Fatalf("SwitchedLedger validation must have Full=false (partial)")
+	}
+
+	// Next round: startRoundLocked with recovering=false should
+	// promote us back to Proposing.
+	engine.mu.Lock()
+	nextRound := consensus.RoundID{Seq: 102, ParentHash: targetID}
+	engine.startRoundLocked(nextRound, true, false)
+	engine.mu.Unlock()
+
+	if mode := engine.Mode(); mode != consensus.ModeProposing {
+		t.Fatalf("next round after recovery: want Proposing, got %v", mode)
+	}
+
+	// Validation in Proposing mode: Full=true.
+	adaptor.mu.Lock()
+	adaptor.validationsBroadcast = nil
+	adaptor.mu.Unlock()
+
+	engine.mu.Lock()
+	engine.sendValidation(&mockLedger{id: consensus.LedgerID{0xBB}, seq: 103})
+	engine.mu.Unlock()
+
+	adaptor.mu.RLock()
+	gotFull := len(adaptor.validationsBroadcast)
+	var fullFull bool
+	if gotFull > 0 {
+		fullFull = adaptor.validationsBroadcast[0].Full
+	}
+	adaptor.mu.RUnlock()
+
+	if gotFull != 1 {
+		t.Fatalf("Proposing round must emit exactly one full validation, got %d", gotFull)
+	}
+	if !fullFull {
+		t.Fatalf("Proposing validation must have Full=true")
 	}
 }

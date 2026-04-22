@@ -11,6 +11,15 @@ import (
 type ValidationTracker struct {
 	mu sync.RWMutex
 
+	// now returns the clock used for freshness checks in isCurrent.
+	// Defaults to time.Now; the engine rewires it to adaptor.Now so
+	// freshness comparisons honor the network-adjusted close offset —
+	// mirrors rippled's app_.timeKeeper().closeTime() call in
+	// Validations.h. Using wall time.Now against a validator's own
+	// freshly-signed SignTime (which uses adaptor.Now) would reject
+	// the self-add by exactly the accumulated offset.
+	now func() time.Time
+
 	// validations maps ledger ID to validations for that ledger
 	validations map[consensus.LedgerID]map[consensus.NodeID]*consensus.Validation
 
@@ -50,8 +59,12 @@ type ValidationTracker struct {
 }
 
 // NewValidationTracker creates a new validation tracker.
+// The tracker's freshness clock defaults to time.Now; wire it to
+// adaptor.Now via SetNow before use so isCurrent honors the network
+// close-time offset.
 func NewValidationTracker(quorum int, freshness time.Duration) *ValidationTracker {
 	return &ValidationTracker{
+		now:         time.Now,
 		validations: make(map[consensus.LedgerID]map[consensus.NodeID]*consensus.Validation),
 		byNode:      make(map[consensus.NodeID]*consensus.Validation),
 		trusted:     make(map[consensus.NodeID]bool),
@@ -60,6 +73,22 @@ func NewValidationTracker(quorum int, freshness time.Duration) *ValidationTracke
 		freshness:   freshness,
 		fired:       make(map[consensus.LedgerID]struct{}),
 	}
+}
+
+// SetNow replaces the clock used by isCurrent for freshness checks.
+// Production use: wire to adaptor.Now so the freshness window honors
+// the network-adjusted close offset (matches rippled's
+// app_.timeKeeper().closeTime() usage in Validations.h). Tests pass
+// fixed-time functions to get deterministic accept/reject behavior.
+// Passing nil resets to time.Now.
+func (vt *ValidationTracker) SetNow(fn func() time.Time) {
+	vt.mu.Lock()
+	defer vt.mu.Unlock()
+	if fn == nil {
+		vt.now = time.Now
+		return
+	}
+	vt.now = fn
 }
 
 // SetTrusted updates the set of trusted validators.
@@ -193,7 +222,12 @@ func (vt *ValidationTracker) Add(validation *consensus.Validation) bool {
 	// delivered to us after too much local-clock drift. Without this
 	// gate a peer can keep year-old validations alive as long as the
 	// sequence number is in range — pointless memory + noise.
-	if !isCurrent(time.Now(), validation.SignTime, validation.SeenTime) {
+	//
+	// Uses vt.now (wired to adaptor.Now by the engine) rather than
+	// raw time.Now so the check honors the network-adjusted close
+	// offset and doesn't reject our own just-signed validations on a
+	// clock-skewed node.
+	if !isCurrent(vt.now(), validation.SignTime, validation.SeenTime) {
 		return false
 	}
 

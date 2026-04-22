@@ -324,3 +324,121 @@ func TestValidationToMessage_ProducesValidBlob(t *testing.T) {
 	assert.Equal(t, orig.LedgerID, parsed.LedgerID)
 	assert.Equal(t, orig.NodeID, parsed.NodeID)
 }
+
+// TestSerializeSTValidation_CanonicalOrder_Hash256BeforeAmount asserts
+// that Hash256 fields (type 5) precede Amount fields (type 6) in the
+// produced blob when both are present. Rippled's
+// STObject::getSigningHash re-serializes in canonical order, so a
+// validator that emits AMOUNT before HASH256 (as a prior version did)
+// produces a signing preimage that rippled peers cannot reproduce →
+// signature verification fails on featureXRPFees flag ledgers where
+// both HASH256 and AMOUNT fee-vote fields are present.
+//
+// Distinct from the pre-existing TestSerializeSTValidation_CanonicalOrder
+// which only exercises the default field set — that test wouldn't catch
+// the AMOUNT/HASH256 swap because buildTestValidation doesn't populate
+// any AMOUNT field.
+func TestSerializeSTValidation_CanonicalOrder_Hash256BeforeAmount(t *testing.T) {
+	v := buildTestValidation()
+	// Populate optional fields across several type codes so the order
+	// check has something to walk — in particular, a Hash256
+	// (ConsensusHash, type 5) and multiple Amounts (BaseFeeDrops etc.,
+	// type 6) must be present to exercise the 5-before-6 invariant
+	// that the prior bug inverted.
+	for i := range v.ConsensusHash {
+		v.ConsensusHash[i] = byte(i + 0x40)
+	}
+	for i := range v.ValidatedHash {
+		v.ValidatedHash[i] = byte(i + 0x60)
+	}
+	v.BaseFeeDrops = 10
+	v.ReserveBaseDrops = 20
+	v.ReserveIncrementDrops = 5
+
+	blob := serializeSTValidation(v)
+	require.NotEmpty(t, blob)
+
+	// Walk each top-level field header and record the type code. We
+	// don't care about field codes here — the canonical rule orders
+	// by (type<<16)|field, so strictly-ascending type is a necessary
+	// condition (sufficient when we only have one field per type code
+	// modulo the known within-type ordering, which is separately
+	// enforced by the parser).
+	var typesSeen []int
+	pos := 0
+	for pos < len(blob) {
+		typeCode, _, err := readFieldHeader(blob, &pos)
+		require.NoError(t, err)
+		typesSeen = append(typesSeen, typeCode)
+		// Skip past the value bytes.
+		_, err = skipFieldData(typeCode, blob, &pos)
+		require.NoError(t, err)
+	}
+
+	// Types must be non-decreasing across the whole blob.
+	for i := 1; i < len(typesSeen); i++ {
+		assert.LessOrEqualf(t, typesSeen[i-1], typesSeen[i],
+			"field at index %d (type %d) must not precede field at index %d (type %d)",
+			i-1, typesSeen[i-1], i, typesSeen[i])
+	}
+
+	// And specifically: Hash256 (5) must appear before Amount (6).
+	var firstAmount, firstHash256 = -1, -1
+	for i, t := range typesSeen {
+		if firstHash256 < 0 && t == typeHash256 {
+			firstHash256 = i
+		}
+		if firstAmount < 0 && t == typeAmount {
+			firstAmount = i
+		}
+	}
+	require.GreaterOrEqual(t, firstHash256, 0, "Hash256 field expected but missing")
+	require.GreaterOrEqual(t, firstAmount, 0, "Amount field expected but missing")
+	assert.Less(t, firstHash256, firstAmount,
+		"Hash256 (type 5) must precede Amount (type 6) per XRPL canonical ordering")
+}
+
+// TestSignVerifyRoundTrip_AllOptionalFields asserts that a Validation
+// populated with every optional field (Hash256, Amount, Vector256, and
+// the legacy UINT fee-vote fields) signs and self-verifies. Any
+// divergence between the serializer's output and the signing preimage
+// — e.g., the fields emitted in a different canonical order — produces
+// a signature that verifies against the WRONG preimage, so this test
+// fails.
+//
+// This is the load-bearing regression for the AMOUNT-before-HASH256
+// bug: before the fix, adding Amount fee-vote fields to a validation
+// produced a signing preimage that didn't match the wire bytes.
+func TestSignVerifyRoundTrip_AllOptionalFields(t *testing.T) {
+	identity, err := NewValidatorIdentity("snoPBrXtMeMyMHUVTgbuqAfg1SUTb")
+	require.NoError(t, err)
+
+	v := buildTestValidation()
+	v.NodeID = identity.NodeID
+	for i := range v.ConsensusHash {
+		v.ConsensusHash[i] = byte(i + 0x40)
+	}
+	for i := range v.ValidatedHash {
+		v.ValidatedHash[i] = byte(i + 0x60)
+	}
+	// Post-XRPFees AMOUNT triple. These are what exposed the prior
+	// canonical-ordering bug: without AMOUNT fields the bug was dormant.
+	v.BaseFeeDrops = 10
+	v.ReserveBaseDrops = 20
+	v.ReserveIncrementDrops = 5
+	v.ServerVersion = 0x0200000000000000
+
+	require.NoError(t, identity.SignValidation(v))
+	require.NotEmpty(t, v.Signature)
+
+	// Re-parse the serialized form so the verify path reads the same
+	// bytes a peer would receive. If serializer and preimage-builder
+	// disagree, the signature doesn't match what the peer hashes and
+	// verify fails.
+	msg := ValidationToMessage(v)
+	reparsed, err := parseSTValidation(msg.Validation)
+	require.NoError(t, err)
+
+	assert.NoError(t, VerifyValidation(reparsed),
+		"signature must verify against the reparsed wire bytes — divergence here means serializer and signing preimage disagree on field order")
+}

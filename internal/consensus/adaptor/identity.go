@@ -248,6 +248,27 @@ func buildValidationSigningData(v *consensus.Validation) []byte {
 		}
 	}
 
+	// --- HASH256 fields (type 5) — must precede AMOUNT (type 6) per
+	// canonical ascending-type ordering. Order must stay byte-identical
+	// to serializeSTValidation — any drift silently breaks our own
+	// self-verify round-trip.
+
+	// sfLedgerHash (type 5, field 1)
+	buf = appendFieldHeader(buf, typeHash256, fieldLedgerHash)
+	buf = append(buf, v.LedgerID[:]...)
+
+	// sfConsensusHash (type 5, field 23) — optional
+	if v.ConsensusHash != ([32]byte{}) {
+		buf = appendFieldHeader(buf, typeHash256, fieldConsensusHash)
+		buf = append(buf, v.ConsensusHash[:]...)
+	}
+
+	// sfValidatedHash (type 5, field 25) — optional.
+	if v.ValidatedHash != ([32]byte{}) {
+		buf = appendFieldHeader(buf, typeHash256, fieldValidatedHash)
+		buf = append(buf, v.ValidatedHash[:]...)
+	}
+
 	// --- AMOUNT fields (type 6) — post-featureXRPFees fee votes ---
 	if v.BaseFeeDrops != 0 {
 		buf = appendFieldHeader(buf, typeAmount, fieldBaseFeeDrops)
@@ -262,33 +283,15 @@ func buildValidationSigningData(v *consensus.Validation) []byte {
 		buf = appendXRPAmount(buf, v.ReserveIncrementDrops)
 	}
 
-	// sfLedgerHash (type 5, field 1)
-	buf = appendFieldHeader(buf, typeHash256, fieldLedgerHash)
-	buf = append(buf, v.LedgerID[:]...)
-
-	// sfConsensusHash (type 5, field 23) — optional
-	if v.ConsensusHash != ([32]byte{}) {
-		buf = appendFieldHeader(buf, typeHash256, fieldConsensusHash)
-		buf = append(buf, v.ConsensusHash[:]...)
-	}
-
-	// sfValidatedHash (type 5, field 25) — optional. Must stay in
-	// sync with serializeSTValidation which emits this after
-	// sfConsensusHash.
-	if v.ValidatedHash != ([32]byte{}) {
-		buf = appendFieldHeader(buf, typeHash256, fieldValidatedHash)
-		buf = append(buf, v.ValidatedHash[:]...)
-	}
-
 	// sfSigningPubKey (type 7, field 3) — included in signing hash per XRPL spec.
 	buf = appendFieldHeader(buf, typeBlob, fieldSigningPubKey)
 	buf = appendVL(buf, v.NodeID[:])
 
-	// sfAmendments (type 19, field 19) — optional flag-ledger vote.
+	// sfAmendments — VECTOR256 (type 19) FIELD 3 per rippled
+	// sfields.macro:306. The older value 19 confused type with field.
 	// Must stay in sync with serializeSTValidation which emits this
-	// AFTER sfSigningPubKey and would appear in the signing preimage
-	// the same way (sfSignature, which comes last, is the only field
-	// excluded from signing).
+	// AFTER sfSigningPubKey; sfSignature comes last and is the only
+	// field excluded from the signing preimage.
 	if len(v.Amendments) > 0 {
 		buf = appendFieldHeader(buf, typeVector256, fieldAmendments)
 		blob := make([]byte, 0, 32*len(v.Amendments))

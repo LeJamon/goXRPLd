@@ -570,8 +570,12 @@ func (r *Router) startLedgerAcquisition(seq uint32, hash [32]byte, peerID uint64
 	// race where two status changes at the same seq with different
 	// hashes armed both a replay-delta AND a legacy acquisition
 	// simultaneously, with adoption order then deciding which won.
-	// Mirror rippled's InboundLedgers::find which dedupes across both
-	// inbound replay-delta and inbound-ledger state machines.
+	// Stricter than rippled: rippled's InboundLedgers and
+	// LedgerDeltaAcquire maintain SEPARATE per-state-machine maps, so
+	// the same hash can in principle acquire through both paths
+	// concurrently there too. Our single-point-of-truth check is a
+	// tighter guarantee than the rippled reference — a deliberate
+	// narrowing, not a mirror.
 	if r.isAcquiring(hash) {
 		return
 	}
