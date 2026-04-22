@@ -188,9 +188,25 @@ type Validation struct {
 	// LoadFee is the validator's current load-based fee.
 	LoadFee uint32
 
-	// SigningData holds the canonical serialized fields (excluding sfSigningPubKey
-	// and sfSignature) for signature verification. Populated by parseSTValidation
-	// for inbound validations; nil for self-built outbound ones.
+	// ConsensusHash is sfConsensusHash — the hash of the agreed-upon
+	// transaction set that produced the validated ledger. Rippled
+	// includes this in validations so peers can tie-break between
+	// multiple ledgers at the same seq with different tx sets.
+	// Zero-hash means "not included".
+	ConsensusHash [32]byte
+
+	// ServerVersion is sfServerVersion — the validator's build
+	// version, encoded as rippled's 64-bit packed version number.
+	// Rippled attaches this to the first validation per peer session.
+	// Zero means "not included".
+	ServerVersion uint64
+
+	// SigningData holds the canonical serialized fields (excluding
+	// sfSignature, but INCLUDING sfSigningPubKey) for signature
+	// verification. Populated by parseSTValidation for inbound
+	// validations. For outbound self-built validations, it is left
+	// nil — SignValidation synthesizes its own preimage from the
+	// struct fields at sign time.
 	SigningData []byte
 }
 

@@ -136,6 +136,20 @@ type Adaptor interface {
 	// GetQuorum returns the number of validators needed for consensus.
 	GetQuorum() int
 
+	// PeerReportedLedgers returns the last-closed ledger hashes that
+	// overlay peers have advertised via statusChange messages. Used
+	// by getNetworkLedger as a fallback signal when peer proposals
+	// haven't yet reached us for the current round — a peer that
+	// just advanced its LCL but hasn't gossipped its proposal to us
+	// still shows up as a vote for where the network is.
+	//
+	// Returns an empty slice when no peer statuses have been seen.
+	// Peer-status votes are subject to the same quorum-validated
+	// gate as proposal votes in checkLedger: they influence the
+	// vote count, but switching to a peer's preferred LCL still
+	// requires that LCL to have trusted-validation quorum.
+	PeerReportedLedgers() []LedgerID
+
 	// Time operations
 
 	// Now returns the current network-adjusted time.

@@ -161,10 +161,18 @@ func buildProposalSigningData(p *consensus.Proposal) []byte {
 }
 
 // buildValidationSigningData constructs the signing digest for a validation.
+//
 // For inbound validations (SigningData populated by parseSTValidation), the
-// exact wire bytes are used, ensuring compatibility with rippled's signing
-// which may include optional fields (ConsensusHash, Cookie, etc.).
-// For outbound validations (SigningData nil), builds from struct fields.
+// exact non-signing bytes from the wire are used — including any optional
+// fields the sender included that we don't model explicitly. That is what
+// makes us compatible with rippled emitting fields we don't ourselves
+// understand.
+//
+// For outbound validations (SigningData nil), we regenerate the preimage
+// from struct fields. It MUST stay byte-identical to what
+// serializeSTValidation emits (minus sfSignature); otherwise a freshly-
+// signed validation would fail verification when parsed back from the
+// wire. When extending the wire format, update both functions together.
 func buildValidationSigningData(v *consensus.Validation) []byte {
 	if len(v.SigningData) > 0 {
 		// Inbound: use the exact non-signing bytes from the wire.
@@ -172,12 +180,14 @@ func buildValidationSigningData(v *consensus.Validation) []byte {
 		return hash[:]
 	}
 
-	// Outbound: build from struct fields in canonical field order.
+	// Outbound: rebuild from struct fields in canonical field order,
+	// matching serializeSTValidation byte-for-byte.
 	var buf []byte
 	buf = append(buf, protocol.HashPrefixValidation[:]...)
 
-	// sfFlags (type 2, field 2)
-	flags := uint32(0)
+	// sfFlags (type 2, field 2). Canonical-sig flag always set on
+	// outbound — must match serializeSTValidation.
+	flags := uint32(vfFullyCanonicalSig)
 	if v.Full {
 		flags |= vfFullValidation
 	}
@@ -193,9 +203,37 @@ func buildValidationSigningData(v *consensus.Validation) []byte {
 	buf = appendFieldHeader(buf, typeUINT32, fieldSigningTime)
 	buf = append(buf, byte(signTimeSec>>24), byte(signTimeSec>>16), byte(signTimeSec>>8), byte(signTimeSec))
 
+	// sfLoadFee (type 2, field 24) — optional
+	if v.LoadFee != 0 {
+		buf = appendFieldHeader(buf, typeUINT32, fieldLoadFee)
+		buf = append(buf, byte(v.LoadFee>>24), byte(v.LoadFee>>16), byte(v.LoadFee>>8), byte(v.LoadFee))
+	}
+
+	// sfCookie (type 3, field 10) — optional
+	if v.Cookie != 0 {
+		buf = appendFieldHeader(buf, typeUINT64, fieldCookie)
+		for i := 7; i >= 0; i-- {
+			buf = append(buf, byte(v.Cookie>>(i*8)))
+		}
+	}
+
+	// sfServerVersion (type 3, field 11) — optional
+	if v.ServerVersion != 0 {
+		buf = appendFieldHeader(buf, typeUINT64, fieldServerVersion)
+		for i := 7; i >= 0; i-- {
+			buf = append(buf, byte(v.ServerVersion>>(i*8)))
+		}
+	}
+
 	// sfLedgerHash (type 5, field 1)
 	buf = appendFieldHeader(buf, typeHash256, fieldLedgerHash)
 	buf = append(buf, v.LedgerID[:]...)
+
+	// sfConsensusHash (type 5, field 23) — optional
+	if v.ConsensusHash != ([32]byte{}) {
+		buf = appendFieldHeader(buf, typeHash256, fieldConsensusHash)
+		buf = append(buf, v.ConsensusHash[:]...)
+	}
 
 	// sfSigningPubKey (type 7, field 3) — included in signing hash per XRPL spec.
 	buf = appendFieldHeader(buf, typeBlob, fieldSigningPubKey)

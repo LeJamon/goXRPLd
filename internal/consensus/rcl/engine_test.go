@@ -230,6 +230,10 @@ func (a *mockAdaptor) GetQuorum() int {
 	return a.quorum
 }
 
+func (a *mockAdaptor) PeerReportedLedgers() []consensus.LedgerID {
+	return nil
+}
+
 // Signing and verification
 func (a *mockAdaptor) SignProposal(proposal *consensus.Proposal) error {
 	proposal.Signature = []byte("test-sig")

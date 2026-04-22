@@ -99,6 +99,13 @@ type Adaptor struct {
 	pendingTxsMu sync.RWMutex
 	pendingTxs   map[consensus.TxID][]byte
 
+	// Peer-reported last-closed ledger hashes, keyed by overlay peer
+	// ID. Populated by the router on every inbound statusChange so
+	// the engine can include peer LCLs in getNetworkLedger even when
+	// no fresh proposal has arrived from that peer yet.
+	peerLCLsMu sync.RWMutex
+	peerLCLs   map[uint64]consensus.LedgerID
+
 	logger *slog.Logger
 }
 
@@ -139,8 +146,40 @@ func New(cfg Config) *Adaptor {
 		operatingMode:     consensus.OpModeDisconnected,
 		txSetCache:        NewTxSetCache(),
 		pendingTxs:        make(map[consensus.TxID][]byte),
+		peerLCLs:          make(map[uint64]consensus.LedgerID),
 		logger:            slog.Default().With("component", "consensus-adaptor"),
 	}
+}
+
+// UpdatePeerLCL records the last-closed-ledger hash a peer reported
+// via statusChange. Called by the router on every inbound
+// TMStatusChange so getNetworkLedger can fall back to peer-reported
+// LCLs when proposal votes are absent or stale. The zero hash is
+// treated as "unknown" and removes any existing entry.
+func (a *Adaptor) UpdatePeerLCL(peerID uint64, ledger consensus.LedgerID) {
+	a.peerLCLsMu.Lock()
+	defer a.peerLCLsMu.Unlock()
+	if ledger == (consensus.LedgerID{}) {
+		delete(a.peerLCLs, peerID)
+		return
+	}
+	a.peerLCLs[peerID] = ledger
+}
+
+// PeerReportedLedgers returns a snapshot of all known peer LCL
+// hashes. Engine-side consensus.Adaptor implementation; see the
+// interface docstring for semantics.
+func (a *Adaptor) PeerReportedLedgers() []consensus.LedgerID {
+	a.peerLCLsMu.RLock()
+	defer a.peerLCLsMu.RUnlock()
+	if len(a.peerLCLs) == 0 {
+		return nil
+	}
+	out := make([]consensus.LedgerID, 0, len(a.peerLCLs))
+	for _, h := range a.peerLCLs {
+		out = append(out, h)
+	}
+	return out
 }
 
 // --- Network operations ---

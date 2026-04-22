@@ -1260,12 +1260,20 @@ func (s *Service) AdoptLedgerHeader(h *header.LedgerHeader) error {
 	}
 
 	// Create the adopted ledger from the peer's header.
-	// NewFromHeader creates in StateValidated — no need to call SetValidated().
 	adopted := ledger.NewFromHeader(*h, stateMap, txMap, drops.Fees{})
 
-	// Update service state
+	// Update service state. The adopted ledger becomes our closed
+	// ledger and joins history, but we do NOT mark it validated —
+	// we haven't yet received trusted-validation quorum for this
+	// hash ourselves. Matches rippled's sync behavior: a freshly
+	// adopted ledger is merely a starting point for tracking;
+	// validated_ledger advances later, when the first consensus
+	// round whose outcome we can quorum-validate completes.
+	//
+	// validatedLedger stays at whatever it was before adoption
+	// (typically genesis for a first-time sync) until the
+	// ValidationTracker fires OnLedgerFullyValidated.
 	s.closedLedger = adopted
-	s.validatedLedger = adopted
 	s.ledgerHistory[h.LedgerIndex] = adopted
 
 	// Create new open ledger on top

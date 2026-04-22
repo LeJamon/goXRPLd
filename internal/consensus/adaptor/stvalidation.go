@@ -54,8 +54,20 @@ const (
 	fieldSignature     = 6
 )
 
-// vfFullValidation is the flag bit for a full validation.
-const vfFullValidation = 0x00000001
+// Validation flags. Kept in sync with rippled's STValidation.h.
+const (
+	// vfFullValidation marks a full validation (vs. a partial one).
+	vfFullValidation = 0x00000001
+
+	// vfFullyCanonicalSig asserts the signature is in canonical form
+	// (low-S, compressed pubkey). Rippled sets this on every outbound
+	// validation (STValidation.cpp:236) and verifies it on inbound if
+	// the flag is present. Outbound goXRPL validations without this
+	// flag are accepted by rippled today (canonicality is optional),
+	// but future rippled releases may make it mandatory — setting it
+	// now keeps us forward-compatible and matches the reference impl.
+	vfFullyCanonicalSig = 0x80000000
+)
 
 var (
 	errShortData     = errors.New("stvalidation: unexpected end of data")
@@ -127,9 +139,17 @@ func parseSTValidation(data []byte) (*consensus.Validation, error) {
 		case typeCode == typeUINT64 && fieldCode == fieldCookie:
 			v.Cookie = binary.BigEndian.Uint64(fieldData)
 
+		case typeCode == typeUINT64 && fieldCode == fieldServerVersion:
+			v.ServerVersion = binary.BigEndian.Uint64(fieldData)
+
 		case typeCode == typeHash256 && fieldCode == fieldLedgerHash:
 			if len(fieldData) == 32 {
 				copy(v.LedgerID[:], fieldData)
+			}
+
+		case typeCode == typeHash256 && fieldCode == fieldConsensusHash:
+			if len(fieldData) == 32 {
+				copy(v.ConsensusHash[:], fieldData)
 			}
 
 		case typeCode == typeBlob && fieldCode == fieldSigningPubKey:
@@ -156,13 +176,20 @@ func parseSTValidation(data []byte) (*consensus.Validation, error) {
 // serializeSTValidation produces XRPL-binary-encoded STValidation bytes from a
 // consensus.Validation. Fields are written in canonical order (ascending type
 // code, then ascending field code within each type).
+//
+// Outbound validations set both vfFullValidation and vfFullyCanonicalSig on
+// sfFlags, matching rippled's STValidation::sign semantics. Optional
+// supplementary fields (Cookie, LoadFee, ConsensusHash, ServerVersion) are
+// emitted only when non-zero.
 func serializeSTValidation(v *consensus.Validation) []byte {
 	var buf []byte
 
 	// --- UINT32 fields (type 2) ---
 
-	// sfFlags (field 2)
-	flags := uint32(0)
+	// sfFlags (field 2). Rippled stamps vfFullyCanonicalSig on every
+	// outbound validation; we match that so canonical-sig-strict peers
+	// don't need to special-case us.
+	flags := uint32(vfFullyCanonicalSig)
 	if v.Full {
 		flags |= vfFullValidation
 	}
@@ -191,11 +218,28 @@ func serializeSTValidation(v *consensus.Validation) []byte {
 		buf = binary.BigEndian.AppendUint64(buf, v.Cookie)
 	}
 
+	// sfServerVersion (field 11) — optional. Rippled populates this
+	// with its build version on first validation per peer session so
+	// the network can track implementation versions in play.
+	if v.ServerVersion != 0 {
+		buf = appendFieldHeader(buf, typeUINT64, fieldServerVersion)
+		buf = binary.BigEndian.AppendUint64(buf, v.ServerVersion)
+	}
+
 	// --- Hash256 fields (type 5) ---
 
 	// sfLedgerHash (field 1)
 	buf = appendFieldHeader(buf, typeHash256, fieldLedgerHash)
 	buf = append(buf, v.LedgerID[:]...)
+
+	// sfConsensusHash (field 23) — optional. Ties the validation to
+	// a specific transaction-set agreement. Rippled uses it to
+	// disambiguate between concurrent ledgers at the same seq with
+	// divergent tx sets. Zero-hash means "not set".
+	if v.ConsensusHash != ([32]byte{}) {
+		buf = appendFieldHeader(buf, typeHash256, fieldConsensusHash)
+		buf = append(buf, v.ConsensusHash[:]...)
+	}
 
 	// --- Blob/VL fields (type 7) ---
 

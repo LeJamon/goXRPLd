@@ -332,6 +332,11 @@ func (r *Router) handleStatusChange(msg *peermanagement.InboundMessage) {
 		}
 		r.peersMu.Unlock()
 
+		// Surface the peer's reported LCL to the adaptor so the
+		// engine's getNetworkLedger can consider it as a vote even
+		// when no proposal has (yet) arrived from this peer.
+		r.adaptor.UpdatePeerLCL(uint64(msg.PeerID), consensus.LedgerID(peerHash))
+
 		// During initial sync, fetch full ledger from peer (like rippled).
 		// Don't adopt with synthetic headers — wait for real state data.
 		if r.adaptor.NeedsInitialSync() && sc.LedgerSeq > 1 {

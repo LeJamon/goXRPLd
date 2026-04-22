@@ -665,6 +665,45 @@ func (e *Engine) getNetworkLedger() consensus.LedgerID {
 		}
 	}
 
+	// Include our own position as a vote too. checkConvergence already
+	// counts self when tallying tx-set agreement; for consistency, the
+	// network-ledger preferred-prevLedger vote should work the same way.
+	// Without this, a 3-validator UNL's majority threshold (>len/2) is
+	// computed over peers only — two peers disagreeing with us will
+	// flip our LCL even though a fair vote would include our own
+	// position and produce a 2-2 tie (no switch).
+	if e.state != nil && e.state.OurPosition != nil {
+		pos := e.state.OurPosition
+		if now.Sub(pos.Timestamp) <= freshness {
+			if key, err := e.adaptor.GetValidatorKey(); err == nil {
+				votes[key] = vote{prevLedger: pos.PreviousLedger}
+			}
+		}
+	}
+
+	// Fold in peer-reported LCLs from statusChange. A peer that has
+	// advanced its LCL but hasn't yet gossipped a proposal to us still
+	// contributes a signal about where the network is. We key these on
+	// a synthetic NodeID derived from the hash so a single peer's
+	// reported LCL counts as one vote regardless of its actual
+	// validator pubkey (which we don't know from the status message).
+	// The vote set remains deduped; two peers reporting the same LCL
+	// produce two votes toward the same hash, which is the intent.
+	for i, h := range e.adaptor.PeerReportedLedgers() {
+		var synthKey consensus.NodeID
+		// Real validator pubkeys are compressed secp256k1 (0x02/0x03
+		// prefix) or ed25519-tagged (0xED). 0xFF is unused by XRPL
+		// public-key encoding so synthetic entries can't collide
+		// with a real validator key.
+		synthKey[0] = 0xFF
+		synthKey[1] = byte(i >> 8)
+		synthKey[2] = byte(i)
+		// Fill the rest with the ledger hash so different reported
+		// LCLs from the same ordinal slot stay distinguishable.
+		copy(synthKey[3:], h[:30])
+		votes[synthKey] = vote{prevLedger: h}
+	}
+
 	if len(votes) == 0 {
 		return ourID
 	}
@@ -1410,6 +1449,16 @@ func (e *Engine) sendValidation(ledger consensus.Ledger) {
 		SignTime:  e.adaptor.Now(),
 		SeenTime:  e.adaptor.Now(),
 		Full:      true,
+	}
+
+	// Tie the validation to the tx-set we converged on, so peers can
+	// tie-break between concurrent same-seq ledgers with different tx
+	// sets. Rippled's STValidation always includes this when available;
+	// we only have it when we actually produced a proposal this round
+	// (observers that didn't propose can legitimately omit it).
+	if e.ourTxSet != nil {
+		setID := e.ourTxSet.ID()
+		copy(validation.ConsensusHash[:], setID[:])
 	}
 
 	if err := e.adaptor.SignValidation(validation); err != nil {
