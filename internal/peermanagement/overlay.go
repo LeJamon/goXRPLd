@@ -770,7 +770,9 @@ func (o *Overlay) handleSquelch(validator []byte, peerID PeerID, squelch bool, d
 		ValidatorPubKey: validator,
 	}
 	if squelch {
-		// rippled stores the duration as seconds in TMSquelch.
+		// rippled stores the duration as seconds in TMSquelch. Only set
+		// on squelch=true — on un-squelch the peer ignores this field
+		// per the XRPL reduce-relay protocol.
 		msg.SquelchDuration = uint32(duration / time.Second)
 	}
 

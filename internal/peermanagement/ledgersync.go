@@ -150,7 +150,12 @@ type LedgerSyncHandler struct {
 	// Pending requests
 	requests map[uint64]*LedgerRequest
 
-	// Request callbacks
+	// Request callbacks. mtREPLAY_DELTA_RESPONSE and mtPROOF_PATH_RESPONSE
+	// are intentionally NOT dispatched to callbacks here — orchestration
+	// (state machine, hash verification, adoption) lives in the consensus
+	// router, which reads those responses via the overlay's Messages()
+	// channel. Dispatching them twice would race the inbound-acquisition
+	// state. See the comment on HandleMessage below.
 	onLedgerData func(ctx context.Context, peerID PeerID, data *message.LedgerData)
 
 	// Data provider for responding to requests
