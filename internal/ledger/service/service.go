@@ -167,6 +167,22 @@ type Service struct {
 	// eviction of pendingLedgerValidations.
 	pendingLedgerValidationsOrder []uint32
 
+	// heldAdoptions stashes replay-delta adoptions that arrived out of
+	// order (child seq before parent seq). Keyed by the *awaited parent
+	// seq* so a successful adopt at seq N can pop the child at seq N+1
+	// in O(1) and cascade-adopt it without a second external trigger.
+	//
+	// Flat (single-hop) by design: replay-delta is single-ledger-per-
+	// request, so multi-ledger backward walks are out of scope here
+	// (tracked separately as D6). Multi-level chains of held children
+	// do cascade via recursion at adopt time, bounded by
+	// heldAdoptionCascadeMax to cap fork-storm recursion.
+	//
+	// Distinct from pendingValidation (hash-keyed accepted events) and
+	// pendingLedgerValidations (seq-keyed validation notifications) —
+	// this map holds the *ledger payload itself* awaiting its parent.
+	heldAdoptions map[uint32]*pendingAdopt
+
 	// hooks provides event callbacks for external subscribers
 	hooks *EventHooks
 
@@ -195,6 +211,7 @@ func New(cfg Config) (*Service, error) {
 		txPositionIndex:          make(map[[32]byte]uint32),
 		pendingValidation:        make(map[[32]byte]*LedgerAcceptedEvent),
 		pendingLedgerValidations: make(map[uint32]pendingValidationEntry),
+		heldAdoptions:            make(map[uint32]*pendingAdopt),
 	}
 
 	return s, nil
@@ -1582,6 +1599,175 @@ func (s *Service) drainPendingLedgerValidationLocked(seq uint32, adopted *ledger
 	return true
 }
 
+// pendingAdopt is the payload of a held replay-delta adoption waiting
+// for its parent seq to land. Carries the exact inputs
+// AdoptLedgerWithState needs so the cascade can apply the held ledger
+// without re-fetching anything.
+type pendingAdopt struct {
+	header   *header.LedgerHeader
+	stateMap *shamap.SHAMap
+	txMap    *shamap.SHAMap
+	at       time.Time
+}
+
+// heldAdoptionTTL bounds how long a held adoption is kept before
+// eviction. 60s comfortably spans the worst-case replay-delta round-
+// trip (typically <5s) while still ensuring a stale fork or a
+// disconnected-peer response can't linger indefinitely and re-fire
+// against an unrelated adopted ledger that happens to land at the
+// awaited parent seq much later.
+const heldAdoptionTTL = 60 * time.Second
+
+// heldAdoptionCascadeMax caps the cascade recursion depth. Real-world
+// cascades are 1-2 hops deep (replay-delta is single-ledger-per-
+// request). The cap is purely a DoS guard: a malicious peer-stream that
+// seeded a deep chain of held orphans pre-adoption would otherwise
+// push arbitrary stack depth into the adopt path. 256 is two orders of
+// magnitude above any legitimate cascade length.
+const heldAdoptionCascadeMax = 256
+
+// SubmitHeldAdoption routes a fetched replay-delta either to immediate
+// adoption (when the awaited parent seq is already in history and its
+// hash matches the supplied ParentHash) or to the held-orphan stash
+// (keyed by the awaited parent seq = h.LedgerIndex - 1). Stashed
+// entries are cascade-adopted later, from inside AdoptLedgerWithState
+// at the parent seq, when the adopted hash matches ParentHash.
+//
+// Safe to call concurrently. Nil header or nil stateMap is rejected;
+// nil txMap is allowed (legacy catchup path — AdoptLedgerWithState
+// falls back to the genesis-shaped empty tx map).
+//
+// Mirrors rippled's tryAdvance cascade shape, flattened to single-hop
+// (see comment on heldAdoptions for the scope trade-off).
+func (s *Service) SubmitHeldAdoption(h *header.LedgerHeader, stateMap *shamap.SHAMap, txMap *shamap.SHAMap) error {
+	if h == nil {
+		return errors.New("SubmitHeldAdoption: nil header")
+	}
+	if stateMap == nil {
+		return errors.New("SubmitHeldAdoption: nil state map")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Evict stale entries on every submission so an operator that
+	// repeatedly submits orphans doesn't keep a stale entry alive.
+	s.evictExpiredHeldAdoptionsLocked()
+
+	// Fast path: if the awaited parent is already in history at the
+	// expected hash, adopt immediately rather than stashing for a
+	// cascade that will never re-fire. Genesis (seq 1) has no parent,
+	// so the fast path is skipped for seq <= 1; the adopt itself will
+	// error downstream if anything is wrong.
+	if h.LedgerIndex > 1 {
+		parentSeq := h.LedgerIndex - 1
+		if parent, ok := s.ledgerHistory[parentSeq]; ok {
+			parentHash := parent.Hash()
+			if parentHash == h.ParentHash {
+				return s.adoptLedgerWithStateLocked(h, stateMap, txMap, 0)
+			}
+			// Parent seq present but on a different fork. Stashing would
+			// create a never-draining entry (the real fork's parent-seq
+			// adopt is not expected to arrive at this node). Drop
+			// quietly so we don't leak memory on divergent-fork gossip.
+			s.logger.Warn("SubmitHeldAdoption dropping divergent-parent submission",
+				"seq", h.LedgerIndex,
+				"parent_have", fmt.Sprintf("%x", parentHash[:8]),
+				"parent_want", fmt.Sprintf("%x", h.ParentHash[:8]),
+			)
+			return nil
+		}
+	}
+
+	// Parent not yet present — stash.
+	s.heldAdoptions[h.LedgerIndex-1] = &pendingAdopt{
+		header:   h,
+		stateMap: stateMap,
+		txMap:    txMap,
+		at:       time.Now(),
+	}
+	return nil
+}
+
+// cascadeHeldAdoptionsLocked promotes a held child whose awaited parent
+// seq (h.LedgerIndex for the child's key) just finished adopting. If the
+// held entry's ParentHash matches the adopted hash, it is removed from
+// the stash and adopted via adoptLedgerWithStateLocked — which itself
+// re-invokes cascadeHeldAdoptionsLocked, giving a bounded recursive
+// walk through any chain of pre-stashed orphans.
+//
+// Entries older than heldAdoptionTTL are evicted on every call (not
+// just on the matched key) so a pathological peer that seeds a stash
+// full of stale forks can't defer eviction forever.
+//
+// Caller must hold s.mu (write).
+func (s *Service) cascadeHeldAdoptionsLocked(adopted *ledger.Ledger, depth int) {
+	// Purge stale entries first so a single adopt sweeps them all out.
+	s.evictExpiredHeldAdoptionsLocked()
+
+	if depth >= heldAdoptionCascadeMax {
+		s.logger.Warn("cascadeHeldAdoptions: hit recursion cap — refusing further promotion",
+			"cap", heldAdoptionCascadeMax,
+			"seq", adopted.Sequence(),
+		)
+		return
+	}
+
+	parentSeq := adopted.Sequence()
+	held, ok := s.heldAdoptions[parentSeq]
+	if !ok {
+		return
+	}
+	delete(s.heldAdoptions, parentSeq)
+
+	adoptedHash := adopted.Hash()
+	if held.header.ParentHash != adoptedHash {
+		// The held orphan expected a different parent hash at this seq
+		// — it was on a divergent fork. Drop it rather than adopting
+		// onto the wrong chain.
+		s.logger.Warn("cascadeHeldAdoptions: dropping fork-mismatched held entry",
+			"seq", held.header.LedgerIndex,
+			"parent_have", fmt.Sprintf("%x", adoptedHash[:8]),
+			"parent_want", fmt.Sprintf("%x", held.header.ParentHash[:8]),
+		)
+		return
+	}
+
+	s.logger.Info("cascadeHeldAdoptions: promoting held orphan",
+		"seq", held.header.LedgerIndex,
+		"hash", fmt.Sprintf("%x", held.header.Hash[:8]),
+		"depth", depth+1,
+	)
+	if err := s.adoptLedgerWithStateLocked(held.header, held.stateMap, held.txMap, depth+1); err != nil {
+		// Adoption of the held entry failed (e.g. persistence error on
+		// the cascade hop). Log and stop — the outer adopt already
+		// succeeded, so we do not surface the cascade error upwards.
+		s.logger.Error("cascadeHeldAdoptions: held-entry adopt failed",
+			"seq", held.header.LedgerIndex,
+			"err", err,
+		)
+	}
+}
+
+// evictExpiredHeldAdoptionsLocked removes held entries whose `at`
+// timestamp is older than heldAdoptionTTL. Caller must hold s.mu.
+func (s *Service) evictExpiredHeldAdoptionsLocked() {
+	if len(s.heldAdoptions) == 0 {
+		return
+	}
+	now := time.Now()
+	for key, held := range s.heldAdoptions {
+		if now.Sub(held.at) >= heldAdoptionTTL {
+			s.logger.Warn("heldAdoption TTL eviction",
+				"parent_seq", key,
+				"child_seq", held.header.LedgerIndex,
+				"age", now.Sub(held.at),
+			)
+			delete(s.heldAdoptions, key)
+		}
+	}
+}
+
 // NeedsInitialSync returns true if the node hasn't yet adopted a ledger from peers.
 func (s *Service) NeedsInitialSync() bool {
 	s.mu.RLock()
@@ -1735,7 +1921,19 @@ func (s *Service) ReAdoptLedgerHeader(h *header.LedgerHeader) error {
 func (s *Service) AdoptLedgerWithState(h *header.LedgerHeader, stateMap *shamap.SHAMap, txMap *shamap.SHAMap) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.adoptLedgerWithStateLocked(h, stateMap, txMap, 0)
+}
 
+// adoptLedgerWithStateLocked is the lock-free core of AdoptLedgerWithState.
+// Caller must hold s.mu (write). `cascadeDepth` is the current recursion
+// depth of the held-orphan cascade (F6); the public entrypoints pass 0
+// and the cascade helper recurses with depth+1 until heldAdoptionCascadeMax.
+func (s *Service) adoptLedgerWithStateLocked(
+	h *header.LedgerHeader,
+	stateMap *shamap.SHAMap,
+	txMap *shamap.SHAMap,
+	cascadeDepth int,
+) error {
 	if s.genesisLedger == nil {
 		return errors.New("no genesis ledger available")
 	}
@@ -1841,6 +2039,13 @@ func (s *Service) AdoptLedgerWithState(h *header.LedgerHeader, stateMap *shamap.
 		"hash", fmt.Sprintf("%x", h.Hash[:8]),
 		"account_hash", fmt.Sprintf("%x", h.AccountHash[:8]),
 	)
+
+	// F6: cascade any held adoption that was waiting on this ledger to
+	// land. Out-of-order replay-delta completions (seq N+2 arriving
+	// before seq N+1) otherwise stall until the inbound loop happens to
+	// re-request them. Also evicts entries older than heldAdoptionTTL so
+	// the stash doesn't accumulate stale forks across adopt calls.
+	s.cascadeHeldAdoptionsLocked(adopted, cascadeDepth)
 
 	return nil
 }
