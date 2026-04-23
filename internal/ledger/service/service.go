@@ -699,7 +699,12 @@ func (s *Service) getValidatedLedgersRange() string {
 }
 
 // collectTransactionResults gathers transaction data from the closed ledger
-// and records each transaction's position within the ledger.
+// and records each transaction's position within the ledger. It also
+// populates s.txIndex (hash -> ledger seq) so tx-hash RPC lookups
+// resolve to this ledger. For the local-close path s.txIndex is also
+// written at Apply time; repeating the write here is idempotent and is
+// the sole index population site for the peer-adopt path, which has no
+// Apply step.
 func (s *Service) collectTransactionResults(l *ledger.Ledger, ledgerSeq uint32, ledgerHash [32]byte) []TransactionResultEvent {
 	var results []TransactionResultEvent
 
@@ -714,6 +719,7 @@ func (s *Service) collectTransactionResults(l *ledger.Ledger, ledgerSeq uint32, 
 		}
 		result.AffectedAccounts = extractAffectedAccounts(txData)
 
+		s.txIndex[txHash] = ledgerSeq
 		s.txPositionIndex[txHash] = txIndex
 		txIndex++
 
@@ -1433,6 +1439,23 @@ func (s *Service) AdoptLedgerWithState(h *header.LedgerHeader, stateMap *shamap.
 	s.closedLedger = adopted
 	s.ledgerHistory[h.LedgerIndex] = adopted
 	s.needsInitialSync = false
+
+	// Persist the adopted ledger exactly as the local close path does so
+	// tx/account_tx/tx_history/transaction_entry RPCs can answer queries
+	// against it. Matches LedgerMaster::setFullLedger -> pendSaveValidated.
+	if err := s.persistLedger(adopted); err != nil {
+		// Degrade gracefully: the in-memory state is still correct and the
+		// next consensus close will re-try persistence. Log loudly because
+		// a persistent failure breaks tx RPCs silently.
+		s.logger.Error("Failed to persist adopted ledger", "seq", h.LedgerIndex, "err", err)
+	}
+
+	// Populate the in-memory tx-index so tx-hash lookups resolve to this
+	// seq. collectTransactionResults walks the tx map and writes to
+	// s.txIndex + s.txPositionIndex as a side effect; we don't need the
+	// returned results here (no subscribers to dispatch to yet — that's
+	// Task 1.2).
+	_ = s.collectTransactionResults(adopted, h.LedgerIndex, h.Hash)
 
 	// Create new open ledger on top
 	openLedger, err := ledger.NewOpen(adopted, time.Now())
