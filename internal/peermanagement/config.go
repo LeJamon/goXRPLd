@@ -74,6 +74,15 @@ type Config struct {
 	EnableCompression   bool
 	EnableLedgerReplay  bool
 
+	// LocalValidatorPubKey is the compressed secp256k1 public key (33
+	// bytes) of the local validator identity, when this node is acting
+	// as a validator. Nil/empty for observer nodes. Used by
+	// handleSquelchMessage to drop inbound TMSquelch frames that target
+	// our own validator — otherwise a hostile peer could silence our
+	// own proposals/validations on the RelayFromValidator path.
+	// Matches rippled PeerImp.cpp:2715-2721.
+	LocalValidatorPubKey []byte
+
 	// Clock function for testing
 	Clock func() time.Time
 }
@@ -226,6 +235,24 @@ func WithLedgerReplay(enabled bool) Option {
 func WithClock(clock func() time.Time) Option {
 	return func(c *Config) {
 		c.Clock = clock
+	}
+}
+
+// WithLocalValidatorPubKey sets the compressed secp256k1 public key
+// (33 bytes) of the local validator identity, so inbound TMSquelch
+// frames targeting our own validator can be dropped. Observer nodes
+// should omit this option (the filter becomes a no-op). Matches
+// rippled PeerImp.cpp:2715-2721 which ignores TMSquelch addressed to
+// app_.getValidationPublicKey().
+func WithLocalValidatorPubKey(key []byte) Option {
+	return func(c *Config) {
+		if len(key) == 0 {
+			c.LocalValidatorPubKey = nil
+			return
+		}
+		// Defensive copy so callers cannot mutate config state after
+		// construction.
+		c.LocalValidatorPubKey = append([]byte(nil), key...)
 	}
 }
 

@@ -2,6 +2,7 @@ package peermanagement
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -207,6 +208,16 @@ type Overlay struct {
 // higher layer (e.g., consensus startup) can wire a LedgerProvider that
 // imports internal/ledger packages — which this layer cannot.
 func (o *Overlay) LedgerSync() *LedgerSyncHandler { return o.ledgerSync }
+
+// localValidatorPubKey returns the compressed secp256k1 public key of
+// the local validator, or nil when this node is not acting as a
+// validator. Used as a cheap passthrough by handleSquelchMessage so
+// the self-target filter doesn't need to reach into cfg directly.
+// Kept unexported — higher layers plumb the pubkey in via
+// WithLocalValidatorPubKey at overlay construction.
+func (o *Overlay) localValidatorPubKey() []byte {
+	return o.cfg.LocalValidatorPubKey
+}
 
 // IncPeerBadData records an invalid-data event attributed to the peer
 // with the given PeerID. Returns the new cumulative count, or 0 when
@@ -872,6 +883,19 @@ func (o *Overlay) handleSquelchMessage(evt Event) {
 		slog.Debug("Squelch malformed pubkey",
 			"t", "Overlay", "peer", evt.PeerID, "len", len(sq.ValidatorPubKey))
 		o.IncPeerBadData(evt.PeerID, "squelch-malformed-pubkey")
+		return
+	}
+
+	// Rippled PeerImp.cpp:2715-2721 drops any inbound squelch whose
+	// target pubkey is our own validator — otherwise a peer could
+	// silence our own traffic on the RelayFromValidator path
+	// (self-silencing DoS). goXRPL additionally charges the sending
+	// peer a bad-data event so repeated attempts feed the eviction
+	// threshold; rippled just logs-and-returns there.
+	if ownPubKey := o.localValidatorPubKey(); len(ownPubKey) == 33 && bytes.Equal(sq.ValidatorPubKey, ownPubKey) {
+		slog.Debug("Squelch dropped: targets local validator",
+			"t", "Overlay", "peer", evt.PeerID)
+		o.IncPeerBadData(evt.PeerID, "squelch-targets-self")
 		return
 	}
 
