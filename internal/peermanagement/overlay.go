@@ -995,6 +995,17 @@ func (o *Overlay) maintenanceLoop(ctx context.Context) error {
 	decayTicker := time.NewTicker(badDataDecayInterval)
 	defer decayTicker.Stop()
 
+	// idleSweepTicker drives the reduce-relay idle-peer sweep (G2).
+	// Cadence is Idled/2 (4s) so no relay peer stays referenced more
+	// than ~1.5x the idle threshold before being evicted — matches
+	// rippled's OverlayImpl.cpp:107-111 which triggers
+	// Slots::deleteIdlePeers every 4 timer ticks of its 1s timer
+	// (Tuning::checkIdlePeers=4). Without this sweep, r.slots only
+	// shrinks on explicit RemovePeer and accumulates stale entries
+	// for validators we no longer see.
+	idleSweepTicker := time.NewTicker(Idled / 2)
+	defer idleSweepTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -1003,6 +1014,10 @@ func (o *Overlay) maintenanceLoop(ctx context.Context) error {
 			o.performMaintenance()
 		case <-decayTicker.C:
 			o.decayBadData()
+		case now := <-idleSweepTicker.C:
+			if o.relay != nil {
+				o.relay.deleteIdlePeers(now)
+			}
 		}
 	}
 }
