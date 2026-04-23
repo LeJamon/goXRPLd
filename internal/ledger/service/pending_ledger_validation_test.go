@@ -1,6 +1,7 @@
 package service
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -198,4 +199,235 @@ func TestSetValidatedLedger_StashHashMismatch(t *testing.T) {
 	svc.mu.RUnlock()
 	assert.False(t, stillStashed,
 		"drain must delete hash-mismatched entries on the seq-adopt side")
+}
+
+// TestAdoptLedgerWithState_EventCallbackFiresAfterValidationFirstRace pins
+// the validation-first race fix: when SetValidatedLedger arrives BEFORE the
+// adopt path installs the ledger, the subsequent adopt's F4 drain promotes
+// validatedLedger in-line — but nothing will ever call SetValidatedLedger
+// again for that hash, so the hash-keyed LedgerAcceptedEvent stash would
+// never drain. The legacy eventCallback (wired to the WebSocket
+// ledgerClosed + transaction streams) must therefore fire inline when F4
+// drain returns true, and the hash-keyed stash must NOT be populated in
+// that case (no one will drain it). Skipping the stash also prevents a
+// double-fire hazard if a late duplicate SetValidatedLedger arrives.
+func TestAdoptLedgerWithState_EventCallbackFiresAfterValidationFirstRace(t *testing.T) {
+	cfg := DefaultConfig()
+	svc, err := New(cfg)
+	require.NoError(t, err)
+	require.NoError(t, svc.Start())
+
+	var (
+		mu            sync.Mutex
+		callbackCount int
+		lastEvent     *LedgerAcceptedEvent
+	)
+	done := make(chan struct{}, 1)
+
+	svc.SetEventCallback(func(event *LedgerAcceptedEvent) {
+		mu.Lock()
+		callbackCount++
+		lastEvent = event
+		mu.Unlock()
+		select {
+		case done <- struct{}{}:
+		default:
+		}
+	})
+
+	txMap, err := shamap.New(shamap.TypeTransaction)
+	require.NoError(t, err)
+	blob1, id1 := makeTxMetaBlobForTest(t, []byte("race-tx-blob-A-padding-padpad"), 0)
+	require.NoError(t, txMap.PutWithNodeType(id1, blob1, shamap.NodeTypeTransactionWithMeta))
+	txRoot, err := txMap.Hash()
+	require.NoError(t, err)
+
+	stateMap, err := shamap.New(shamap.TypeState)
+	require.NoError(t, err)
+	stateRoot, err := stateMap.Hash()
+	require.NoError(t, err)
+
+	var adoptedHash [32]byte
+	adoptedHash[0] = 0xE1
+	adoptedSeq := svc.GetClosedLedgerIndex() + 1
+	hdr := &header.LedgerHeader{
+		LedgerIndex: adoptedSeq,
+		Hash:        adoptedHash,
+		TxHash:      txRoot,
+		AccountHash: stateRoot,
+	}
+
+	// Validation-first race: trusted-validation quorum gossip reaches us
+	// before the peer-adopt loop installs seq N. This stashes in
+	// pendingLedgerValidations keyed by seq.
+	svc.SetValidatedLedger(adoptedSeq, adoptedHash)
+
+	// Sanity: the seq-keyed stash must be populated and validatedLedger
+	// must NOT have advanced yet (the seq isn't in history).
+	svc.mu.RLock()
+	_, seqStashed := svc.pendingLedgerValidations[adoptedSeq]
+	svc.mu.RUnlock()
+	require.True(t, seqStashed,
+		"setup: SetValidatedLedger must stash (seq, hash) when seq not in history")
+
+	// Now adopt. F4 drain inside adoptLedgerWithStateLocked sees the
+	// matching-hash, non-expired stash and promotes validatedLedger
+	// to the adopted ledger. Because no SetValidatedLedger will arrive
+	// later for this hash, the legacy eventCallback MUST fire inline.
+	require.NoError(t, svc.AdoptLedgerWithState(hdr, stateMap, txMap))
+
+	assert.Equal(t, adoptedSeq, svc.GetValidatedLedgerIndex(),
+		"F4 drain must promote validatedLedger on matching adopt")
+
+	// Wait for the inline-dispatched eventCallback.
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("eventCallback must fire inline when F4 drain promotes the adopted ledger — " +
+			"no later SetValidatedLedger will arrive to drain the hash-keyed stash")
+	}
+
+	mu.Lock()
+	assert.Equal(t, 1, callbackCount,
+		"eventCallback must fire exactly once on the validation-first race path")
+	require.NotNil(t, lastEvent)
+	require.NotNil(t, lastEvent.LedgerInfo)
+	assert.Equal(t, adoptedSeq, lastEvent.LedgerInfo.Sequence,
+		"fired event must carry the adopted ledger's seq")
+	assert.Equal(t, adoptedHash, lastEvent.LedgerInfo.Hash,
+		"fired event must carry the adopted ledger's hash")
+	assert.Len(t, lastEvent.TransactionResults, 1,
+		"fired event must carry the adopted tx results")
+	mu.Unlock()
+
+	// The hash-keyed stash must NOT have been populated — firing inline
+	// supersedes stashing. Leaving a stash here would cause a double-fire
+	// if a late duplicate SetValidatedLedger arrived for the same hash.
+	svc.mu.RLock()
+	_, hashStashed := svc.pendingValidation[adoptedHash]
+	svc.mu.RUnlock()
+	assert.False(t, hashStashed,
+		"pendingValidation[hash] must NOT be populated when F4 drain fires inline — "+
+			"the event has already been consumed")
+
+	// Defense-in-depth: a second SetValidatedLedger call for the same
+	// (seq, hash) must be a no-op (seq is in history and already validated)
+	// and MUST NOT fire eventCallback again.
+	svc.SetValidatedLedger(adoptedSeq, adoptedHash)
+
+	select {
+	case <-done:
+		t.Fatal("eventCallback must not fire twice — no late-duplicate stash should remain")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 1, callbackCount,
+		"late-duplicate SetValidatedLedger must not cause a second eventCallback dispatch")
+}
+
+// TestAcceptConsensusResult_EventCallbackFiresAfterValidationFirstRace pins
+// the same fix for the consensus-close path. When a trusted-validation
+// gossip for seq N arrives before the local consensus round closes seq N,
+// AcceptConsensusResult's F4 drain promotes validatedLedger in-line — and
+// likewise no later SetValidatedLedger will arrive to drain the hash-keyed
+// stash. The eventCallback must fire inline.
+func TestAcceptConsensusResult_EventCallbackFiresAfterValidationFirstRace(t *testing.T) {
+	cfg := DefaultConfig()
+	svc, err := New(cfg)
+	require.NoError(t, err)
+	require.NoError(t, svc.Start())
+
+	var (
+		mu            sync.Mutex
+		callbackCount int
+		lastEvent     *LedgerAcceptedEvent
+	)
+	done := make(chan struct{}, 1)
+
+	svc.SetEventCallback(func(event *LedgerAcceptedEvent) {
+		mu.Lock()
+		callbackCount++
+		lastEvent = event
+		mu.Unlock()
+		select {
+		case done <- struct{}{}:
+		default:
+		}
+	})
+
+	// Predict the hash that AcceptConsensusResult will compute so we can
+	// stash a matching validation. The openLedger already chains off the
+	// current closedLedger via Start() — closing it with (closeTime, 0)
+	// and no txs is deterministic, so we can snapshot+close a clone to
+	// derive the exact hash. Simpler alternative: stash the *seq* with a
+	// wrong hash first to verify validation-first no-ops, then do the
+	// real-race test below. But the cleanest form is to perform the close
+	// twice: once discarded to capture the hash, then re-close for real.
+	//
+	// Even simpler: do the real close first, observe the produced hash,
+	// then drive AcceptConsensusResult on a fresh service where we can
+	// pre-stash that hash. That keeps the test free of internal cloning.
+	probeSvc, err := New(DefaultConfig())
+	require.NoError(t, err)
+	require.NoError(t, probeSvc.Start())
+
+	parent := probeSvc.GetClosedLedger()
+	require.NotNil(t, parent)
+	expectedSeq := parent.Sequence() + 1
+	closeTime := time.Unix(1700000000, 0)
+	_, err = probeSvc.AcceptConsensusResult(parent, nil, closeTime)
+	require.NoError(t, err)
+
+	// Capture the hash that the deterministic close produced.
+	probeSvc.mu.RLock()
+	expectedHash := probeSvc.closedLedger.Hash()
+	probeSvc.mu.RUnlock()
+	require.NotEqual(t, [32]byte{}, expectedHash)
+
+	// Back to the real svc: stash the validation BEFORE AcceptConsensusResult.
+	parentReal := svc.GetClosedLedger()
+	require.NotNil(t, parentReal)
+	require.Equal(t, parent.Sequence(), parentReal.Sequence(),
+		"probe and real service must start from the same closedLedger seq")
+
+	svc.SetValidatedLedger(expectedSeq, expectedHash)
+
+	svc.mu.RLock()
+	_, seqStashed := svc.pendingLedgerValidations[expectedSeq]
+	svc.mu.RUnlock()
+	require.True(t, seqStashed,
+		"setup: SetValidatedLedger must stash (seq, hash) when seq not in history")
+
+	// Close the consensus ledger. F4 drain sees the matching-hash,
+	// non-expired stash and promotes validatedLedger. eventCallback MUST
+	// fire inline because no later SetValidatedLedger will arrive.
+	closedSeq, err := svc.AcceptConsensusResult(parentReal, nil, closeTime)
+	require.NoError(t, err)
+	require.Equal(t, expectedSeq, closedSeq)
+
+	assert.Equal(t, expectedSeq, svc.GetValidatedLedgerIndex(),
+		"F4 drain must promote validatedLedger on matching consensus close")
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("eventCallback must fire inline when F4 drain promotes the closed ledger")
+	}
+
+	mu.Lock()
+	assert.Equal(t, 1, callbackCount,
+		"eventCallback must fire exactly once on the consensus-close validation-first race path")
+	require.NotNil(t, lastEvent)
+	require.NotNil(t, lastEvent.LedgerInfo)
+	assert.Equal(t, expectedSeq, lastEvent.LedgerInfo.Sequence)
+	assert.Equal(t, expectedHash, lastEvent.LedgerInfo.Hash)
+	mu.Unlock()
+
+	svc.mu.RLock()
+	_, hashStashed := svc.pendingValidation[expectedHash]
+	svc.mu.RUnlock()
+	assert.False(t, hashStashed,
+		"pendingValidation[hash] must NOT be populated when F4 drain fires inline")
 }

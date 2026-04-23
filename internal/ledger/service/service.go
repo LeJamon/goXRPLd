@@ -1335,7 +1335,12 @@ func (s *Service) AcceptConsensusResult(parent *ledger.Ledger, txBlobs [][]byte,
 
 	// Drain any validation that arrived before this close (validation
 	// tracker leading the consensus close). Fail-safe on expired/mismatch.
-	s.drainPendingLedgerValidationLocked(closedSeq, s.closedLedger)
+	// Capture the return: when drain returns true, the adopted ledger was
+	// promoted to validated in-line from the pre-stashed (seq, hash)
+	// notification — no later SetValidatedLedger will arrive to fire the
+	// legacy eventCallback, so we must fire it inline below (and skip
+	// the hash-keyed stash, which would never be drained).
+	promotedByDrain := s.drainPendingLedgerValidationLocked(closedSeq, s.closedLedger)
 
 	// Collect transaction results for event callbacks/hooks
 	var txResults []TransactionResultEvent
@@ -1394,12 +1399,29 @@ func (s *Service) AcceptConsensusResult(parent *ledger.Ledger, txBlobs [][]byte,
 	// reached, keeping WebSocket ledgerClosed events in lockstep with
 	// server_info.validated_ledger. Rippled publishes both from the
 	// same quorum-gated point (pubLedger / checkAccept).
+	//
+	// Validation-first race exception: when the drain above promoted
+	// validatedLedger in-line, the trusted validation has ALREADY arrived
+	// (pre-stashed by an earlier SetValidatedLedger call). No future
+	// SetValidatedLedger will land for this hash, so stashing the event
+	// would orphan it forever — WebSocket `ledgerClosed` + `transaction`
+	// subscribers (wired through SetEventCallback) would miss the ledger.
+	// Fire the callback inline instead, matching SetValidatedLedger's own
+	// drain-then-dispatch shape.
 	if s.eventCallback != nil {
 		event := &LedgerAcceptedEvent{
 			LedgerInfo:         ledgerInfo,
 			TransactionResults: txResults,
 		}
-		s.stashPendingValidationLocked(closedLedgerHash, event)
+		if promotedByDrain {
+			// Fire on a goroutine so subscriber callbacks can't reach
+			// back into s.mu (which is still held via the deferred
+			// Unlock) and deadlock the service.
+			callback := s.eventCallback
+			go callback(event)
+		} else {
+			s.stashPendingValidationLocked(closedLedgerHash, event)
+		}
 	}
 
 	s.logger.Info("Consensus ledger accepted",
@@ -1971,8 +1993,11 @@ func (s *Service) adoptLedgerWithStateLocked(
 	// If a trusted validation for this seq arrived before we got here
 	// (validation tracker leading the adopt loop), drain the stash and
 	// promote on match. The drain is fail-safe: expired or
-	// hash-mismatched entries are deleted without promoting.
-	s.drainPendingLedgerValidationLocked(h.LedgerIndex, adopted)
+	// hash-mismatched entries are deleted without promoting. Capture the
+	// return: when drain returns true, the hash-keyed eventCallback stash
+	// below must be skipped and the callback fired inline — see the
+	// comment at the callback-dispatch block for the full rationale.
+	promotedByDrain := s.drainPendingLedgerValidationLocked(h.LedgerIndex, adopted)
 
 	// Persist the adopted ledger exactly as the local close path does so
 	// tx/account_tx/tx_history/transaction_entry RPCs can answer queries
@@ -2026,12 +2051,30 @@ func (s *Service) adoptLedgerWithStateLocked(
 	// that transition). Stash the event keyed by hash so the next
 	// SetValidatedLedger(seq, hash) for this ledger drains it —
 	// the exact same pattern AcceptConsensusResult uses.
+	//
+	// Validation-first race exception: when the F4 drain above promoted
+	// validatedLedger in-line from a pre-stashed (seq, hash) notification,
+	// no future SetValidatedLedger will arrive for this hash. Stashing
+	// here would orphan the event forever — WebSocket `ledgerClosed` +
+	// `transaction` subscribers (wired through SetEventCallback) would
+	// silently miss the ledger. Fire the callback inline instead, matching
+	// SetValidatedLedger's own drain-then-dispatch shape. Skipping the
+	// stash also prevents a double-fire if a late-duplicate
+	// SetValidatedLedger arrives for the same hash.
 	if s.eventCallback != nil {
 		event := &LedgerAcceptedEvent{
 			LedgerInfo:         ledgerInfo,
 			TransactionResults: txResults,
 		}
-		s.stashPendingValidationLocked(h.Hash, event)
+		if promotedByDrain {
+			// Fire on a goroutine so subscriber callbacks can't reach
+			// back into s.mu (still held via the caller's defer) and
+			// deadlock the service.
+			callback := s.eventCallback
+			go callback(event)
+		} else {
+			s.stashPendingValidationLocked(h.Hash, event)
+		}
 	}
 
 	s.logger.Info("Adopted ledger with full state from peer",
