@@ -190,7 +190,10 @@ func TestRelayFromValidator_SkipsSquelchedPeers(t *testing.T) {
 	payload := []byte("validation-frame")
 	// exceptPeer = 0 means no peer is excluded by origin — this test
 	// exercises only the squelch filter, not the origin-exclusion.
-	require.NoError(t, o.RelayFromValidator(validator, PeerID(0), payload))
+	// The suppressionHash is unused by this test (reverse-index is
+	// populated but never read), so any sentinel value works.
+	var hash [32]byte
+	require.NoError(t, o.RelayFromValidator(validator, hash, PeerID(0), payload))
 
 	// `allowed` must have received exactly the payload.
 	select {

@@ -299,7 +299,13 @@ func (r *Router) handleProposal(msg *peermanagement.InboundMessage) {
 	// that see the same message with different optional-field framing
 	// (e.g., deprecated `hops` included or omitted) — same semantic
 	// proposal, but different byte payload.
-	firstSeen, lastSeen := r.messageSeen.observe(hashProposalSuppression(proposal))
+	//
+	// B3: stash the hash on the Proposal so the downstream relay path
+	// can thread it to Overlay's reverse index without recomputing
+	// (matches rippled's RCLCxPeerPos::suppressionID() instance member).
+	suppressionHash := hashProposalSuppression(proposal)
+	proposal.SuppressionHash = suppressionHash
+	firstSeen, lastSeen := r.messageSeen.observe(suppressionHash)
 
 	if err := r.engine.OnProposal(proposal, originPeer); err != nil {
 		r.logger.Debug("engine rejected proposal", "error", err, "peer", msg.PeerID)
@@ -314,8 +320,16 @@ func (r *Router) handleProposal(msg *peermanagement.InboundMessage) {
 	// (trust-specific branching happens later for relay decisions).
 	// Gating on trust pre-R5.7 under-squelched untrusted gossip
 	// vs. what the rest of the network does.
+	//
+	// B3: feed the slot with the FULL set of known-havers, not just
+	// originPeer. seenPeers is the overlay's reverse-index entry
+	// populated when we previously relayed this message outward —
+	// matching rippled's haveMessage set from overlay_.relay
+	// (PeerImp.cpp:3010-3017) which is then passed whole to
+	// updateSlotAndSquelch.
 	if !firstSeen && time.Since(lastSeen) < peermanagement.Idled {
-		r.adaptor.UpdateRelaySlot(proposal.NodeID[:], originPeer)
+		seenPeers := r.adaptor.PeersThatHave(suppressionHash)
+		r.adaptor.UpdateRelaySlot(proposal.NodeID[:], originPeer, seenPeers)
 	}
 }
 
@@ -359,7 +373,13 @@ func (r *Router) handleValidation(msg *peermanagement.InboundMessage) {
 	// fields vary, inner canonical blob does not. We use the raw
 	// inbound bytes here — NOT a re-serialized copy — so a lossy or
 	// reordered round-trip can't silently diverge the hash.
-	firstSeen, lastSeen := r.messageSeen.observe(hashValidationSuppression(val.Validation))
+	// B3: stash the hash on the Validation so the downstream relay
+	// path can thread it to Overlay's reverse index without
+	// recomputing (matches rippled's pattern of computing
+	// sha512Half(m->validation()) once per inbound and carrying it).
+	suppressionHash := hashValidationSuppression(val.Validation)
+	validation.SuppressionHash = suppressionHash
+	firstSeen, lastSeen := r.messageSeen.observe(suppressionHash)
 
 	if err := r.engine.OnValidation(validation, originPeer); err != nil {
 		r.logger.Debug("engine rejected validation", "error", err, "peer", msg.PeerID)
@@ -367,9 +387,11 @@ func (r *Router) handleValidation(msg *peermanagement.InboundMessage) {
 	}
 
 	// Same IDLED-gated, no-trust-gate feeding as handleProposal.
-	// Mirrors rippled's TMValidation path at PeerImp.cpp:2385.
+	// Mirrors rippled's TMValidation path at PeerImp.cpp:2385 and the
+	// B3 haveMessage expansion at PeerImp.cpp:3049-3054.
 	if !firstSeen && time.Since(lastSeen) < peermanagement.Idled {
-		r.adaptor.UpdateRelaySlot(validation.NodeID[:], originPeer)
+		seenPeers := r.adaptor.PeersThatHave(suppressionHash)
+		r.adaptor.UpdateRelaySlot(validation.NodeID[:], originPeer, seenPeers)
 	}
 }
 

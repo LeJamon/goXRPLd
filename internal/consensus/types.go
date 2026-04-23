@@ -157,6 +157,16 @@ type Proposal struct {
 
 	// Timestamp is when this proposal was created.
 	Timestamp time.Time
+
+	// SuppressionHash is the router-level dedup key for this proposal,
+	// computed via the canonical proposalUniqueId scheme
+	// (RCLCxPeerPos.cpp:66-83). Mirrors rippled's
+	// RCLCxPeerPos::suppressionID() carried on the peer-position
+	// instance so later relay + slot-feeding code doesn't have to
+	// recompute it. Populated by the consensus router on inbound
+	// messages; zero on self-originated proposals (Broadcast skips the
+	// reverse index anyway).
+	SuppressionHash [32]byte
 }
 
 // Validation represents a validation message from a validator.
@@ -254,6 +264,14 @@ type Validation struct {
 	// nil — SignValidation synthesizes its own preimage from the
 	// struct fields at sign time.
 	SigningData []byte
+
+	// SuppressionHash is the router-level dedup key for this validation.
+	// Computed as sha512Half(innerSTValidationBlob) — matches rippled
+	// PeerImp.cpp:2374 (`sha512Half(makeSlice(m->validation()))`).
+	// Populated by the consensus router on inbound validations so later
+	// relay + slot-feeding code doesn't have to recompute it. Zero on
+	// self-originated validations (Broadcast skips the reverse index).
+	SuppressionHash [32]byte
 }
 
 // DisputedTx represents a transaction that validators disagree on.

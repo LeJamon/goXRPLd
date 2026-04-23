@@ -122,6 +122,28 @@ func BadDataWeight(reason string) int {
 	}
 }
 
+// RelayedIndexTTL bounds how long a suppression-key → peers entry is
+// kept in the reverse index. Must match the consensus router's
+// messageDedupTTL so that a hash remains queryable for as long as the
+// router may observe duplicates for it. If the index expired before
+// the dedup window, a duplicate hitting router.handleProposal could
+// find no "peers that have the message" entry and under-feed the
+// slot — the exact bug B3 was filed to fix.
+const RelayedIndexTTL = 30 * time.Second
+
+// RelayedIndexMaxEntries caps memory for the reverse index under
+// adversarial traffic. Sized to match the adaptor's dedup cap so both
+// age out together under sustained churn.
+const RelayedIndexMaxEntries = 4096
+
+// relayedEntry is one bucket in the reverse index — the set of peers
+// we know "have" a given suppression-key, plus the last-update time
+// for TTL reaping.
+type relayedEntry struct {
+	peers  map[PeerID]struct{}
+	seenAt time.Time
+}
+
 // Overlay is the central orchestrator for XRPL peer-to-peer networking.
 // It manages peer connections, discovery, message routing, and the reduce-relay system.
 type Overlay struct {
@@ -137,6 +159,18 @@ type Overlay struct {
 	peers   map[PeerID]*Peer
 	peersMu sync.RWMutex
 	nextID  atomic.Uint64
+
+	// relayedIndex maps suppression-hash → set of peers known to have
+	// that message. Populated as we forward a validator message (each
+	// recipient joins the set) and queried by the consensus router on
+	// duplicate arrivals so ALL known-havers feed the reduce-relay
+	// slot — not just the peer that delivered the current duplicate.
+	// Matches rippled's overlay().relay returning the haveMessage set
+	// that is then passed to updateSlotAndSquelch
+	// (PeerImp.cpp:3010-3017 for proposals, 3044-3054 for validations).
+	relayedIndex   map[[32]byte]*relayedEntry
+	relayedIndexMu sync.Mutex
+	clockForIndex  func() time.Time
 
 	// Coordination channels
 	events   chan Event
@@ -257,14 +291,16 @@ func New(opts ...Option) (*Overlay, error) {
 	events := make(chan Event, 256)
 
 	o := &Overlay{
-		cfg:        cfg,
-		identity:   identity,
-		discovery:  NewDiscovery(&cfg, events),
-		relay:      NewRelay(&cfg, nil), // squelch callback set below
-		ledgerSync: NewLedgerSyncHandler(events),
-		peers:      make(map[PeerID]*Peer),
-		events:     events,
-		messages:   make(chan *InboundMessage, 256),
+		cfg:           cfg,
+		identity:      identity,
+		discovery:     NewDiscovery(&cfg, events),
+		relay:         NewRelay(&cfg, nil), // squelch callback set below
+		ledgerSync:    NewLedgerSyncHandler(events),
+		peers:         make(map[PeerID]*Peer),
+		events:        events,
+		messages:      make(chan *InboundMessage, 256),
+		relayedIndex:  make(map[[32]byte]*relayedEntry),
+		clockForIndex: time.Now,
 	}
 
 	// Set squelch callback for reduce-relay
@@ -1181,15 +1217,27 @@ func (o *Overlay) Broadcast(msg []byte) error {
 // excluding the originating peer (exceptPeer). Pass 0 for exceptPeer
 // when no peer should be excluded (e.g. tests that synthesize a relay).
 //
+// suppressionHash is the consensus-router suppression key for this
+// message (same [32]byte used by the dedup cache). Every peer we
+// actually send to is recorded in the reverse index so a later
+// duplicate arrival from ANOTHER peer can query
+// Overlay.PeersThatHave(suppressionHash) and feed the reduce-relay
+// slot with the full set of known-havers — matching rippled's
+// haveMessage return from overlay_.relay at PeerImp.cpp:3010-3017 /
+// 3044-3054.
+//
 // Mirrors rippled's gossip-forward path in OverlayImpl::relay: the
 // squelch is consulted before each outbound send (PeerImp.cpp:240-256)
 // and expired squelches auto-clear via Peer.ExpireSquelch. Self-origin
 // is handled by a separate code path (see Broadcast) that skips the
 // filter entirely.
-func (o *Overlay) RelayFromValidator(validator []byte, exceptPeer PeerID, msg []byte) error {
-	o.peersMu.RLock()
-	defer o.peersMu.RUnlock()
+func (o *Overlay) RelayFromValidator(validator []byte, suppressionHash [32]byte, exceptPeer PeerID, msg []byte) error {
+	// Collect the set of peers we actually forwarded to, under the
+	// peer-map RLock. Record into the reverse index AFTER releasing
+	// that lock so we never nest index-mutex inside peers-mutex.
+	var forwarded []PeerID
 
+	o.peersMu.RLock()
 	for id, peer := range o.peers {
 		if id == exceptPeer {
 			continue
@@ -1201,8 +1249,108 @@ func (o *Overlay) RelayFromValidator(validator []byte, exceptPeer PeerID, msg []
 			continue
 		}
 		peer.Send(msg)
+		forwarded = append(forwarded, id)
+	}
+	o.peersMu.RUnlock()
+
+	if len(forwarded) > 0 {
+		o.recordRelayedPeers(suppressionHash, forwarded)
 	}
 	return nil
+}
+
+// recordRelayedPeers adds peerIDs to the reverse-index bucket for
+// suppressionHash, trimming expired buckets if we hit the size cap.
+// Safe for concurrent callers.
+func (o *Overlay) recordRelayedPeers(suppressionHash [32]byte, peerIDs []PeerID) {
+	if o.relayedIndex == nil {
+		return
+	}
+	clock := o.clockForIndex
+	if clock == nil {
+		clock = time.Now
+	}
+	now := clock()
+
+	o.relayedIndexMu.Lock()
+	defer o.relayedIndexMu.Unlock()
+
+	// Trim if we're at capacity. A cheap TTL sweep rather than a
+	// formal LRU — the index is a cache, not a hot path.
+	if len(o.relayedIndex) >= RelayedIndexMaxEntries {
+		cutoff := now.Add(-RelayedIndexTTL)
+		for h, e := range o.relayedIndex {
+			if e.seenAt.Before(cutoff) {
+				delete(o.relayedIndex, h)
+			}
+		}
+		// If that didn't free enough space (adversarial churn), drop
+		// half the map — bounded worst case, same shape as the
+		// messageSuppression eviction in the consensus router.
+		if len(o.relayedIndex) >= RelayedIndexMaxEntries {
+			i := 0
+			for h := range o.relayedIndex {
+				if i >= RelayedIndexMaxEntries/2 {
+					break
+				}
+				delete(o.relayedIndex, h)
+				i++
+			}
+		}
+	}
+
+	entry, ok := o.relayedIndex[suppressionHash]
+	if !ok {
+		entry = &relayedEntry{peers: make(map[PeerID]struct{})}
+		o.relayedIndex[suppressionHash] = entry
+	}
+	for _, id := range peerIDs {
+		entry.peers[id] = struct{}{}
+	}
+	entry.seenAt = now
+}
+
+// PeersThatHave returns the set of peer IDs known to have the message
+// whose suppression-hash is `suppressionHash`. Entries are populated
+// when we relay a validator message outward (RelayFromValidator) and
+// expire after RelayedIndexTTL.
+//
+// Returns nil when the hash is unknown or the bucket has aged out —
+// callers treat both equivalently (nothing to feed the slot with
+// beyond the current originPeer).
+//
+// Thread-safe. The returned slice is a private copy the caller may
+// mutate freely.
+func (o *Overlay) PeersThatHave(suppressionHash [32]byte) []PeerID {
+	if o.relayedIndex == nil {
+		return nil
+	}
+	clock := o.clockForIndex
+	if clock == nil {
+		clock = time.Now
+	}
+
+	o.relayedIndexMu.Lock()
+	defer o.relayedIndexMu.Unlock()
+
+	entry, ok := o.relayedIndex[suppressionHash]
+	if !ok {
+		return nil
+	}
+	// Lazy-expire: if the bucket is older than TTL, drop it and report
+	// "unknown". Keeps queries from returning stale peers after the
+	// dedup window has elapsed (which would feed the slot with
+	// counters the rest of the network would have dropped long ago).
+	if clock().Sub(entry.seenAt) >= RelayedIndexTTL {
+		delete(o.relayedIndex, suppressionHash)
+		return nil
+	}
+
+	out := make([]PeerID, 0, len(entry.peers))
+	for id := range entry.peers {
+		out = append(out, id)
+	}
+	return out
 }
 
 // OnValidatorMessage is called by the consensus router on every inbound
