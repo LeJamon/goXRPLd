@@ -780,6 +780,173 @@ func (s *Service) collectTransactionResults(l *ledger.Ledger, ledgerSeq uint32, 
 	return results
 }
 
+// fixMismatchLocked invalidates the tail of ledgerHistory when the
+// adopted ledger does not chain to whatever we already have at
+// `adopted.Sequence()-1`. Mirrors rippled's setFullLedger parent-hash
+// sanity check + fixMismatch() call (LedgerMaster.cpp:749-801, 849-862).
+//
+// Trigger: prev := ledgerHistory[adoptedSeq-1] exists AND
+// prev.Hash() != adopted.ParentHash(). When that happens:
+//
+//  1. Delete the prev-seq slot (wrong fork at adoptedSeq-1).
+//  2. Delete every seq > adoptedSeq — those entries chained to the
+//     now-discarded prev or to a sibling of `adopted`, and so their
+//     parent lineage no longer resolves.
+//  3. Purge s.txIndex / s.txPositionIndex entries for the removed
+//     ledgers — otherwise `tx` / `transaction_entry` RPCs keep
+//     resolving to a seq whose contents were discarded.
+//  4. Clear s.closedLedger if it was pointing at an invalidated slot.
+//     AdoptLedgerWithState reassigns closedLedger to `adopted` right
+//     after this returns, so the clear is a defense-in-depth belt.
+//  5. If the invalidated prev-seq entry was marked validated, log ERROR
+//     — silently resetting a validated ledger would mask a serious
+//     fork. We do NOT reset s.validatedLedger silently; operator
+//     attention is required.
+//
+// Caller must hold s.mu (write lock). Called from AdoptLedgerWithState
+// before the new entry is written. No-op on the happy path (parent
+// chain matches or no prev entry exists), so the hot path is a single
+// map lookup + hash compare.
+//
+// Scope note: rippled's fixMismatch walks the LedgerHashes skiplist
+// backward further than the immediate parent and tries to "close the
+// seam" by finding the deepest still-consistent ancestor. This Go
+// implementation only invalidates the immediate prev-seq mismatch and
+// the forward orphans — deeper history is left untouched. Rationale:
+// the skiplist walk requires hashOfSeq reconstruction against the
+// adopted state, which is deferred. The common case (single-ledger
+// fork at the tip) is fully covered; multi-ledger divergences lower
+// in history will be re-tripped on each subsequent adopt as they
+// re-become the prev-seq.
+func (s *Service) fixMismatchLocked(adopted *ledger.Ledger) {
+	adoptedSeq := adopted.Sequence()
+	if adoptedSeq == 0 {
+		return
+	}
+
+	prev, havePrev := s.ledgerHistory[adoptedSeq-1]
+	if !havePrev {
+		// No prev-seq entry to mismatch against — nothing to do.
+		return
+	}
+	if prev.Hash() == adopted.ParentHash() {
+		// Happy path: the adopted ledger chains correctly.
+		return
+	}
+
+	// Mismatch. Collect the set of seqs to purge:
+	//   (a) the mismatched prev-seq itself,
+	//   (b) every seq strictly greater than adoptedSeq (orphaned
+	//       forward entries — their ancestry passes through prev-seq
+	//       or a sibling of `adopted`, both now invalid).
+	//
+	// Note: seq == adoptedSeq is also purged implicitly because the
+	// caller overwrites that slot with `adopted` right after we return.
+	// We still collect any tx-index entries associated with it so
+	// orphaned tx-hash lookups from the stale ledger don't linger.
+	var toRemove []uint32
+	toRemove = append(toRemove, adoptedSeq-1)
+	if sameSeq, ok := s.ledgerHistory[adoptedSeq]; ok && sameSeq.Hash() != adopted.Hash() {
+		toRemove = append(toRemove, adoptedSeq)
+	}
+	for seq := range s.ledgerHistory {
+		if seq > adoptedSeq {
+			toRemove = append(toRemove, seq)
+		}
+	}
+
+	// Collect diagnostic info before mutation for the WARN log. A
+	// fixMismatch hit is rare and operationally significant —
+	// operators should be able to reconstruct exactly which history
+	// slots were purged from a single log line.
+	type purged struct {
+		Seq       uint32
+		Hash      string
+		Validated bool
+	}
+	purgedDetails := make([]purged, 0, len(toRemove))
+	validatedSeqPurged := uint32(0)
+	validatedHashPurged := [32]byte{}
+	hitValidated := false
+
+	for _, seq := range toRemove {
+		l, ok := s.ledgerHistory[seq]
+		if !ok {
+			continue
+		}
+		h := l.Hash()
+		purgedDetails = append(purgedDetails, purged{
+			Seq:       seq,
+			Hash:      fmt.Sprintf("%x", h[:8]),
+			Validated: l.IsValidated(),
+		})
+		if l.IsValidated() {
+			hitValidated = true
+			validatedSeqPurged = seq
+			validatedHashPurged = h
+		}
+
+		// Drop tx-index entries that resolve to this invalidated seq.
+		// Iteration order over a Go map is randomized; that is fine
+		// here because we mutate only entries whose value equals `seq`.
+		for txHash, txSeq := range s.txIndex {
+			if txSeq == seq {
+				delete(s.txIndex, txHash)
+				delete(s.txPositionIndex, txHash)
+			}
+		}
+
+		delete(s.ledgerHistory, seq)
+	}
+
+	// Defense-in-depth: if closedLedger was pointing at one of the
+	// purged slots, clear it. The caller (AdoptLedgerWithState) is
+	// about to reassign closedLedger = adopted anyway, but clearing
+	// here ensures any intermediate read (e.g., a deferred logger
+	// access) does not dereference a ledger we just invalidated.
+	if s.closedLedger != nil {
+		closedSeq := s.closedLedger.Sequence()
+		if _, purged := s.ledgerHistory[closedSeq]; !purged && closedSeq != adoptedSeq {
+			// closedLedger points at a seq we removed from history.
+			if closedSeq == adoptedSeq-1 || closedSeq > adoptedSeq {
+				s.closedLedger = nil
+			}
+		}
+	}
+
+	// Validated-ledger handling: we do NOT silently reset it. A
+	// validated ledger getting invalidated by a parent-hash mismatch
+	// means the node previously quorum-validated a hash that the
+	// peer-adopted chain now contradicts — a serious fork that
+	// requires operator attention. Log ERROR and leave the pointer
+	// in place; downstream consumers will observe the divergence
+	// (e.g., validatedLedger > adoptedSeq) and either re-sync or
+	// surface a visible alert.
+	if hitValidated {
+		s.logger.Error("fixMismatch purged a validated ledger — possible fork detected",
+			"adopted_seq", adoptedSeq,
+			"adopted_hash", fmt.Sprintf("%x", adopted.Hash()),
+			"adopted_parent_hash", fmt.Sprintf("%x", adopted.ParentHash()),
+			"prev_seq", adoptedSeq-1,
+			"prev_hash", fmt.Sprintf("%x", prev.Hash()),
+			"purged_validated_seq", validatedSeqPurged,
+			"purged_validated_hash", fmt.Sprintf("%x", validatedHashPurged),
+		)
+	}
+
+	adoptedHash := adopted.Hash()
+	adoptedParent := adopted.ParentHash()
+	prevHash := prev.Hash()
+	s.logger.Warn("fixMismatch invalidated diverged history tail",
+		"adopted_seq", adoptedSeq,
+		"adopted_hash", fmt.Sprintf("%x", adoptedHash[:8]),
+		"adopted_parent_hash", fmt.Sprintf("%x", adoptedParent[:8]),
+		"stored_prev_hash", fmt.Sprintf("%x", prevHash[:8]),
+		"purged_count", len(purgedDetails),
+		"purged", purgedDetails,
+	)
+}
+
 // extractAffectedAccounts extracts account addresses affected by a transaction.
 // Parses the binary transaction blob and extracts Account (sender),
 // Destination (for payments, escrows, checks, etc.), and any other
@@ -1586,6 +1753,16 @@ func (s *Service) AdoptLedgerWithState(h *header.LedgerHeader, stateMap *shamap.
 	}
 
 	adopted := ledger.NewFromHeader(*h, stateMap, txMap, drops.Fees{})
+
+	// F5: before installing the adopted ledger into history, check
+	// whether it chains to whatever we already have at seq-1. If the
+	// parent-hash doesn't match, we're on a divergent fork relative to
+	// what the peer served — invalidate the tail (prev-seq + every
+	// orphaned forward entry) so subsequent RPCs don't resolve against
+	// stale state. Mirrors rippled LedgerMaster::setFullLedger's
+	// parent-hash sanity check and fixMismatch() call at
+	// LedgerMaster.cpp:849-862.
+	s.fixMismatchLocked(adopted)
 
 	// Same reasoning as ReAdoptLedgerHeader: peer-adopted ledgers advance
 	// closedLedger but not validatedLedger. The quorum gate owns that.
