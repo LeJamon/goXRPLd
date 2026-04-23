@@ -152,6 +152,21 @@ type Service struct {
 	// pendingValidationOrder tracks insertion order for LRU eviction.
 	pendingValidationOrder [][32]byte
 
+	// pendingLedgerValidations stashes trusted-validation notifications
+	// keyed by ledger *sequence* when SetValidatedLedger arrives ahead of
+	// the peer-adoption of that seq. On every subsequent insertion into
+	// ledgerHistory for a matching seq, the stash is drained and the
+	// ledger promoted to validated if the hash matches and the entry
+	// has not expired. Distinct from pendingValidation, which is keyed
+	// by *hash* and stashes full accepted events — this map stashes
+	// validation notifications in the opposite race (validation before
+	// close/adopt, not close/adopt before validation).
+	pendingLedgerValidations map[uint32]pendingValidationEntry
+
+	// pendingLedgerValidationsOrder tracks insertion order for LRU
+	// eviction of pendingLedgerValidations.
+	pendingLedgerValidationsOrder []uint32
+
 	// hooks provides event callbacks for external subscribers
 	hooks *EventHooks
 
@@ -171,14 +186,15 @@ func New(cfg Config) (*Service, error) {
 		logger = xrpllog.Discard()
 	}
 	s := &Service{
-		config:            cfg,
-		logger:            logger.Named(xrpllog.PartitionLedger),
-		nodeStore:         cfg.NodeStore,
-		relationalDB:      cfg.RelationalDB,
-		ledgerHistory:     make(map[uint32]*ledger.Ledger),
-		txIndex:           make(map[[32]byte]uint32),
-		txPositionIndex:   make(map[[32]byte]uint32),
-		pendingValidation: make(map[[32]byte]*LedgerAcceptedEvent),
+		config:                   cfg,
+		logger:                   logger.Named(xrpllog.PartitionLedger),
+		nodeStore:                cfg.NodeStore,
+		relationalDB:             cfg.RelationalDB,
+		ledgerHistory:            make(map[uint32]*ledger.Ledger),
+		txIndex:                  make(map[[32]byte]uint32),
+		txPositionIndex:          make(map[[32]byte]uint32),
+		pendingValidation:        make(map[[32]byte]*LedgerAcceptedEvent),
+		pendingLedgerValidations: make(map[uint32]pendingValidationEntry),
 	}
 
 	return s, nil
@@ -598,6 +614,12 @@ func (s *Service) AcceptLedger() (uint32, error) {
 	s.closedLedger = s.openLedger
 	s.validatedLedger = s.openLedger
 	s.ledgerHistory[closedSeq] = s.openLedger
+
+	// Standalone already promotes to validated above, so any stashed
+	// validation at this seq is redundant — but drain it so the entry
+	// doesn't linger and accidentally match a later re-close at the
+	// same seq. No-op when nothing is stashed.
+	s.drainPendingLedgerValidationLocked(closedSeq, s.closedLedger)
 
 	// Collect transaction results for event callbacks/hooks
 	var txResults []TransactionResultEvent
@@ -1127,6 +1149,10 @@ func (s *Service) AcceptConsensusResult(parent *ledger.Ledger, txBlobs [][]byte,
 	s.closedLedger = s.openLedger
 	s.ledgerHistory[closedSeq] = s.openLedger
 
+	// Drain any validation that arrived before this close (validation
+	// tracker leading the consensus close). Fail-safe on expired/mismatch.
+	s.drainPendingLedgerValidationLocked(closedSeq, s.closedLedger)
+
 	// Collect transaction results for event callbacks/hooks
 	var txResults []TransactionResultEvent
 	if s.eventCallback != nil || (s.hooks != nil && (s.hooks.OnLedgerClosed != nil || s.hooks.OnTransaction != nil)) {
@@ -1215,6 +1241,14 @@ func (s *Service) SetValidatedLedger(seq uint32, expectedHash [32]byte) {
 	s.mu.Lock()
 	l, ok := s.ledgerHistory[seq]
 	if !ok {
+		// Validation tracker raced ahead of the peer-adoption loop:
+		// quorum was reached for seq N before our local adopt/close
+		// installed seq N into ledgerHistory. Stash the (seq, hash)
+		// pair so the next insertion at that seq can promote to
+		// validated if the hash matches. Without this stash, the
+		// validation is dropped and server_info.validated_ledger
+		// lags closed_ledger indefinitely.
+		s.stashPendingLedgerValidationLocked(seq, expectedHash)
 		s.mu.Unlock()
 		return
 	}
@@ -1288,6 +1322,97 @@ func (s *Service) drainPendingValidationLocked(hash [32]byte) *LedgerAcceptedEve
 		}
 	}
 	return event
+}
+
+// pendingValidationEntry records a trusted-validation notification that
+// arrived for a ledger sequence not yet present in ledgerHistory. The
+// `at` timestamp TTL-guards the entry: if the adopt/close path races
+// far enough behind the validation tracker that quorum gossip has gone
+// stale, the entry is discarded on drain rather than silently promoting.
+type pendingValidationEntry struct {
+	expectedHash [32]byte
+	at           time.Time
+}
+
+// pendingValidationTTL bounds how long a stashed validation is considered
+// fresh enough to promote on later adopt/close. 30s is comfortably larger
+// than the quorum-gossip window (a few seconds in practice) but small
+// enough that a truly stale validation — one where the adopt path is
+// lagging minutes behind — fails safe by refusing promotion.
+const pendingValidationTTL = 30 * time.Second
+
+// stashPendingLedgerValidationLocked stores a (seq, expectedHash, at) entry
+// for later drain when ledgerHistory[seq] is populated. LRU-evicts the
+// oldest entry if the stash would exceed pendingValidationMaxLen.
+// Caller must hold s.mu.
+func (s *Service) stashPendingLedgerValidationLocked(seq uint32, expectedHash [32]byte) {
+	if _, exists := s.pendingLedgerValidations[seq]; !exists {
+		s.pendingLedgerValidationsOrder = append(s.pendingLedgerValidationsOrder, seq)
+	}
+	s.pendingLedgerValidations[seq] = pendingValidationEntry{
+		expectedHash: expectedHash,
+		at:           time.Now(),
+	}
+
+	for len(s.pendingLedgerValidationsOrder) > pendingValidationMaxLen {
+		oldest := s.pendingLedgerValidationsOrder[0]
+		s.pendingLedgerValidationsOrder = s.pendingLedgerValidationsOrder[1:]
+		// Silently losing the oldest pending validation when the cap is
+		// hit means a ledger that later adopts at this seq won't be
+		// promoted to validated by this (already-delivered) quorum
+		// notification. Log via the service's configured logger at warn
+		// level so an operator noticing a stuck-validation issue can see
+		// it; keep the cap in place so a node where adoption never
+		// catches up (disconnected peer, partition) can't leak memory.
+		if s.logger != nil {
+			s.logger.Warn("pendingLedgerValidations LRU drop — validation lost for this seq",
+				"seq", oldest,
+				"cap", pendingValidationMaxLen,
+			)
+		}
+		delete(s.pendingLedgerValidations, oldest)
+	}
+}
+
+// drainPendingLedgerValidationLocked checks for a stashed validation at
+// the given seq and, if present, removes it. If the entry matches the
+// adopted hash AND has not exceeded pendingValidationTTL, the adopted
+// ledger is promoted to validated and the promotion is reflected in
+// s.validatedLedger. Returns true when a promotion occurred so callers
+// can log / emit events accordingly. Caller must hold s.mu.
+//
+// Expired or hash-mismatched entries are always deleted — leaving them
+// in place would let a later adopt at the same seq accidentally match
+// a stale notification.
+func (s *Service) drainPendingLedgerValidationLocked(seq uint32, adopted *ledger.Ledger) bool {
+	entry, ok := s.pendingLedgerValidations[seq]
+	if !ok {
+		return false
+	}
+	delete(s.pendingLedgerValidations, seq)
+	for i, q := range s.pendingLedgerValidationsOrder {
+		if q == seq {
+			s.pendingLedgerValidationsOrder = append(s.pendingLedgerValidationsOrder[:i], s.pendingLedgerValidationsOrder[i+1:]...)
+			break
+		}
+	}
+
+	if time.Since(entry.at) >= pendingValidationTTL {
+		// Expired: gossip is too old to trust. A fresh SetValidatedLedger
+		// call will re-stash / re-promote if the validation is still
+		// current on the trusted-validation tracker's side.
+		return false
+	}
+	if adopted.Hash() != entry.expectedHash {
+		// Fork signal: peers validated a different hash at this seq
+		// than the one we just adopted. Refuse to promote; the adopted
+		// ledger is on the wrong fork from the quorum's perspective.
+		return false
+	}
+
+	_ = adopted.SetValidated()
+	s.validatedLedger = adopted
+	return true
 }
 
 // NeedsInitialSync returns true if the node hasn't yet adopted a ledger from peers.
@@ -1467,6 +1592,12 @@ func (s *Service) AdoptLedgerWithState(h *header.LedgerHeader, stateMap *shamap.
 	s.closedLedger = adopted
 	s.ledgerHistory[h.LedgerIndex] = adopted
 	s.needsInitialSync = false
+
+	// If a trusted validation for this seq arrived before we got here
+	// (validation tracker leading the adopt loop), drain the stash and
+	// promote on match. The drain is fail-safe: expired or
+	// hash-mismatched entries are deleted without promoting.
+	s.drainPendingLedgerValidationLocked(h.LedgerIndex, adopted)
 
 	// Persist the adopted ledger exactly as the local close path does so
 	// tx/account_tx/tx_history/transaction_entry RPCs can answer queries
