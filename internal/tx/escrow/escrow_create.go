@@ -15,7 +15,7 @@ import (
 
 // maxMPTokenAmount is the maximum MPT value (int64 max).
 // Reference: rippled include/xrpl/protocol/STAmount.h maxMPTokenAmount
-const maxMPTokenAmount int64 = 0x7FFFFFFFFFFFFFFF // 9223372036854775807
+const maxMPTokenAmount int64 = 0x7FFFFFFFFFFFFFFF
 
 func init() {
 	tx.Register(tx.TypeEscrowCreate, func() tx.Transaction {
@@ -47,7 +47,6 @@ type EscrowCreate struct {
 	Condition *string `json:"Condition,omitempty" xrpl:"Condition,omitempty"`
 }
 
-// NewEscrowCreate creates a new EscrowCreate transaction
 func NewEscrowCreate(account, destination string, amount tx.Amount) *EscrowCreate {
 	return &EscrowCreate{
 		BaseTx:      *tx.NewBaseTx(tx.TypeEscrowCreate, account),
@@ -56,19 +55,16 @@ func NewEscrowCreate(account, destination string, amount tx.Amount) *EscrowCreat
 	}
 }
 
-// TxType returns the transaction type
 func (e *EscrowCreate) TxType() tx.Type {
 	return tx.TypeEscrowCreate
 }
 
-// Validate validates the EscrowCreate transaction
 // Reference: rippled Escrow.cpp EscrowCreate::preflight()
 func (e *EscrowCreate) Validate() error {
 	if err := e.BaseTx.Validate(); err != nil {
 		return err
 	}
 
-	// Check for invalid flags
 	// Reference: rippled Escrow.cpp preflight() fix1543 flag check
 	if err := tx.CheckFlags(e.GetFlags(), tx.TfUniversalMask); err != nil {
 		return err
@@ -134,7 +130,6 @@ func (e *EscrowCreate) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (e *EscrowCreate) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(e)
 }
@@ -297,7 +292,6 @@ func (e *EscrowCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 	}
 
-	// Create the escrow entry
 	accountID, _ := state.DecodeAccountID(e.Account)
 	sequence := e.GetCommon().SeqProxy()
 

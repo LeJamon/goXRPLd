@@ -19,19 +19,16 @@ type DIDDelete struct {
 	tx.BaseTx
 }
 
-// NewDIDDelete creates a new DIDDelete transaction
 func NewDIDDelete(account string) *DIDDelete {
 	return &DIDDelete{
 		BaseTx: *tx.NewBaseTx(tx.TypeDIDDelete, account),
 	}
 }
 
-// TxType returns the transaction type
 func (d *DIDDelete) TxType() tx.Type {
 	return tx.TypeDIDDelete
 }
 
-// Validate validates the DIDDelete transaction
 // Reference: rippled DID.cpp DIDDelete::preflight
 func (d *DIDDelete) Validate() error {
 	if err := d.BaseTx.Validate(); err != nil {
@@ -46,17 +43,14 @@ func (d *DIDDelete) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (d *DIDDelete) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(d)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (d *DIDDelete) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureDID}
 }
 
-// Apply applies a DIDDelete transaction to the ledger state.
 // Reference: rippled DID.cpp DIDDelete::doApply
 func (d *DIDDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("did delete apply",
@@ -75,7 +69,6 @@ func (d *DIDDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 	ownerDirKey := keylet.OwnerDir(ctx.AccountID)
 	state.DirRemove(ctx.View, ownerDirKey, 0, didKey.Key, true)
 
-	// Delete the DID entry
 	if err := ctx.View.Erase(didKey); err != nil {
 		ctx.Log.Error("did delete: unable to delete DID from owner")
 		return tx.TefINTERNAL

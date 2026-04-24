@@ -29,19 +29,16 @@ type DIDSet struct {
 	URI string `json:"URI,omitempty" xrpl:"URI,omitempty"`
 }
 
-// NewDIDSet creates a new DIDSet transaction
 func NewDIDSet(account string) *DIDSet {
 	return &DIDSet{
 		BaseTx: *tx.NewBaseTx(tx.TypeDIDSet, account),
 	}
 }
 
-// TxType returns the transaction type
 func (d *DIDSet) TxType() tx.Type {
 	return tx.TypeDIDSet
 }
 
-// Validate validates the DIDSet transaction
 // Reference: rippled DID.cpp DIDSet::preflight
 func (d *DIDSet) Validate() error {
 	if err := d.BaseTx.Validate(); err != nil {
@@ -108,17 +105,14 @@ func (d *DIDSet) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (d *DIDSet) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(d)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (d *DIDSet) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureDID}
 }
 
-// Apply applies a DIDSet transaction to the ledger state.
 // Reference: rippled DID.cpp DIDSet::doApply
 func (d *DIDSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("did set apply",
@@ -128,10 +122,8 @@ func (d *DIDSet) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	didKey := keylet.DID(ctx.AccountID)
 
-	// Check if DID already exist
 	existingData, err := ctx.View.Read(didKey)
 	if err == nil && existingData != nil {
-		// Update existing DID
 		did, err := state.ParseDID(existingData)
 		if err != nil {
 			return tx.TefINTERNAL
@@ -174,7 +166,6 @@ func (d *DIDSet) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TesSUCCESS
 	}
 
-	// Create new DID
 	reserve := ctx.AccountReserve(ctx.Account.OwnerCount + 1)
 	if ctx.Account.Balance < reserve {
 		return tx.TecINSUFFICIENT_RESERVE

@@ -37,12 +37,10 @@ func NewMPTokenAuthorize(account, issuanceID string) *MPTokenAuthorize {
 	}
 }
 
-// TxType returns the transaction type
 func (m *MPTokenAuthorize) TxType() tx.Type {
 	return tx.TypeMPTokenAuthorize
 }
 
-// Validate validates the MPTokenAuthorize transaction
 // Reference: rippled MPTokenAuthorize.cpp preflight
 func (m *MPTokenAuthorize) Validate() error {
 	if err := m.BaseTx.Validate(); err != nil {
@@ -51,7 +49,6 @@ func (m *MPTokenAuthorize) Validate() error {
 
 	flags := m.GetFlags()
 
-	// Check for invalid flags
 	if flags&^tfMPTokenAuthorizeValidMask != 0 {
 		return tx.Errorf(tx.TemINVALID_FLAG, "invalid flags for MPTokenAuthorize")
 	}
@@ -83,12 +80,10 @@ func (m *MPTokenAuthorize) HasHolder() bool {
 	return m.Holder != ""
 }
 
-// Flatten returns a flat map of all transaction fields
 func (m *MPTokenAuthorize) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(m)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (m *MPTokenAuthorize) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureMPTokensV1}
 }
@@ -169,7 +164,6 @@ func (m *MPTokenAuthorize) holderUnauthorize(ctx *tx.ApplyContext, issuanceKey, 
 		return tx.TecNO_PERMISSION
 	}
 
-	// Remove from owner directory
 	ownerDirKey := keylet.OwnerDir(ctx.AccountID)
 	state.DirRemove(ctx.View, ownerDirKey, token.OwnerNode, tokenKey.Key, false)
 

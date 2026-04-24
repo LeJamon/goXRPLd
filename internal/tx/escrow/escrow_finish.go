@@ -42,7 +42,6 @@ type EscrowFinish struct {
 	CredentialIDs []string `json:"CredentialIDs,omitempty" xrpl:"CredentialIDs,omitempty"`
 }
 
-// NewEscrowFinish creates a new EscrowFinish transaction
 func NewEscrowFinish(account, owner string, offerSequence uint32) *EscrowFinish {
 	return &EscrowFinish{
 		BaseTx:        *tx.NewBaseTx(tx.TypeEscrowFinish, account),
@@ -51,19 +50,16 @@ func NewEscrowFinish(account, owner string, offerSequence uint32) *EscrowFinish 
 	}
 }
 
-// TxType returns the transaction type
 func (e *EscrowFinish) TxType() tx.Type {
 	return tx.TypeEscrowFinish
 }
 
-// Validate validates the EscrowFinish transaction
 // Reference: rippled Escrow.cpp EscrowFinish::preflight()
 func (e *EscrowFinish) Validate() error {
 	if err := e.BaseTx.Validate(); err != nil {
 		return err
 	}
 
-	// Check for invalid flags
 	if err := tx.CheckFlags(e.GetFlags(), tx.TfUniversalMask); err != nil {
 		return err
 	}
@@ -101,7 +97,6 @@ func (e *EscrowFinish) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (e *EscrowFinish) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(e)
 }
@@ -143,7 +138,6 @@ func (e *EscrowFinish) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 	}
 
-	// Get the escrow owner's account ID
 	ownerID, err := state.DecodeAccountID(e.Owner)
 	if err != nil {
 		return tx.TemINVALID
@@ -334,7 +328,6 @@ func (e *EscrowFinish) Apply(ctx *tx.ApplyContext) tx.Result {
 			// Reference: rippled Escrow.cpp escrowUnlockApplyHelper<MPTIssue> lines 944-1012
 			mptHexID := escrowEntry.MPTIssuanceID
 
-			// Get the raw amount
 			var originalAmount uint64
 			if escrowEntry.MPTAmount != nil {
 				originalAmount = uint64(*escrowEntry.MPTAmount)

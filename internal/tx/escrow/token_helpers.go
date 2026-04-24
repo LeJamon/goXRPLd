@@ -22,9 +22,7 @@ import (
 // parityRate is the identity transfer rate (no fee). Matches rippled's parityRate.
 const parityRate uint32 = 1_000_000_000
 
-// ---------------------------------------------------------------------------
 // 1. EscrowCreate Preclaim Helpers
-// ---------------------------------------------------------------------------
 
 // escrowCreatePreclaimIOU validates IOU escrow creation preconditions.
 // Reference: rippled Escrow.cpp escrowCreatePreclaimHelper<Issue> lines 204-279
@@ -201,9 +199,7 @@ func escrowCreatePreclaimMPT(view tx.LedgerView, rules *amendment.Rules, account
 	return tx.TesSUCCESS
 }
 
-// ---------------------------------------------------------------------------
 // 2. EscrowFinish Preclaim Helpers
-// ---------------------------------------------------------------------------
 
 // escrowFinishPreclaimIOU validates IOU escrow finish preconditions.
 // Reference: rippled Escrow.cpp lines 702-724
@@ -274,9 +270,7 @@ func escrowFinishPreclaimMPT(view tx.LedgerView, destID [20]byte, amount tx.Amou
 	return tx.TesSUCCESS
 }
 
-// ---------------------------------------------------------------------------
 // 3. EscrowCancel Preclaim Helpers
-// ---------------------------------------------------------------------------
 
 // escrowCancelPreclaimIOU validates IOU escrow cancel preconditions.
 // Reference: rippled Escrow.cpp lines 1219-1237
@@ -337,9 +331,7 @@ func escrowCancelPreclaimMPT(view tx.LedgerView, accountID [20]byte, amount tx.A
 	return tx.TesSUCCESS
 }
 
-// ---------------------------------------------------------------------------
 // 4. Lock Helpers
-// ---------------------------------------------------------------------------
 
 // escrowLockMPT locks MPT tokens by decreasing sender's MPTAmount and increasing
 // LockedAmount on both the MPToken and MPTIssuance.
@@ -430,9 +422,7 @@ func escrowLockMPT(view tx.LedgerView, senderID [20]byte, amount tx.Amount) tx.R
 	return tx.TesSUCCESS
 }
 
-// ---------------------------------------------------------------------------
 // 5. Unlock Helpers
-// ---------------------------------------------------------------------------
 
 // escrowUnlockIOU unlocks IOU tokens during EscrowFinish or EscrowCancel.
 // Handles trust line creation, transfer fee calculation, limit checking,
@@ -469,14 +459,11 @@ func escrowUnlockIOU(
 		return tx.TesSUCCESS
 	}
 
-	// Check if trust line exists
 	trustLineKey := keylet.Line(receiverID, issuerID, amount.Currency)
 	trustLineData, err := view.Read(trustLineKey)
 	trustLineExists := err == nil && trustLineData != nil
 
-	// Create trust line if needed
 	if !trustLineExists && createAsset && !receiverIsIssuer {
-		// Check reserve
 		reserve := reserveBase + uint64(destOwnerCount+1)*reserveIncrement
 		if destBalance < reserve {
 			return tx.TecNO_LINE_INSUF_RESERVE
@@ -587,7 +574,6 @@ func escrowUnlockMPT(
 		receiverExists, _ := view.Exists(receiverTokenKey)
 
 		if !receiverExists && createAsset {
-			// Check reserve
 			reserve := reserveBase + uint64(destOwnerCount+1)*reserveIncrement
 			if destBalance < reserve {
 				return tx.TecINSUFFICIENT_RESERVE
@@ -713,9 +699,7 @@ func escrowUnlockMPT(
 	return tx.TesSUCCESS
 }
 
-// ---------------------------------------------------------------------------
 // 6. Shared Utilities
-// ---------------------------------------------------------------------------
 
 // requireAuthIOU checks if an issuer requires authorization and if the account
 // is authorized on the trust line.
@@ -934,9 +918,7 @@ func mptIssuerFromIssuanceID(hexID string) string {
 	return addr
 }
 
-// ---------------------------------------------------------------------------
 // 7. Trust Line Helpers for Unlock
-// ---------------------------------------------------------------------------
 
 // createTrustLineForEscrow creates a zero-balance trust line between issuer and
 // receiver for escrow unlock. Matches rippled's trustCreate pattern.
@@ -1136,7 +1118,6 @@ func checkTrustLineLimit(view tx.LedgerView, receiverID, issuerID [20]byte, curr
 		lineBalance = lineBalance.Negate()
 	}
 
-	// Add the final amount to the balance
 	newBalance, err := lineBalance.Add(finalAmount)
 	if err != nil {
 		return tx.TefINTERNAL
@@ -1206,15 +1187,12 @@ func createMPTokenForEscrow(
 		return tx.TecDIR_FULL
 	}
 
-	// Increment owner count for the destination
 	adjustOwnerCountViaView(view, destID, 1)
 
 	return tx.TesSUCCESS
 }
 
-// ---------------------------------------------------------------------------
 // Internal helpers
-// ---------------------------------------------------------------------------
 
 // readAccountRoot reads and parses an AccountRoot from the ledger.
 func readAccountRoot(view tx.LedgerView, accountID [20]byte) (*state.AccountRoot, error) {
@@ -1230,7 +1208,6 @@ func readAccountRoot(view tx.LedgerView, accountID [20]byte) (*state.AccountRoot
 // Checks global freeze on issuer + individual freeze on trust line.
 // Reference: rippled View.cpp isFrozen(view, account, currency, issuer)
 func isFrozenIOU(view tx.LedgerView, accountID, issuerID [20]byte, currency string) bool {
-	// Check global freeze
 	issuerAccount, err := readAccountRoot(view, issuerID)
 	if err != nil || issuerAccount == nil {
 		return false
@@ -1239,7 +1216,6 @@ func isFrozenIOU(view tx.LedgerView, accountID, issuerID [20]byte, currency stri
 		return true
 	}
 
-	// Check individual freeze if not self
 	if issuerID != accountID {
 		return tx.IsTrustlineFrozen(view, accountID, issuerID, currency)
 	}
@@ -1437,7 +1413,6 @@ func computeMPTTransferFee(
 	senderIsIssuer := issuerID == senderID
 	receiverIsIssuer := issuerID == receiverID
 
-	// Get current transfer rate
 	currentRate := parityRate
 	if issuance.TransferFee > 0 {
 		currentRate = getMPTTransferRate(issuance.TransferFee)
