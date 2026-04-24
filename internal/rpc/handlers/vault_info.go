@@ -69,7 +69,6 @@ func (m *VaultInfoMethod) Handle(ctx *types.RpcContext, params json.RawMessage) 
 		vaultKey = vaultKeylet.Key
 	}
 
-	// Get the Vault entry
 	vaultEntry, err := types.Services.Ledger.GetLedgerEntry(vaultKey, ledgerIndex)
 	if err != nil {
 		return nil, &types.RpcError{
@@ -78,7 +77,6 @@ func (m *VaultInfoMethod) Handle(ctx *types.RpcContext, params json.RawMessage) 
 		}
 	}
 
-	// Decode the Vault entry
 	vaultDecoded, decodeErr := binarycodec.Decode(hex.EncodeToString(vaultEntry.Node))
 	if decodeErr != nil {
 		return nil, types.RpcErrorInternal("Failed to decode Vault: " + decodeErr.Error())
@@ -92,12 +90,10 @@ func (m *VaultInfoMethod) Handle(ctx *types.RpcContext, params json.RawMessage) 
 			var mptIssuanceKey [32]byte
 			copy(mptIssuanceKey[:], shareMPTIDBytes)
 
-			// Get the MPToken issuance entry
 			mptIssuanceEntry, mptErr := types.Services.Ledger.GetLedgerEntry(mptIssuanceKey, ledgerIndex)
 			if mptErr == nil {
 				mptIssuanceDecoded, mptDecodeErr := binarycodec.Decode(hex.EncodeToString(mptIssuanceEntry.Node))
 				if mptDecodeErr == nil {
-					// Add shares info to vault response
 					vaultDecoded["shares"] = mptIssuanceDecoded
 				}
 			}

@@ -36,7 +36,6 @@ func (m *GetAggregatePriceMethod) Handle(ctx *types.RpcContext, params json.RawM
 		raw = make(map[string]json.RawMessage)
 	}
 
-	// --- oracles validation ---
 	// rippled: !params.isMember(jss::oracles) -> missing_field_error
 	oraclesRaw, hasOracles := raw["oracles"]
 	if !hasOracles {
@@ -53,20 +52,17 @@ func (m *GetAggregatePriceMethod) Handle(ctx *types.RpcContext, params json.RawM
 		return nil, types.RpcErrorOracleMalformed()
 	}
 
-	// --- base_asset validation ---
 	// rippled: !params.isMember(jss::base_asset) -> missing_field_error
 	baseAssetRaw, hasBaseAsset := raw["base_asset"]
 	if !hasBaseAsset {
 		return nil, types.RpcErrorMissingField("base_asset")
 	}
-	// --- quote_asset validation ---
 	// rippled: !params.isMember(jss::quote_asset) -> missing_field_error
 	quoteAssetRaw, hasQuoteAsset := raw["quote_asset"]
 	if !hasQuoteAsset {
 		return nil, types.RpcErrorMissingField("quote_asset")
 	}
 
-	// --- trim validation ---
 	// rippled: if present, must be valid uint; then if present, must be 1..25
 	const maxTrim = 25
 	var trimValue uint32
@@ -83,7 +79,6 @@ func (m *GetAggregatePriceMethod) Handle(ctx *types.RpcContext, params json.RawM
 		}
 	}
 
-	// --- time_threshold validation ---
 	// rippled: if present, must be valid uint
 	var timeThreshold uint32
 	if ttRaw, ok := raw["time_threshold"]; ok {
@@ -94,7 +89,6 @@ func (m *GetAggregatePriceMethod) Handle(ctx *types.RpcContext, params json.RawM
 		timeThreshold = v
 	}
 
-	// --- base_asset / quote_asset currency validation ---
 	// rippled: empty or invalid currency -> rpcINVALID_PARAMS
 	baseAsset, err := parseCurrencyParam(baseAssetRaw)
 	if err != nil {
@@ -170,23 +164,17 @@ func (m *GetAggregatePriceMethod) Handle(ctx *types.RpcContext, params json.RawM
 			return nil, types.RpcErrorInvalidParams("Invalid parameters.")
 		}
 
-		// Get oracle keylet
 		oracleKeylet := keylet.Oracle(accountID, documentID)
-
-		// Get the Oracle entry
 		oracleEntry, lookupErr := types.Services.Ledger.GetLedgerEntry(oracleKeylet.Key, ledgerIndex)
 		if lookupErr != nil {
-			// Skip oracles that don't exist
 			continue
 		}
 
-		// Decode the Oracle entry
 		oracleDecoded, decodeErr2 := binarycodec.Decode(hex.EncodeToString(oracleEntry.Node))
 		if decodeErr2 != nil {
 			continue
 		}
 
-		// Get the last update time
 		var lastUpdateTime uint32
 		if lut, ok := oracleDecoded["LastUpdateTime"]; ok {
 			switch v := lut.(type) {
@@ -219,7 +207,6 @@ func (m *GetAggregatePriceMethod) Handle(ctx *types.RpcContext, params json.RawM
 				continue
 			}
 
-			// Get the asset price
 			assetPrice, ok := priceData["AssetPrice"]
 			if !ok {
 				continue

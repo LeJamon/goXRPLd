@@ -39,7 +39,6 @@ func (m *LedgerRangeMethod) Handle(ctx *types.RpcContext, params json.RawMessage
 		return nil, err
 	}
 
-	// Get ledger range from the ledger service
 	result, err := types.Services.Ledger.GetLedgerRange(request.StartLedger, request.StopLedger)
 	if err != nil {
 		return nil, types.RpcErrorInternal("Failed to get ledger range: " + err.Error())

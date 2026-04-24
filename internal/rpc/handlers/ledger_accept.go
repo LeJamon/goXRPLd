@@ -16,13 +16,11 @@ func (m *LedgerAcceptMethod) Handle(ctx *types.RpcContext, params json.RawMessag
 		return nil, err
 	}
 
-	// Check if running in standalone mode
 	if !types.Services.Ledger.IsStandalone() {
 		return nil, types.NewRpcError(types.RpcNOT_STANDALONE, "notStandalone", "notStandalone",
 			"ledger_accept is only available in standalone mode")
 	}
 
-	// Accept the ledger
 	closedSeq, err := types.Services.Ledger.AcceptLedger()
 	if err != nil {
 		return nil, types.RpcErrorInternal("Failed to accept ledger: " + err.Error())

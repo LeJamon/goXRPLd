@@ -143,7 +143,6 @@ func (m *AccountTxMethod) Handle(ctx *types.RpcContext, params json.RawMessage) 
 		return entry
 	}
 
-	// Get network_id for CTID encoding
 	serverInfo := types.Services.Ledger.GetServerInfo()
 	networkID := serverInfo.NetworkID
 
@@ -199,7 +198,6 @@ func (m *AccountTxMethod) Handle(ctx *types.RpcContext, params json.RawMessage) 
 					txJSON["ledger_index"] = txn.LedgerIndex
 					txJSON["hash"] = txHashHex
 
-					// Add CTID inside tx_json (v2 only)
 					if txn.LedgerIndex > 0 && txn.LedgerIndex < 0x0FFFFFFF {
 						txJSON["ctid"] = encodeCTIDWithNetworkID(txn.LedgerIndex, uint16(txn.TxnSeq), uint16(networkID))
 					}

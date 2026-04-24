@@ -105,7 +105,6 @@ func parsePositiveIntParam(raw json.RawMessage, fieldName string, strictPositive
 	val, err := strconv.ParseInt(str, 10, 64)
 	if err != nil {
 		// Could be a float like "1.5" or too large
-		// Check if it's a float
 		if _, fErr := strconv.ParseFloat(str, 64); fErr == nil {
 			// It's a valid float but not an integer → rpcHIGH_FEE
 			return 0, types.RpcErrorExpectedFieldHighFee(fieldName, "a positive integer")
@@ -187,7 +186,6 @@ func signTransactionJSON(txJSON json.RawMessage, creds signCredentials, offline 
 			return nil, types.RpcErrorInvalidParams("Account in tx_json does not match signing key")
 		}
 	} else {
-		// Set the account if not present
 		txMap["Account"] = address
 	}
 
@@ -215,7 +213,6 @@ func signTransactionJSON(txJSON json.RawMessage, creds signCredentials, offline 
 			txMap["Fee"] = formatUint64AsString(networkFee)
 		}
 
-		// Set Sequence if not present
 		if _, ok := txMap["Sequence"]; !ok {
 			// TODO: When ledger lookup is available, auto-fill from account state.
 			// For now, attempt to get account info.
@@ -244,10 +241,8 @@ func signTransactionJSON(txJSON json.RawMessage, creds signCredentials, offline 
 		}
 	}
 
-	// Add the signing public key
 	txMap["SigningPubKey"] = publicKey
 
-	// Parse the transaction to get a proper Transaction object
 	txBytes, err := json.Marshal(txMap)
 	if err != nil {
 		return nil, types.RpcErrorInternal("Failed to marshal transaction: " + err.Error())
@@ -258,29 +253,22 @@ func signTransactionJSON(txJSON json.RawMessage, creds signCredentials, offline 
 		return nil, types.RpcErrorInvalidParams("Failed to parse transaction: " + err.Error())
 	}
 
-	// Update the common fields with signing key
 	txCommon := transaction.GetCommon()
 	txCommon.SigningPubKey = publicKey
 
-	// Sign the transaction
 	signature, err := tx.SignTransaction(transaction, privateKey)
 	if err != nil {
 		return nil, types.RpcErrorInternal("Failed to sign transaction: " + err.Error())
 	}
 
-	// Add signature to transaction map
 	txMap["TxnSignature"] = signature
 
-	// Encode the transaction to binary
 	txBlob, err := binarycodec.Encode(txMap)
 	if err != nil {
 		return nil, types.RpcErrorInternal("Failed to encode transaction: " + err.Error())
 	}
 
-	// Calculate transaction hash
 	txHash := CalculateTxHash(txBlob)
-
-	// Add hash to response tx_json
 	txMap["hash"] = txHash
 
 	return &signResult{

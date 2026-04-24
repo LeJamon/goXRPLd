@@ -103,7 +103,6 @@ func (m *SimulateMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (
 		return nil, types.RpcErrorSrcActMalformed("Invalid field 'tx.Account'.")
 	}
 
-	// --- Autofill fields (handler-level, no ledger access needed) ---
 	// Reference: rippled autofillTx()
 
 	// Autofill SigningPubKey: if not present, set to ""

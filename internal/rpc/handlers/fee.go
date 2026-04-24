@@ -25,10 +25,7 @@ func (m *FeeMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (inter
 		return nil, err
 	}
 
-	// Get fee settings from ledger service
 	baseFee, _, _ := types.Services.Ledger.GetCurrentFees()
-
-	// Get current ledger index
 	currentLedgerIndex := types.Services.Ledger.GetCurrentLedgerIndex()
 
 	baseFeeStr := fmt.Sprintf("%d", baseFee)

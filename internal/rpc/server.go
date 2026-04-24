@@ -92,7 +92,6 @@ func (s *Server) handleGetRequest(w http.ResponseWriter, r *http.Request) {
 		method = "server_info"
 	}
 
-	// Create RPC context
 	clientIP := getClientIP(r)
 	portCtx := GetPortContext(r.Context())
 	role := roleForRequest(clientIP, portCtx)
@@ -104,16 +103,12 @@ func (s *Server) handleGetRequest(w http.ResponseWriter, r *http.Request) {
 		ClientIP:   clientIP,
 	}
 
-	// Execute method
 	result, rpcErr := s.executeMethod(method, nil, ctx)
-
-	// Build XRPL format response
 	s.writeXrplResponse(w, method, nil, result, rpcErr)
 }
 
 // handlePostRequest processes POST requests with XRPL JSON-RPC payload
 func (s *Server) handlePostRequest(w http.ResponseWriter, r *http.Request) {
-	// Read request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		s.writeXrplError(w, "", nil, "internal", "Failed to read request body")
@@ -121,14 +116,12 @@ func (s *Server) handlePostRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	// Parse XRPL request
 	var request XrplRequest
 	if err := json.Unmarshal(body, &request); err != nil {
 		s.writeXrplError(w, "", nil, "jsonInvalid", "Invalid JSON: "+err.Error())
 		return
 	}
 
-	// Check for method
 	if request.Method == "" {
 		s.writeXrplError(w, "", nil, "missingCommand", "Missing method field")
 		return
@@ -140,7 +133,6 @@ func (s *Server) handlePostRequest(w http.ResponseWriter, r *http.Request) {
 		params = request.Params[0]
 	}
 
-	// Create RPC context
 	clientIP := getClientIP(r)
 	portCtx := GetPortContext(r.Context())
 	role := roleForRequest(clientIP, portCtx)
@@ -164,7 +156,6 @@ func (s *Server) handlePostRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Execute method
 	result, rpcErr := s.executeMethod(request.Method, params, ctx)
 
 	// Build request object for error responses
@@ -182,7 +173,6 @@ func (s *Server) handlePostRequest(w http.ResponseWriter, r *http.Request) {
 		requestObj = map[string]interface{}{"command": request.Method}
 	}
 
-	// Build XRPL format response
 	s.writeXrplResponse(w, request.Method, requestObj, result, rpcErr)
 }
 
@@ -190,7 +180,6 @@ func (s *Server) handlePostRequest(w http.ResponseWriter, r *http.Request) {
 func (s *Server) executeMethod(method string, params json.RawMessage, ctx *types.RpcContext) (interface{}, *types.RpcError) {
 	rpcLog().Debug("rpc", "method", method, "client", ctx.ClientIP)
 
-	// Get method handler
 	handler, exists := s.registry.Get(method)
 	if !exists {
 		return nil, types.RpcErrorMethodNotFound(method)
@@ -216,7 +205,6 @@ func (s *Server) executeMethod(method string, params json.RawMessage, ctx *types
 		}
 	}
 
-	// Check API version support
 	supportedVersions := handler.SupportedApiVersions()
 	if len(supportedVersions) > 0 {
 		supported := false
@@ -231,7 +219,6 @@ func (s *Server) executeMethod(method string, params json.RawMessage, ctx *types
 		}
 	}
 
-	// Execute handler
 	return handler.Handle(ctx, params)
 }
 
@@ -248,7 +235,6 @@ func (s *Server) writeXrplResponseWithOptions(w http.ResponseWriter, method stri
 	response := make(map[string]interface{})
 
 	if rpcErr != nil {
-		// Error response format - XRPL includes error, error_code, error_message inside result
 		resultObj := map[string]interface{}{
 			"status":        "error",
 			"error":         rpcErr.ErrorString,
@@ -260,13 +246,10 @@ func (s *Server) writeXrplResponseWithOptions(w http.ResponseWriter, method stri
 		}
 		response["result"] = resultObj
 	} else {
-		// Success response format
-		// If result is already a map, add status to it
 		if resultMap, ok := result.(map[string]interface{}); ok {
 			resultMap["status"] = "success"
 			response["result"] = resultMap
 		} else {
-			// Wrap non-map results
 			response["result"] = map[string]interface{}{
 				"status": "success",
 				"data":   result,
@@ -365,18 +348,15 @@ func roleForRequest(clientIP string, portCtx *PortContext) types.Role {
 
 // getClientIP extracts the client IP from the request
 func getClientIP(r *http.Request) string {
-	// Check X-Forwarded-For header
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		ips := strings.Split(xff, ",")
 		return strings.TrimSpace(ips[0])
 	}
 
-	// Check X-Real-IP header
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
 		return xri
 	}
 
-	// Fall back to RemoteAddr
 	ip := r.RemoteAddr
 	if idx := strings.LastIndex(ip, ":"); idx != -1 {
 		ip = ip[:idx]

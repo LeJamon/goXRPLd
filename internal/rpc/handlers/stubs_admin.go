@@ -7,15 +7,6 @@ import (
 	xrpllog "github.com/LeJamon/goXRPLd/log"
 )
 
-// =============================================================================
-// ADMIN STUB HANDLERS
-// =============================================================================
-//
-// These handlers are admin/operational tools that require additional
-// infrastructure (LedgerCleaner, logging framework, validator config, etc.).
-// TODO [admin]: Implement when the corresponding infrastructure is in place.
-// =============================================================================
-
 // LedgerCleanerMethod handles the ledger_cleaner RPC method.
 // STUB: Returns error. Admin-only maintenance tool.
 //

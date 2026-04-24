@@ -57,7 +57,6 @@ func (m *AMMInfoMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (i
 			return nil, types.RpcErrorInvalidParams("Invalid amm_account: " + decErr.Error())
 		}
 
-		// Get the account to find its AMMID
 		var accountIDArray [20]byte
 		copy(accountIDArray[:], accountID)
 		accountKey := keylet.Account(accountIDArray)
@@ -105,13 +104,11 @@ func (m *AMMInfoMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (i
 		ammKey = ammKeylet.Key
 	}
 
-	// Get the AMM entry
 	ammEntry, err := types.Services.Ledger.GetLedgerEntry(ammKey, ledgerIndex)
 	if err != nil {
 		return nil, types.RpcErrorActNotFound("AMM not found")
 	}
 
-	// Decode the AMM entry
 	decoded, decodeErr := binarycodec.Decode(hex.EncodeToString(ammEntry.Node))
 	if decodeErr != nil {
 		return nil, types.RpcErrorInternal("Failed to decode AMM: " + decodeErr.Error())

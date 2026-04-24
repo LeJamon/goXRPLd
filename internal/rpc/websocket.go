@@ -103,7 +103,6 @@ func (ws *WebSocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// because the WebSocket connection lives beyond the HTTP request lifecycle
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Create WebSocket connection object
 	wsConn := &WebSocketConnection{
 		ID:            generateConnectionID(),
 		conn:          conn,
@@ -120,7 +119,6 @@ func (ws *WebSocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ws.connections[wsConn.ID] = wsConn
 	ws.connectionsMutex.Unlock()
 
-	// Add to subscription manager
 	legacyConn := &types.Connection{
 		ID:            wsConn.ID,
 		Subscriptions: wsConn.subscriptions,
@@ -138,7 +136,6 @@ func (ws *WebSocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (ws *WebSocketServer) handleConnection(wsConn *WebSocketConnection) {
 	defer ws.closeConnection(wsConn)
 
-	// Set read limit
 	wsConn.conn.SetReadLimit(512 * 1024) // 512KB max message size
 
 	// Set up pong handler to reset read deadline on pong received
@@ -152,7 +149,6 @@ func (ws *WebSocketServer) handleConnection(wsConn *WebSocketConnection) {
 
 	// Read loop - this is blocking and runs until error or close
 	for {
-		// Set read deadline before each read
 		wsConn.conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 
 		// Read message from WebSocket (blocking)
@@ -164,7 +160,6 @@ func (ws *WebSocketServer) handleConnection(wsConn *WebSocketConnection) {
 			return
 		}
 
-		// Check if context is cancelled
 		select {
 		case <-wsConn.ctx.Done():
 			return
@@ -260,7 +255,6 @@ func (ws *WebSocketServer) handleMessage(wsConn *WebSocketConnection, message []
 		cmd.Params = paramsBytes
 	}
 
-	// Create RPC context
 	clientIP := getWebSocketClientIP(wsConn.conn)
 	role := roleForRequest(clientIP, wsConn.portCtx)
 	wsLog().Debug("ws request", "cmd", cmd.Command, "remoteAddr", wsConn.conn.RemoteAddr().String(), "clientIP", clientIP, "role", role, "isAdmin", role == types.RoleAdmin)
@@ -414,7 +408,6 @@ func (ws *WebSocketServer) handlePathFindCreate(wsConn *WebSocketConnection, ctx
 		return
 	}
 
-	// Get ledger view for initial computation
 	view, err := types.Services.Ledger.GetClosedLedgerView()
 	if err != nil {
 		ws.sendError(wsConn, types.NewRpcError(types.RpcNO_CURRENT, "noCurrent", "noCurrent",
@@ -505,7 +498,6 @@ func (ws *WebSocketServer) UpdatePathFindSessions(getView func() (types.LedgerSt
 		return
 	}
 
-	// Get ledger view once for all sessions
 	view, err := getView()
 	if err != nil {
 		wsLog().Error("Failed to get ledger view for path_find updates", "err", err)
@@ -538,24 +530,19 @@ func (ws *WebSocketServer) UpdatePathFindSessions(getView func() (types.LedgerSt
 
 // handleRPCMethod processes regular RPC method calls over WebSocket
 func (ws *WebSocketServer) handleRPCMethod(wsConn *WebSocketConnection, ctx *types.RpcContext, cmd types.WebSocketCommand) {
-	// Get method handler
 	handler, exists := ws.methodRegistry.Get(cmd.Command)
 	if !exists {
 		ws.sendError(wsConn, types.RpcErrorMethodNotFound(cmd.Command), cmd.ID)
 		return
 	}
 
-	// Check role permissions
 	if ctx.Role < handler.RequiredRole() {
 		ws.sendError(wsConn, types.NewRpcError(types.RpcCOMMAND_UNTRUSTED, "commandUntrusted", "commandUntrusted",
 			fmt.Sprintf("Command '%s' requires higher privileges", cmd.Command)), cmd.ID)
 		return
 	}
 
-	// Execute method
 	result, rpcErr := handler.Handle(ctx, cmd.Params)
-
-	// Send response
 	if rpcErr != nil {
 		ws.sendError(wsConn, rpcErr, cmd.ID)
 	} else {
@@ -661,12 +648,10 @@ func (ws *WebSocketServer) closeConnection(wsConn *WebSocketConnection) {
 	wsConn.pathFindSession = nil
 	wsConn.mutex.Unlock()
 
-	// Remove from connections map
 	ws.connectionsMutex.Lock()
 	delete(ws.connections, wsConn.ID)
 	ws.connectionsMutex.Unlock()
 
-	// Remove from subscription manager
 	ws.subscriptionManager.RemoveConnection(wsConn.ID)
 
 	// Release per-port connection limiter slot

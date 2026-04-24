@@ -180,7 +180,6 @@ func (m *WalletProposeMethod) Handle(ctx *types.RpcContext, params json.RawMessa
 		"public_key_hex":  strings.ToUpper(publicKey),
 	}
 
-	// Add warning if passphrase was used
 	if warning != "" {
 		response["warning"] = warning
 	}

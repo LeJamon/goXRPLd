@@ -194,7 +194,6 @@ func (m *TxMethod) buildResponseV2(
 		if closeTimeSec > 0 {
 			txJSON["date"] = closeTimeSec
 		}
-		// Add CTID inside tx_json
 		if txInfo.LedgerIndex > 0 && txInfo.TxIndex <= 0xFFFF && txInfo.LedgerIndex < 0x0FFFFFFF {
 			txJSON["ctid"] = encodeCTID(txInfo.LedgerIndex, uint16(txInfo.TxIndex))
 		}
@@ -355,7 +354,6 @@ func (m *TxMethod) lookupByCTID(ctx *types.RpcContext, ledgerSeq uint32, txIndex
 		response["close_time_iso"] = closeTime.UTC().Format("2006-01-02T15:04:05Z")
 		response["date"] = closeTimeSec
 	}
-	// Add CTID to v1 response at root level
 	response["ctid"] = encodeCTID(ledgerSeq, txIndex)
 
 	return response, nil

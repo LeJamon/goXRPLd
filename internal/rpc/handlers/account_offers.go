@@ -35,7 +35,6 @@ func (m *AccountOffersMethod) Handle(ctx *types.RpcContext, params json.RawMessa
 		ledgerIndex = request.LedgerIndex.String()
 	}
 
-	// Get account offers from the ledger service
 	limit := ClampLimit(request.Limit, LimitAccountOffers, ctx.IsAdmin)
 	result, err := types.Services.Ledger.GetAccountOffers(request.Account, ledgerIndex, limit)
 	if err != nil {

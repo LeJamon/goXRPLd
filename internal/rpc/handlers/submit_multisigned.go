@@ -126,7 +126,6 @@ func (m *SubmitMultisignedMethod) Handle(ctx *types.RpcContext, params json.RawM
 			return nil, types.RpcErrorInvalidParams("Signers array may only contain Signer entries.")
 		}
 
-		// Check required signer fields
 		account, ok := signer["Account"].(string)
 		if !ok || account == "" {
 			return nil, types.RpcErrorInvalidParams("Signer entry missing Account")
@@ -185,14 +184,11 @@ func (m *SubmitMultisignedMethod) Handle(ctx *types.RpcContext, params json.RawM
 
 	result, submitErr := types.Services.Ledger.SubmitTransaction(txJSON)
 	if submitErr != nil {
-		// Return submission error with details
 		return nil, types.RpcErrorInternal("Transaction submission failed: " + submitErr.Error())
 	}
 
-	// Add hash to response tx_json
 	txMap["hash"] = txHash
 
-	// Build response
 	response := map[string]interface{}{
 		"engine_result":         result.EngineResult,
 		"engine_result_code":    result.EngineResultCode,
@@ -201,7 +197,6 @@ func (m *SubmitMultisignedMethod) Handle(ctx *types.RpcContext, params json.RawM
 		"tx_json":               txMap,
 	}
 
-	// Add applied status from result
 	if result.Applied {
 		response["applied"] = result.Applied
 	}

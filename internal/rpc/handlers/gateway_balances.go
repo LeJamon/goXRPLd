@@ -75,14 +75,12 @@ func (m *GatewayBalancesMethod) Handle(ctx *types.RpcContext, params json.RawMes
 				Message: "Account not found.",
 			}
 		}
-		// Check for malformed account address
 		if len(err.Error()) > 24 && err.Error()[:24] == "invalid account address:" {
 			return nil, &types.RpcError{
 				Code:    types.RpcACT_NOT_FOUND,
 				Message: "Account malformed.",
 			}
 		}
-		// Check for invalid hotwallet
 		if len(err.Error()) > 20 && err.Error()[:20] == "invalid hotwallet ad" {
 			if ctx.ApiVersion < 2 {
 				return nil, &types.RpcError{
