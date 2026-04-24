@@ -29,7 +29,6 @@ func NewTicketCreate(account string, count uint32) *TicketCreate {
 	}
 }
 
-// TxType returns the transaction type
 func (t *TicketCreate) TxType() tx.Type {
 	return tx.TypeTicketCreate
 }
@@ -62,7 +61,6 @@ func (t *TicketCreate) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (t *TicketCreate) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(t)
 }
@@ -117,7 +115,6 @@ func (t *TicketCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TecINSUFFICIENT_RESERVE
 	}
 
-	// Create tickets
 	for i := uint32(0); i < t.TicketCount; i++ {
 		ticketSeq := ctx.Account.Sequence + i
 
@@ -132,7 +129,6 @@ func (t *TicketCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 			return tx.TefINTERNAL
 		}
 
-		// Add ticket to owner directory
 		_, err = state.DirInsert(ctx.View, ownerDirKey, ticketKey.Key, func(dir *state.DirectoryNode) {
 			dir.Owner = ctx.AccountID
 		})

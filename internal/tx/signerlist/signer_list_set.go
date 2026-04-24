@@ -50,7 +50,6 @@ func NewSignerListSet(account string, quorum uint32) *SignerListSet {
 	}
 }
 
-// TxType returns the transaction type
 func (s *SignerListSet) TxType() tx.Type {
 	return tx.TypeSignerListSet
 }
@@ -113,7 +112,6 @@ func (s *SignerListSet) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (s *SignerListSet) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(s)
 }
@@ -143,7 +141,6 @@ func NewSetRegularKey(account string) *SetRegularKey {
 	}
 }
 
-// TxType returns the transaction type
 func (s *SetRegularKey) TxType() tx.Type {
 	return tx.TypeRegularKeySet
 }
@@ -161,7 +158,6 @@ func (s *SetRegularKey) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (s *SetRegularKey) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(s)
 }
@@ -372,7 +368,6 @@ func (s *SignerListSet) Apply(ctx *tx.ApplyContext) tx.Result {
 		return sleEntries[i].Account < sleEntries[j].Account
 	})
 
-	// Serialize and insert the new signer list.
 	signerListData, err := state.SerializeSignerList(s.SignerQuorum, sleEntries, ctx.AccountID, flags)
 	if err != nil {
 		ctx.Log.Error("signer list set: failed to serialize signer list", "error", err)

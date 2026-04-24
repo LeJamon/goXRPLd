@@ -34,7 +34,6 @@ func NewVaultDeposit(account, vaultID string, amount tx.Amount) *VaultDeposit {
 	}
 }
 
-// TxType returns the transaction type
 func (v *VaultDeposit) TxType() tx.Type {
 	return tx.TypeVaultDeposit
 }
@@ -85,12 +84,10 @@ func (v *VaultDeposit) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (v *VaultDeposit) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(v)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (v *VaultDeposit) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureSingleAssetVault}
 }

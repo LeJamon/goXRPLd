@@ -67,12 +67,10 @@ func NewXChainCreateBridge(account string, bridge XChainBridge, signatureReward 
 	}
 }
 
-// TxType returns the transaction type
 func (x *XChainCreateBridge) TxType() tx.Type {
 	return tx.TypeXChainCreateBridge
 }
 
-// Validate validates the XChainCreateBridge transaction
 func (x *XChainCreateBridge) Validate() error {
 	if err := x.BaseTx.Validate(); err != nil {
 		return err
@@ -85,12 +83,10 @@ func (x *XChainCreateBridge) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (x *XChainCreateBridge) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(x)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (x *XChainCreateBridge) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureXChainBridge}
 }
@@ -123,22 +119,18 @@ func NewXChainModifyBridge(account string, bridge XChainBridge) *XChainModifyBri
 	}
 }
 
-// TxType returns the transaction type
 func (x *XChainModifyBridge) TxType() tx.Type {
 	return tx.TypeXChainModifyBridge
 }
 
-// Validate validates the XChainModifyBridge transaction
 func (x *XChainModifyBridge) Validate() error {
 	return x.BaseTx.Validate()
 }
 
-// Flatten returns a flat map of all transaction fields
 func (x *XChainModifyBridge) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(x)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (x *XChainModifyBridge) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureXChainBridge}
 }
@@ -167,12 +159,10 @@ func NewXChainCreateClaimID(account string, bridge XChainBridge, signatureReward
 	}
 }
 
-// TxType returns the transaction type
 func (x *XChainCreateClaimID) TxType() tx.Type {
 	return tx.TypeXChainCreateClaimID
 }
 
-// Validate validates the XChainCreateClaimID transaction
 func (x *XChainCreateClaimID) Validate() error {
 	if err := x.BaseTx.Validate(); err != nil {
 		return err
@@ -185,12 +175,10 @@ func (x *XChainCreateClaimID) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (x *XChainCreateClaimID) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(x)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (x *XChainCreateClaimID) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureXChainBridge}
 }
@@ -222,12 +210,10 @@ func NewXChainCommit(account string, bridge XChainBridge, claimID uint64, amount
 	}
 }
 
-// TxType returns the transaction type
 func (x *XChainCommit) TxType() tx.Type {
 	return tx.TypeXChainCommit
 }
 
-// Validate validates the XChainCommit transaction
 func (x *XChainCommit) Validate() error {
 	if err := x.BaseTx.Validate(); err != nil {
 		return err
@@ -240,12 +226,10 @@ func (x *XChainCommit) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (x *XChainCommit) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(x)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (x *XChainCommit) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureXChainBridge}
 }
@@ -281,12 +265,10 @@ func NewXChainClaim(account string, bridge XChainBridge, claimID uint64, destina
 	}
 }
 
-// TxType returns the transaction type
 func (x *XChainClaim) TxType() tx.Type {
 	return tx.TypeXChainClaim
 }
 
-// Validate validates the XChainClaim transaction
 func (x *XChainClaim) Validate() error {
 	if err := x.BaseTx.Validate(); err != nil {
 		return err
@@ -303,12 +285,10 @@ func (x *XChainClaim) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (x *XChainClaim) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(x)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (x *XChainClaim) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureXChainBridge}
 }
@@ -341,12 +321,10 @@ func NewXChainAccountCreateCommit(account string, bridge XChainBridge, destinati
 	}
 }
 
-// TxType returns the transaction type
 func (x *XChainAccountCreateCommit) TxType() tx.Type {
 	return tx.TypeXChainAccountCreateCommit
 }
 
-// Validate validates the XChainAccountCreateCommit transaction
 func (x *XChainAccountCreateCommit) Validate() error {
 	if err := x.BaseTx.Validate(); err != nil {
 		return err
@@ -363,12 +341,10 @@ func (x *XChainAccountCreateCommit) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (x *XChainAccountCreateCommit) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(x)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (x *XChainAccountCreateCommit) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureXChainBridge}
 }
@@ -417,12 +393,10 @@ func NewXChainAddClaimAttestation(account string, bridge XChainBridge, claimID u
 	}
 }
 
-// TxType returns the transaction type
 func (x *XChainAddClaimAttestation) TxType() tx.Type {
 	return tx.TypeXChainAddClaimAttestation
 }
 
-// Validate validates the XChainAddClaimAttestation transaction
 func (x *XChainAddClaimAttestation) Validate() error {
 	if err := x.BaseTx.Validate(); err != nil {
 		return err
@@ -451,12 +425,10 @@ func (x *XChainAddClaimAttestation) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (x *XChainAddClaimAttestation) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(x)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (x *XChainAddClaimAttestation) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureXChainBridge}
 }
@@ -507,12 +479,10 @@ func NewXChainAddAccountCreateAttestation(account string, bridge XChainBridge) *
 	}
 }
 
-// TxType returns the transaction type
 func (x *XChainAddAccountCreateAttestation) TxType() tx.Type {
 	return tx.TypeXChainAddAccountCreateAttest
 }
 
-// Validate validates the XChainAddAccountCreateAttestation transaction
 func (x *XChainAddAccountCreateAttestation) Validate() error {
 	if err := x.BaseTx.Validate(); err != nil {
 		return err
@@ -529,34 +499,28 @@ func (x *XChainAddAccountCreateAttestation) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (x *XChainAddAccountCreateAttestation) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(x)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (x *XChainAddAccountCreateAttestation) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureXChainBridge}
 }
 
-// Apply applies the XChainCreateBridge transaction to the ledger.
 func (x *XChainCreateBridge) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Account.OwnerCount++
 	return tx.TesSUCCESS
 }
 
-// Apply applies the XChainModifyBridge transaction to the ledger.
 func (x *XChainModifyBridge) Apply(ctx *tx.ApplyContext) tx.Result {
 	return tx.TesSUCCESS
 }
 
-// Apply applies the XChainCreateClaimID transaction to the ledger.
 func (x *XChainCreateClaimID) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Account.OwnerCount++
 	return tx.TesSUCCESS
 }
 
-// Apply applies the XChainCommit transaction to the ledger.
 func (x *XChainCommit) Apply(ctx *tx.ApplyContext) tx.Result {
 	if x.Amount.IsNative() {
 		amount := uint64(x.Amount.Drops())
@@ -568,7 +532,6 @@ func (x *XChainCommit) Apply(ctx *tx.ApplyContext) tx.Result {
 	return tx.TesSUCCESS
 }
 
-// Apply applies the XChainClaim transaction to the ledger.
 func (x *XChainClaim) Apply(ctx *tx.ApplyContext) tx.Result {
 	if x.Amount.IsNative() {
 		amount := uint64(x.Amount.Drops())
@@ -590,7 +553,6 @@ func (x *XChainClaim) Apply(ctx *tx.ApplyContext) tx.Result {
 	return tx.TesSUCCESS
 }
 
-// Apply applies the XChainAccountCreateCommit transaction to the ledger.
 func (x *XChainAccountCreateCommit) Apply(ctx *tx.ApplyContext) tx.Result {
 	if x.Amount.IsNative() {
 		amount := uint64(x.Amount.Drops())
@@ -602,12 +564,10 @@ func (x *XChainAccountCreateCommit) Apply(ctx *tx.ApplyContext) tx.Result {
 	return tx.TesSUCCESS
 }
 
-// Apply applies the XChainAddClaimAttestation transaction to the ledger.
 func (x *XChainAddClaimAttestation) Apply(ctx *tx.ApplyContext) tx.Result {
 	return tx.TesSUCCESS
 }
 
-// Apply applies the XChainAddAccountCreateAttestation transaction to the ledger.
 func (x *XChainAddAccountCreateAttestation) Apply(ctx *tx.ApplyContext) tx.Result {
 	return tx.TesSUCCESS
 }

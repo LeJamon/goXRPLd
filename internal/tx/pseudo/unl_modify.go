@@ -29,7 +29,6 @@ type UNLModify struct {
 	UNLModifyValidator string `json:"UNLModifyValidator,omitempty" xrpl:"UNLModifyValidator,omitempty"`
 }
 
-// TxType returns the transaction type
 func (u *UNLModify) TxType() tx.Type {
 	return tx.TypeUNLModify
 }
@@ -42,7 +41,6 @@ func (u *UNLModify) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (u *UNLModify) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(u)
 }

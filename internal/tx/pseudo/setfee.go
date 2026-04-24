@@ -66,7 +66,6 @@ func NewSetFee() *SetFee {
 	}
 }
 
-// TxType returns the transaction type
 func (s *SetFee) TxType() tx.Type {
 	return tx.TypeFee
 }
@@ -91,7 +90,6 @@ func (s *SetFee) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (s *SetFee) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(s)
 }
@@ -114,7 +112,6 @@ func (s *SetFee) Apply(ctx *tx.ApplyContext) tx.Result {
 		"reserveIncrement", s.ReserveIncrement,
 	)
 
-	// Get the fees keylet
 	feesKey := keylet.Fees()
 
 	// Check if FeeSettings exists
@@ -191,7 +188,6 @@ func (s *SetFee) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 	}
 
-	// Serialize the updated FeeSettings
 	data, err := state.SerializeFeeSettings(feeSettings)
 	if err != nil {
 		ctx.Log.Error("set fee: failed to serialize fee settings", "error", err)

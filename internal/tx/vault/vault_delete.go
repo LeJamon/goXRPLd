@@ -30,7 +30,6 @@ func NewVaultDelete(account, vaultID string) *VaultDelete {
 	}
 }
 
-// TxType returns the transaction type
 func (v *VaultDelete) TxType() tx.Type {
 	return tx.TypeVaultDelete
 }
@@ -71,12 +70,10 @@ func (v *VaultDelete) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (v *VaultDelete) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(v)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (v *VaultDelete) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureSingleAssetVault}
 }

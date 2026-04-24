@@ -97,7 +97,6 @@ func NewPayment(account, destination string, amount tx.Amount) *Payment {
 	}
 }
 
-// TxType returns the transaction type
 func (p *Payment) TxType() tx.Type {
 	return tx.TypePayment
 }
@@ -304,7 +303,6 @@ func (p *Payment) Validate() error {
 			return tx.Errorf(tx.TemMALFORMED, "Invalid credentials array size")
 		}
 
-		// Check for duplicates
 		seen := make(map[string]bool, len(p.CredentialIDs))
 		for _, id := range p.CredentialIDs {
 			if seen[id] {
@@ -377,7 +375,6 @@ func (p *Payment) validatePathElements() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (p *Payment) Flatten() (map[string]any, error) {
 	m, err := tx.ReflectFlatten(p)
 	if err != nil {

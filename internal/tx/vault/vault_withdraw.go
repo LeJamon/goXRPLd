@@ -40,7 +40,6 @@ func NewVaultWithdraw(account, vaultID string, amount tx.Amount) *VaultWithdraw 
 	}
 }
 
-// TxType returns the transaction type
 func (v *VaultWithdraw) TxType() tx.Type {
 	return tx.TypeVaultWithdraw
 }
@@ -105,12 +104,10 @@ func (v *VaultWithdraw) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (v *VaultWithdraw) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(v)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (v *VaultWithdraw) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureSingleAssetVault}
 }
