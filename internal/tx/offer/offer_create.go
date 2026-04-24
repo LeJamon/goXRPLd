@@ -198,7 +198,6 @@ func (o *OfferCreate) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (o *OfferCreate) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(o)
 }

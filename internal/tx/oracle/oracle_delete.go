@@ -46,12 +46,10 @@ func (o *OracleDelete) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (o *OracleDelete) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(o)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (o *OracleDelete) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeaturePriceOracle}
 }

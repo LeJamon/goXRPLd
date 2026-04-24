@@ -82,12 +82,10 @@ func (p *PaymentChannelFund) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (p *PaymentChannelFund) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(p)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (p *PaymentChannelFund) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeaturePayChan}
 }

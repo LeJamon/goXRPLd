@@ -45,7 +45,6 @@ func (e *EnableAmendment) TxType() tx.Type {
 	return tx.TypeAmendment
 }
 
-// Validate validates the EnableAmendment transaction.
 // Reference: rippled Change.cpp preflight()
 func (e *EnableAmendment) Validate() error {
 	// Pseudo-transaction: minimal validation
@@ -64,7 +63,6 @@ func (e *EnableAmendment) IsPseudoTransaction() bool {
 	return true
 }
 
-// Apply applies the EnableAmendment transaction to ledger state.
 // Reference: rippled Change.cpp applyAmendment() lines 248-345
 func (e *EnableAmendment) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Reference: rippled line 251: uint256 amendment(ctx_.tx.getFieldH256(sfAmendment))

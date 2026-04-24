@@ -72,12 +72,10 @@ func NewDelegateSet(account string) *DelegateSet {
 	}
 }
 
-// TxType returns the transaction type
 func (d *DelegateSet) TxType() tx.Type {
 	return tx.TypeDelegateSet
 }
 
-// Validate validates the DelegateSet transaction.
 // Reference: rippled DelegateSet.cpp preflight()
 func (d *DelegateSet) Validate() error {
 	if err := d.BaseTx.Validate(); err != nil {
@@ -113,7 +111,6 @@ func (d *DelegateSet) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields.
 // Custom implementation to properly format Permissions as:
 //
 //	[{"Permission": {"PermissionValue": <uint32>}}, ...]
@@ -143,12 +140,10 @@ func (d *DelegateSet) Flatten() (map[string]any, error) {
 	return m, nil
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (d *DelegateSet) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeaturePermissionDelegation}
 }
 
-// Apply applies the DelegateSet transaction to the ledger.
 // Reference: rippled DelegateSet.cpp preclaim() + doApply()
 func (d *DelegateSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("delegate set apply",

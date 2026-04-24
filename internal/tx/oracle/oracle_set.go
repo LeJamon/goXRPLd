@@ -220,7 +220,6 @@ func (o *OracleSet) ValidatePriceDataSeries(isUpdate bool) (map[string]PriceData
 	return pairsToAdd, pairsToDelete, nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (o *OracleSet) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(o)
 }
@@ -248,7 +247,6 @@ func (o *OracleSet) AddPriceDataDelete(baseAsset, quoteAsset string) {
 	})
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (o *OracleSet) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeaturePriceOracle}
 }

@@ -38,7 +38,6 @@ func NewCheckCash(account, checkID string) *CheckCash {
 	}
 }
 
-// TxType returns the transaction type
 func (c *CheckCash) TxType() tx.Type {
 	return tx.TypeCheckCash
 }
@@ -91,7 +90,6 @@ func (c *CheckCash) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (c *CheckCash) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(c)
 }
@@ -108,7 +106,6 @@ func (c *CheckCash) SetDeliverMin(amount tx.Amount) {
 	c.Amount = nil
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (c *CheckCash) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureChecks}
 }

@@ -49,7 +49,6 @@ func NewAMMDeposit(account string, asset, asset2 tx.Asset) *AMMDeposit {
 	}
 }
 
-// TxType returns the transaction type
 func (a *AMMDeposit) TxType() tx.Type {
 	return tx.TypeAMMDeposit
 }
@@ -66,7 +65,6 @@ func (a *AMMDeposit) GetAMMAsset2() tx.Asset {
 	return a.Asset2
 }
 
-// Validate validates the AMMDeposit transaction
 // Reference: rippled AMMDeposit.cpp preflight lines 32-162
 func (a *AMMDeposit) Validate() error {
 	if err := a.BaseTx.Validate(); err != nil {
@@ -195,17 +193,14 @@ func (a *AMMDeposit) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (a *AMMDeposit) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(a)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (a *AMMDeposit) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureAMM, amendment.FeatureFixUniversalNumber}
 }
 
-// Apply applies the AMMDeposit transaction to ledger state.
 // Reference: rippled AMMDeposit.cpp preclaim + applyGuts
 func (a *AMMDeposit) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("amm deposit apply",

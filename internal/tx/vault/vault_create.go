@@ -50,7 +50,6 @@ func (v *VaultCreate) TxType() tx.Type {
 	return tx.TypeVaultCreate
 }
 
-// Validate validates the VaultCreate transaction
 // Reference: rippled VaultCreate.cpp preflight()
 func (v *VaultCreate) Validate() error {
 	if err := v.BaseTx.Validate(); err != nil {
@@ -133,7 +132,6 @@ func (v *VaultCreate) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureSingleAssetVault}
 }
 
-// Apply applies the VaultCreate transaction to the ledger.
 func (v *VaultCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	if v.Asset.Currency == "" {
 		return tx.TemINVALID

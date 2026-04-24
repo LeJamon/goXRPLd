@@ -155,12 +155,10 @@ func NewAccountSet(account string) *AccountSet {
 	}
 }
 
-// TxType returns the transaction type
 func (a *AccountSet) TxType() tx.Type {
 	return tx.TypeAccountSet
 }
 
-// Validate validates the AccountSet transaction
 // Reference: rippled SetAccount.cpp preflight()
 func (a *AccountSet) Validate() error {
 	if err := a.BaseTx.Validate(); err != nil {
@@ -265,7 +263,6 @@ func (a *AccountSet) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (a *AccountSet) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(a)
 }
@@ -288,7 +285,6 @@ func (a *AccountSet) EnableDefaultRipple() {
 	a.SetFlag = &flag
 }
 
-// Apply applies the AccountSet transaction to ledger state.
 func (a *AccountSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("account set apply",
 		"account", a.Account,

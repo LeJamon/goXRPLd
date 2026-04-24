@@ -60,12 +60,10 @@ func NewMPTokenClawback(account, holder, issuanceID string, amount state.Amount)
 	}
 }
 
-// TxType returns the transaction type
 func (c *Clawback) TxType() tx.Type {
 	return tx.TypeClawback
 }
 
-// Validate validates the Clawback transaction
 // Reference: rippled Clawback.cpp preflight()
 func (c *Clawback) Validate() error {
 	if err := c.BaseTx.Validate(); err != nil {
@@ -127,7 +125,6 @@ func (c *Clawback) Validate() error {
 	return nil
 }
 
-// Apply applies the Clawback transaction to ledger state.
 // Reference: rippled Clawback.cpp preclaim() + applyHelper<Issue>() / applyHelper<MPTIssue>()
 func (c *Clawback) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("clawback apply",
@@ -454,12 +451,10 @@ func (c *Clawback) ClawbackAmount() tx.Amount {
 	return c.Amount
 }
 
-// Flatten returns a flat map of all transaction fields
 func (c *Clawback) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(c)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type.
 // Only require FeatureMPTokensV1 when the Amount actually holds an MPT issue,
 // matching rippled's dispatch which checks the Amount type, not the Holder field.
 // Reference: rippled Clawback.cpp:90-94 dispatches preflightHelper<MPTIssue>

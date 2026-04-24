@@ -38,7 +38,6 @@ func (v *VaultDeposit) TxType() tx.Type {
 	return tx.TypeVaultDeposit
 }
 
-// Validate validates the VaultDeposit transaction
 // Reference: rippled VaultDeposit.cpp preflight()
 func (v *VaultDeposit) Validate() error {
 	if err := v.BaseTx.Validate(); err != nil {
@@ -92,7 +91,6 @@ func (v *VaultDeposit) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureSingleAssetVault}
 }
 
-// Apply applies the VaultDeposit transaction to the ledger.
 func (v *VaultDeposit) Apply(ctx *tx.ApplyContext) tx.Result {
 	if v.VaultID == "" || v.Amount.IsZero() {
 		return tx.TemINVALID

@@ -78,12 +78,10 @@ func (n *NFTokenModify) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (n *NFTokenModify) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(n)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type.
 // Reference: rippled NFTokenModify.cpp preflight — requires both NonFungibleTokensV1_1 and DynamicNFT.
 func (n *NFTokenModify) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureNonFungibleTokensV1_1, amendment.FeatureDynamicNFT}

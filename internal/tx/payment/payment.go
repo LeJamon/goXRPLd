@@ -124,7 +124,6 @@ func (p *Payment) isMPTDirect() bool {
 	return p.MPTokenIssuanceID != "" || p.Amount.IsMPT()
 }
 
-// Validate validates the payment transaction
 // Reference: rippled Payment.cpp preflight() function
 func (p *Payment) Validate() error {
 	if err := p.BaseTx.Validate(); err != nil {
@@ -419,7 +418,6 @@ func (p *Payment) SetNoDirectRipple() {
 	p.SetFlags(flags)
 }
 
-// Apply applies the Payment transaction to the ledger state.
 func (p *Payment) Apply(ctx *tx.ApplyContext) tx.Result {
 	mptDirect := p.isMPTDirect()
 

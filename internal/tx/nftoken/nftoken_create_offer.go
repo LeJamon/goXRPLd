@@ -139,7 +139,6 @@ func (n *NFTokenCreateOffer) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (n *NFTokenCreateOffer) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(n)
 }
@@ -150,7 +149,6 @@ func (n *NFTokenCreateOffer) SetSellOffer() {
 	n.SetFlags(flags)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (n *NFTokenCreateOffer) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureNonFungibleTokensV1}
 }

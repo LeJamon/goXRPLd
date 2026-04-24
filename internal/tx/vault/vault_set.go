@@ -43,7 +43,6 @@ func (v *VaultSet) TxType() tx.Type {
 	return tx.TypeVaultSet
 }
 
-// Validate validates the VaultSet transaction
 // Reference: rippled VaultSet.cpp preflight()
 func (v *VaultSet) Validate() error {
 	if err := v.BaseTx.Validate(); err != nil {
@@ -107,7 +106,6 @@ func (v *VaultSet) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureSingleAssetVault}
 }
 
-// Apply applies the VaultSet transaction to the ledger.
 func (v *VaultSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	if v.VaultID == "" {
 		return tx.TemINVALID

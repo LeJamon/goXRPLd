@@ -80,7 +80,6 @@ func (n *NFTokenAcceptOffer) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (n *NFTokenAcceptOffer) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(n)
 }
@@ -95,7 +94,6 @@ func (n *NFTokenAcceptOffer) SetBuyOffer(offerID string) {
 	n.NFTokenBuyOffer = offerID
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (n *NFTokenAcceptOffer) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureNonFungibleTokensV1}
 }

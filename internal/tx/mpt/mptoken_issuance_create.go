@@ -174,7 +174,6 @@ func (m *MPTokenIssuanceCreate) RequiredAmendments() [][32]byte {
 	return amendments
 }
 
-// Apply applies the MPTokenIssuanceCreate transaction to ledger state.
 // Reference: rippled MPTokenIssuanceCreate.cpp doApply() / create()
 func (m *MPTokenIssuanceCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("mptoken issuance create apply",

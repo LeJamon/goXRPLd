@@ -39,7 +39,6 @@ func (t *TicketCreate) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureTicketBatch}
 }
 
-// Validate validates the TicketCreate transaction
 // Reference: rippled CreateTicket.cpp preflight()
 func (t *TicketCreate) Validate() error {
 	if err := t.BaseTx.Validate(); err != nil {
@@ -65,7 +64,6 @@ func (t *TicketCreate) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(t)
 }
 
-// Apply applies the TicketCreate transaction to ledger state.
 // Reference: rippled CreateTicket.cpp preclaim() + doApply()
 func (t *TicketCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("ticket create apply",

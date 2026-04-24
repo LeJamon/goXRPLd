@@ -70,7 +70,6 @@ func (t *TrustSet) TxType() tx.Type {
 	return tx.TypeTrustSet
 }
 
-// Validate validates the TrustSet transaction
 // Reference: rippled SetTrust.cpp preflight()
 func (t *TrustSet) Validate() error {
 	if err := t.BaseTx.Validate(); err != nil {

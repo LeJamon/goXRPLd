@@ -70,7 +70,6 @@ func (s *SetFee) TxType() tx.Type {
 	return tx.TypeFee
 }
 
-// Validate validates the SetFee transaction.
 // Reference: rippled Change.cpp preflight()
 func (s *SetFee) Validate() error {
 	// SetFee is a pseudo-transaction - most standard validation is skipped
@@ -99,7 +98,6 @@ func (s *SetFee) IsPseudoTransaction() bool {
 	return true
 }
 
-// Apply applies the SetFee transaction to ledger state.
 // This creates or updates the FeeSettings singleton entry.
 // Reference: rippled Change.cpp applyFee()
 func (s *SetFee) Apply(ctx *tx.ApplyContext) tx.Result {

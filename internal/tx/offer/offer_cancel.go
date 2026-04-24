@@ -46,7 +46,6 @@ func (o *OfferCancel) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (o *OfferCancel) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(o)
 }

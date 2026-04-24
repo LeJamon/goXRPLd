@@ -68,12 +68,10 @@ func (n *NFTokenCancelOffer) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (n *NFTokenCancelOffer) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(n)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (n *NFTokenCancelOffer) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureNonFungibleTokensV1}
 }

@@ -45,7 +45,6 @@ func NewAMMWithdraw(account string, asset, asset2 tx.Asset) *AMMWithdraw {
 	}
 }
 
-// TxType returns the transaction type
 func (a *AMMWithdraw) TxType() tx.Type {
 	return tx.TypeAMMWithdraw
 }
@@ -62,7 +61,6 @@ func (a *AMMWithdraw) GetAMMAsset2() tx.Asset {
 	return a.Asset2
 }
 
-// Validate validates the AMMWithdraw transaction
 // Reference: rippled AMMWithdraw.cpp preflight
 func (a *AMMWithdraw) Validate() error {
 	if err := a.BaseTx.Validate(); err != nil {
@@ -176,17 +174,14 @@ func (a *AMMWithdraw) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (a *AMMWithdraw) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(a)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (a *AMMWithdraw) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureAMM, amendment.FeatureFixUniversalNumber}
 }
 
-// Apply applies the AMMWithdraw transaction to ledger state.
 // Reference: rippled AMMWithdraw.cpp applyGuts
 func (a *AMMWithdraw) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("amm withdraw apply",

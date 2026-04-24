@@ -36,12 +36,10 @@ func NewAMMVote(account string, asset, asset2 tx.Asset, tradingFee uint16) *AMMV
 	}
 }
 
-// TxType returns the transaction type
 func (a *AMMVote) TxType() tx.Type {
 	return tx.TypeAMMVote
 }
 
-// Validate validates the AMMVote transaction
 // Reference: rippled AMMVote.cpp preflight
 func (a *AMMVote) Validate() error {
 	if err := a.BaseTx.Validate(); err != nil {
@@ -67,17 +65,14 @@ func (a *AMMVote) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (a *AMMVote) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(a)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (a *AMMVote) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureAMM, amendment.FeatureFixUniversalNumber}
 }
 
-// Apply applies the AMMVote transaction to ledger state.
 // Reference: rippled AMMVote.cpp applyVote
 func (a *AMMVote) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("amm vote apply",

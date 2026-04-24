@@ -40,7 +40,6 @@ func NewAMMClawback(account, holder string, asset, asset2 tx.Asset) *AMMClawback
 	}
 }
 
-// TxType returns the transaction type
 func (a *AMMClawback) TxType() tx.Type {
 	return tx.TypeAMMClawback
 }
@@ -57,7 +56,6 @@ func (a *AMMClawback) GetAMMAsset2() tx.Asset {
 	return a.Asset2
 }
 
-// Validate validates the AMMClawback transaction
 // Reference: rippled AMMClawback.cpp preflight
 func (a *AMMClawback) Validate() error {
 	if err := a.BaseTx.Validate(); err != nil {
@@ -120,18 +118,14 @@ func (a *AMMClawback) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (a *AMMClawback) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(a)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (a *AMMClawback) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureAMM, amendment.FeatureFixUniversalNumber, amendment.FeatureAMMClawback}
 }
 
-// Apply applies the AMMClawback transaction to ledger state.
-//
 // Rippled flow: AMMClawback delegates to AMMWithdraw infrastructure which
 // performs accountSend (AMM -> holder) + redeemIOU (LP tokens), then
 // rippleCredit (holder -> issuer) for the clawback. The net effect for

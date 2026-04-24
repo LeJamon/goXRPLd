@@ -42,12 +42,10 @@ func NewAMMBid(account string, asset, asset2 tx.Asset) *AMMBid {
 	}
 }
 
-// TxType returns the transaction type
 func (a *AMMBid) TxType() tx.Type {
 	return tx.TypeAMMBid
 }
 
-// Validate validates the AMMBid transaction
 // Reference: rippled AMMBid.cpp preflight
 func (a *AMMBid) Validate() error {
 	if err := a.BaseTx.Validate(); err != nil {
@@ -104,17 +102,14 @@ func (a *AMMBid) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (a *AMMBid) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(a)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (a *AMMBid) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureAMM, amendment.FeatureFixUniversalNumber}
 }
 
-// Apply applies the AMMBid transaction to ledger state.
 // Reference: rippled AMMBid.cpp applyBid
 func (a *AMMBid) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("amm bid apply",

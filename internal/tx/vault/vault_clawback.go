@@ -41,7 +41,6 @@ func (v *VaultClawback) TxType() tx.Type {
 	return tx.TypeVaultClawback
 }
 
-// Validate validates the VaultClawback transaction
 // Reference: rippled VaultClawback.cpp preflight()
 func (v *VaultClawback) Validate() error {
 	if err := v.BaseTx.Validate(); err != nil {
@@ -117,7 +116,6 @@ func (v *VaultClawback) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureSingleAssetVault}
 }
 
-// Apply applies the VaultClawback transaction to the ledger.
 func (v *VaultClawback) Apply(ctx *tx.ApplyContext) tx.Result {
 	if v.VaultID == "" || v.Holder == "" {
 		return tx.TemINVALID

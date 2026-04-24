@@ -88,7 +88,6 @@ func (m *MPTokenAuthorize) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureMPTokensV1}
 }
 
-// Apply applies the MPTokenAuthorize transaction to ledger state.
 // Reference: rippled MPTokenAuthorize.cpp preclaim() + doApply() + View.cpp::authorizeMPToken()
 func (m *MPTokenAuthorize) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("mptoken authorize apply",

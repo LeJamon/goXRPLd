@@ -76,7 +76,6 @@ func (m *MPTokenIssuanceDestroy) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureMPTokensV1}
 }
 
-// Apply applies the MPTokenIssuanceDestroy transaction to ledger state.
 // Reference: rippled MPTokenIssuanceDestroy.cpp preclaim() + doApply()
 func (m *MPTokenIssuanceDestroy) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("mptoken issuance destroy apply",

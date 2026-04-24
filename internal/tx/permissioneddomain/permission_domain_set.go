@@ -41,7 +41,6 @@ func (p *PermissionedDomainSet) TxType() tx.Type {
 	return tx.TypePermissionedDomainSet
 }
 
-// Validate validates the PermissionedDomainSet transaction
 // Reference: rippled PermissionedDomainSet.cpp preflight()
 func (p *PermissionedDomainSet) Validate() error {
 	if err := p.BaseTx.Validate(); err != nil {
@@ -133,7 +132,6 @@ func (p *PermissionedDomainSet) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeaturePermissionedDomains, amendment.FeatureCredentials}
 }
 
-// Apply applies the PermissionedDomainSet transaction to the ledger.
 // Reference: rippled PermissionedDomainSet.cpp preclaim() + doApply()
 func (p *PermissionedDomainSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("permissioned domain set apply",

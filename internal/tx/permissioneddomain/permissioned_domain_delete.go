@@ -36,7 +36,6 @@ func (p *PermissionedDomainDelete) TxType() tx.Type {
 	return tx.TypePermissionedDomainDelete
 }
 
-// Validate validates the PermissionedDomainDelete transaction
 // Reference: rippled PermissionedDomainDelete.cpp preflight()
 func (p *PermissionedDomainDelete) Validate() error {
 	if err := p.BaseTx.Validate(); err != nil {
@@ -83,7 +82,6 @@ func (p *PermissionedDomainDelete) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeaturePermissionedDomains}
 }
 
-// Apply applies the PermissionedDomainDelete transaction to the ledger.
 // Reference: rippled PermissionedDomainDelete.cpp preclaim() + doApply()
 func (p *PermissionedDomainDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("permissioned domain delete apply",

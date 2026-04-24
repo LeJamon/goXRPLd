@@ -74,12 +74,10 @@ func NewDepositPreauth(account string) *DepositPreauth {
 	}
 }
 
-// TxType returns the transaction type
 func (d *DepositPreauth) TxType() tx.Type {
 	return tx.TypeDepositPreauth
 }
 
-// RequiredAmendments returns the amendments required for this transaction type.
 // Reference: rippled DepositPreauth::preflight() amendment checks
 func (d *DepositPreauth) RequiredAmendments() [][32]byte {
 	amendments := [][32]byte{amendment.FeatureDepositPreauth}
@@ -89,7 +87,6 @@ func (d *DepositPreauth) RequiredAmendments() [][32]byte {
 	return amendments
 }
 
-// Validate validates the DepositPreauth transaction fields.
 // Reference: rippled DepositPreauth::preflight()
 func (d *DepositPreauth) Validate() error {
 	if err := d.BaseTx.Validate(); err != nil {
@@ -195,7 +192,6 @@ func checkCredentialArray(creds []CredentialWrapper) error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (d *DepositPreauth) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(d)
 }
@@ -268,7 +264,6 @@ func toKeyletPairs(pairs []sortedCredPair) []keylet.CredentialPair {
 	return result
 }
 
-// Apply applies the DepositPreauth transaction to ledger state.
 // Combines preclaim checks and doApply logic.
 // Reference: rippled DepositPreauth::preclaim() + DepositPreauth::doApply()
 func (d *DepositPreauth) Apply(ctx *tx.ApplyContext) tx.Result {

@@ -163,12 +163,10 @@ func (p *PaymentChannelClaim) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (p *PaymentChannelClaim) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(p)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (p *PaymentChannelClaim) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeaturePayChan}
 }

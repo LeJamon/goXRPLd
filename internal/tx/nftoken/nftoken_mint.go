@@ -164,7 +164,6 @@ func (n *NFTokenMint) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (n *NFTokenMint) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(n)
 }
@@ -181,7 +180,6 @@ func (n *NFTokenMint) SetTransferable() {
 	n.SetFlags(flags)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type.
 // When offer fields (Amount, Destination, Expiration) are present, also requires
 // FeatureNFTokenMintOffer.
 // Reference: rippled NFTokenMint.cpp preflight — temDISABLED when offer fields present without amendment
