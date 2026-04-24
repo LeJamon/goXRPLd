@@ -62,7 +62,6 @@ func randomSecp256k1SecretKey() (*SecretKey, error) {
 		return randomSecp256k1SecretKey()
 	}
 
-	// Get the normalized bytes
 	normalizedKey := privKey.Serialize()
 	SecureErase(key)
 
