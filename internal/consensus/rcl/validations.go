@@ -267,7 +267,27 @@ func isCurrent(now, signTime, seenTime time.Time) bool {
 //     wastes work on every checkFullValidation pass.
 //   - Per-node newer-seq-only rule: a node's latest validation
 //     supersedes any earlier one. Same as before.
+//
+// onFullyValidated is fired OUTSIDE vt.mu so the callback may take other
+// locks (engine.mu, archive channel send) or call back into the tracker
+// (e.g. ExpireOld) without deadlocking. Mirrors the lock-free callback
+// dispatch ExpireOld already uses for onStale.
+//
+// Defer order is LIFO: vt.mu.Unlock runs first (released before the
+// callback), then the captured fire-tuple is dispatched.
 func (vt *ValidationTracker) Add(validation *consensus.Validation) bool {
+	var (
+		fireID     consensus.LedgerID
+		fireSeq    uint32
+		shouldFire bool
+		cb         func(consensus.LedgerID, uint32)
+	)
+	defer func() {
+		if shouldFire && cb != nil {
+			cb(fireID, fireSeq)
+		}
+	}()
+
 	vt.mu.Lock()
 	defer vt.mu.Unlock()
 
@@ -323,17 +343,21 @@ func (vt *ValidationTracker) Add(validation *consensus.Validation) bool {
 	}
 	ledgerVals[resolvedID] = validation
 
-	// Check for full validation
-	vt.checkFullValidation(validation.LedgerID)
-
+	// Capture the fire-tuple under the lock; the deferred dispatcher
+	// invokes onFullyValidated after vt.mu.Unlock has run.
+	fireID, fireSeq, shouldFire = vt.checkFullValidationLocked(validation.LedgerID)
+	cb = vt.onFullyValidated
 	return true
 }
 
-// checkFullValidation checks if a ledger has reached full validation.
-// Fires the callback exactly once per ledger — the first time trusted
-// count crosses the quorum threshold. Subsequent adds for the same
-// ledger are ignored to avoid repeatedly flipping server_info's
-// validated_ledger on every late-arriving peer validation.
+// checkFullValidationLocked records that a ledger crossed the quorum
+// threshold (via vt.fired) and returns the (id, seq, shouldFire) tuple
+// the caller needs to invoke onFullyValidated outside the lock.
+//
+// Fires (well, requests-fire-by) exactly once per ledger — the first
+// time trusted count crosses the quorum threshold. Subsequent adds for
+// the same ledger are ignored to avoid repeatedly flipping
+// server_info's validated_ledger on every late-arriving peer validation.
 //
 // Zero-quorum edge case (empty UNL): requires at least one tracked
 // validation for the ledger before firing, so we don't spuriously
@@ -343,16 +367,18 @@ func (vt *ValidationTracker) Add(validation *consensus.Validation) bool {
 // message acceptance but excluded from the quorum count here, matching
 // rippled's LedgerMaster.cpp:952. Same-quorum with a validator
 // temporarily disabled shouldn't require one MORE validation to finalize.
-func (vt *ValidationTracker) checkFullValidation(ledgerID consensus.LedgerID) {
+//
+// Caller MUST hold vt.mu.
+func (vt *ValidationTracker) checkFullValidationLocked(ledgerID consensus.LedgerID) (consensus.LedgerID, uint32, bool) {
 	if vt.onFullyValidated == nil {
-		return
+		return ledgerID, 0, false
 	}
 	if _, done := vt.fired[ledgerID]; done {
-		return
+		return ledgerID, 0, false
 	}
 	ledgerVals, exists := vt.validations[ledgerID]
 	if !exists || len(ledgerVals) == 0 {
-		return
+		return ledgerID, 0, false
 	}
 
 	var sampleSeq uint32
@@ -364,8 +390,9 @@ func (vt *ValidationTracker) checkFullValidation(ledgerID consensus.LedgerID) {
 
 	if trustedCount >= vt.quorum {
 		vt.fired[ledgerID] = struct{}{}
-		vt.onFullyValidated(ledgerID, sampleSeq)
+		return ledgerID, sampleSeq, true
 	}
+	return ledgerID, 0, false
 }
 
 // GetValidations returns all validations for a ledger.
