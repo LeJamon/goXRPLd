@@ -3,6 +3,7 @@ package adaptor
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/LeJamon/goXRPLd/config"
@@ -54,6 +55,16 @@ func (c *Components) Stop() {
 	if c.Engine != nil {
 		_ = c.Engine.Stop()
 	}
+	// Drain any in-flight replay-delta acquisitions. Router is
+	// already cancelled above so no new acquisitions can arrive; we
+	// just need to clear the map so we don't leak state into a
+	// subsequent Start. Log the count for observability.
+	if c.Router != nil {
+		if remaining := c.Router.StopReplayer(); remaining > 0 {
+			slog.Info("replay-delta acquisitions drained at shutdown",
+				"t", "Components.Stop", "in_flight_at_stop", remaining)
+		}
+	}
 	if c.overlayCancel != nil {
 		c.overlayCancel()
 	}
@@ -75,6 +86,16 @@ func NewFromConfig(
 	if err != nil {
 		return nil, fmt.Errorf("create overlay: %w", err)
 	}
+
+	// Wire the read-side LedgerProvider so the overlay's ledger-sync
+	// handler can answer mtREPLAY_DELTA_REQ and mtPROOF_PATH_REQ from
+	// peers. Legacy mtGET_LEDGER is NOT routed through this provider
+	// — the consensus router's handleGetLedger (router.go) answers
+	// mtGET_LEDGER(LedgerInfoBase) requests directly from the ledger
+	// service. peermanagement is forbidden from importing
+	// internal/ledger, so the adapter installed here lets both layers
+	// reach the ledger without breaking that layering boundary.
+	overlay.LedgerSync().SetProvider(NewLedgerProvider(ledgerSvc))
 
 	// Create validator identity (nil if not a validator)
 	var identity *ValidatorIdentity
@@ -110,6 +131,13 @@ func NewFromConfig(
 
 	// Create the router
 	router := NewRouter(engine, adaptor, modeManager, overlay.Messages())
+
+	// Plumb peer disconnect notifications back through the router so
+	// per-peer state (peerStates for catch-up, peerLCLs for the
+	// getNetworkLedger vote) is cleaned the instant a peer goes away.
+	// Without this a disconnected peer's stale LCL keeps influencing
+	// consensus convergence.
+	overlay.SetPeerDisconnectCallback(router.HandlePeerDisconnect)
 
 	// Wire operating mode into ledger service for server_info.
 	// Matches rippled: report "proposing" when both in full operating mode
@@ -167,6 +195,10 @@ func OverlayOptionsFromConfig(appCfg *config.Config) []peermanagement.Option {
 
 	// Compression
 	opts = append(opts, peermanagement.WithCompression(appCfg.Compression))
+
+	// Ledger replay (Phase B server + Phase B client). The toml toggle
+	// is a 0/1 int to match rippled's [ledger_replay] stanza semantics.
+	opts = append(opts, peermanagement.WithLedgerReplay(appCfg.LedgerReplay != 0))
 
 	return opts
 }

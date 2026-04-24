@@ -57,9 +57,22 @@ type Config struct {
 	MessageBufferSize int
 	SendBufferSize    int
 
-	// Features
-	EnableReduceRelay bool
-	EnableCompression bool
+	// Features — advertised via X-Protocol-Ctl during handshake so
+	// peers know which optional protocol extensions we speak. Matches
+	// rippled's compr / vprr / txrr / ledgerreplay feature toggles.
+	//
+	// EnableReduceRelay is a legacy alias that enables BOTH vprr and
+	// txrr at once. New code should set EnableVPReduceRelay and
+	// EnableTxReduceRelay independently so an operator can run one
+	// without the other — matches rippled's Handshake.cpp handling of
+	// the two features as independent toggles. When EnableReduceRelay
+	// is set, it is propagated to both at Validate() time if either
+	// specific toggle is still false.
+	EnableReduceRelay   bool
+	EnableVPReduceRelay bool
+	EnableTxReduceRelay bool
+	EnableCompression   bool
+	EnableLedgerReplay  bool
 
 	// Clock function for testing
 	Clock func() time.Time
@@ -83,8 +96,9 @@ func DefaultConfig() Config {
 		MessageBufferSize: DefaultMessageBufferSize,
 		SendBufferSize:    DefaultSendBufferSize,
 
-		EnableReduceRelay: true,
-		EnableCompression: true,
+		EnableReduceRelay:  true,
+		EnableCompression:  true,
+		EnableLedgerReplay: true,
 
 		Clock: time.Now,
 	}
@@ -198,6 +212,16 @@ func WithCompression(enabled bool) Option {
 	}
 }
 
+// WithLedgerReplay enables or disables the ledgerreplay X-Protocol-Ctl
+// feature. When disabled we won't advertise replay support, so peers
+// won't offer us mtREPLAY_DELTA_RESPONSE and won't accept replay
+// requests from us — the catchup path falls back to legacy GetLedger.
+func WithLedgerReplay(enabled bool) Option {
+	return func(c *Config) {
+		c.EnableLedgerReplay = enabled
+	}
+}
+
 // WithClock sets the clock function (for testing).
 func WithClock(clock func() time.Time) Option {
 	return func(c *Config) {
@@ -241,6 +265,14 @@ func (c *Config) Validate() error {
 	}
 	if c.Clock == nil {
 		return errors.New("Clock function cannot be nil")
+	}
+	// Legacy EnableReduceRelay propagates to both specific flags when
+	// the caller hasn't set them independently. Matches rippled's
+	// behavior where enabling "reduce-relay" as a whole turns on both
+	// vprr and txrr.
+	if c.EnableReduceRelay {
+		c.EnableVPReduceRelay = true
+		c.EnableTxReduceRelay = true
 	}
 	return nil
 }

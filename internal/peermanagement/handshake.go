@@ -52,14 +52,26 @@ type HandshakeConfig struct {
 	UserAgent   string
 	NetworkID   uint32
 	CrawlPublic bool
+
+	// Protocol feature toggles advertised via X-Protocol-Ctl. Rippled
+	// peers gate feature-specific requests (mtREPLAY_DELTA_REQUEST,
+	// mtTRANSACTIONS batch relay, LZ4 compression) on the handshake
+	// advertisement — if we don't tell peers we support a feature, they
+	// won't send it to us and they won't accept it from us. Matches
+	// rippled's Handshake.cpp / peerFeatureEnabled.
+	EnableLedgerReplay  bool
+	EnableCompression   bool
+	EnableVPReduceRelay bool
+	EnableTxReduceRelay bool
 }
 
 // DefaultHandshakeConfig returns default handshake configuration.
 func DefaultHandshakeConfig() HandshakeConfig {
 	return HandshakeConfig{
-		UserAgent:   "goXRPL/0.1.0",
-		NetworkID:   0,
-		CrawlPublic: false,
+		UserAgent:          "goXRPL/0.1.0",
+		NetworkID:          0,
+		CrawlPublic:        false,
+		EnableLedgerReplay: true, // Phase B wires the server+client paths
 	}
 }
 
@@ -86,6 +98,17 @@ func MakeSharedValue(conn *tls.Conn) ([]byte, error) {
 		return nil, fmt.Errorf("%w: finished messages are empty", ErrHandshakeFailed)
 	}
 
+	// KNOWN ISSUE: on Go's TLS 1.2 server side, `c.serverFinished`
+	// stays all-zeros in a full (non-resume) handshake because
+	// handshake_server.go:119 calls `sendFinished(nil)` and never
+	// copies the verify bytes back into the field. Only the
+	// CLIENT side sees both fields populated. As a result, server
+	// and client compute DIFFERENT sharedValues from the same
+	// connection — signature verification based on this value
+	// cannot currently work both ways. R5.2 documents the fix as
+	// a follow-up (requires computing the finished-message
+	// equivalent via master secret + transcript hash instead of
+	// reading the stdlib field).
 	return MakeSharedValueFromFinished(clientBytes, serverBytes)
 }
 
@@ -163,6 +186,13 @@ func WriteRawHandshakeRequest(w io.Writer, req *http.Request) error {
 	writeHeader(HeaderSessionSignature)
 	writeHeader(HeaderNetworkID)
 	writeHeader(HeaderNetworkTime)
+	// X-Protocol-Ctl advertises the features (ledgerreplay, compr, vprr,
+	// txrr) the outbound side is willing to negotiate. Missing from the
+	// initial whitelist — without it the peer's inbound parser sees an
+	// empty feature set and refuses to serve feature-gated requests
+	// like mtREPLAY_DELTA_REQ and mtPROOF_PATH_REQ. Mirrors rippled's
+	// makeHandshakeHeaders writing the same header on outbound.
+	writeHeader(HeaderProtocolCtl)
 	buf.WriteString("\r\n")
 	_, err := w.Write(buf.Bytes())
 	return err
@@ -201,6 +231,19 @@ func addHandshakeHeaders(h http.Header, id *Identity, sharedValue []byte, cfg Ha
 	sig, err := id.SignDigest(sharedValue)
 	if err == nil {
 		h.Set(HeaderSessionSignature, base64.StdEncoding.EncodeToString(sig))
+	}
+
+	// Advertise supported protocol features so peers know what to
+	// request from us (and what to accept from us). Without this, our
+	// replay-delta handlers, compression, and reduce-relay relay paths
+	// are silently gated off by any standards-compliant peer.
+	if ctl := MakeFeaturesRequestHeader(
+		cfg.EnableCompression,
+		cfg.EnableLedgerReplay,
+		cfg.EnableTxReduceRelay,
+		cfg.EnableVPReduceRelay,
+	); ctl != "" {
+		h.Set(HeaderProtocolCtl, ctl)
 	}
 }
 
@@ -304,9 +347,23 @@ const (
 	FeatureValidatorListPropagation Feature = iota
 	FeatureLedgerReplay
 	FeatureCompression
-	FeatureReduceRelay
+	// FeatureVpReduceRelay corresponds to rippled's vprr
+	// (validator-proposal reduce-relay). Gating on this feature
+	// controls validator-proposal + validation relay suppression and
+	// TMSquelch for validators.
+	FeatureVpReduceRelay
+	// FeatureTxReduceRelay corresponds to rippled's txrr (transaction
+	// reduce-relay). A peer may enable TXRR without VPRR and
+	// vice-versa; they are independent in rippled's Handshake.cpp.
+	FeatureTxReduceRelay
 	FeatureTransactionBatching
 )
+
+// FeatureReduceRelay is kept as a transitional alias for the VPRR
+// flag so existing callers that "check for reduce-relay" continue to
+// compile; new code should pick FeatureVpReduceRelay or
+// FeatureTxReduceRelay explicitly.
+const FeatureReduceRelay = FeatureVpReduceRelay
 
 // String returns the string representation of a feature.
 func (f Feature) String() string {
@@ -317,8 +374,10 @@ func (f Feature) String() string {
 		return "ledgerReplay"
 	case FeatureCompression:
 		return "compression"
-	case FeatureReduceRelay:
-		return "reduceRelay"
+	case FeatureVpReduceRelay:
+		return "vpReduceRelay"
+	case FeatureTxReduceRelay:
+		return "txReduceRelay"
 	case FeatureTransactionBatching:
 		return "transactionBatching"
 	default:
@@ -326,7 +385,8 @@ func (f Feature) String() string {
 	}
 }
 
-// ParseFeature parses a feature string.
+// ParseFeature parses a feature string. Accepts both "reduceRelay"
+// (legacy) and the explicit vprr/txrr names.
 func ParseFeature(s string) (Feature, bool) {
 	switch strings.ToLower(s) {
 	case "validatorlistpropagation":
@@ -335,8 +395,10 @@ func ParseFeature(s string) (Feature, bool) {
 		return FeatureLedgerReplay, true
 	case "compression":
 		return FeatureCompression, true
-	case "reducerelay":
-		return FeatureReduceRelay, true
+	case "reducerelay", "vpreducerelay", "vprr":
+		return FeatureVpReduceRelay, true
+	case "txreducerelay", "txrr":
+		return FeatureTxReduceRelay, true
 	case "transactionbatching":
 		return FeatureTransactionBatching, true
 	default:
@@ -416,16 +478,18 @@ func (fs *FeatureSet) Intersect(other *FeatureSet) *FeatureSet {
 }
 
 // PeerCapabilities represents the negotiated capabilities of a peer.
+//
+// Only fields that are actually populated during handshake (via
+// ParseProtocolCtlFeatures) are kept here. Previously this struct
+// carried ProtocolMajor/Minor, ListeningPort, SupportsCrawl, and
+// IsValidator — none of which were ever written, so every HasFeature-
+// adjacent query silently returned the zero value. Removing them
+// avoids dead code and makes the wire contract explicit: if a field
+// shows up here, the handshake populates it.
 type PeerCapabilities struct {
 	mu sync.RWMutex
 
-	ProtocolMajor int
-	ProtocolMinor int
-	Features      *FeatureSet
-	NetworkID     uint32
-	ListeningPort uint16
-	SupportsCrawl bool
-	IsValidator   bool
+	Features *FeatureSet
 }
 
 // NewPeerCapabilities creates new peer capabilities.
@@ -536,6 +600,75 @@ func PeerFeatureEnabled(headers http.Header, feature, value string, localEnabled
 	return localEnabled && IsFeatureValue(headers, feature, value)
 }
 
+// VerifyHandshakeHeadersNoSig runs the subset of rippled's verifyHandshake
+// checks that DON'T require the TLS shared-value (i.e., signature
+// verification). Used by both inbound and outbound handshake paths to
+// enforce parity without the MakeSharedValue asymmetry on Go TLS 1.2
+// that blocks full signature verification (see
+// tasks/pr264-round5-fixes.md R5.2).
+//
+// Checks:
+//   - Public-Key header present and base58-parseable as a secp256k1
+//     node key (0xED ed25519 prefixes are rejected at parse time).
+//   - Self-connection: peer's Public-Key must differ from localPubKey.
+//   - Network-ID: must match localNetworkID exactly. Unlike the
+//     pre-R6.1 inbound code, a local NetworkID==0 still enforces that
+//     the peer either omits the header OR advertises 0; a testnet
+//     peer's Network-ID=1 is rejected even when we're on mainnet.
+//   - Network-Time: if the peer advertised it, the skew must be
+//     within NetworkClockTolerance of local wall clock.
+//
+// Returns (peerPubKey, nil) on success. The returned token is nil
+// when the peer omitted Public-Key — callers decide whether to treat
+// that as fatal (rippled does).
+func VerifyHandshakeHeadersNoSig(
+	headers http.Header,
+	localPubKey string,
+	localNetworkID uint32,
+) (*PublicKeyToken, error) {
+	peerPubKeyStr := headers.Get(HeaderPublicKey)
+	if peerPubKeyStr == "" {
+		return nil, fmt.Errorf("%w: missing %s", ErrInvalidHandshake, HeaderPublicKey)
+	}
+	if peerPubKeyStr == localPubKey {
+		return nil, ErrSelfConnection
+	}
+	peerPubKey, err := ParsePublicKeyToken(peerPubKeyStr)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidHandshake, err)
+	}
+
+	if netIDStr := headers.Get(HeaderNetworkID); netIDStr != "" {
+		netID, err := strconv.ParseUint(netIDStr, 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("malformed Network-ID %q: %w", netIDStr, err)
+		}
+		if uint32(netID) != localNetworkID {
+			return nil, fmt.Errorf("%w: peer=%d local=%d", ErrNetworkMismatch, netID, localNetworkID)
+		}
+	} else if localNetworkID != 0 {
+		// Peer omitted Network-ID but we require a non-default
+		// network. Rippled rejects this symmetrically.
+		return nil, fmt.Errorf("%w: peer omitted Network-ID (local expects %d)",
+			ErrNetworkMismatch, localNetworkID)
+	}
+
+	if netTimeStr := headers.Get(HeaderNetworkTime); netTimeStr != "" {
+		netTime, err := strconv.ParseInt(netTimeStr, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("malformed Network-Time %q: %w", netTimeStr, err)
+		}
+		peerTime := time.Unix(netTime+XRPLEpochOffset, 0)
+		diff := time.Since(peerTime)
+		if diff < -NetworkClockTolerance || diff > NetworkClockTolerance {
+			return nil, fmt.Errorf("%w: clock skew %v exceeds tolerance %v",
+				ErrHandshakeFailed, diff, NetworkClockTolerance)
+		}
+	}
+
+	return peerPubKey, nil
+}
+
 // MakeFeaturesRequestHeader creates the X-Protocol-Ctl header value for a request.
 // Reference: rippled Handshake.cpp makeFeaturesRequestHeader()
 func MakeFeaturesRequestHeader(comprEnabled, ledgerReplayEnabled, txReduceRelayEnabled, vpReduceRelayEnabled bool) string {
@@ -589,8 +722,16 @@ func ParseProtocolCtlFeatures(headers http.Header) *FeatureSet {
 	if FeatureEnabled(headers, FeatureNameLedgerReplay) {
 		fs.Enable(FeatureLedgerReplay)
 	}
-	if FeatureEnabled(headers, FeatureNameTXRR) || FeatureEnabled(headers, FeatureNameVPRR) {
-		fs.Enable(FeatureReduceRelay)
+	// Track txrr and vprr independently. Rippled's Handshake.cpp
+	// publishes two separate features so operators can enable one
+	// without the other; collapsing them into a single flag loses the
+	// ability to correctly gate per-feature behavior (TMSquelch is
+	// VPRR, tx relay suppression is TXRR).
+	if FeatureEnabled(headers, FeatureNameTXRR) {
+		fs.Enable(FeatureTxReduceRelay)
+	}
+	if FeatureEnabled(headers, FeatureNameVPRR) {
+		fs.Enable(FeatureVpReduceRelay)
 	}
 
 	return fs

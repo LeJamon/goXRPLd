@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"sync"
@@ -63,9 +64,26 @@ type Peer struct {
 	score   *PeerScore
 	traffic *TrafficCounter
 
+	// squelchMap tracks per-validator squelch expiry deadlines. Outgoing
+	// validation/proposal messages originating from a squelched validator
+	// must not be relayed to this peer until the deadline passes.
+	// Mirrors rippled's `Squelch` (see overlay/Squelch.h). The key is the
+	// validator's public key bytes as a string for use as a map key.
+	squelchMu  sync.RWMutex
+	squelchMap map[string]time.Time
+
 	createdAt time.Time
 	closeCh   chan struct{}
 	closed    atomic.Bool
+
+	// badDataBalance tracks the weighted invalid-data "fee" this peer
+	// owes, modeled on rippled's Resource::Consumer balance. Each bad-
+	// data event adds a weight from BadDataWeight(reason); a background
+	// decay in the overlay halves the balance every
+	// badDataDecayInterval so a chatty-but-honest peer can recover while
+	// a persistent offender eventually evicts. Stored as int64 to
+	// accommodate potential negative values from decay overshoot.
+	badDataBalance atomic.Int64
 }
 
 // PeerConfig holds peer connection configuration.
@@ -89,17 +107,18 @@ func DefaultPeerConfig() PeerConfig {
 // NewPeer creates a new peer.
 func NewPeer(id PeerID, endpoint Endpoint, inbound bool, identity *Identity, events chan<- Event) *Peer {
 	return &Peer{
-		id:        id,
-		endpoint:  endpoint,
-		inbound:   inbound,
-		identity:  identity,
-		state:     PeerStateDisconnected,
-		send:      make(chan []byte, DefaultSendBufferSize),
-		events:    events,
-		score:     NewPeerScore(),
-		traffic:   NewTrafficCounter(),
-		createdAt: time.Now(),
-		closeCh:   make(chan struct{}),
+		id:         id,
+		endpoint:   endpoint,
+		inbound:    inbound,
+		identity:   identity,
+		state:      PeerStateDisconnected,
+		send:       make(chan []byte, DefaultSendBufferSize),
+		events:     events,
+		score:      NewPeerScore(),
+		traffic:    NewTrafficCounter(),
+		squelchMap: make(map[string]time.Time),
+		createdAt:  time.Now(),
+		closeCh:    make(chan struct{}),
 	}
 }
 
@@ -255,8 +274,19 @@ func (p *Peer) performHandshake(ctx context.Context, tlsConn *tls.Conn) error {
 	}
 	resp.Body.Close()
 
+	// R5.2 NOTE: outbound handshake verification is disabled for the
+	// same reason as the inbound side — MakeSharedValue produces
+	// asymmetric values on Go TLS 1.2 client vs server, so
+	// signature verification would reject every honest peer today.
+	// See the long comment in overlay.go:performInboundHandshake.
+
+	// Capture the peer's advertised protocol features from the handshake
+	// response headers so downstream code can query e.g. whether this peer
+	// supports ledger-replay before issuing a replay-delta request.
+	caps := NewPeerCapabilities()
+	caps.Features = ParseProtocolCtlFeatures(resp.Header)
 	p.mu.Lock()
-	p.capabilities = NewPeerCapabilities()
+	p.capabilities = caps
 	p.mu.Unlock()
 
 	return nil
@@ -393,6 +423,142 @@ func (p *Peer) pingLoop(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// maxSquelchesPerPeer caps the per-peer squelch map to bound memory
+// under adversarial input. A peer cannot squelch more than this many
+// distinct validators at a time; once the cap is reached further
+// AddSquelch calls for NEW validators are refused (existing entries
+// may still be refreshed). Rippled doesn't document a fixed cap but
+// its per-peer Slot has the same intent; 128 comfortably covers a
+// UNL of realistic size while preventing unbounded growth.
+const maxSquelchesPerPeer = 128
+
+// AddSquelch records a squelch instruction received from this peer for the
+// given validator. Mirrors rippled's `Squelch::addSquelch`: returns false
+// (and removes any prior squelch) when duration is outside the allowed
+// [MinUnsquelchExpire, MaxUnsquelchExpirePeers] range.
+//
+// An out-of-range duration is treated as a bad-data event attributed to
+// the peer — rippled's equivalent path charges feeInvalidData. We keep
+// the increment here (the only place the duration is checked) so callers
+// in the overlay message layer don't need a separate "did we reject it"
+// branch and so the counter can never miss a rejection.
+//
+// Returns false when the per-peer squelch map is full AND the validator
+// is not already present — prevents a peer from spamming squelches for
+// random validator keys to grow our memory footprint. An existing entry
+// is still refreshable regardless of cap.
+func (p *Peer) AddSquelch(validator []byte, duration time.Duration) bool {
+	if duration < MinUnsquelchExpire || duration > MaxUnsquelchExpirePeers {
+		p.RemoveSquelch(validator)
+		p.IncBadData("squelch-duration")
+		return false
+	}
+	key := string(validator)
+	p.squelchMu.Lock()
+	_, exists := p.squelchMap[key]
+	full := !exists && len(p.squelchMap) >= maxSquelchesPerPeer
+	if !full {
+		p.squelchMap[key] = time.Now().Add(duration)
+	}
+	p.squelchMu.Unlock()
+	if full {
+		// Cap hit with a fresh key — refuse the insert and charge
+		// the peer for overflowing our buffer. IncBadData only
+		// touches an atomic counter so it's safe outside squelchMu.
+		p.IncBadData("squelch-map-full")
+		return false
+	}
+	return true
+}
+
+// IncBadData records an invalid-data event attributed to this peer and
+// returns the new cumulative balance. `reason` is a short stable label
+// used both for diagnostic logging AND to look up a per-reason weight
+// via BadDataWeight — mirrors rippled's Resource::Consumer which
+// charges different fee amounts (feeInvalidData=400,
+// feeMalformedRequest=200, feeRequestNoReply=10) depending on the
+// severity of the offense.
+func (p *Peer) IncBadData(reason string) uint32 {
+	w := BadDataWeight(reason)
+	n := p.badDataBalance.Add(int64(w))
+	slog.Debug("peer bad data",
+		"t", "Peer", "peer", p.id, "reason", reason,
+		"weight", w, "balance", n,
+		"endpoint", p.endpoint.String(),
+	)
+	if n < 0 {
+		return 0
+	}
+	return uint32(n)
+}
+
+// BadDataCount returns the cumulative invalid-data balance for this
+// peer (clamped to non-negative). Thread-safe. The return type stays
+// uint32 for compatibility with callers that treat this as a count;
+// the underlying storage is int64 to handle decay overshoot.
+func (p *Peer) BadDataCount() uint32 {
+	n := p.badDataBalance.Load()
+	if n < 0 {
+		return 0
+	}
+	return uint32(n)
+}
+
+// DecayBadData halves the bad-data balance. Called by the overlay's
+// maintenance loop on a fixed cadence so transient protocol hiccups
+// (a flaky peer throwing a few malformed compression frames) don't
+// accumulate to eviction over a long session. Rippled's Resource::
+// Fees.cpp:26-43 uses a similar exponential decay. The floor at 0
+// prevents the balance from going meaningfully negative.
+func (p *Peer) DecayBadData() {
+	for {
+		cur := p.badDataBalance.Load()
+		if cur <= 0 {
+			return
+		}
+		next := cur / 2
+		if p.badDataBalance.CompareAndSwap(cur, next) {
+			return
+		}
+	}
+}
+
+// RemoveSquelch deletes any squelch entry for the given validator.
+// Mirrors rippled's `Squelch::removeSquelch`.
+func (p *Peer) RemoveSquelch(validator []byte) {
+	p.squelchMu.Lock()
+	delete(p.squelchMap, string(validator))
+	p.squelchMu.Unlock()
+}
+
+// ExpireSquelch reports whether a message originating from `validator`
+// may be relayed to this peer. Returns true when there is no squelch or
+// the existing squelch has expired (and clears the expired entry); false
+// when an active squelch is in effect. Mirrors rippled's
+// `Squelch::expireSquelch`.
+func (p *Peer) ExpireSquelch(validator []byte) bool {
+	key := string(validator)
+
+	p.squelchMu.RLock()
+	deadline, ok := p.squelchMap[key]
+	p.squelchMu.RUnlock()
+
+	if !ok {
+		return true
+	}
+	if deadline.After(time.Now()) {
+		return false
+	}
+
+	// Squelch expired — remove and allow.
+	p.squelchMu.Lock()
+	if d, stillThere := p.squelchMap[key]; stillThere && !d.After(time.Now()) {
+		delete(p.squelchMap, key)
+	}
+	p.squelchMu.Unlock()
+	return true
 }
 
 // Send queues data to be sent to the peer.

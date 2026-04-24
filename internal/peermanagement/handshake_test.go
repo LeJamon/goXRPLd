@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/LeJamon/goXRPLd/codec/addresscodec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -226,6 +228,160 @@ func TestVerifyPeerHandshake_MissingSignature(t *testing.T) {
 	assert.Contains(t, err.Error(), "Session-Signature")
 }
 
+// TestVerifyHandshakeHeadersNoSig covers R6.1 + R6.2: the inbound
+// handshake's non-signature verification path. Each subtest exercises
+// one failure mode that rippled enforces but pre-R6 goXRPL silently
+// accepted or mis-handled.
+func TestVerifyHandshakeHeadersNoSig(t *testing.T) {
+	localId, err := NewIdentity()
+	require.NoError(t, err)
+	remoteId, err := NewIdentity()
+	require.NoError(t, err)
+
+	mkHeaders := func(pubKey, netID, netTime string) http.Header {
+		h := http.Header{}
+		if pubKey != "" {
+			h.Set(HeaderPublicKey, pubKey)
+		}
+		if netID != "" {
+			h.Set(HeaderNetworkID, netID)
+		}
+		if netTime != "" {
+			h.Set(HeaderNetworkTime, netTime)
+		}
+		return h
+	}
+	xrplNow := func() string {
+		return strconvUnixXRPL(time.Now())
+	}
+
+	t.Run("happy_path_mainnet", func(t *testing.T) {
+		h := mkHeaders(remoteId.EncodedPublicKey(), "", xrplNow())
+		pk, err := VerifyHandshakeHeadersNoSig(h, localId.EncodedPublicKey(), 0)
+		require.NoError(t, err)
+		require.NotNil(t, pk)
+		assert.Equal(t, remoteId.EncodedPublicKey(), pk.Encode())
+	})
+
+	t.Run("mainnet_rejects_nonzero_networkid", func(t *testing.T) {
+		// Pre-R6.1: mainnet (NetworkID=0) silently accepted any
+		// Network-ID the peer advertised. Now we reject.
+		h := mkHeaders(remoteId.EncodedPublicKey(), "1", xrplNow())
+		_, err := VerifyHandshakeHeadersNoSig(h, localId.EncodedPublicKey(), 0)
+		assert.ErrorIs(t, err, ErrNetworkMismatch,
+			"mainnet must reject a peer advertising Network-ID=1 (testnet)")
+	})
+
+	t.Run("non_default_network_peer_missing_netid", func(t *testing.T) {
+		// Symmetric case: we're on network 2, peer omits Network-ID.
+		h := mkHeaders(remoteId.EncodedPublicKey(), "", xrplNow())
+		_, err := VerifyHandshakeHeadersNoSig(h, localId.EncodedPublicKey(), 2)
+		assert.ErrorIs(t, err, ErrNetworkMismatch,
+			"non-default-network node must reject a peer omitting Network-ID")
+	})
+
+	t.Run("malformed_networkid_rejected", func(t *testing.T) {
+		// Pre-R6.1: ParseUint failures were silently ignored.
+		h := mkHeaders(remoteId.EncodedPublicKey(), "not-a-number", xrplNow())
+		_, err := VerifyHandshakeHeadersNoSig(h, localId.EncodedPublicKey(), 0)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "malformed Network-ID")
+	})
+
+	t.Run("malformed_networktime_rejected", func(t *testing.T) {
+		// R6.2: Network-Time was never checked in performInboundHandshake.
+		h := mkHeaders(remoteId.EncodedPublicKey(), "", "not-a-number")
+		_, err := VerifyHandshakeHeadersNoSig(h, localId.EncodedPublicKey(), 0)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "malformed Network-Time")
+	})
+
+	t.Run("network_time_clock_skew", func(t *testing.T) {
+		// Peer timestamp 5 minutes ahead of our clock — way beyond
+		// NetworkClockTolerance (20s).
+		farFuture := strconvUnixXRPL(time.Now().Add(5 * time.Minute))
+		h := mkHeaders(remoteId.EncodedPublicKey(), "", farFuture)
+		_, err := VerifyHandshakeHeadersNoSig(h, localId.EncodedPublicKey(), 0)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "clock skew")
+	})
+
+	t.Run("self_connection", func(t *testing.T) {
+		h := mkHeaders(localId.EncodedPublicKey(), "", xrplNow())
+		_, err := VerifyHandshakeHeadersNoSig(h, localId.EncodedPublicKey(), 0)
+		assert.ErrorIs(t, err, ErrSelfConnection)
+	})
+
+	t.Run("missing_public_key", func(t *testing.T) {
+		h := mkHeaders("", "", xrplNow())
+		_, err := VerifyHandshakeHeadersNoSig(h, localId.EncodedPublicKey(), 0)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "Public-Key")
+	})
+}
+
+// strconvUnixXRPL formats a time as XRPL epoch seconds (like rippled's
+// Network-Time header builder). Test helper for R6.2 tests.
+func strconvUnixXRPL(t time.Time) string {
+	xrplSec := t.Unix() - XRPLEpochOffset
+	return fmtInt(xrplSec)
+}
+
+func fmtInt(n int64) string {
+	// Simple base-10 stringification without importing another package.
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	buf := make([]byte, 0, 20)
+	for n > 0 {
+		buf = append(buf, byte('0'+n%10))
+		n /= 10
+	}
+	if neg {
+		buf = append(buf, '-')
+	}
+	// reverse
+	for i, j := 0, len(buf)-1; i < j; i, j = i+1, j-1 {
+		buf[i], buf[j] = buf[j], buf[i]
+	}
+	return string(buf)
+}
+
+// TestParsePublicKeyToken_RejectsEd25519Prefix pins R5.13: the 0xED
+// (ed25519) key-type prefix must be rejected at parse time. Rippled
+// requires secp256k1 for node public keys (Handshake.cpp:294-295) —
+// an ed25519 validator key is different from a node key, and a peer
+// advertising the wrong family is either misconfigured or hostile.
+// Regression guard against a future btcec refactor that might
+// accidentally accept 33-byte ed25519 keys (which share the same
+// compressed length).
+func TestParsePublicKeyToken_RejectsEd25519Prefix(t *testing.T) {
+	// Build a synthetic node-pubkey payload with the ed25519 0xED
+	// prefix in the key-bytes position. The token format is:
+	//   [NodePublicKeyPrefix=0x1C] [33 key bytes starting with 0xED] [4-byte checksum]
+	keyBytes := make([]byte, CompressedPubKeyLen)
+	keyBytes[0] = 0xED
+	for i := 1; i < CompressedPubKeyLen; i++ {
+		keyBytes[i] = byte(i)
+	}
+
+	payload := make([]byte, 1+CompressedPubKeyLen)
+	payload[0] = NodePublicKeyPrefix
+	copy(payload[1:], keyBytes)
+	checksum := doubleSHA256Identity(payload)[:ChecksumLen]
+	full := append(payload, checksum...)
+	encoded := addresscodec.EncodeBase58(full)
+
+	_, err := ParsePublicKeyToken(encoded)
+	require.Error(t, err, "ed25519-tagged node key must be rejected at parse time")
+	assert.Contains(t, err.Error(), "ed25519",
+		"error message should name the rejected key type for operator clarity")
+}
+
 // TestVerifyPeerHandshake_SelfConnection tests self-connection detection
 // Reference: rippled Handshake.cpp verifyHandshake - "Self connection"
 func TestVerifyPeerHandshake_SelfConnection(t *testing.T) {
@@ -371,7 +527,8 @@ func TestFeatureString(t *testing.T) {
 		{FeatureValidatorListPropagation, "validatorListPropagation"},
 		{FeatureLedgerReplay, "ledgerReplay"},
 		{FeatureCompression, "compression"},
-		{FeatureReduceRelay, "reduceRelay"},
+		{FeatureVpReduceRelay, "vpReduceRelay"},
+		{FeatureTxReduceRelay, "txReduceRelay"},
 		{FeatureTransactionBatching, "transactionBatching"},
 		{Feature(99), "unknown"},
 	}
@@ -851,49 +1008,107 @@ func TestMakeFeaturesResponseHeader(t *testing.T) {
 	}
 }
 
-// TestParseProtocolCtlFeatures tests full feature set parsing
+// TestMakeFeaturesRequestHeader_IndependentVPRRTXRR pins R5.12: the
+// two reduce-relay flags advertise independently on the wire. An
+// operator who enables only VPRR must NOT see txrr=1 on the
+// handshake, and vice versa. Matches rippled's Handshake.cpp which
+// treats them as independent toggles.
+func TestMakeFeaturesRequestHeader_IndependentVPRRTXRR(t *testing.T) {
+	tests := []struct {
+		name          string
+		compr, replay bool
+		txrr, vprr    bool
+		wantContains  []string
+		wantExcludes  []string
+	}{
+		{
+			name:         "only_vprr",
+			vprr:         true,
+			wantContains: []string{"vprr=1"},
+			wantExcludes: []string{"txrr=1"},
+		},
+		{
+			name:         "only_txrr",
+			txrr:         true,
+			wantContains: []string{"txrr=1"},
+			wantExcludes: []string{"vprr=1"},
+		},
+		{
+			name:         "both",
+			vprr:         true,
+			txrr:         true,
+			wantContains: []string{"vprr=1", "txrr=1"},
+		},
+		{
+			name:         "neither",
+			wantExcludes: []string{"vprr=1", "txrr=1"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			hdr := MakeFeaturesRequestHeader(tc.compr, tc.replay, tc.txrr, tc.vprr)
+			for _, want := range tc.wantContains {
+				assert.Contains(t, hdr, want)
+			}
+			for _, nope := range tc.wantExcludes {
+				assert.NotContains(t, hdr, nope)
+			}
+		})
+	}
+}
+
+// TestParseProtocolCtlFeatures tests full feature set parsing. VPRR and
+// TXRR are tracked independently — rippled's Handshake.cpp publishes
+// them as separate flags, so an operator may enable one without the
+// other. Tests pin both the "all on" and the "only one" cases.
 func TestParseProtocolCtlFeatures(t *testing.T) {
 	tests := []struct {
 		name      string
 		header    string
 		hasCompr  bool
 		hasReplay bool
-		hasReduce bool
+		hasVPRR   bool
+		hasTXRR   bool
 	}{
 		{
 			name:      "all_features",
 			header:    "compr=lz4;ledgerreplay=1;vprr=1;txrr=1",
 			hasCompr:  true,
 			hasReplay: true,
-			hasReduce: true,
+			hasVPRR:   true,
+			hasTXRR:   true,
 		},
 		{
 			name:      "only_compression",
 			header:    "compr=lz4",
 			hasCompr:  true,
 			hasReplay: false,
-			hasReduce: false,
+			hasVPRR:   false,
+			hasTXRR:   false,
 		},
 		{
 			name:      "only_vprr",
 			header:    "vprr=1",
 			hasCompr:  false,
 			hasReplay: false,
-			hasReduce: true,
+			hasVPRR:   true,
+			hasTXRR:   false,
 		},
 		{
 			name:      "only_txrr",
 			header:    "txrr=1",
 			hasCompr:  false,
 			hasReplay: false,
-			hasReduce: true,
+			hasVPRR:   false,
+			hasTXRR:   true,
 		},
 		{
 			name:      "empty_header",
 			header:    "",
 			hasCompr:  false,
 			hasReplay: false,
-			hasReduce: false,
+			hasVPRR:   false,
+			hasTXRR:   false,
 		},
 	}
 
@@ -908,7 +1123,10 @@ func TestParseProtocolCtlFeatures(t *testing.T) {
 
 			assert.Equal(t, tt.hasCompr, fs.Has(FeatureCompression))
 			assert.Equal(t, tt.hasReplay, fs.Has(FeatureLedgerReplay))
-			assert.Equal(t, tt.hasReduce, fs.Has(FeatureReduceRelay))
+			assert.Equal(t, tt.hasVPRR, fs.Has(FeatureVpReduceRelay),
+				"vprr flag must be tracked independently of txrr")
+			assert.Equal(t, tt.hasTXRR, fs.Has(FeatureTxReduceRelay),
+				"txrr flag must be tracked independently of vprr")
 		})
 	}
 }

@@ -176,6 +176,13 @@ type Validation struct {
 	// SeenTime is when we received this validation.
 	SeenTime time.Time
 
+	// CloseTime is sfCloseTime from the ledger header the validator
+	// signed. Optional per rippled STValidation.cpp:63 (soeOPTIONAL)
+	// and populated only when the parser sees it. Not used by the
+	// engine today — surfaced for RPC consumers that need per-
+	// validation close times. Zero time.Time means "not present".
+	CloseTime time.Time
+
 	// Signature is the validator's signature.
 	Signature []byte
 
@@ -188,9 +195,64 @@ type Validation struct {
 	// LoadFee is the validator's current load-based fee.
 	LoadFee uint32
 
-	// SigningData holds the canonical serialized fields (excluding sfSigningPubKey
-	// and sfSignature) for signature verification. Populated by parseSTValidation
-	// for inbound validations; nil for self-built outbound ones.
+	// ConsensusHash is sfConsensusHash — the hash of the agreed-upon
+	// transaction set that produced the validated ledger. Rippled
+	// includes this in validations so peers can tie-break between
+	// multiple ledgers at the same seq with different tx sets.
+	// Zero-hash means "not included".
+	ConsensusHash [32]byte
+
+	// ServerVersion is sfServerVersion — the validator's build
+	// version, encoded as rippled's 64-bit packed version number.
+	// Rippled attaches this to the first validation per peer session.
+	// Zero means "not included".
+	ServerVersion uint64
+
+	// ValidatedHash is sfValidatedHash — the hash of the most
+	// recent ledger THIS validator considers fully validated at the
+	// time of signing (rippled RCLConsensus.cpp:858-859). Emitted when
+	// the featureHardenedValidations amendment is enabled on the
+	// parent. Peers use this as an additional fork-detection signal.
+	// Zero-hash means "not included".
+	ValidatedHash [32]byte
+
+	// Amendments is sfAmendments — the list of amendment IDs this
+	// validator wishes to vote FOR on the current flag ledger. Only
+	// populated on flag ledgers (seq % 256 == 0) when the validator
+	// has amendments to propose (rippled RCLConsensus.cpp:886-894).
+	// Empty means either not a flag ledger or no amendments to vote
+	// on.
+	Amendments [][32]byte
+
+	// Fee-voting fields. Rippled emits these on flag ledgers via
+	// FeeVote::doValidation (RCLConsensus.cpp:882-883). Pre-XRPFees
+	// amendment nodes emit the UINT32/UINT64 legacy forms; post-
+	// XRPFees they emit the AMOUNT "Drops" variants. We model both
+	// sets; the adaptor populates whichever is appropriate for the
+	// parent ledger's amendment set. Zero values mean "not emitted".
+
+	// BaseFee is sfBaseFee (UINT64 field 5, legacy drops).
+	BaseFee uint64
+	// ReserveBase is sfReserveBase (UINT32 field 31, legacy drops).
+	ReserveBase uint32
+	// ReserveIncrement is sfReserveIncrement (UINT32 field 32, legacy
+	// drops).
+	ReserveIncrement uint32
+
+	// BaseFeeDrops is sfBaseFeeDrops (AMOUNT field 22, post-XRPFees).
+	// XRP-denominated drops amount encoded as an Amount.
+	BaseFeeDrops uint64
+	// ReserveBaseDrops is sfReserveBaseDrops (AMOUNT field 23).
+	ReserveBaseDrops uint64
+	// ReserveIncrementDrops is sfReserveIncrementDrops (AMOUNT field 24).
+	ReserveIncrementDrops uint64
+
+	// SigningData holds the canonical serialized fields (excluding
+	// sfSignature, but INCLUDING sfSigningPubKey) for signature
+	// verification. Populated by parseSTValidation for inbound
+	// validations. For outbound self-built validations, it is left
+	// nil — SignValidation synthesizes its own preimage from the
+	// struct fields at sign time.
 	SigningData []byte
 }
 

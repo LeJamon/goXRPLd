@@ -19,11 +19,19 @@ type Engine interface {
 	// The proposing parameter indicates if this node should propose.
 	StartRound(round RoundID, proposing bool) error
 
-	// OnProposal handles an incoming proposal from a peer.
-	OnProposal(proposal *Proposal) error
+	// OnProposal handles an incoming proposal. originPeer is the overlay
+	// peer ID that delivered the message, or 0 for self-originated
+	// proposals (unused on production ingress but convenient for tests).
+	// The engine passes originPeer through to the adaptor's relay path
+	// so gossip forwards can exclude the originator — mirrors rippled's
+	// PeerImp::onMessage(TMProposeSet) behavior.
+	OnProposal(proposal *Proposal, originPeer uint64) error
 
-	// OnValidation handles an incoming validation from a peer.
-	OnValidation(validation *Validation) error
+	// OnValidation handles an incoming validation. Same originPeer
+	// semantics as OnProposal — mirrors rippled's
+	// PeerImp::onMessage(TMValidation) which feeds updateSlotAndSquelch
+	// and the gossip-forward path with the originating peer excluded.
+	OnValidation(validation *Validation, originPeer uint64) error
 
 	// OnTxSet handles receiving a transaction set we requested.
 	OnTxSet(id TxSetID, txs [][]byte) error
@@ -56,14 +64,37 @@ type Engine interface {
 type Adaptor interface {
 	// Network operations
 
-	// BroadcastProposal sends a proposal to all peers.
+	// BroadcastProposal sends OUR OWN proposal to all peers. Not
+	// subject to per-peer squelch filtering — we always deliver our
+	// self-originated traffic. Mirrors rippled's OverlayImpl which
+	// skips the squelch filter for self-originated broadcasts.
 	BroadcastProposal(proposal *Proposal) error
 
-	// BroadcastValidation sends a validation to all peers.
+	// BroadcastValidation sends OUR OWN validation to all peers. Same
+	// no-filter semantics as BroadcastProposal.
 	BroadcastValidation(validation *Validation) error
 
-	// RelayProposal forwards a peer's proposal to other peers.
-	RelayProposal(proposal *Proposal) error
+	// RelayProposal forwards a peer's proposal to other peers, honoring
+	// the per-peer squelch filter and excluding the originating peer
+	// (exceptPeer). Pass 0 for exceptPeer to send to all peers (e.g.
+	// for tests that synthesize a relay without an origin).
+	RelayProposal(proposal *Proposal, exceptPeer uint64) error
+
+	// RelayValidation forwards a peer's validation to other peers,
+	// honoring the per-peer squelch filter and excluding the
+	// originating peer (exceptPeer). Same semantics as RelayProposal.
+	// Mirrors rippled's gossip-forward path for TMValidation in
+	// OverlayImpl::relay.
+	RelayValidation(validation *Validation, exceptPeer uint64) error
+
+	// UpdateRelaySlot feeds the reduce-relay state machine with an
+	// inbound validator message from peerID. Mirrors rippled's
+	// PeerImp::onMessage(TMProposeSet/TMValidation) calling
+	// updateSlotAndSquelch — this is what drives the reduce-relay
+	// selection logic to emit mtSQUELCH once peer activity crosses
+	// the configured thresholds. Router calls this on every trusted
+	// inbound proposal/validation.
+	UpdateRelaySlot(validatorKey []byte, peerID uint64)
 
 	// RequestTxSet requests a transaction set from peers.
 	RequestTxSet(id TxSetID) error
@@ -78,6 +109,15 @@ type Adaptor interface {
 
 	// GetLastClosedLedger returns the most recently closed ledger.
 	GetLastClosedLedger() (Ledger, error)
+
+	// GetValidatedLedgerHash returns the hash of the most recent ledger
+	// this node considers FULLY VALIDATED (trusted-validation quorum
+	// reached). Zero LedgerID when no ledger has crossed quorum yet —
+	// callers must treat the zero value as "not available" and skip
+	// emission (e.g., sfValidatedHash in STValidation). Separate from
+	// GetLastClosedLedger which returns the consensus-closed view, not
+	// the network-agreement view.
+	GetValidatedLedgerHash() LedgerID
 
 	// BuildLedger constructs a new ledger from a transaction set.
 	BuildLedger(parent Ledger, txSet TxSet, closeTime time.Time) (Ledger, error)
@@ -136,6 +176,88 @@ type Adaptor interface {
 	// GetQuorum returns the number of validators needed for consensus.
 	GetQuorum() int
 
+	// GetNegativeUNL returns the set of validator NodeIDs currently on
+	// the negative-UNL — the XRPL mechanism for temporarily disabling
+	// unreliable validators without removing them from the UNL. Rippled
+	// keeps this state in the ltNEGATIVE_UNL SLE on every ledger; the
+	// adaptor reads it from the currently-validated ledger.
+	//
+	// Validators on the negative-UNL are still TRUSTED for message
+	// acceptance but are EXCLUDED from quorum counts in
+	// ValidationTracker.checkFullValidation. Returning the set here
+	// lets the engine refresh the tracker on every acceptLedger so a
+	// validator added to (or removed from) the negUNL across a ledger
+	// boundary is correctly excluded (or re-included).
+	//
+	// Returns nil or empty when no negUNL is in effect — the tracker
+	// treats nil as "all trusted validators contribute to quorum".
+	GetNegativeUNL() []NodeID
+
+	// IsFeatureEnabled reports whether the named amendment is enabled
+	// on the rules of the currently-validated (or otherwise most
+	// authoritative) ledger. Used by the engine to gate optional
+	// STValidation fields that rippled only emits under specific
+	// amendments — e.g., sfValidatedHash requires featureHardenedValidations
+	// (RCLConsensus.cpp:853). Adaptors that can't read rules (no ledger
+	// yet, adaptor-only test harness) SHOULD return true to preserve
+	// the mainnet-default behavior of emitting the optional fields.
+	IsFeatureEnabled(name string) bool
+
+	// GetCookie returns the validator's per-boot sfCookie value —
+	// generated once at adaptor construction from a CSPRNG. Emitted on
+	// every outgoing validation so peers can detect a validator
+	// restart. Mirrors rippled RCLConsensus.cpp:813-818.
+	GetCookie() uint64
+
+	// GetServerVersion returns the sfServerVersion value the validator
+	// advertises — an implementation + version identifier. Different
+	// implementations (rippled vs goXRPL) use different high-byte tags
+	// so network-wide version accounting can distinguish them. Zero
+	// means "not included" and the serializer will skip the field.
+	GetServerVersion() uint64
+
+	// GetLoadFee returns the local load_fee the validator advertises
+	// on every outbound validation (sfLoadFee). Rippled emits this
+	// under HardenedValidations from the local LoadFeeTrack —
+	// RCLConsensus.cpp:851. Adaptors without a load-feedback loop
+	// should return 0; the serializer treats 0 as omit.
+	GetLoadFee() uint32
+
+	// GetFeeVote returns this validator's fee-vote stance for emission
+	// on every validation. postXRPFees reflects the parent ledger's
+	// rules: when true the engine populates the AMOUNT triple
+	// (sfBaseFeeDrops/sfReserveBaseDrops/sfReserveIncrementDrops);
+	// when false it populates the legacy UINT triple
+	// (sfBaseFee/sfReserveBase/sfReserveIncrement). Matches rippled's
+	// FeeVoteImpl.cpp:120-192 mutual-exclusive gate. Zero values from
+	// the adaptor mean "no vote" and the serializer omits the fields.
+	GetFeeVote() (baseFee, reserveBase, reserveIncrement uint64, postXRPFees bool)
+
+	// GetAmendmentVote returns the list of amendment IDs this
+	// validator wishes to vote FOR on the next flag ledger. The
+	// engine calls this on flag-ledger validations only (see
+	// isVotingLedger). Returns nil on non-validators or when no
+	// amendments require a vote. Matches rippled's
+	// AmendmentTable::doValidation (RCLConsensus.cpp:888-893).
+	//
+	// Implementations should filter amendments already enabled on
+	// the current ledger so we don't re-vote for active ones.
+	GetAmendmentVote() [][32]byte
+
+	// PeerReportedLedgers returns the last-closed ledger hashes that
+	// overlay peers have advertised via statusChange messages. Used
+	// by getNetworkLedger as a fallback signal when peer proposals
+	// haven't yet reached us for the current round — a peer that
+	// just advanced its LCL but hasn't gossipped its proposal to us
+	// still shows up as a vote for where the network is.
+	//
+	// Returns an empty slice when no peer statuses have been seen.
+	// Peer-status votes are subject to the same quorum-validated
+	// gate as proposal votes in checkLedger: they influence the
+	// vote count, but switching to a peer's preferred LCL still
+	// requires that LCL to have trusted-validation quorum.
+	PeerReportedLedgers() []LedgerID
+
 	// Time operations
 
 	// Now returns the current network-adjusted time.
@@ -156,7 +278,21 @@ type Adaptor interface {
 	SetOperatingMode(mode OperatingMode)
 
 	// OnConsensusReached is called when a round completes successfully.
+	// Fires at local-accept time (consensus round resolution). This is
+	// when the closed ledger is stored and pending-tx bookkeeping runs.
+	// It does NOT mean the network has agreed — see OnLedgerFullyValidated.
 	OnConsensusReached(ledger Ledger, validations []*Validation)
+
+	// OnLedgerFullyValidated is called once per ledger the first time
+	// trusted validations for that ledger cross the quorum threshold.
+	// This is the network-agreement gate: server_info.validated_ledger
+	// advances here, not at OnConsensusReached. Mirrors rippled's
+	// LedgerMaster::checkAccept() which only calls setValidLedger()
+	// after verifying trusted-validation count >= quorum.
+	//
+	// Safe to call even when the ledger is not yet in local history —
+	// implementations should no-op or defer rather than fail.
+	OnLedgerFullyValidated(ledgerID LedgerID, seq uint32)
 
 	// OnModeChange is called when consensus mode changes.
 	OnModeChange(oldMode, newMode Mode)

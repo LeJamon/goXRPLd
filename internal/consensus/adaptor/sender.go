@@ -19,6 +19,11 @@ func NewOverlaySender(overlay *peermanagement.Overlay) *OverlaySender {
 	return &OverlaySender{overlay: overlay}
 }
 
+// BroadcastProposal sends OUR OWN proposal to every connected peer
+// WITHOUT applying the squelch filter. Rippled skips the filter for
+// self-originated broadcasts (OverlayImpl.cpp:1133-1137); a peer that
+// squelches our own pubkey should NOT cause our own proposals to
+// disappear from the network.
 func (s *OverlaySender) BroadcastProposal(proposal *consensus.Proposal) error {
 	msg := ProposalToMessage(proposal)
 	frame, err := encodeFrame(message.TypeProposeLedger, msg)
@@ -28,6 +33,9 @@ func (s *OverlaySender) BroadcastProposal(proposal *consensus.Proposal) error {
 	return s.overlay.Broadcast(frame)
 }
 
+// BroadcastValidation sends OUR OWN validation to every connected peer
+// WITHOUT applying the squelch filter. Same rationale as
+// BroadcastProposal.
 func (s *OverlaySender) BroadcastValidation(validation *consensus.Validation) error {
 	msg := ValidationToMessage(validation)
 	frame, err := encodeFrame(message.TypeValidation, msg)
@@ -37,10 +45,36 @@ func (s *OverlaySender) BroadcastValidation(validation *consensus.Validation) er
 	return s.overlay.Broadcast(frame)
 }
 
-func (s *OverlaySender) RelayProposal(proposal *consensus.Proposal) error {
-	// RelayProposal is the same as BroadcastProposal for now.
-	// In a full implementation, we'd exclude the originating peer.
-	return s.BroadcastProposal(proposal)
+// RelayProposal forwards a peer-originated proposal to other peers,
+// honoring the per-peer squelch filter on the ORIGINATING validator's
+// pubkey (so peers that have signaled they no longer need that
+// validator's gossip are skipped) and excluding the originating peer
+// itself. Mirrors rippled's OverlayImpl::relay for TMProposeSet.
+func (s *OverlaySender) RelayProposal(proposal *consensus.Proposal, exceptPeer uint64) error {
+	msg := ProposalToMessage(proposal)
+	frame, err := encodeFrame(message.TypeProposeLedger, msg)
+	if err != nil {
+		return fmt.Errorf("encode proposal: %w", err)
+	}
+	return s.overlay.RelayFromValidator(proposal.NodeID[:], peermanagement.PeerID(exceptPeer), frame)
+}
+
+// RelayValidation forwards a peer-originated validation to other peers
+// with the same filter semantics as RelayProposal.
+func (s *OverlaySender) RelayValidation(validation *consensus.Validation, exceptPeer uint64) error {
+	msg := ValidationToMessage(validation)
+	frame, err := encodeFrame(message.TypeValidation, msg)
+	if err != nil {
+		return fmt.Errorf("encode validation: %w", err)
+	}
+	return s.overlay.RelayFromValidator(validation.NodeID[:], peermanagement.PeerID(exceptPeer), frame)
+}
+
+// UpdateRelaySlot feeds the overlay's reduce-relay state machine with
+// an inbound validator message. Mirrors rippled's
+// PeerImp::updateSlotAndSquelch call in onMessage(TMProposeSet/TMValidation).
+func (s *OverlaySender) UpdateRelaySlot(validatorKey []byte, peerID uint64) {
+	s.overlay.OnValidatorMessage(validatorKey, peermanagement.PeerID(peerID))
 }
 
 func (s *OverlaySender) RequestTxSet(id consensus.TxSetID) error {
@@ -101,6 +135,67 @@ func (s *OverlaySender) RequestLedgerBaseFromPeer(peerID uint64, hash [32]byte, 
 	frame, err := encodeFrame(message.TypeGetLedger, msg)
 	if err != nil {
 		return fmt.Errorf("encode get_ledger (base): %w", err)
+	}
+	return s.overlay.Send(peermanagement.PeerID(peerID), frame)
+}
+
+// PeerSupportsReplay reports whether the peer advertised the ledger-replay
+// feature via the X-Protocol-Ctl handshake header. False when the peer is
+// unknown, the handshake hasn't completed, or the peer opted out.
+func (s *OverlaySender) PeerSupportsReplay(peerID uint64) bool {
+	return s.overlay.PeerSupports(peermanagement.PeerID(peerID), peermanagement.FeatureLedgerReplay)
+}
+
+// ReplayCapablePeersExcluding returns up to `max` peer IDs that
+// advertised ledger-replay via handshake, omitting IDs in `excluded`.
+// Uses the overlay's Peers() snapshot and filters by PeerSupports.
+// O(n*m) in peers × excluded, which is fine for realistic n (< 100)
+// and m (< subTaskRetryMax = 10).
+func (s *OverlaySender) ReplayCapablePeersExcluding(excluded []uint64, max int) []uint64 {
+	if max <= 0 {
+		return nil
+	}
+	excludedSet := make(map[uint64]struct{}, len(excluded))
+	for _, id := range excluded {
+		excludedSet[id] = struct{}{}
+	}
+	peers := s.overlay.Peers()
+	out := make([]uint64, 0, max)
+	for _, p := range peers {
+		id := uint64(p.ID)
+		if _, skip := excludedSet[id]; skip {
+			continue
+		}
+		if !s.overlay.PeerSupports(p.ID, peermanagement.FeatureLedgerReplay) {
+			continue
+		}
+		out = append(out, id)
+		if len(out) >= max {
+			break
+		}
+	}
+	return out
+}
+
+// IncPeerBadData forwards to Overlay.IncPeerBadData. Called by the
+// consensus router via Adaptor.IncPeerBadData when it detects malformed
+// or invalid data from a peer (e.g., replay-delta verification
+// failures, ledger-data hash/root mismatches). Safe no-op for unknown
+// peers.
+func (s *OverlaySender) IncPeerBadData(peerID uint64, reason string) {
+	s.overlay.IncPeerBadData(peermanagement.PeerID(peerID), reason)
+}
+
+// RequestReplayDelta asks a specific peer for a fast-catchup replay delta
+// (header + every tx blob, in tx-map order) for the given ledger hash.
+// Mirrors rippled's LedgerDeltaAcquire::trigger which sends a
+// TMReplayDeltaRequest via PeerSet::sendRequest
+// (rippled/src/xrpld/app/ledger/detail/LedgerDeltaAcquire.cpp:124-156).
+func (s *OverlaySender) RequestReplayDelta(peerID uint64, hash [32]byte) error {
+	msg := &message.ReplayDeltaRequest{LedgerHash: hash[:]}
+	frame, err := encodeFrame(message.TypeReplayDeltaReq, msg)
+	if err != nil {
+		return fmt.Errorf("encode replay delta request: %w", err)
 	}
 	return s.overlay.Send(peermanagement.PeerID(peerID), frame)
 }

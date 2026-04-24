@@ -8,7 +8,11 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/consensus"
 )
 
-// XRPL SField type codes.
+// XRPL SField type codes — mirror rippled
+// include/xrpl/protocol/SField.h:65-87. Off-by-2 for UINT384/UINT512
+// was latent (no validation field uses these types) but breaks the
+// (type<<16)|field canonical sort order for any future-added field
+// of those types.
 const (
 	typeUINT16    = 1
 	typeUINT32    = 2
@@ -24,8 +28,10 @@ const (
 	typeHash160   = 17
 	typePathSet   = 18
 	typeVector256 = 19
-	typeUINT384   = 20
-	typeUINT512   = 21
+	typeUINT96    = 20
+	typeUINT192   = 21
+	typeUINT384   = 22
+	typeUINT512   = 23
 )
 
 // Known field codes within their type groups.
@@ -52,10 +58,36 @@ const (
 	// Blob/VL fields (type 7)
 	fieldSigningPubKey = 3
 	fieldSignature     = 6
+
+	// Vector256 fields (type 19).
+	// sfAmendments is VECTOR256 field 3 per rippled
+	// include/xrpl/protocol/detail/sfields.macro:306. The previous
+	// value of 19 matched the TYPE code, not the field code — a
+	// common confusion. With the wrong field code, outbound
+	// flag-ledger votes were malformed and inbound amendment votes
+	// from rippled peers never matched the parser switch.
+	fieldAmendments = 3
+
+	// Amount fields (type 6) — post-featureXRPFees fee-voting.
+	fieldBaseFeeDrops          = 22
+	fieldReserveBaseDrops      = 23
+	fieldReserveIncrementDrops = 24
 )
 
-// vfFullValidation is the flag bit for a full validation.
-const vfFullValidation = 0x00000001
+// Validation flags. Kept in sync with rippled's STValidation.h.
+const (
+	// vfFullValidation marks a full validation (vs. a partial one).
+	vfFullValidation = 0x00000001
+
+	// vfFullyCanonicalSig asserts the signature is in canonical form
+	// (low-S, compressed pubkey). Rippled sets this on every outbound
+	// validation (STValidation.cpp:236) and verifies it on inbound if
+	// the flag is present. Outbound goXRPL validations without this
+	// flag are accepted by rippled today (canonicality is optional),
+	// but future rippled releases may make it mandatory — setting it
+	// now keeps us forward-compatible and matches the reference impl.
+	vfFullyCanonicalSig = 0x80000000
+)
 
 var (
 	errShortData     = errors.New("stvalidation: unexpected end of data")
@@ -121,15 +153,75 @@ func parseSTValidation(data []byte) (*consensus.Validation, error) {
 			epoch := binary.BigEndian.Uint32(fieldData)
 			v.SignTime = xrplEpochToTime(epoch)
 
+		case typeCode == typeUINT32 && fieldCode == fieldCloseTime:
+			// sfCloseTime is optional per rippled
+			// STValidation.cpp:63 — some validators omit it.
+			// Pre-R6b.5c the parser silently discarded this field;
+			// now we surface it on the Validation struct for RPC
+			// consumers. Does not affect signature verification
+			// (SigningData still captures the raw bytes).
+			epoch := binary.BigEndian.Uint32(fieldData)
+			v.CloseTime = xrplEpochToTime(epoch)
+
 		case typeCode == typeUINT32 && fieldCode == fieldLoadFee:
 			v.LoadFee = binary.BigEndian.Uint32(fieldData)
+
+		case typeCode == typeUINT32 && fieldCode == fieldReserveBase:
+			v.ReserveBase = binary.BigEndian.Uint32(fieldData)
+
+		case typeCode == typeUINT32 && fieldCode == fieldReserveInc:
+			v.ReserveIncrement = binary.BigEndian.Uint32(fieldData)
+
+		case typeCode == typeUINT64 && fieldCode == fieldBaseFee:
+			v.BaseFee = binary.BigEndian.Uint64(fieldData)
 
 		case typeCode == typeUINT64 && fieldCode == fieldCookie:
 			v.Cookie = binary.BigEndian.Uint64(fieldData)
 
+		case typeCode == typeUINT64 && fieldCode == fieldServerVersion:
+			v.ServerVersion = binary.BigEndian.Uint64(fieldData)
+
+		case typeCode == typeAmount && fieldCode == fieldBaseFeeDrops:
+			if amt, ok := parseXRPAmount(fieldData); ok {
+				v.BaseFeeDrops = amt
+			}
+
+		case typeCode == typeAmount && fieldCode == fieldReserveBaseDrops:
+			if amt, ok := parseXRPAmount(fieldData); ok {
+				v.ReserveBaseDrops = amt
+			}
+
+		case typeCode == typeAmount && fieldCode == fieldReserveIncrementDrops:
+			if amt, ok := parseXRPAmount(fieldData); ok {
+				v.ReserveIncrementDrops = amt
+			}
+
 		case typeCode == typeHash256 && fieldCode == fieldLedgerHash:
 			if len(fieldData) == 32 {
 				copy(v.LedgerID[:], fieldData)
+			}
+
+		case typeCode == typeHash256 && fieldCode == fieldConsensusHash:
+			if len(fieldData) == 32 {
+				copy(v.ConsensusHash[:], fieldData)
+			}
+
+		case typeCode == typeHash256 && fieldCode == fieldValidatedHash:
+			if len(fieldData) == 32 {
+				copy(v.ValidatedHash[:], fieldData)
+			}
+
+		case typeCode == typeVector256 && fieldCode == fieldAmendments:
+			// Vector256 is VL-wrapped concat of 32-byte IDs. fieldData
+			// is the VL payload, so iterate in 32-byte chunks.
+			if len(fieldData)%32 == 0 {
+				n := len(fieldData) / 32
+				v.Amendments = make([][32]byte, 0, n)
+				for i := 0; i < n; i++ {
+					var id [32]byte
+					copy(id[:], fieldData[i*32:(i+1)*32])
+					v.Amendments = append(v.Amendments, id)
+				}
 			}
 
 		case typeCode == typeBlob && fieldCode == fieldSigningPubKey:
@@ -156,13 +248,20 @@ func parseSTValidation(data []byte) (*consensus.Validation, error) {
 // serializeSTValidation produces XRPL-binary-encoded STValidation bytes from a
 // consensus.Validation. Fields are written in canonical order (ascending type
 // code, then ascending field code within each type).
+//
+// Outbound validations set both vfFullValidation and vfFullyCanonicalSig on
+// sfFlags, matching rippled's STValidation::sign semantics. Optional
+// supplementary fields (Cookie, LoadFee, ConsensusHash, ServerVersion) are
+// emitted only when non-zero.
 func serializeSTValidation(v *consensus.Validation) []byte {
 	var buf []byte
 
 	// --- UINT32 fields (type 2) ---
 
-	// sfFlags (field 2)
-	flags := uint32(0)
+	// sfFlags (field 2). Rippled stamps vfFullyCanonicalSig on every
+	// outbound validation; we match that so canonical-sig-strict peers
+	// don't need to special-case us.
+	flags := uint32(vfFullyCanonicalSig)
 	if v.Full {
 		flags |= vfFullValidation
 	}
@@ -183,7 +282,28 @@ func serializeSTValidation(v *consensus.Validation) []byte {
 		buf = binary.BigEndian.AppendUint32(buf, v.LoadFee)
 	}
 
+	// sfReserveBase (field 31) — optional flag-ledger fee vote (legacy
+	// pre-XRPFees form). Rippled RCLConsensus.cpp:882-883 via
+	// FeeVote::doValidation.
+	if v.ReserveBase != 0 {
+		buf = appendFieldHeader(buf, typeUINT32, fieldReserveBase)
+		buf = binary.BigEndian.AppendUint32(buf, v.ReserveBase)
+	}
+
+	// sfReserveIncrement (field 32) — optional flag-ledger fee vote.
+	if v.ReserveIncrement != 0 {
+		buf = appendFieldHeader(buf, typeUINT32, fieldReserveInc)
+		buf = binary.BigEndian.AppendUint32(buf, v.ReserveIncrement)
+	}
+
 	// --- UINT64 fields (type 3) ---
+
+	// sfBaseFee (field 5) — optional flag-ledger fee vote (legacy
+	// pre-XRPFees form).
+	if v.BaseFee != 0 {
+		buf = appendFieldHeader(buf, typeUINT64, fieldBaseFee)
+		buf = binary.BigEndian.AppendUint64(buf, v.BaseFee)
+	}
 
 	// sfCookie (field 10) — optional
 	if v.Cookie != 0 {
@@ -191,11 +311,70 @@ func serializeSTValidation(v *consensus.Validation) []byte {
 		buf = binary.BigEndian.AppendUint64(buf, v.Cookie)
 	}
 
+	// sfServerVersion (field 11) — optional. Rippled populates this
+	// with its build version on first validation per peer session so
+	// the network can track implementation versions in play.
+	if v.ServerVersion != 0 {
+		buf = appendFieldHeader(buf, typeUINT64, fieldServerVersion)
+		buf = binary.BigEndian.AppendUint64(buf, v.ServerVersion)
+	}
+
 	// --- Hash256 fields (type 5) ---
+	// Must come BEFORE AMOUNT (type 6) per canonical ascending-type
+	// ordering. Rippled STObject::getSigningHash re-serializes in that
+	// order; a preimage mismatch against rippled peers would cause
+	// signature verification to fail on flag ledgers where AMOUNT
+	// fee-vote fields are present.
 
 	// sfLedgerHash (field 1)
 	buf = appendFieldHeader(buf, typeHash256, fieldLedgerHash)
 	buf = append(buf, v.LedgerID[:]...)
+
+	// sfConsensusHash (field 23) — optional. Ties the validation to
+	// a specific transaction-set agreement. Rippled uses it to
+	// disambiguate between concurrent ledgers at the same seq with
+	// divergent tx sets. Zero-hash means "not set".
+	if v.ConsensusHash != ([32]byte{}) {
+		buf = appendFieldHeader(buf, typeHash256, fieldConsensusHash)
+		buf = append(buf, v.ConsensusHash[:]...)
+	}
+
+	// sfValidatedHash (field 25) — optional. Rippled emits this under
+	// featureHardenedValidations (RCLConsensus.cpp:858-859); it's the
+	// hash of the validator's current fully-validated ledger at sign
+	// time, giving peers an additional fork-detection signal beyond
+	// sfLedgerHash. Zero-hash means "not set".
+	if v.ValidatedHash != ([32]byte{}) {
+		buf = appendFieldHeader(buf, typeHash256, fieldValidatedHash)
+		buf = append(buf, v.ValidatedHash[:]...)
+	}
+
+	// --- Amount fields (type 6) ---
+	// Emitted AFTER Hash256 per canonical ordering. See note above.
+
+	// Post-featureXRPFees fee-voting fields (rippled uses AMOUNT-typed
+	// variants once XRPFees is enabled). Encoded as 8-byte XRP amounts
+	// with the native (high-bit-clear) flag. The adaptor is
+	// responsible for populating these mutually-exclusively with the
+	// legacy sfBaseFee/sfReserveBase/sfReserveIncrement triple based
+	// on the parent ledger's rules.enabled(featureXRPFees) — see
+	// FeeVoteImpl.cpp:120-192 for rippled's if/else branching. We
+	// keep the non-zero gate here as defense-in-depth: a bug in the
+	// population layer produces a MISSING field (rejected by the
+	// parser's field presence check), not a DOUBLE field (which
+	// would parse but diverge semantically from rippled).
+	if v.BaseFeeDrops != 0 {
+		buf = appendFieldHeader(buf, typeAmount, fieldBaseFeeDrops)
+		buf = appendXRPAmount(buf, v.BaseFeeDrops)
+	}
+	if v.ReserveBaseDrops != 0 {
+		buf = appendFieldHeader(buf, typeAmount, fieldReserveBaseDrops)
+		buf = appendXRPAmount(buf, v.ReserveBaseDrops)
+	}
+	if v.ReserveIncrementDrops != 0 {
+		buf = appendFieldHeader(buf, typeAmount, fieldReserveIncrementDrops)
+		buf = appendXRPAmount(buf, v.ReserveIncrementDrops)
+	}
 
 	// --- Blob/VL fields (type 7) ---
 
@@ -208,6 +387,24 @@ func serializeSTValidation(v *consensus.Validation) []byte {
 	if len(v.Signature) > 0 {
 		buf = appendFieldHeader(buf, typeBlob, fieldSignature)
 		buf = appendVL(buf, v.Signature)
+	}
+
+	// --- Vector256 fields (type 19) ---
+
+	// sfAmendments — VECTOR256 (type 19) FIELD 3 per rippled
+	// include/xrpl/protocol/detail/sfields.macro:306. Flag-ledger
+	// amendment vote. Rippled emits this on isVotingLedger
+	// (RCLConsensus.cpp:886-894); each entry is a 32-byte amendment
+	// ID the validator wishes to signal support for. Encoded as
+	// VL(concat(ids)). Emitted last because Vector256 (type 19)
+	// follows typeBlob (7) in canonical ordering.
+	if len(v.Amendments) > 0 {
+		buf = appendFieldHeader(buf, typeVector256, fieldAmendments)
+		blob := make([]byte, 0, 32*len(v.Amendments))
+		for _, id := range v.Amendments {
+			blob = append(blob, id[:]...)
+		}
+		buf = appendVL(buf, blob)
 	}
 
 	return buf
@@ -407,6 +604,37 @@ func appendFieldHeader(buf []byte, typeCode, fieldCode int) []byte {
 		return append(buf, byte(fieldCode), byte(typeCode))
 	}
 	return append(buf, 0, byte(typeCode), byte(fieldCode))
+}
+
+// parseXRPAmount decodes an 8-byte native XRPL Amount into a drops
+// value. Returns (_, false) if the "not XRP" flag is set (i.e. an IOU)
+// — fee-vote fields are always native, so an IOU here indicates a
+// malformed validation and is dropped silently.
+func parseXRPAmount(data []byte) (uint64, bool) {
+	if len(data) != 8 {
+		return 0, false
+	}
+	raw := binary.BigEndian.Uint64(data)
+	if raw&(1<<63) != 0 {
+		return 0, false // IOU form — not expected for fee-vote fields.
+	}
+	// Strip the positive-sign bit; remaining 62 bits carry drops.
+	return raw &^ (1 << 62), true
+}
+
+// appendXRPAmount appends an XRPL-encoded native Amount (8 bytes).
+// Rippled Amount encoding: bit 63 = "not XRP" flag (clear for XRP),
+// bit 62 = sign bit (always set for positive / non-negative), lower
+// bits carry the drops value. Used to emit the post-featureXRPFees
+// fee-vote fields (sfBaseFeeDrops, sfReserveBaseDrops,
+// sfReserveIncrementDrops) which are AMOUNT-typed.
+func appendXRPAmount(buf []byte, drops uint64) []byte {
+	// High bit clear = XRP; second-highest bit set = positive.
+	// drops must fit in 62 bits, which is enforced by the XRPL total
+	// drops invariant (< 100 billion XRP × 10^6 drops/XRP).
+	var encoded [8]byte
+	binary.BigEndian.PutUint64(encoded[:], drops|(1<<62))
+	return append(buf, encoded[:]...)
 }
 
 // appendVL appends a variable-length encoded blob (length prefix + data).

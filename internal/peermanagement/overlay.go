@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -15,6 +16,111 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/peermanagement/message"
 	"golang.org/x/sync/errgroup"
 )
+
+// EvictBadDataThreshold is the bad-data BALANCE at which the overlay
+// disconnects a peer. IncBadData adds a per-reason weight (see
+// BadDataWeight) and a background decay halves the balance every
+// badDataDecayInterval — together this approximates rippled's
+// Resource::Consumer model: persistent offenders accumulate faster
+// than decay and evict; chatty-but-honest peers decay below threshold.
+// 25000 matches rippled's dropThreshold constant in
+// src/xrpld/overlay/Resource/impl/Tuning.h:30-40 (NOT its much lower
+// minGossipBalance — those are distinct gates). Calibration: a peer
+// sending one genuinely-corrupt message per decay window
+// (weightInvalidData=400) asymptotically approaches 800 (below the
+// 25000 threshold), so sporadic offenders survive; sustained
+// multi-hundred-per-window abuse crosses the threshold within seconds.
+const EvictBadDataThreshold = 25000
+
+// badDataDecayInterval is the cadence at which Peer.DecayBadData
+// halves the balance. Go's step-halving every 10s decays about twice
+// as fast as rippled's continuous ~32s exponential window; this is an
+// intentional difference — goXRPL recovers faster from transient bad
+// behavior while still evicting sustained abuse within a few
+// intervals. Paired with the 25000 threshold, a rapid burst of
+// malformed data (say, 70 × 400 = 28000 within one interval) evicts
+// immediately; a steady stream of one such message per interval
+// asymptotes at 800 and never crosses the threshold.
+const badDataDecayInterval = 10 * time.Second
+
+// Bad-data weights mirror rippled's Resource::Fees.cpp:26-30. They
+// scale the per-reason severity of an IncBadData call:
+//   - feeInvalidSignature (2000) — bad signature / wrong pubkey format
+//   - feeInvalidData      (400)  — genuinely corrupt data
+//   - feeMalformedRequest (200)  — syntactically bad request / bad hash
+//   - feeRequestNoReply   (10)   — peer didn't answer a request
+//
+// Keeping the numbers at rippled's values means an operator familiar
+// with rippled's tuning can port reasoning across implementations.
+// Signature offenses are the heaviest — a peer forging or mangling
+// signatures is either broken or hostile and a small number of such
+// events should approach the eviction threshold.
+const (
+	weightInvalidSignature = 2000
+	weightInvalidData      = 400
+	weightMalformedReq     = 200
+	weightRequestNoReply   = 10
+	weightDefaultBadData   = 100 // fallback for unrecognized reasons
+)
+
+// BadDataWeight returns the weight to charge IncBadData for `reason`.
+// Maps reason labels to rippled's fee tiers. Unrecognized reasons fall
+// back to weightDefaultBadData so a new bad-data source doesn't
+// accidentally ship with zero weight.
+//
+// Classification rationale per rippled PeerImp.cpp:
+//   - sig-size / pubkey-size → feeInvalidSignature (PeerImp.cpp:1683-1686)
+//   - ledger-hash / txset / prev-ledger-size / node-id-zero → feeMalformedRequest
+//     (PeerImp.cpp:1693: "bad hashes")
+//   - verify / decode / wire-corruption → feeInvalidData
+//   - no-reply → feeRequestNoReply
+func BadDataWeight(reason string) int {
+	switch reason {
+	// Bad signatures and malformed pubkeys — heaviest charge.
+	// Rippled: feeInvalidSignature at PeerImp.cpp:1683-1686 for
+	// ProposeSet, equivalent path for Validation.
+	case "proposal-malformed-sig-size",
+		"proposal-malformed-pubkey-size",
+		"validation-malformed-sig-size":
+		return weightInvalidSignature
+	// Genuine data corruption / protocol violation — next-heaviest.
+	case "replay-delta-verify",
+		"ledger-data-base",
+		"ledger-data-state",
+		"squelch-duration",
+		"squelch-map-full",
+		"squelch-malformed-pubkey":
+		return weightInvalidData
+	// Malformed requests: decode failures, bad hashes, wrong-field
+	// requests. Rippled: feeMalformedRequest at PeerImp.cpp:1693 for
+	// "bad hashes" and at PeerImp.cpp:1476 for bad requests.
+	case "proposal-malformed-prev-ledger-size",
+		"proposal-malformed-txset-size",
+		"validation-malformed-ledger-hash-zero",
+		"validation-malformed-node-id-zero",
+		"handshake-malformed-networkid",
+		"handshake-malformed-networktime",
+		"replay-delta-resp-decode",
+		"replay-delta-req-decode",
+		"replay-delta-req-bad",
+		"proof-path-req-decode",
+		"proof-path-req-bad",
+		"proof-path-req-unnegotiated",
+		"replay-delta-req-unnegotiated",
+		"replay-delta-resp-unnegotiated",
+		"proof-path-resp-unnegotiated",
+		"proposal-decode",
+		"validation-decode",
+		"validation-parse",
+		"ledger-data-decode":
+		return weightMalformedReq
+	// A peer that didn't respond or returned benign "no data" — lowest.
+	case "no-reply":
+		return weightRequestNoReply
+	default:
+		return weightDefaultBadData
+	}
+}
 
 // Overlay is the central orchestrator for XRPL peer-to-peer networking.
 // It manages peer connections, discovery, message routing, and the reduce-relay system.
@@ -36,12 +142,99 @@ type Overlay struct {
 	events   chan Event
 	messages chan *InboundMessage
 
+	// Peer lifecycle callbacks wired by higher layers (e.g., consensus
+	// router) that need to clean up per-peer state on disconnect. Fired
+	// from the event-loop goroutine AFTER the peer has been removed from
+	// the map, so callees can assume the peer is already gone. nil when
+	// no subscriber is registered.
+	onPeerDisconnect func(PeerID)
+
+	// droppedMessages counts how many times the non-blocking send to
+	// the messages channel hit its default branch (downstream consumer
+	// slow). Exposed via DroppedMessages() so server_info / telemetry
+	// can surface back-pressure to operators. Without this counter a
+	// slow consumer silently loses events with only a debug-level log.
+	droppedMessages atomic.Uint64
+
+	// droppedLedgerResponses counts the same shape for the ledger-sync
+	// response send path (EventLedgerResponse). Separate from
+	// droppedMessages so the two traffic classes can be distinguished.
+	droppedLedgerResponses atomic.Uint64
+
 	// Network
 	listener net.Listener
 
 	// Lifecycle
 	ctx    context.Context
 	cancel context.CancelFunc
+}
+
+// LedgerSync returns the overlay's ledger-sync handler so callers in a
+// higher layer (e.g., consensus startup) can wire a LedgerProvider that
+// imports internal/ledger packages — which this layer cannot.
+func (o *Overlay) LedgerSync() *LedgerSyncHandler { return o.ledgerSync }
+
+// IncPeerBadData records an invalid-data event attributed to the peer
+// with the given PeerID. Returns the new cumulative count, or 0 when
+// the peer is unknown (gracefully no-ops). Exposed so higher layers
+// that can't import *Peer directly — e.g., the consensus router, which
+// only sees PeerID via InboundMessage — can still charge a peer for
+// malformed/invalid payloads. `reason` is a short stable label for
+// diagnostic logging; it's forwarded to Peer.IncBadData.
+//
+// Use this as the single surface for higher-layer charge-backs: the
+// peermanagement package already increments inline for events it
+// detects itself (e.g., AddSquelch) so callers outside this package
+// only need to cover the cases they detect themselves.
+func (o *Overlay) IncPeerBadData(peerID PeerID, reason string) uint32 {
+	o.peersMu.RLock()
+	peer, ok := o.peers[peerID]
+	o.peersMu.RUnlock()
+	if !ok {
+		return 0
+	}
+	return peer.IncBadData(reason)
+}
+
+// peerNegotiatedLedgerReplay reports whether the peer identified by
+// peerID advertised the ledger-replay feature during handshake. Used
+// to gate serving mtREPLAY_DELTA_REQ and mtPROOF_PATH_REQ: rippled
+// drops these from peers that didn't negotiate the feature
+// (PeerImp.cpp:1473-1478) because they indicate protocol-violation.
+func (o *Overlay) peerNegotiatedLedgerReplay(peerID PeerID) bool {
+	return o.PeerSupports(peerID, FeatureLedgerReplay)
+}
+
+// PeerSupports reports whether the peer identified by peerID has
+// advertised support for the given protocol feature via its handshake
+// headers. Returns false when the peer is unknown, the handshake has
+// not completed, or the feature was not negotiated. Used by higher
+// layers (e.g., consensus catchup) to avoid issuing feature-gated
+// requests to peers that would silently drop them.
+func (o *Overlay) PeerSupports(peerID PeerID, f Feature) bool {
+	o.peersMu.RLock()
+	peer, ok := o.peers[peerID]
+	o.peersMu.RUnlock()
+	if !ok {
+		return false
+	}
+	caps := peer.Capabilities()
+	if caps == nil {
+		return false
+	}
+	return caps.HasFeature(f)
+}
+
+// ListenAddr returns the resolved address the overlay is accepting
+// connections on, or the empty string if no listener is bound. Useful
+// when the overlay was configured with port 0 (ephemeral) and the
+// caller needs the actual port to drive a peer connection — e.g.,
+// integration tests that wire two overlays together on localhost.
+func (o *Overlay) ListenAddr() string {
+	if o.listener == nil {
+		return ""
+	}
+	return o.listener.Addr().String()
 }
 
 // New creates a new Overlay with the provided options.
@@ -297,19 +490,57 @@ func (o *Overlay) performInboundHandshake(ctx context.Context, peer *Peer, tlsCo
 	}
 	req.Body.Close()
 
-	// Store the buffered reader on the peer for the readLoop
+	// R5.2 PARTIAL + R6.1 + R6.2: verify everything the handshake
+	// can enforce without the TLS shared-value signature (which is
+	// blocked by Go's c.serverFinished asymmetry — see
+	// handshake.go:MakeSharedValue KNOWN ISSUE). Covers:
+	//   - Public-Key presence + parseability + self-connection
+	//   - Network-ID exact match (incl. mainnet rejecting testnet)
+	//   - Network-Time ±20s skew tolerance
+	// Full signature verification tracked in
+	// tasks/pr264-round5-fixes.md.
+	peerPubKey, verifyErr := VerifyHandshakeHeadersNoSig(
+		req.Header,
+		o.identity.EncodedPublicKey(),
+		o.cfg.NetworkID,
+	)
+	if verifyErr != nil {
+		// Charge malformed-field cases (ParseUint failures on
+		// Network-ID/Network-Time, unparseable Public-Key).
+		// Self-connection and network-mismatch aren't the peer's
+		// fault per se, so don't charge those.
+		if !errors.Is(verifyErr, ErrSelfConnection) && !errors.Is(verifyErr, ErrNetworkMismatch) {
+			o.IncPeerBadData(peer.ID(), "handshake-malformed-networkid")
+		}
+		return NewHandshakeError(peer.Endpoint(), "verify", verifyErr)
+	}
 	peer.mu.Lock()
-	peer.bufReader = bufReader
+	peer.remotePubKey = peerPubKey
 	peer.mu.Unlock()
 
-	// Build and send response
-	cfg := HandshakeConfig{
-		UserAgent:   o.cfg.UserAgent,
-		NetworkID:   o.cfg.NetworkID,
-		CrawlPublic: false,
+	hsCfg := HandshakeConfig{
+		UserAgent:           o.cfg.UserAgent,
+		NetworkID:           o.cfg.NetworkID,
+		CrawlPublic:         false,
+		EnableLedgerReplay:  o.cfg.EnableLedgerReplay,
+		EnableCompression:   o.cfg.EnableCompression,
+		EnableVPReduceRelay: o.cfg.EnableVPReduceRelay,
+		EnableTxReduceRelay: o.cfg.EnableTxReduceRelay,
 	}
 
-	resp := BuildHandshakeResponse(o.identity, sharedValue, cfg)
+	// Capture the peer's advertised protocol features from the handshake
+	// request headers so downstream code can query e.g. whether this peer
+	// supports ledger-replay before issuing a replay-delta request.
+	caps := NewPeerCapabilities()
+	caps.Features = ParseProtocolCtlFeatures(req.Header)
+
+	// Store the buffered reader + capabilities on the peer for the readLoop.
+	peer.mu.Lock()
+	peer.bufReader = bufReader
+	peer.capabilities = caps
+	peer.mu.Unlock()
+
+	resp := BuildHandshakeResponse(o.identity, sharedValue, hsCfg)
 	if err := resp.Write(tlsConn); err != nil {
 		return NewHandshakeError(peer.Endpoint(), "send_response", err)
 	}
@@ -364,6 +595,26 @@ func (o *Overlay) onPeerHandshakeComplete(evt Event) {
 func (o *Overlay) onPeerDisconnected(evt Event) {
 	o.discovery.MarkDisconnected(evt.PeerID)
 	o.relay.RemovePeer(evt.PeerID)
+	// Fire the higher-layer disconnect callback so per-peer state in
+	// consumers (router peerStates, adaptor peerLCLs) gets cleaned.
+	// Without this the peer's last-reported ledger stays in the
+	// engine's getNetworkLedger vote set indefinitely, biasing
+	// consensus toward the view of a peer that's no longer here.
+	if cb := o.onPeerDisconnect; cb != nil {
+		cb(evt.PeerID)
+	}
+}
+
+// SetPeerDisconnectCallback registers a callback fired after a peer is
+// removed from the overlay. The callback runs on the event-loop
+// goroutine so implementations MUST NOT block — push to a channel if
+// meaningful work is needed. Passing nil clears the callback.
+//
+// This is the channel by which higher layers (e.g. the consensus
+// router) are notified of disconnects so they can clean their own
+// per-peer state. Prefer this over polling Peers().
+func (o *Overlay) SetPeerDisconnectCallback(cb func(PeerID)) {
+	o.onPeerDisconnect = cb
 }
 
 func (o *Overlay) onPeerFailed(evt Event) {
@@ -381,9 +632,100 @@ func (o *Overlay) onMessageReceived(evt Event) {
 		return
 	}
 
+	// Handle TMSquelch at the transport level — update per-peer squelch
+	// state and do not forward to external consumers. Mirrors rippled's
+	// PeerImp::onMessage(TMSquelch) at PeerImp.cpp:2691-2732, which
+	// applies every inbound TMSquelch unconditionally. Feature
+	// negotiation governs what WE SEND (we only emit TMSquelch to peers
+	// who advertised reduce-relay), not what we accept: a squelch
+	// directive is harmless if applied — it only suppresses what we
+	// send next — and rejecting it creates a not-actually-rippled
+	// attack surface where a hostile peer could advertise one capability
+	// set to us and another to a neighbor to desync squelch state.
+	if msgType == message.TypeSquelch {
+		// TMSquelch is a validator-proposal concept (VPRR). We log,
+		// not drop, a squelch from a peer that didn't negotiate vprr —
+		// rippled applies the squelch regardless of feature gate.
+		if !o.PeerSupports(evt.PeerID, FeatureVpReduceRelay) {
+			slog.Debug("TMSquelch from peer without vprr feature; applying anyway (parity with rippled)",
+				"t", "Overlay", "peer", evt.PeerID)
+		}
+		o.handleSquelchMessage(evt)
+		return
+	}
+
+	// Serve mtREPLAY_DELTA_REQ from the local ledger sync handler. Mirrors
+	// rippled's PeerImp::onMessage(TMReplayDeltaRequest) which delegates to
+	// LedgerReplayMsgHandler::processReplayDeltaRequest. Before dispatching
+	// we verify the peer actually negotiated ledger-replay in its handshake
+	// — rippled charges feeMalformedRequest and drops when a peer sends
+	// these without the feature (PeerImp.cpp:1473-1478). Silently dropping
+	// + charging badData preserves that guarantee while keeping our
+	// response path honest.
+	if msgType == message.TypeReplayDeltaReq {
+		if !o.peerNegotiatedLedgerReplay(evt.PeerID) {
+			slog.Debug("ReplayDeltaRequest from peer without ledgerreplay feature; dropping",
+				"t", "Overlay", "peer", evt.PeerID)
+			o.IncPeerBadData(evt.PeerID, "replay-delta-req-unnegotiated")
+			return
+		}
+		o.dispatchReplayDeltaRequest(evt)
+		return
+	}
+
+	// Serve mtPROOF_PATH_REQ from the local ledger sync handler. Mirrors
+	// rippled's PeerImp::onMessage(TMProofPathRequest) which delegates to
+	// LedgerReplayMsgHandler::processProofPathRequest. Same handshake-
+	// negotiation gate as mtREPLAY_DELTA_REQ above — the proof-path
+	// protocol is part of the ledger-replay feature bundle in rippled.
+	if msgType == message.TypeProofPathReq {
+		if !o.peerNegotiatedLedgerReplay(evt.PeerID) {
+			slog.Debug("ProofPathRequest from peer without ledgerreplay feature; dropping",
+				"t", "Overlay", "peer", evt.PeerID)
+			o.IncPeerBadData(evt.PeerID, "proof-path-req-unnegotiated")
+			return
+		}
+		o.dispatchProofPathRequest(evt)
+		return
+	}
+
+	// Response-path feature gate. A peer that didn't negotiate
+	// ledgerreplay in handshake shouldn't be sending us
+	// TMReplayDeltaResponse or TMProofPathResponse unsolicited —
+	// rippled PeerImp.cpp:1511-1515 charges feeMalformedRequest and
+	// drops. Gate BEFORE forwarding to the router so a non-negotiated
+	// peer can't wedge the inbound acquisition state with bogus
+	// responses.
+	if msgType == message.TypeReplayDeltaResponse {
+		if !o.peerNegotiatedLedgerReplay(evt.PeerID) {
+			slog.Debug("TMReplayDeltaResponse from peer without ledgerreplay feature; dropping",
+				"t", "Overlay", "peer", evt.PeerID)
+			o.IncPeerBadData(evt.PeerID, "replay-delta-resp-unnegotiated")
+			return
+		}
+	}
+	if msgType == message.TypeProofPathResponse {
+		if !o.peerNegotiatedLedgerReplay(evt.PeerID) {
+			slog.Debug("TMProofPathResponse from peer without ledgerreplay feature; dropping",
+				"t", "Overlay", "peer", evt.PeerID)
+			o.IncPeerBadData(evt.PeerID, "proof-path-resp-unnegotiated")
+			return
+		}
+	}
+
+	// mtREPLAY_DELTA_RESPONSE / mtPROOF_PATH_RESPONSE that pass the
+	// feature gate above reach the consensus router via the overlay's
+	// Messages() channel — like every other peer-originated reply
+	// (mtLEDGER_DATA, mtTRANSACTION, mtVALIDATION). The router owns
+	// the verification + adoption state and is the only place that
+	// can drive it. Mirrors rippled's PeerImp dispatching all
+	// consensus traffic through the same inbound path.
+
 	slog.Debug("Message received", "t", "Overlay", "type", msgType.String(), "peer", evt.PeerID, "size", len(evt.Payload))
 
-	// Forward to external consumers
+	// Forward to external consumers. On back-pressure (channel full),
+	// increment a visible counter rather than silently dropping — the
+	// warn log alone is easy to miss at production log levels.
 	select {
 	case o.messages <- &InboundMessage{
 		PeerID:  evt.PeerID,
@@ -391,7 +733,126 @@ func (o *Overlay) onMessageReceived(evt Event) {
 		Payload: evt.Payload,
 	}:
 	default:
+		o.droppedMessages.Add(1)
 		slog.Warn("Message dropped: channel full", "t", "Overlay", "type", msgType.String())
+	}
+}
+
+// DroppedMessages returns the cumulative count of inbound messages the
+// overlay had to drop because the downstream consumer channel was
+// full. Surfaced via server_info/server_state for operators to detect
+// consumer back-pressure — a nonzero and growing value indicates the
+// router/engine can't keep up with network ingress.
+func (o *Overlay) DroppedMessages() uint64 {
+	return o.droppedMessages.Load()
+}
+
+// DroppedLedgerResponses returns the cumulative count of ledger-sync
+// responses dropped due to a full events channel (see
+// LedgerSyncHandler.sendReplayDeltaResponse /
+// sendProofPathResponse). Same shape as DroppedMessages but for the
+// server-side response path. Delegates to the handler's own counter
+// so the two drop sites (handler-side events-channel drop and any
+// future overlay-side drop tracked in droppedLedgerResponses) can
+// both contribute.
+func (o *Overlay) DroppedLedgerResponses() uint64 {
+	var handler uint64
+	if o.ledgerSync != nil {
+		handler = o.ledgerSync.DroppedResponses()
+	}
+	return o.droppedLedgerResponses.Load() + handler
+}
+
+// dispatchReplayDeltaRequest decodes an inbound mtREPLAY_DELTA_REQ frame and
+// routes it to the local LedgerSyncHandler. Decode failures are logged and
+// dropped silently — a malformed request from a peer should not crash the
+// dispatch loop. The handler answers via the configured LedgerProvider, which
+// is wired at startup by the consensus adaptor (see
+// internal/consensus/adaptor.NewLedgerProvider) — that layer can import
+// internal/ledger, which this package cannot.
+func (o *Overlay) dispatchReplayDeltaRequest(evt Event) {
+	decoded, err := message.Decode(message.TypeReplayDeltaReq, evt.Payload)
+	if err != nil {
+		slog.Debug("ReplayDeltaRequest decode failed", "t", "Overlay", "peer", evt.PeerID, "err", err)
+		o.IncPeerBadData(evt.PeerID, "replay-delta-req-decode")
+		return
+	}
+	req, ok := decoded.(*message.ReplayDeltaRequest)
+	if !ok {
+		return
+	}
+	if err := o.ledgerSync.HandleMessage(o.ctx, evt.PeerID, req); err != nil {
+		slog.Debug("ReplayDeltaRequest handler error", "t", "Overlay", "peer", evt.PeerID, "err", err)
+		if errors.Is(err, ErrPeerBadRequest) {
+			o.IncPeerBadData(evt.PeerID, "replay-delta-req-bad")
+		}
+	}
+}
+
+// dispatchProofPathRequest decodes an inbound mtPROOF_PATH_REQ frame and
+// routes it to the local LedgerSyncHandler. Decode failures are logged
+// and dropped silently — a malformed request from a peer should not
+// crash the dispatch loop. The handler answers via the configured
+// LedgerProvider, which is wired at startup by the consensus adaptor
+// (see internal/consensus/adaptor.NewLedgerProvider) — that layer can
+// import internal/ledger, which this package cannot.
+func (o *Overlay) dispatchProofPathRequest(evt Event) {
+	decoded, err := message.Decode(message.TypeProofPathReq, evt.Payload)
+	if err != nil {
+		slog.Debug("ProofPathRequest decode failed", "t", "Overlay", "peer", evt.PeerID, "err", err)
+		o.IncPeerBadData(evt.PeerID, "proof-path-req-decode")
+		return
+	}
+	req, ok := decoded.(*message.ProofPathRequest)
+	if !ok {
+		return
+	}
+	if err := o.ledgerSync.HandleMessage(o.ctx, evt.PeerID, req); err != nil {
+		slog.Debug("ProofPathRequest handler error", "t", "Overlay", "peer", evt.PeerID, "err", err)
+		if errors.Is(err, ErrPeerBadRequest) {
+			o.IncPeerBadData(evt.PeerID, "proof-path-req-bad")
+		}
+	}
+}
+
+// handleSquelchMessage processes an inbound TMSquelch from a peer and
+// updates the per-peer validator squelch table.
+func (o *Overlay) handleSquelchMessage(evt Event) {
+	decoded, err := message.Decode(message.TypeSquelch, evt.Payload)
+	if err != nil {
+		slog.Debug("Squelch decode failed", "t", "Overlay", "peer", evt.PeerID, "err", err)
+		o.IncPeerBadData(evt.PeerID, "squelch-malformed-pubkey")
+		return
+	}
+	sq, ok := decoded.(*message.Squelch)
+	if !ok {
+		return
+	}
+	// Validator pubkey must be a 33-byte compressed secp256k1 point.
+	// Rippled charges feeInvalidData on empty/wrong-length at
+	// PeerImp.cpp:2701-2712. Silently dropping here let a peer spam
+	// bogus TMSquelch frames without penalty.
+	if len(sq.ValidatorPubKey) != 33 {
+		slog.Debug("Squelch malformed pubkey",
+			"t", "Overlay", "peer", evt.PeerID, "len", len(sq.ValidatorPubKey))
+		o.IncPeerBadData(evt.PeerID, "squelch-malformed-pubkey")
+		return
+	}
+
+	o.peersMu.RLock()
+	peer, exists := o.peers[evt.PeerID]
+	o.peersMu.RUnlock()
+	if !exists {
+		return
+	}
+
+	if !sq.Squelch {
+		peer.RemoveSquelch(sq.ValidatorPubKey)
+		return
+	}
+	duration := time.Duration(sq.SquelchDuration) * time.Second
+	if !peer.AddSquelch(sq.ValidatorPubKey, duration) {
+		slog.Debug("Squelch ignored: invalid duration", "t", "Overlay", "peer", evt.PeerID, "duration", sq.SquelchDuration)
 	}
 }
 
@@ -429,6 +890,13 @@ func (o *Overlay) onEndpointsReceived(evt Event) {
 	}
 }
 
+// onLedgerResponse ships an already-wire-framed ledger-sync response
+// (produced by LedgerSyncHandler.send*Response) to the requesting peer.
+// The payload MUST be a full wire frame (6-byte header + protobuf body)
+// — see sendReplayDeltaResponse for the contract. Shipping a bare
+// protobuf here caused B to parse the first 6 body bytes as a garbage
+// wire header and stall for the phantom payload, which was the
+// post-handshake I/O regression fixed alongside this comment.
 func (o *Overlay) onLedgerResponse(evt Event) {
 	o.Send(evt.PeerID, evt.Payload)
 }
@@ -485,12 +953,20 @@ func (o *Overlay) maintenanceLoop(ctx context.Context) error {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
+	// decayTicker drives bad-data balance decay on its own cadence so
+	// the eviction scoring matches rippled's time-windowed Consumer
+	// model rather than a flat counter.
+	decayTicker := time.NewTicker(badDataDecayInterval)
+	defer decayTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
 			o.performMaintenance()
+		case <-decayTicker.C:
+			o.decayBadData()
 		}
 	}
 }
@@ -498,9 +974,68 @@ func (o *Overlay) maintenanceLoop(ctx context.Context) error {
 func (o *Overlay) performMaintenance() {
 	// Cleanup expired ledger requests
 	o.ledgerSync.CleanupExpiredRequests()
+	// Evict peers that have accumulated enough bad-data events to cross
+	// the threshold. Runs here (not inline in IncBadData) so the
+	// disconnect happens off any hot receive path and so a single tick
+	// can evict multiple offenders found since the last pass.
+	o.evictBadDataPeers()
 }
 
-// handleSquelch is called by the relay system when a peer should be squelched.
+// decayBadData halves every connected peer's bad-data balance.
+// Mirrors rippled's Resource::Fees.cpp:26-43 exponential decay so a
+// chatty-but-honest peer's transient protocol hiccups don't
+// accumulate to eviction over a long session.
+func (o *Overlay) decayBadData() {
+	o.peersMu.RLock()
+	defer o.peersMu.RUnlock()
+	for _, peer := range o.peers {
+		peer.DecayBadData()
+	}
+}
+
+// evictBadDataPeers disconnects peers whose cumulative invalid-data
+// count has reached EvictBadDataThreshold. Mirrors rippled's behavior
+// of dropping peers that have been charged enough feeInvalidData to
+// exhaust their balance. Must be safe to call with the peer map locked
+// for read only — we collect offenders under RLock, then disconnect
+// them after releasing the lock to avoid holding it across Close().
+func (o *Overlay) evictBadDataPeers() {
+	type offender struct {
+		id    PeerID
+		peer  *Peer
+		count uint32
+	}
+	var toEvict []offender
+
+	o.peersMu.RLock()
+	for id, peer := range o.peers {
+		if n := peer.BadDataCount(); n >= EvictBadDataThreshold {
+			toEvict = append(toEvict, offender{id: id, peer: peer, count: n})
+		}
+	}
+	o.peersMu.RUnlock()
+
+	for _, off := range toEvict {
+		slog.Info("Evicting peer for bad data",
+			"t", "Overlay",
+			"peer", off.id,
+			"count", off.count,
+			"threshold", EvictBadDataThreshold,
+			"endpoint", off.peer.Endpoint().String(),
+		)
+		// Close first so the peer's run goroutine exits and its
+		// removePeer callback fires; defensively remove here too so a
+		// caller-driven test path (no running goroutine) still sees the
+		// peer gone after this function returns.
+		off.peer.Close()
+		o.removePeer(off.id)
+	}
+}
+
+// handleSquelch is called by the relay system when a peer should be squelched
+// or unsquelched for a given validator. It constructs a TMSquelch message and
+// delivers it to the specific peer (unicast — see rippled's
+// OverlayImpl::squelch in src/xrpld/overlay/detail/OverlayImpl.cpp).
 func (o *Overlay) handleSquelch(validator []byte, peerID PeerID, squelch bool, duration time.Duration) {
 	o.peersMu.RLock()
 	peer, exists := o.peers[peerID]
@@ -513,20 +1048,28 @@ func (o *Overlay) handleSquelch(validator []byte, peerID PeerID, squelch bool, d
 	msg := &message.Squelch{
 		Squelch:         squelch,
 		ValidatorPubKey: validator,
-		SquelchDuration: uint32(duration.Seconds()),
+	}
+	if squelch {
+		// rippled stores the duration as seconds in TMSquelch. Only set
+		// on squelch=true — on un-squelch the peer ignores this field
+		// per the XRPL reduce-relay protocol.
+		msg.SquelchDuration = uint32(duration / time.Second)
 	}
 
 	encoded, err := message.Encode(msg)
 	if err != nil {
+		slog.Warn("Squelch encode failed", "t", "Overlay", "peer", peerID, "err", err)
 		return
 	}
-
-	wireMsg, err := message.BuildWireMessage(message.TypeSquelch, encoded)
+	frame, err := message.BuildWireMessage(message.TypeSquelch, encoded)
 	if err != nil {
+		slog.Warn("Squelch frame build failed", "t", "Overlay", "peer", peerID, "err", err)
 		return
 	}
 
-	peer.Send(wireMsg)
+	if err := peer.Send(frame); err != nil {
+		slog.Info("Squelch send failed", "t", "Overlay", "peer", peerID, "err", err)
+	}
 }
 
 // Connect initiates an outbound connection to the specified address.
@@ -549,9 +1092,13 @@ func (o *Overlay) Connect(addr string) error {
 	peerID := PeerID(o.nextID.Add(1))
 	peer := NewPeer(peerID, endpoint, false, o.identity, o.events)
 	peer.handshakeCfg = HandshakeConfig{
-		UserAgent:   o.cfg.UserAgent,
-		NetworkID:   o.cfg.NetworkID,
-		CrawlPublic: false,
+		UserAgent:           o.cfg.UserAgent,
+		NetworkID:           o.cfg.NetworkID,
+		CrawlPublic:         false,
+		EnableLedgerReplay:  o.cfg.EnableLedgerReplay,
+		EnableCompression:   o.cfg.EnableCompression,
+		EnableVPReduceRelay: o.cfg.EnableVPReduceRelay,
+		EnableTxReduceRelay: o.cfg.EnableTxReduceRelay,
 	}
 
 	o.events <- Event{
@@ -606,7 +1153,16 @@ func (o *Overlay) Connect(addr string) error {
 	return nil
 }
 
-// Broadcast sends a message to all connected peers.
+// Broadcast sends a message to all connected peers, unfiltered. Used
+// for SELF-originated validator traffic (our own proposals and
+// validations) and for non-validator messages (statusChange, etc.).
+// Rippled deliberately skips the squelch filter for self-originated
+// broadcasts in OverlayImpl.cpp:1133-1137; otherwise a peer that
+// squelches our own pubkey would silence us to them.
+//
+// For peer-originated validator messages that need to be gossip-
+// forwarded, use RelayFromValidator which applies the squelch filter
+// and excludes the originating peer.
 func (o *Overlay) Broadcast(msg []byte) error {
 	o.peersMu.RLock()
 	defer o.peersMu.RUnlock()
@@ -617,6 +1173,51 @@ func (o *Overlay) Broadcast(msg []byte) error {
 		}
 	}
 	return nil
+}
+
+// RelayFromValidator forwards a peer-originated validator message
+// (proposal or validation) to other connected peers, applying the
+// per-peer squelch filter on the ORIGINATING validator's pubkey AND
+// excluding the originating peer (exceptPeer). Pass 0 for exceptPeer
+// when no peer should be excluded (e.g. tests that synthesize a relay).
+//
+// Mirrors rippled's gossip-forward path in OverlayImpl::relay: the
+// squelch is consulted before each outbound send (PeerImp.cpp:240-256)
+// and expired squelches auto-clear via Peer.ExpireSquelch. Self-origin
+// is handled by a separate code path (see Broadcast) that skips the
+// filter entirely.
+func (o *Overlay) RelayFromValidator(validator []byte, exceptPeer PeerID, msg []byte) error {
+	o.peersMu.RLock()
+	defer o.peersMu.RUnlock()
+
+	for id, peer := range o.peers {
+		if id == exceptPeer {
+			continue
+		}
+		if peer.State() != PeerStateConnected {
+			continue
+		}
+		if !peer.ExpireSquelch(validator) {
+			continue
+		}
+		peer.Send(msg)
+	}
+	return nil
+}
+
+// OnValidatorMessage is called by the consensus router on every inbound
+// trusted proposal/validation so the reduce-relay state machine can
+// select peers to squelch. Mirrors rippled's
+// PeerImp::updateSlotAndSquelch (PeerImp.cpp:1737,2385,3013,3049).
+//
+// Without this wiring the Relay.OnMessage loop never sees inbound
+// activity and mtSQUELCH is never emitted — which was the pre-fix
+// behavior the PR review caught.
+func (o *Overlay) OnValidatorMessage(validatorKey []byte, peerID PeerID) {
+	if o.relay == nil {
+		return
+	}
+	o.relay.OnMessage(validatorKey, peerID)
 }
 
 // Send sends a message to a specific peer.
@@ -659,6 +1260,34 @@ func (o *Overlay) Messages() <-chan *InboundMessage {
 // Identity returns the node's identity.
 func (o *Overlay) Identity() *Identity {
 	return o.identity
+}
+
+// IssueSquelch hand-rolls a TMSquelch frame to the given peer, marking
+// the given validator's messages as to-be-squelched (or cleared when
+// squelch=false). This is the same path the reduce-relay system takes
+// when it autonomously squelches a peer — mirroring rippled's
+// OverlayImpl::squelch — but is exposed as a deliberate API so callers
+// (including integration tests) can drive squelch state changes
+// without having to reach a natural squelch threshold.
+func (o *Overlay) IssueSquelch(validator []byte, peerID PeerID, squelch bool, duration time.Duration) {
+	o.handleSquelch(validator, peerID, squelch, duration)
+}
+
+// IsValidatorSquelchedOnPeer reports whether the local peer with the
+// given PeerID currently has an active squelch for `validator`. It is
+// the programmatic counterpart of peer.ExpireSquelch, which returns
+// true when there is NO active squelch — this wrapper inverts so the
+// name matches the usual intuition (true = this peer has been told to
+// squelch this validator). Useful for end-to-end tests that verify
+// TMSquelch was parsed and recorded by the receiver.
+func (o *Overlay) IsValidatorSquelchedOnPeer(peerID PeerID, validator []byte) bool {
+	o.peersMu.RLock()
+	peer, exists := o.peers[peerID]
+	o.peersMu.RUnlock()
+	if !exists {
+		return false
+	}
+	return !peer.ExpireSquelch(validator)
 }
 
 // addPeer adds a peer to the overlay.

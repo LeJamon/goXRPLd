@@ -32,14 +32,14 @@ func (m *mockEngine) Timing() consensus.Timing                  { return consens
 func (m *mockEngine) GetLastCloseInfo() (int, time.Duration)    { return 0, 0 }
 func (m *mockEngine) OnLedger(consensus.LedgerID, []byte) error { return nil }
 
-func (m *mockEngine) OnProposal(p *consensus.Proposal) error {
+func (m *mockEngine) OnProposal(p *consensus.Proposal, _ uint64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.proposals = append(m.proposals, p)
 	return nil
 }
 
-func (m *mockEngine) OnValidation(v *consensus.Validation) error {
+func (m *mockEngine) OnValidation(v *consensus.Validation, _ uint64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.validations = append(m.validations, v)
@@ -83,13 +83,15 @@ func TestRouterDispatchesProposal(t *testing.T) {
 	defer cancel()
 	go router.Run(ctx)
 
-	// Create a ProposeSet message
+	// Create a ProposeSet message with sizes inside the bounds
+	// validateProposeBounds enforces (post-PR #264 review: 64-72 byte
+	// signature, 33-byte pubkey, 32-byte hashes).
 	proposeSet := &message.ProposeSet{
 		ProposeSeq:     1,
 		CurrentTxHash:  make([]byte, 32),
 		NodePubKey:     make([]byte, 33),
 		CloseTime:      timeToXrplEpoch(time.Now()),
-		Signature:      []byte{0x01, 0x02},
+		Signature:      make([]byte, signatureMinLen),
 		PreviousLedger: make([]byte, 32),
 	}
 	proposeSet.NodePubKey[0] = 0x02 // valid compressed key prefix
@@ -244,6 +246,165 @@ func TestRouterStopsOnContextCancel(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("router did not stop after context cancel")
 	}
+}
+
+// countingSender wraps noopSender with a counter on UpdateRelaySlot
+// so router tests can assert how many times the reduce-relay slot
+// was fed.
+type countingSender struct {
+	noopSender
+	mu    sync.Mutex
+	calls []countingRelaySlotCall
+}
+
+type countingRelaySlotCall struct {
+	Validator []byte
+	PeerID    uint64
+}
+
+func (s *countingSender) UpdateRelaySlot(validator []byte, peer uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make([]byte, len(validator))
+	copy(cp, validator)
+	s.calls = append(s.calls, countingRelaySlotCall{Validator: cp, PeerID: peer})
+}
+
+func (s *countingSender) getCalls() []countingRelaySlotCall {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]countingRelaySlotCall(nil), s.calls...)
+}
+
+// TestRouter_UpdateRelaySlot_DuplicatesOnly pins the R4.4 rippled
+// parity behavior: reduce-relay selection feeds on DUPLICATE arrivals
+// only (PeerImp.cpp:1730-1738 fires inside the `!added` branch of
+// HashRouter::addSuppressionPeer). Counting first-seen proposals
+// would accelerate selection N-fold vs rippled.
+//
+// Regression guard: a mutation that makes handleProposal call
+// UpdateRelaySlot unconditionally (the pre-R4.4 behavior) would
+// produce two calls from this two-message sequence, not one.
+func TestRouter_UpdateRelaySlot_DuplicatesOnly(t *testing.T) {
+	engine := &mockEngine{}
+
+	// Build an adaptor whose trusted set includes the test pubkey so
+	// the trust gate doesn't suppress the UpdateRelaySlot call.
+	svc := newTestLedgerService(t)
+	pubKey := make([]byte, 33)
+	pubKey[0] = 0x02
+	for i := 1; i < 33; i++ {
+		pubKey[i] = byte(i)
+	}
+	var nodeID consensus.NodeID
+	copy(nodeID[:], pubKey)
+
+	sender := &countingSender{}
+	adaptor := New(Config{
+		LedgerService: svc,
+		Sender:        sender,
+		Validators:    []consensus.NodeID{nodeID},
+	})
+
+	inbox := make(chan *peermanagement.InboundMessage, 10)
+	router := NewRouter(engine, adaptor, nil, inbox)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go router.Run(ctx)
+
+	// Single canonical proposal payload — same bytes delivered twice
+	// from different peers is what rippled considers a "duplicate."
+	proposeSet := &message.ProposeSet{
+		ProposeSeq:     1,
+		CurrentTxHash:  make([]byte, 32),
+		NodePubKey:     pubKey,
+		CloseTime:      timeToXrplEpoch(time.Unix(1_700_000_000, 0)), // stable
+		Signature:      make([]byte, signatureMinLen),
+		PreviousLedger: make([]byte, 32),
+	}
+	payload := encodePayload(t, proposeSet)
+
+	// Peer A delivers it first: first-seen, must NOT fire UpdateRelaySlot.
+	inbox <- &peermanagement.InboundMessage{
+		PeerID:  1,
+		Type:    uint16(message.TypeProposeLedger),
+		Payload: payload,
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	firstRound := sender.getCalls()
+	assert.Empty(t, firstRound,
+		"first-seen proposal must NOT feed UpdateRelaySlot (rippled fires only on duplicates)")
+
+	// Peer B delivers the same bytes: duplicate, MUST fire UpdateRelaySlot.
+	inbox <- &peermanagement.InboundMessage{
+		PeerID:  2,
+		Type:    uint16(message.TypeProposeLedger),
+		Payload: payload,
+	}
+	time.Sleep(30 * time.Millisecond)
+
+	calls := sender.getCalls()
+	require.Len(t, calls, 1,
+		"duplicate proposal from a second peer must fire exactly one UpdateRelaySlot call")
+	assert.Equal(t, uint64(2), calls[0].PeerID,
+		"UpdateRelaySlot must be fed with the DUPLICATE peer's ID (the second arrival)")
+}
+
+// TestRouter_UpdateRelaySlot_UntrustedValidator pins R5.7: untrusted
+// validator duplicates MUST feed the reduce-relay slot — rippled's
+// PeerImp.cpp:1730-1748 calls updateSlotAndSquelch before the
+// isTrusted branch, so both trusted and untrusted duplicates drive
+// selection. Pre-R5.7 gating on IsTrusted under-squelched untrusted
+// gossip vs. rippled's behavior.
+func TestRouter_UpdateRelaySlot_UntrustedValidator(t *testing.T) {
+	engine := &mockEngine{}
+
+	svc := newTestLedgerService(t)
+
+	// Adaptor has NO trusted validators — the test pubkey is
+	// therefore untrusted. Rippled still feeds the slot on duplicate
+	// arrivals for this validator.
+	sender := &countingSender{}
+	adaptor := New(Config{
+		LedgerService: svc,
+		Sender:        sender,
+		Validators:    nil, // empty UNL
+	})
+
+	inbox := make(chan *peermanagement.InboundMessage, 10)
+	router := NewRouter(engine, adaptor, nil, inbox)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go router.Run(ctx)
+
+	untrustedPubKey := make([]byte, 33)
+	untrustedPubKey[0] = 0x02
+	for i := 1; i < 33; i++ {
+		untrustedPubKey[i] = byte(0x80 | i) // distinct from the earlier test
+	}
+
+	proposeSet := &message.ProposeSet{
+		ProposeSeq:     1,
+		CurrentTxHash:  make([]byte, 32),
+		NodePubKey:     untrustedPubKey,
+		CloseTime:      timeToXrplEpoch(time.Unix(1_700_000_001, 0)),
+		Signature:      make([]byte, signatureMinLen),
+		PreviousLedger: make([]byte, 32),
+	}
+	payload := encodePayload(t, proposeSet)
+
+	inbox <- &peermanagement.InboundMessage{PeerID: 1, Type: uint16(message.TypeProposeLedger), Payload: payload}
+	time.Sleep(30 * time.Millisecond)
+	inbox <- &peermanagement.InboundMessage{PeerID: 2, Type: uint16(message.TypeProposeLedger), Payload: payload}
+	time.Sleep(30 * time.Millisecond)
+
+	calls := sender.getCalls()
+	require.Len(t, calls, 1,
+		"untrusted-validator duplicate MUST still fire UpdateRelaySlot (rippled fires regardless of trust)")
+	assert.Equal(t, uint64(2), calls[0].PeerID)
 }
 
 func TestRouterStopsOnChannelClose(t *testing.T) {
