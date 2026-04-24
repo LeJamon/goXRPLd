@@ -178,7 +178,6 @@ func (d *DelegateSet) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	delegateKey := keylet.DelegateKeylet(ctx.AccountID, authorizeID)
 
-	// Check if delegate SLE already exists
 	existingData, readErr := ctx.View.Read(delegateKey)
 	if readErr == nil && existingData != nil {
 		// Delegate SLE exists -- update or delete
@@ -222,7 +221,6 @@ func (d *DelegateSet) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TecINSUFFICIENT_RESERVE
 	}
 
-	// Create the delegate SLE
 	delegateData, serErr := state.SerializeDelegate(ctx.AccountID, authorizeID, permValues, 0)
 	if serErr != nil {
 		return tx.TefINTERNAL
@@ -270,7 +268,6 @@ func deleteDelegate(ctx *tx.ApplyContext, delegateKey keylet.Keylet, account [20
 		return tx.TefINTERNAL
 	}
 
-	// Remove from owner directory
 	ownerDirKey := keylet.OwnerDir(account)
 	state.DirRemove(ctx.View, ownerDirKey, existingEntry.OwnerNode, delegateKey.Key, false)
 

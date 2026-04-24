@@ -188,7 +188,6 @@ func (c *CredentialDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TecNO_PERMISSION
 	}
 
-	// Remove from issuer's owner directory
 	issuerDirKey := keylet.OwnerDir(issuerID)
 	state.DirRemove(ctx.View, issuerDirKey, cred.IssuerNode, credKeylet.Key, false)
 
@@ -198,7 +197,6 @@ func (c *CredentialDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 		state.DirRemove(ctx.View, subjectDirKey, cred.SubjectNode, credKeylet.Key, false)
 	}
 
-	// Delete the credential
 	if err := ctx.View.Erase(credKeylet); err != nil {
 		return tx.TefINTERNAL
 	}

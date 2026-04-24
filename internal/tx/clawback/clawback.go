@@ -217,17 +217,14 @@ func (c *Clawback) applyMPT(ctx *tx.ApplyContext) tx.Result {
 		actual = requested
 	}
 
-	// Decrement holder's balance
 	token.MPTAmount -= actual
 
-	// Decrement issuance outstanding amount
 	if issuance.OutstandingAmount >= actual {
 		issuance.OutstandingAmount -= actual
 	} else {
 		issuance.OutstandingAmount = 0
 	}
 
-	// Serialize and update MPToken
 	updatedToken, err := state.SerializeMPToken(token)
 	if err != nil {
 		return tx.TefINTERNAL
@@ -236,7 +233,6 @@ func (c *Clawback) applyMPT(ctx *tx.ApplyContext) tx.Result {
 		return tx.TefINTERNAL
 	}
 
-	// Serialize and update issuance
 	updatedIssuance, err := state.SerializeMPTokenIssuance(issuance)
 	if err != nil {
 		return tx.TefINTERNAL
@@ -412,7 +408,6 @@ func (c *Clawback) applyIOU(ctx *tx.ApplyContext) tx.Result {
 		highDirKey := keylet.OwnerDir(highAccountID)
 		state.DirRemove(ctx.View, highDirKey, rs.HighNode, trustKey.Key, false)
 
-		// Delete the trust line
 		if err := ctx.View.Erase(trustKey); err != nil {
 			return tx.TefINTERNAL
 		}
@@ -425,7 +420,6 @@ func (c *Clawback) applyIOU(ctx *tx.ApplyContext) tx.Result {
 			holderAccount.OwnerCount--
 		}
 
-		// Write holder account back to ledger
 		if result := ctx.UpdateAccountRoot(holderID, holderAccount); result != tx.TesSUCCESS {
 			return result
 		}
@@ -442,7 +436,6 @@ func (c *Clawback) applyIOU(ctx *tx.ApplyContext) tx.Result {
 			rs.Flags &^= state.LsfHighReserve
 		}
 
-		// Serialize and update trust line
 		updatedData, serErr := state.SerializeRippleState(rs)
 		if serErr != nil {
 			return tx.TefINTERNAL

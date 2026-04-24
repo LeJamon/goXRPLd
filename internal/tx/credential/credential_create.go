@@ -185,19 +185,16 @@ func (c *CredentialCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TecINSUFFICIENT_RESERVE
 	}
 
-	// Create the credential entry
 	cred := &CredentialEntry{
 		Subject:        subjectID,
 		Issuer:         ctx.AccountID,
 		CredentialType: credTypeBytes,
 	}
 
-	// Set expiration if provided
 	if c.Expiration != nil {
 		cred.Expiration = c.Expiration
 	}
 
-	// Set URI if provided
 	if c.URI != "" {
 		uriBytes, err := hex.DecodeString(c.URI)
 		if err == nil {

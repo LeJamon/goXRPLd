@@ -194,14 +194,12 @@ func (c *CredentialAccept) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TefINTERNAL
 	}
 
-	// Check if already accepted
 	if cred.IsAccepted() {
 		ctx.Log.Warn("credential accept: credential already accepted",
 			"subject", c.Account, "issuer", c.Issuer, "credentialType", c.CredentialType)
 		return tx.TecDUPLICATE
 	}
 
-	// Check if credential is expired
 	closeTime := ctx.Config.ParentCloseTime
 	if CheckCredentialExpired(cred, closeTime) {
 		// Delete expired credentials even if the transaction failed
@@ -232,7 +230,6 @@ func (c *CredentialAccept) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TecINSUFFICIENT_RESERVE
 	}
 
-	// Set accepted flag
 	cred.SetAccepted()
 
 	// Serialize and update the credential
