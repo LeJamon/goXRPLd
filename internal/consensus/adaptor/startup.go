@@ -127,10 +127,8 @@ func NewFromConfig(
 		return nil, fmt.Errorf("parse validators: %w", err)
 	}
 
-	// Create the sender wrapping the overlay
 	sender := NewOverlaySender(overlay)
 
-	// Create the adaptor
 	adaptor := New(Config{
 		LedgerService: ledgerSvc,
 		Sender:        sender,
@@ -138,7 +136,6 @@ func NewFromConfig(
 		Validators:    validators,
 	})
 
-	// Create mode manager
 	modeManager := NewModeManager(adaptor)
 
 	// Validator manifest cache. Shared across the engine (for
@@ -149,7 +146,6 @@ func NewFromConfig(
 	// as itself.
 	manifestCache := manifest.NewCache()
 
-	// Create the RCL consensus engine
 	engine := rcl.NewEngine(adaptor, rcl.DefaultConfig())
 
 	// Translate ephemeral signing keys → master keys before quorum
@@ -159,7 +155,6 @@ func NewFromConfig(
 		return consensus.NodeID(manifestCache.GetMasterKey([33]byte(nid)))
 	})
 
-	// Create the router
 	router := NewRouter(engine, adaptor, modeManager, overlay.Messages())
 	router.SetManifestCache(manifestCache, overlay)
 
