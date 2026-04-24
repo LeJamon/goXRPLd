@@ -76,7 +76,6 @@ func (rm *RepositoryManager) Open(ctx context.Context) error {
 		return relationaldb.NewConnectionError("open", "failed to apply transaction DB pragmas", err)
 	}
 
-	// Initialize schemas
 	if err := rm.initLedgerSchema(ctx); err != nil {
 		rm.close()
 		return relationaldb.NewSchemaError("open", "failed to initialize ledger schema", err)
@@ -86,7 +85,6 @@ func (rm *RepositoryManager) Open(ctx context.Context) error {
 		return relationaldb.NewSchemaError("open", "failed to initialize transaction schema", err)
 	}
 
-	// Initialize repository instances
 	rm.ledgerRepo = NewLedgerRepository(rm.ledgerDB)
 	rm.transactionRepo = NewTransactionRepository(rm.txDB)
 	rm.accountTransactionRepo = NewAccountTransactionRepository(rm.txDB)

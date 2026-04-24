@@ -76,12 +76,10 @@ func NewDatabaseWithConfig(backend Backend, config *DatabaseConfig) (*DatabaseIm
 		backend: backend,
 	}
 
-	// Initialize positive cache
 	if config.CacheSize > 0 {
 		db.cache = NewCache(config.CacheSize, config.CacheTTL)
 	}
 
-	// Initialize negative cache
 	if config.NegativeCacheTTL > 0 {
 		db.negativeCache = NewNegativeCacheWithConfig(&NegativeCacheConfig{
 			TTL:     config.NegativeCacheTTL,
@@ -89,7 +87,6 @@ func NewDatabaseWithConfig(backend Backend, config *DatabaseConfig) (*DatabaseIm
 		})
 	}
 
-	// Initialize batch writer if configured
 	if config.BatchWriteConfig != nil {
 		bw, err := NewBatchWriter(backend, config.BatchWriteConfig)
 		if err != nil {
@@ -117,7 +114,6 @@ func (d *DatabaseImpl) Store(ctx context.Context, node *Node) error {
 	atomic.AddUint64(&d.stats.writes, 1)
 	atomic.AddUint64(&d.stats.writeBytes, uint64(len(node.Data)))
 
-	// Update positive cache
 	if d.cache != nil {
 		d.cache.Put(node)
 	}
@@ -140,7 +136,6 @@ func (d *DatabaseImpl) Fetch(ctx context.Context, hash Hash256) (*Node, error) {
 
 	atomic.AddUint64(&d.stats.reads, 1)
 
-	// Check positive cache first
 	if d.cache != nil {
 		if node, found := d.cache.Get(hash); found {
 			atomic.AddUint64(&d.stats.cacheHits, 1)
@@ -171,7 +166,6 @@ func (d *DatabaseImpl) Fetch(ctx context.Context, hash Hash256) (*Node, error) {
 
 	if node != nil {
 		atomic.AddUint64(&d.stats.readBytes, uint64(len(node.Data)))
-		// Update positive cache
 		if d.cache != nil {
 			d.cache.Put(node)
 		}
@@ -336,7 +330,6 @@ func (d *DatabaseImpl) Close() error {
 func (d *DatabaseImpl) StoreAsync(ctx context.Context, node *Node) <-chan error {
 	result := make(chan error, 1)
 
-	// Check context
 	select {
 	case <-ctx.Done():
 		result <- ctx.Err()

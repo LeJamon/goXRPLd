@@ -66,7 +66,6 @@ func (rm *RepositoryManager) Open(ctx context.Context) error {
 		return relationaldb.NewSchemaError("open", "failed to initialize schema", err)
 	}
 
-	// Initialize repository instances
 	rm.ledgerRepo = NewLedgerRepository(rm.db)
 	rm.transactionRepo = NewTransactionRepository(rm.db)
 	rm.accountTransactionRepo = NewAccountTransactionRepository(rm.db)

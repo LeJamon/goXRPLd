@@ -135,7 +135,6 @@ func (e *DatabaseError) Is(target error) bool {
 		return e.Message == dbErr.Message && e.Type == dbErr.Type
 	}
 
-	// Check against known error variables
 	switch target {
 	case ErrLedgerNotFound:
 		return e.Type == ErrorTypeData && e.Code == "LEDGER_NOT_FOUND"

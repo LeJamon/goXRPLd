@@ -164,7 +164,6 @@ func (r *TransactionRepository) DeleteTransactionsByLedgerSeq(ctx context.Contex
 		return relationaldb.NewQueryError("delete_transactions_by_ledger_seq", "failed to delete account transactions", err)
 	}
 
-	// Delete transactions
 	if _, err := r.getExecutor().ExecContext(ctx, "DELETE FROM transactions WHERE ledger_seq = $1", ledgerSeq); err != nil {
 		return relationaldb.NewQueryError("delete_transactions_by_ledger_seq", "failed to delete transactions", err)
 	}
@@ -178,7 +177,6 @@ func (r *TransactionRepository) DeleteTransactionsBeforeLedgerSeq(ctx context.Co
 		return relationaldb.NewQueryError("delete_transactions_before_ledger_seq", "failed to delete account transactions", err)
 	}
 
-	// Delete transactions
 	if _, err := r.getExecutor().ExecContext(ctx, "DELETE FROM transactions WHERE ledger_seq < $1", ledgerSeq); err != nil {
 		return relationaldb.NewQueryError("delete_transactions_before_ledger_seq", "failed to delete transactions", err)
 	}

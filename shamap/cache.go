@@ -70,7 +70,6 @@ func (c *TreeNodeCache) Put(hash [32]byte, node Node) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Check if already in cache
 	if elem, found := c.cache[hash]; found {
 		c.lruList.MoveToFront(elem)
 		elem.Value.(*cacheEntry).node = node
@@ -82,7 +81,6 @@ func (c *TreeNodeCache) Put(hash [32]byte, node Node) {
 		c.evictOldest()
 	}
 
-	// Add new entry
 	entry := &cacheEntry{hash: hash, node: node}
 	elem := c.lruList.PushFront(entry)
 	c.cache[hash] = elem
@@ -200,7 +198,6 @@ func (c *FullBelowCache) MarkFull(hash [32]byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Check if already marked
 	if _, found := c.fullSet[hash]; found {
 		return
 	}
@@ -295,12 +292,10 @@ func (c *FullBelowCache) Touch(hash [32]byte, childHashes [][32]byte) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Check if already full
 	if _, found := c.fullSet[hash]; found {
 		return true
 	}
 
-	// Check if all children are full
 	for _, childHash := range childHashes {
 		if _, found := c.fullSet[childHash]; !found {
 			return false

@@ -75,7 +75,6 @@ type Manager struct {
 	connected bool
 	lastError error
 
-	// Maintenance
 	maintenanceInterval time.Duration
 	maintenanceCtx      context.Context
 	maintenanceCancel   context.CancelFunc
@@ -314,7 +313,6 @@ func (m *Manager) ExecuteWithRetry(ctx context.Context, operation func() error) 
 
 		lastErr = err
 
-		// Check if error is retryable
 		if !IsRetryable(err) {
 			m.logger.Debug("Operation failed with non-retryable error", "error", err)
 			m.metrics.IncrementCounter("db.operation.non_retryable_error", map[string]string{
@@ -440,7 +438,6 @@ func (m *Manager) performMaintenance(ctx context.Context) {
 		})
 	}()
 
-	// Check space
 	if hasSpace, err := m.repoManager.Ledger().HasLedgerSpace(ctx); err != nil {
 		m.logger.Error("Failed to check ledger space", "error", err)
 	} else if !hasSpace {
