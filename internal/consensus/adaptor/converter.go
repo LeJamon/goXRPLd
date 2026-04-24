@@ -66,7 +66,7 @@ func ValidationFromMessage(msg *message.Validation) (*consensus.Validation, erro
 // STValidation suitable for the TMValidation protobuf wire format.
 func ValidationToMessage(v *consensus.Validation) *message.Validation {
 	return &message.Validation{
-		Validation: serializeSTValidation(v),
+		Validation: SerializeSTValidation(v),
 	}
 }
 

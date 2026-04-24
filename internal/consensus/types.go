@@ -280,6 +280,13 @@ type Validation struct {
 	// relay + slot-feeding code doesn't have to recompute it. Zero on
 	// self-originated validations (Broadcast skips the reverse index).
 	SuppressionHash [32]byte
+
+	// Raw is the original wire bytes of the serialized STValidation.
+	// Populated by parseSTValidation for inbound validations. Nil for
+	// self-built validations until SerializeSTValidation is called.
+	// Used by the validation archive to persist the canonical blob
+	// without a parse → re-serialize round-trip.
+	Raw []byte
 }
 
 // AvalancheState tracks per-dispute threshold escalation during

@@ -236,6 +236,7 @@ func parseSTValidation(data []byte) (*consensus.Validation, error) {
 	}
 
 	v.SigningData = signingBuf
+	v.Raw = append([]byte(nil), data...)
 
 	// Validate required fields were present.
 	if v.LedgerSeq == 0 || v.LedgerID == (consensus.LedgerID{}) || v.NodeID == (consensus.NodeID{}) {
@@ -245,7 +246,7 @@ func parseSTValidation(data []byte) (*consensus.Validation, error) {
 	return v, nil
 }
 
-// serializeSTValidation produces XRPL-binary-encoded STValidation bytes from a
+// SerializeSTValidation produces XRPL-binary-encoded STValidation bytes from a
 // consensus.Validation. Fields are written in canonical order (ascending type
 // code, then ascending field code within each type).
 //
@@ -253,7 +254,10 @@ func parseSTValidation(data []byte) (*consensus.Validation, error) {
 // sfFlags, matching rippled's STValidation::sign semantics. Optional
 // supplementary fields (Cookie, LoadFee, ConsensusHash, ServerVersion) are
 // emitted only when non-zero.
-func serializeSTValidation(v *consensus.Validation) []byte {
+//
+// Exported so external packages (the validation archive) can reserialize
+// self-built validations whose Raw field is nil.
+func SerializeSTValidation(v *consensus.Validation) []byte {
 	var buf []byte
 
 	// --- UINT32 fields (type 2) ---
