@@ -180,9 +180,7 @@ func setupDepositAuthorizedTestServices(mock *mockDepositAuthorizedLedgerService
 	}
 }
 
-// =============================================================================
 // Error Validation Tests
-// =============================================================================
 
 // TestDepositAuthorizedErrorValidation tests error handling for invalid inputs
 // Based on rippled DepositAuthorized_test.cpp testErrors()
@@ -298,9 +296,7 @@ func TestDepositAuthorizedErrorValidation(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Authorization Tests
-// =============================================================================
 
 // TestDepositAuthorizedBasicAuthorized tests when deposit is authorized (no DepositAuth flag)
 // Based on rippled DepositAuthorized_test.cpp testValid()
@@ -514,9 +510,7 @@ func TestDepositAuthorizedReciprocal(t *testing.T) {
 	assert.Equal(t, true, respMap["deposit_authorized"])
 }
 
-// =============================================================================
 // Service Unavailable Tests
-// =============================================================================
 
 // TestDepositAuthorizedServiceUnavailable tests response when ledger service is unavailable
 func TestDepositAuthorizedServiceUnavailable(t *testing.T) {
@@ -547,9 +541,7 @@ func TestDepositAuthorizedServiceUnavailable(t *testing.T) {
 	assert.Nil(t, resp)
 }
 
-// =============================================================================
 // Method Metadata Tests
-// =============================================================================
 
 // TestDepositAuthorizedMethodMetadata tests method metadata (role, API versions)
 func TestDepositAuthorizedMethodMetadata(t *testing.T) {
@@ -567,9 +559,7 @@ func TestDepositAuthorizedMethodMetadata(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Handler-Level Address Validation Tests
-// =============================================================================
 
 // TestDepositAuthorizedAddressValidation tests that handler-level Base58 address
 // validation catches malformed addresses before the service layer is called.
@@ -665,9 +655,7 @@ func TestDepositAuthorizedAddressValidation(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Credential Validation Tests
-// =============================================================================
 
 // TestDepositAuthorizedCredentialValidation tests credential format and duplicate
 // detection at the handler level.

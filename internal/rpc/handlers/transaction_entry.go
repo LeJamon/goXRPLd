@@ -78,7 +78,6 @@ func (m *TransactionEntryMethod) Handle(ctx *types.RpcContext, params json.RawMe
 		return nil, types.RpcErrorInternal("Failed to parse transaction data")
 	}
 
-	// Get ledger hash for response
 	ledgerHash := txInfo.LedgerHash
 	if ledgerHash == "" {
 		ledger, err := types.Services.Ledger.GetLedgerBySequence(targetSeq)

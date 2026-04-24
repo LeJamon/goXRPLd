@@ -68,19 +68,16 @@ func NewNFTokenMint(account string, taxon uint32) *NFTokenMint {
 	}
 }
 
-// TxType returns the transaction type
 func (n *NFTokenMint) TxType() tx.Type {
 	return tx.TypeNFTokenMint
 }
 
-// Validate validates the NFTokenMint transaction
 // Reference: rippled NFTokenMint.cpp preflight
 func (n *NFTokenMint) Validate() error {
 	if err := n.BaseTx.Validate(); err != nil {
 		return err
 	}
 
-	// Check for invalid flags
 	// Use the most permissive mask here since Validate() has no access to Rules.
 	// The amendment-dependent checks (rejecting tfTrustLine when
 	// fixRemoveNFTokenAutoTrustLine is enabled, rejecting tfMutable when
@@ -167,7 +164,6 @@ func (n *NFTokenMint) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (n *NFTokenMint) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(n)
 }
@@ -184,7 +180,6 @@ func (n *NFTokenMint) SetTransferable() {
 	n.SetFlags(flags)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type.
 // When offer fields (Amount, Destination, Expiration) are present, also requires
 // FeatureNFTokenMintOffer.
 // Reference: rippled NFTokenMint.cpp preflight — temDISABLED when offer fields present without amendment
@@ -196,7 +191,6 @@ func (n *NFTokenMint) RequiredAmendments() [][32]byte {
 	return amends
 }
 
-// Apply applies the NFTokenMint transaction to the ledger.
 // Reference: rippled NFTokenMint.cpp doApply
 func (n *NFTokenMint) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("nftoken mint apply",
@@ -283,7 +277,6 @@ func (n *NFTokenMint) Apply(ctx *tx.ApplyContext) tx.Result {
 			return tx.TemBAD_AMOUNT
 		}
 
-		// Check expiration
 		if n.Expiration != nil && *n.Expiration <= ctx.Config.ParentCloseTime {
 			return tx.TecEXPIRED
 		}
@@ -292,7 +285,6 @@ func (n *NFTokenMint) Apply(ctx *tx.ApplyContext) tx.Result {
 		// These are the flags that will be embedded in the minted token.
 		nftFlags := uint16(n.GetFlags() & 0xFFFF)
 
-		// Get transfer fee
 		var transferFee uint16
 		if n.TransferFee != nil {
 			transferFee = *n.TransferFee
@@ -331,7 +323,6 @@ func (n *NFTokenMint) Apply(ctx *tx.ApplyContext) tx.Result {
 					}
 				}
 
-				// Check if NFT issuer is frozen for this IOU
 				if tx.IsGlobalFrozen(ctx.View, n.Amount.Issuer) || tx.IsTrustlineFrozen(ctx.View, issuerID, iouIssuerID, n.Amount.Currency) {
 					return tx.TecFROZEN
 				}
@@ -406,7 +397,6 @@ func (n *NFTokenMint) Apply(ctx *tx.ApplyContext) tx.Result {
 		offset := issuerAccount.FirstNFTokenSequence
 		tokenSeq = offset + mintedNftCnt
 
-		// Check for overflow
 		if tokenSeq+1 == 0 || tokenSeq < offset {
 			return tx.TecMAX_SEQUENCE_REACHED
 		}
@@ -431,7 +421,6 @@ func (n *NFTokenMint) Apply(ctx *tx.ApplyContext) tx.Result {
 		tokenFlags |= nftFlagMutable
 	}
 
-	// Get transfer fee
 	var transferFee uint16
 	if n.TransferFee != nil {
 		transferFee = *n.TransferFee
@@ -454,7 +443,6 @@ func (n *NFTokenMint) Apply(ctx *tx.ApplyContext) tx.Result {
 		return insertResult.Result
 	}
 
-	// Update owner count based on pages created
 	ctx.Account.OwnerCount += uint32(insertResult.PagesCreated)
 
 	// MintedNFTokens was already incremented above in the fixNFTokenRemint/non-fix branches.

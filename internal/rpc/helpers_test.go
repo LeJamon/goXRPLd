@@ -8,10 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// =============================================================================
 // InjectDeliveredAmount Tests
 // Based on rippled src/test/rpc/DeliveredAmount_test.cpp
-// =============================================================================
 
 // TestDeliveredAmountNonPaymentSkipped verifies that non-Payment transactions
 // are skipped entirely (no DeliveredAmount is added to meta).
@@ -318,9 +316,7 @@ func TestDeliveredAmountPriorityOrder(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // FormatLedgerHash Tests
-// =============================================================================
 
 // TestFormatLedgerHashValidHash verifies that a 32-byte hash is formatted
 // as a lowercase 64-character hex string.
@@ -373,12 +369,10 @@ func TestFormatLedgerHashDeterministic(t *testing.T) {
 	assert.Equal(t, result1, result2, "Same input should produce same output")
 }
 
-// =============================================================================
 // ResolveLedgerIndex Tests (tested indirectly via TransactionEntryMethod)
 // The resolveTargetLedger method is unexported on TransactionEntryMethod,
 // so we test it indirectly through the handler's behavior with different
 // ledger_index values passed via parameters.
-// =============================================================================
 // Note: Direct tests for resolveTargetLedger would require the handlers
 // package. Ledger index resolution is tested indirectly through handler
 // tests like TestAccountInfoLedgerSpecification and

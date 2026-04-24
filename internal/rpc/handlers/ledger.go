@@ -110,7 +110,6 @@ func (m *LedgerMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (in
 	closeTimeHuman := closeTime.UTC().Format("2006-Jan-02 15:04:05.000000000 UTC")
 	closeTimeISO := closeTime.UTC().Format(time.RFC3339)
 
-	// Get reserve info
 	_, reserveBase, reserveInc := types.Services.Ledger.GetCurrentFees()
 
 	ledgerInfo := map[string]interface{}{
@@ -132,7 +131,6 @@ func (m *LedgerMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (in
 		"transaction_hash":      txHashStr,
 	}
 
-	// Add transactions if requested
 	if request.Transactions {
 		var txList []interface{}
 		apiVersion := ctx.ApiVersion
@@ -155,7 +153,6 @@ func (m *LedgerMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (in
 				}
 				txList = append(txList, txEntry)
 			} else {
-				// Return just transaction hashes
 				txList = append(txList, hashStr)
 			}
 			return true
@@ -173,11 +170,9 @@ func (m *LedgerMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (in
 		"validated":    validated,
 	}
 
-	// Add reserve info at top level
 	response["reserve_base_drops"] = fmt.Sprintf("%d", reserveBase)
 	response["reserve_inc_drops"] = fmt.Sprintf("%d", reserveInc)
 
-	// Add queue data if requested
 	if request.Queue {
 		response["queue_data"] = []interface{}{}
 	}

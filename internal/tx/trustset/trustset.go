@@ -66,12 +66,10 @@ func NewTrustSet(account string, limitAmount tx.Amount) *TrustSet {
 	}
 }
 
-// TxType returns the transaction type
 func (t *TrustSet) TxType() tx.Type {
 	return tx.TypeTrustSet
 }
 
-// Validate validates the TrustSet transaction
 // Reference: rippled SetTrust.cpp preflight()
 func (t *TrustSet) Validate() error {
 	if err := t.BaseTx.Validate(); err != nil {
@@ -130,7 +128,6 @@ func (t *TrustSet) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (t *TrustSet) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(t)
 }
@@ -212,7 +209,6 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TemDST_IS_SRC
 	}
 
-	// Get the issuer account ID
 	issuerAccountID, err := state.DecodeAccountID(t.LimitAmount.Issuer)
 	if err != nil {
 		return tx.TemBAD_ISSUER
@@ -233,7 +229,6 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TefINTERNAL
 	}
 
-	// Get the account ID
 	accountID, _ := state.DecodeAccountID(ctx.Account.Account)
 
 	// Capture the initial owner count and compute the reserve once,
@@ -444,7 +439,6 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 			PreviousTxnLgrSeq: ctx.Config.LedgerSequence,
 		}
 
-		// Set the limit based on which side this account is
 		// Note: In RippleState, LowLimit.Issuer = LOW account, HighLimit.Issuer = HIGH account
 		// The "issuer" in these Amount fields refers to which account owns that limit
 		lowAccountStr, _ := state.EncodeAccountID(lowAccountID)
@@ -549,7 +543,6 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 		rs.LowNode = lowDirResult.Page
 		rs.HighNode = highDirResult.Page
 
-		// Serialize and insert the trust line
 		trustLineData, err := state.SerializeRippleState(rs)
 		if err != nil {
 			return tx.TefINTERNAL
@@ -559,7 +552,6 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 			return tx.TefINTERNAL
 		}
 
-		// Increment owner count for the transaction sender
 		ctx.Account.OwnerCount++
 	} else {
 		// Modify existing trust line
@@ -573,7 +565,6 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 			return tx.TefINTERNAL
 		}
 
-		// Update the limit.
 		// Per rippled: saLimitAllow = saLimitAmount; saLimitAllow.setIssuer(account_);
 		// The limit's issuer must be set to the sender's account, not the counterparty.
 		// In a RippleState, LowLimit.Issuer = lowAccount, HighLimit.Issuer = highAccount.
@@ -737,7 +728,6 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 			highDirKey := keylet.OwnerDir(highAccountID)
 			state.DirRemove(ctx.View, highDirKey, rs.HighNode, trustLineKey.Key, false)
 
-			// Delete the trust line
 			if err := ctx.View.Erase(trustLineKey); err != nil {
 				return tx.TefINTERNAL
 			}
@@ -855,7 +845,6 @@ func (t *TrustSet) Apply(ctx *tx.ApplyContext) tx.Result {
 				}
 			}
 
-			// Update the trust line
 			updatedData, err := state.SerializeRippleState(rs)
 			if err != nil {
 				return tx.TefINTERNAL

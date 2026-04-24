@@ -10,12 +10,8 @@ import (
 // be included in a ledger. It manages fee escalation, per-account queuing,
 // and transaction selection based on fee level.
 type TxQ struct {
-	mu sync.Mutex
-
-	// config holds the queue configuration
-	config Config
-
-	// feeMetrics tracks and computes fee escalation
+	mu         sync.Mutex
+	config     Config
 	feeMetrics *FeeMetrics
 
 	// byFee holds all candidates sorted by fee level (descending).
@@ -28,7 +24,6 @@ type TxQ struct {
 	byAccount map[[20]byte]*AccountQueue
 
 	// maxSize is the dynamic maximum queue size.
-	// It's recomputed after each ledger close based on recent transaction counts.
 	// nil means no limit (before the first processClosedLedger call).
 	// Reference: rippled uses std::optional<size_t> maxSize_ which starts as nullopt.
 	maxSize *uint32
@@ -52,29 +47,14 @@ func New(config Config) *TxQ {
 
 // Metrics holds queue metrics for monitoring and RPC.
 type Metrics struct {
-	// TxCount is the number of transactions in the queue
-	TxCount uint32
-
-	// TxQMaxSize is the maximum queue size (may be nil if no limit)
-	TxQMaxSize *uint32
-
-	// TxInLedger is the number of transactions in the current open ledger
-	TxInLedger uint32
-
-	// TxPerLedger is the expected number of transactions per ledger
-	TxPerLedger uint32
-
-	// ReferenceFeeLevel is the base fee level (256)
-	ReferenceFeeLevel uint64
-
-	// MinProcessingFeeLevel is the minimum fee level to be accepted into the queue
+	TxCount               uint32
+	TxQMaxSize            *uint32 // nil means no limit
+	TxInLedger            uint32
+	TxPerLedger           uint32
+	ReferenceFeeLevel     uint64
 	MinProcessingFeeLevel uint64
-
-	// MedFeeLevel is the median fee level from the last closed ledger
-	MedFeeLevel uint64
-
-	// OpenLedgerFeeLevel is the fee level required to bypass the queue
-	OpenLedgerFeeLevel uint64
+	MedFeeLevel           uint64
+	OpenLedgerFeeLevel    uint64
 }
 
 // GetMetrics returns the current queue metrics.
@@ -87,7 +67,6 @@ func (q *TxQ) GetMetrics(txInLedger uint32) Metrics {
 
 	minProcessingFeeLevel := BaseLevel
 	if q.isFull() && len(q.byFee) > 0 {
-		// When full, need to beat the lowest fee in the queue
 		minProcessingFeeLevel = uint64(q.byFee[len(q.byFee)-1].FeeLevel) + 1
 	}
 
@@ -140,10 +119,7 @@ func (q *TxQ) GetRequiredFeeLevel(txInLedger uint32) FeeLevel {
 // Candidates with the same fee are ordered by txID XOR parentHash for deterministic ordering.
 // Caller must hold the lock.
 func (q *TxQ) insertByFee(c *Candidate) {
-	// Find insertion point using binary search
 	pos := q.findInsertPosition(c)
-
-	// Insert at position
 	q.byFee = append(q.byFee, nil)
 	copy(q.byFee[pos+1:], q.byFee[pos:])
 	q.byFee[pos] = c
@@ -153,7 +129,6 @@ func (q *TxQ) insertByFee(c *Candidate) {
 // Order is: descending by fee level, then ascending by (txID XOR parentHash).
 // Caller must hold the lock.
 func (q *TxQ) findInsertPosition(c *Candidate) int {
-	// Binary search for the right position
 	lo, hi := 0, len(q.byFee)
 	for lo < hi {
 		mid := (lo + hi) / 2
@@ -220,7 +195,6 @@ func (q *TxQ) erase(c *Candidate) {
 
 	if aq, exists := q.byAccount[c.Account]; exists {
 		aq.Remove(c.SeqProxy)
-		// Clean up empty account queues
 		if aq.Empty() {
 			delete(q.byAccount, c.Account)
 		}

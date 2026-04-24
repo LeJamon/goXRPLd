@@ -238,7 +238,6 @@ func TestGatewayBalancesErrorValidation(t *testing.T) {
 			mock.gatewayBalancesResult = nil
 			mock.gatewayBalancesErr = nil
 
-			// Setup mock if needed
 			if tc.setupMock != nil {
 				tc.setupMock()
 			}
@@ -251,7 +250,6 @@ func TestGatewayBalancesErrorValidation(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			// Call the method
 			result, rpcErr := method.Handle(ctx, paramsJSON)
 
 			// Verify error response

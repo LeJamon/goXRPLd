@@ -41,7 +41,6 @@ type LedgerStateFix struct {
 	Owner string `json:"Owner,omitempty" xrpl:"Owner,omitempty"`
 }
 
-// NewLedgerStateFix creates a new LedgerStateFix transaction
 func NewLedgerStateFix(account string, fixType uint8) *LedgerStateFix {
 	return &LedgerStateFix{
 		BaseTx:        *tx.NewBaseTx(tx.TypeLedgerStateFix, account),
@@ -49,7 +48,6 @@ func NewLedgerStateFix(account string, fixType uint8) *LedgerStateFix {
 	}
 }
 
-// NewNFTokenPageLinkFix creates a LedgerStateFix for NFToken page link repair
 func NewNFTokenPageLinkFix(account, owner string) *LedgerStateFix {
 	return &LedgerStateFix{
 		BaseTx:        *tx.NewBaseTx(tx.TypeLedgerStateFix, account),
@@ -58,19 +56,16 @@ func NewNFTokenPageLinkFix(account, owner string) *LedgerStateFix {
 	}
 }
 
-// TxType returns the transaction type
 func (l *LedgerStateFix) TxType() tx.Type {
 	return tx.TypeLedgerStateFix
 }
 
-// Validate validates the LedgerStateFix transaction
 // Reference: rippled LedgerStateFix.cpp preflight()
 func (l *LedgerStateFix) Validate() error {
 	if err := l.BaseTx.Validate(); err != nil {
 		return err
 	}
 
-	// Check for invalid flags (universal mask)
 	// Reference: rippled LedgerStateFix.cpp:36-37
 	if err := tx.CheckFlags(l.GetFlags(), tx.TfUniversalMask); err != nil {
 		return err
@@ -80,13 +75,11 @@ func (l *LedgerStateFix) Validate() error {
 	// Reference: rippled LedgerStateFix.cpp:42-51
 	switch l.LedgerFixType {
 	case LedgerFixTypeNFTokenPageLink:
-		// Owner is required for nfTokenPageLink fix
 		// Reference: rippled LedgerStateFix.cpp:45-46
 		if l.Owner == "" {
 			return ErrLedgerFixOwnerRequired
 		}
 	default:
-		// Invalid fix type
 		// Reference: rippled LedgerStateFix.cpp:49-50
 		return ErrLedgerFixInvalidType
 	}
@@ -94,7 +87,6 @@ func (l *LedgerStateFix) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (l *LedgerStateFix) Flatten() (map[string]any, error) {
 	m, err := tx.ReflectFlatten(l)
 	if err != nil {
@@ -111,13 +103,10 @@ func (l *LedgerStateFix) Flatten() (map[string]any, error) {
 	return m, nil
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (l *LedgerStateFix) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureFixNFTokenPageLinks}
 }
 
-// Apply applies the LedgerStateFix transaction to the ledger.
-// This implements the Appliable interface: Apply(ctx *tx.ApplyContext) tx.Result
 // Reference: rippled LedgerStateFix.cpp preclaim() + doApply()
 func (l *LedgerStateFix) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("ledger state fix apply",
@@ -400,8 +389,5 @@ func (l *LedgerStateFix) CalculateBaseFee(_ tx.LedgerView, config tx.EngineConfi
 	return config.ReserveIncrement
 }
 
-// Ensure LedgerStateFix implements Appliable.
 var _ tx.Appliable = (*LedgerStateFix)(nil)
-
-// Ensure LedgerStateFix implements CustomBaseFeeCalculator.
 var _ tx.CustomBaseFeeCalculator = (*LedgerStateFix)(nil)

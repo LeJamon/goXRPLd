@@ -32,12 +32,10 @@ func NewNFTokenCancelOffer(account string, offerIDs []string) *NFTokenCancelOffe
 	}
 }
 
-// TxType returns the transaction type
 func (n *NFTokenCancelOffer) TxType() tx.Type {
 	return tx.TypeNFTokenCancelOffer
 }
 
-// Validate validates the NFTokenCancelOffer transaction
 // Reference: rippled NFTokenCancelOffer.cpp preflight
 func (n *NFTokenCancelOffer) Validate() error {
 	if err := n.BaseTx.Validate(); err != nil {
@@ -59,7 +57,6 @@ func (n *NFTokenCancelOffer) Validate() error {
 		return tx.Errorf(tx.TemMALFORMED, "NFTokenOffers exceeds maximum count")
 	}
 
-	// Check for duplicates
 	seen := make(map[string]bool)
 	for _, offerID := range n.NFTokenOffers {
 		if seen[offerID] {
@@ -71,17 +68,14 @@ func (n *NFTokenCancelOffer) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (n *NFTokenCancelOffer) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(n)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (n *NFTokenCancelOffer) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureNonFungibleTokensV1}
 }
 
-// Apply applies the NFTokenCancelOffer transaction to the ledger.
 // Reference: rippled NFTokenCancelOffer.cpp preclaim + doApply
 func (n *NFTokenCancelOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("nftoken cancel offer apply",

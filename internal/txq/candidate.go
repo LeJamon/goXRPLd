@@ -13,10 +13,7 @@ const RetriesAllowed = 10
 // SeqProxy represents either a sequence number or a ticket number.
 // This mirrors rippled's SeqProxy type.
 type SeqProxy struct {
-	// Value is the sequence or ticket number
-	Value uint32
-
-	// IsTicket indicates whether this is a ticket number (true) or sequence (false)
+	Value    uint32
 	IsTicket bool
 }
 
@@ -33,59 +30,34 @@ func NewSeqProxyTicket(ticket uint32) SeqProxy {
 // Less returns true if this SeqProxy is less than other.
 // Sequences come before tickets, and within each category, lower values come first.
 func (s SeqProxy) Less(other SeqProxy) bool {
-	// Sequences come before tickets
 	if !s.IsTicket && other.IsTicket {
 		return true
 	}
 	if s.IsTicket && !other.IsTicket {
 		return false
 	}
-	// Same type, compare values
 	return s.Value < other.Value
 }
 
 // Candidate represents a transaction that may be applied to the open ledger.
 // It holds all the information needed to attempt application and track retries.
 type Candidate struct {
-	// Txn is the transaction to apply
-	Txn tx.Transaction
-
-	// TxID is the transaction hash
-	TxID [32]byte
-
-	// Account is the account that submitted the transaction
-	Account [20]byte
-
-	// FeeLevel is the fee level paid by this transaction
-	FeeLevel FeeLevel
-
-	// SeqProxy is the sequence or ticket number
-	SeqProxy SeqProxy
-
-	// LastValid is the LastLedgerSequence if present (0 if not set)
-	LastValid uint32
-
-	// RetriesRemaining tracks how many more times we can retry this transaction.
-	// Starts at RetriesAllowed.
-	RetriesRemaining int
-
-	// LastResult holds the result from the last failed application attempt.
-	// Zero value means no attempt has been made yet.
-	LastResult tx.Result
-
+	Txn              tx.Transaction
+	TxID             [32]byte
+	Account          [20]byte
+	FeeLevel         FeeLevel
+	SeqProxy         SeqProxy
+	LastValid        uint32
+	RetriesRemaining int // starts at RetriesAllowed; drops to 0 before removal
+	LastResult       tx.Result
 	// PreflightResult holds the result from the preflight check.
 	PreflightResult tx.Result
-
-	// Fee is the fee in drops
-	Fee uint64
-
-	// Consequences tracks the potential impact of this transaction
-	Consequences TxConsequences
+	Fee             uint64
+	Consequences    TxConsequences
 }
 
 // TxConsequences describes the potential impact of applying a transaction.
 type TxConsequences struct {
-	// Fee is the fee that will be consumed
 	Fee uint64
 
 	// PotentialSpend is the maximum XRP that could be spent beyond the fee.
@@ -128,10 +100,7 @@ func NewCandidate(
 
 // AccountQueue tracks queued transactions for a single account.
 type AccountQueue struct {
-	// Account is the account ID
-	Account [20]byte
-
-	// Transactions maps SeqProxy to Candidate, ordered by SeqProxy
+	Account      [20]byte
 	Transactions map[SeqProxy]*Candidate
 
 	// RetryPenalty is set when a transaction has exhausted its retries.
@@ -242,7 +211,6 @@ func (aq *AccountQueue) GetSortedCandidates() []*Candidate {
 		result = append(result, c)
 	}
 
-	// Sort by SeqProxy
 	sort.Slice(result, func(i, j int) bool {
 		return result[i].SeqProxy.Less(result[j].SeqProxy)
 	})

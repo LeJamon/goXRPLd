@@ -10,10 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// =============================================================================
 // Test vectors derived from rippled src/test/protocol/STObject_test.cpp
 // These tests verify field ordering, nested objects, and binary format compliance.
-// =============================================================================
 
 // TestFieldOrdering_RippledVectors verifies fields are serialized in ordinal order.
 // From testSerialization() in STObject_test.cpp - fields must be sorted by ordinal.

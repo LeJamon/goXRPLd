@@ -24,7 +24,6 @@ func (e *cacheEntry) isExpired() bool {
 type Cache struct {
 	mu sync.RWMutex
 
-	// Configuration
 	maxSize int           // Maximum number of items
 	ttl     time.Duration // Time to live for entries
 
@@ -32,7 +31,6 @@ type Cache struct {
 	items map[Hash256]*list.Element // Hash to list element mapping
 	lru   *list.List                // LRU list (most recent at front)
 
-	// Statistics
 	hits         uint64 // Number of cache hits
 	misses       uint64 // Number of cache misses
 	evictions    uint64 // Number of evictions due to size limit
@@ -65,7 +63,6 @@ func (c *Cache) Get(hash Hash256) (*Node, bool) {
 
 	entry := element.Value.(*cacheEntry)
 
-	// Check if the entry has expired
 	if entry.isExpired() {
 		c.removeElementLocked(element)
 		c.expirations++
@@ -89,9 +86,7 @@ func (c *Cache) Put(node *Node) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Check if the item already exists
 	if element, found := c.items[node.Hash]; found {
-		// Update existing entry
 		entry := element.Value.(*cacheEntry)
 		c.currentBytes = c.currentBytes - entry.size + node.Size()
 		entry.node = node
@@ -101,7 +96,6 @@ func (c *Cache) Put(node *Node) {
 		return
 	}
 
-	// Create new entry
 	entry := &cacheEntry{
 		key:       node.Hash,
 		node:      node,
@@ -149,7 +143,6 @@ func (c *Cache) Sweep() int {
 	removed := 0
 	now := time.Now()
 
-	// Iterate from back (oldest) to front
 	for element := c.lru.Back(); element != nil; {
 		entry := element.Value.(*cacheEntry)
 		if now.After(entry.expiresAt) {

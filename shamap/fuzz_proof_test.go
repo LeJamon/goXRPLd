@@ -143,8 +143,6 @@ func FuzzVerifyProofPathValidTree(f *testing.F) {
 	})
 }
 
-// --- helpers ---
-
 func makeHash(fill byte) [32]byte {
 	var h [32]byte
 	for i := range h {

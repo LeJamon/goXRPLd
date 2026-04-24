@@ -67,9 +67,7 @@ func setupLedgerEntryTestServices(mock *mockLedgerEntryService) func() {
 	}
 }
 
-// =============================================================================
 // Direct Index Lookup Tests
-// =============================================================================
 
 // TestLedgerEntryDirectIndexLookup tests direct index lookup (256-bit hex)
 // Based on rippled LedgerEntry_test.cpp testLedgerEntryInvalid() and testLedgerEntryAccountRoot()
@@ -212,9 +210,7 @@ func TestLedgerEntryDirectIndexLookup(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Check Entry Tests
-// =============================================================================
 
 // TestLedgerEntryCheck tests check lookup by check ID
 // Based on rippled LedgerEntry_test.cpp testLedgerEntryCheck()
@@ -320,9 +316,7 @@ func TestLedgerEntryCheck(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Payment Channel Entry Tests
-// =============================================================================
 
 // TestLedgerEntryPaymentChannel tests payment_channel lookup by channel ID
 // Based on rippled LedgerEntry_test.cpp testLedgerEntryPayChan()
@@ -428,9 +422,7 @@ func TestLedgerEntryPaymentChannel(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Directory Entry Tests
-// =============================================================================
 
 // TestLedgerEntryDirectory tests directory lookup by directory index
 // Based on rippled LedgerEntry_test.cpp testLedgerEntryDirectory()
@@ -537,9 +529,7 @@ func TestLedgerEntryDirectory(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // NFT Page Entry Tests
-// =============================================================================
 
 // TestLedgerEntryNFTPage tests NFT page lookup by page index
 func TestLedgerEntryNFTPage(t *testing.T) {
@@ -644,9 +634,7 @@ func TestLedgerEntryNFTPage(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Error Cases - Missing Entry Type
-// =============================================================================
 
 // TestLedgerEntryMissingEntryType tests error when no entry type is specified
 func TestLedgerEntryMissingEntryType(t *testing.T) {
@@ -695,9 +683,7 @@ func TestLedgerEntryMissingEntryType(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Ledger Specification Tests
-// =============================================================================
 
 // TestLedgerEntryLedgerSpecification tests different ledger index specifications
 // Based on rippled ledger specification behavior
@@ -887,9 +873,7 @@ func TestLedgerEntryLedgerSpecification(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Response Format Tests
-// =============================================================================
 
 // TestLedgerEntryResponseFields tests that the response contains expected fields
 func TestLedgerEntryResponseFields(t *testing.T) {
@@ -977,9 +961,7 @@ func TestLedgerEntryResponseFields(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Service Unavailability Tests
-// =============================================================================
 
 // TestLedgerEntryServiceUnavailable tests behavior when ledger service is not available
 func TestLedgerEntryServiceUnavailable(t *testing.T) {
@@ -1029,9 +1011,7 @@ func TestLedgerEntryServiceUnavailable(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Method Metadata Tests
-// =============================================================================
 
 // TestLedgerEntryMethodMetadata tests the method's metadata functions
 func TestLedgerEntryMethodMetadata(t *testing.T) {
@@ -1050,9 +1030,7 @@ func TestLedgerEntryMethodMetadata(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Entry Type Priority Tests
-// =============================================================================
 
 // TestLedgerEntryTypePriority tests that index takes priority over other entry types
 func TestLedgerEntryTypePriority(t *testing.T) {
@@ -1103,9 +1081,7 @@ func TestLedgerEntryTypePriority(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Not Implemented Entry Types - Document Expected Behavior
-// =============================================================================
 
 // TestLedgerEntryNotImplementedTypes documents entry types that are defined but not fully implemented
 // TestLedgerEntryImplementedTypes tests that keylet-based lookups now work
@@ -1200,9 +1176,7 @@ func TestLedgerEntryImplementedTypes(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Invalid Parameters Tests
-// =============================================================================
 
 // TestLedgerEntryInvalidParameters tests various invalid parameter scenarios
 func TestLedgerEntryInvalidParameters(t *testing.T) {
@@ -1280,9 +1254,7 @@ func TestLedgerEntryInvalidParameters(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Entry Not Found Error Code Test
-// =============================================================================
 
 // TestLedgerEntryNotFoundErrorCode tests that entry not found returns correct error code
 func TestLedgerEntryNotFoundErrorCode(t *testing.T) {
@@ -1314,9 +1286,7 @@ func TestLedgerEntryNotFoundErrorCode(t *testing.T) {
 	assert.Contains(t, rpcErr.Message, "not found")
 }
 
-// =============================================================================
 // AccountRoot Entry Tests
-// =============================================================================
 
 // TestLedgerEntryAccountRoot tests account_root lookup by address and by index
 // Based on rippled LedgerEntry_test.cpp testLedgerEntryAccountRoot()
@@ -1438,9 +1408,7 @@ func TestLedgerEntryAccountRoot(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Escrow Entry Tests
-// =============================================================================
 
 // TestLedgerEntryEscrow tests escrow lookup by owner+seq and by index
 // Based on rippled LedgerEntry_test.cpp testLedgerEntryEscrow()
@@ -1538,9 +1506,7 @@ func TestLedgerEntryEscrow(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Offer Entry Tests
-// =============================================================================
 
 // TestLedgerEntryOffer tests offer lookup by account+seq and by index
 // Based on rippled LedgerEntry_test.cpp testLedgerEntryOffer()
@@ -1638,9 +1604,7 @@ func TestLedgerEntryOffer(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // RippleState (Trust Line) Entry Tests
-// =============================================================================
 
 // TestLedgerEntryRippleState tests trust line lookup by accounts+currency
 // Based on rippled LedgerEntry_test.cpp testLedgerEntryRippleState()
@@ -1738,9 +1702,7 @@ func TestLedgerEntryRippleState(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Ticket Entry Tests
-// =============================================================================
 
 // TestLedgerEntryTicket tests ticket lookup by account+ticket_seq and by index
 // Based on rippled LedgerEntry_test.cpp testLedgerEntryTicket()
@@ -1838,9 +1800,7 @@ func TestLedgerEntryTicket(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // DepositPreauth Entry Tests
-// =============================================================================
 
 // TestLedgerEntryDepositPreauth tests deposit_preauth lookup by owner+authorized and by index
 // Based on rippled LedgerEntry_test.cpp testLedgerEntryDepositPreauth()
@@ -1938,9 +1898,7 @@ func TestLedgerEntryDepositPreauth(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // AMM Entry Tests
-// =============================================================================
 
 // TestLedgerEntryAMM tests AMM lookup by asset+asset2 and by index
 // Based on rippled AMM ledger entry tests
@@ -2038,9 +1996,7 @@ func TestLedgerEntryAMM(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Invalid Ledger Hash/Index Tests
-// =============================================================================
 
 // TestLedgerEntryInvalidLedgerSpecification tests error handling for invalid ledger specifications
 // Based on rippled LedgerEntry_test.cpp testLedgerEntryInvalid()
@@ -2117,9 +2073,7 @@ func TestLedgerEntryInvalidLedgerSpecification(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Unexpected Ledger Type Tests
-// =============================================================================
 
 // TestLedgerEntryUnexpectedType tests error when requesting wrong entry type
 // Based on rippled behavior where requesting an AccountRoot index via check field fails
@@ -2167,9 +2121,7 @@ func TestLedgerEntryUnexpectedType(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Multiple Entry Type Parameters Tests
-// =============================================================================
 
 // TestLedgerEntryMultipleTypes tests behavior when multiple entry types are specified
 func TestLedgerEntryMultipleTypes(t *testing.T) {
@@ -2221,9 +2173,7 @@ func TestLedgerEntryMultipleTypes(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Malformed Request Tests
-// =============================================================================
 
 // TestLedgerEntryMalformedRequests tests various malformed request scenarios
 // Based on rippled LedgerEntry_test.cpp malformed request handling
@@ -2302,9 +2252,7 @@ func TestLedgerEntryMalformedRequests(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // API Version Tests
-// =============================================================================
 
 // TestLedgerEntryAPIVersions tests that the method works correctly with different API versions
 func TestLedgerEntryAPIVersions(t *testing.T) {
@@ -2350,9 +2298,7 @@ func TestLedgerEntryAPIVersions(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Hex Validation Tests
-// =============================================================================
 
 // TestLedgerEntryHexValidation tests hex string validation for various entry types
 func TestLedgerEntryHexValidation(t *testing.T) {
@@ -2519,9 +2465,7 @@ func TestLedgerEntryHexValidation(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Hex Index Fallback Tests
-// =============================================================================
 
 // TestLedgerEntryHexFallback tests that all entry types that support it accept
 // a direct hex string as an alternative to the structured object form.
@@ -2595,9 +2539,7 @@ func TestLedgerEntryHexFallback(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // New Entry Type Tests: vault, delegate, bridge, xchain
-// =============================================================================
 
 // TestLedgerEntryVault tests vault entry lookup by hex and by object form
 func TestLedgerEntryVault(t *testing.T) {
@@ -2800,9 +2742,7 @@ func TestLedgerEntryXChainClaimID(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Ticket Conformance Tests
-// =============================================================================
 
 // TestLedgerEntryTicketConformance tests that ticket uses ticket_seq (not ticket_id)
 // matching rippled's parseTicket() which expects jss::ticket_seq
@@ -2848,9 +2788,7 @@ func TestLedgerEntryTicketConformance(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Uppercase Hex Response Tests
-// =============================================================================
 
 // TestLedgerEntryUppercaseHex verifies that the ledger_hash in the response
 // uses uppercase hex encoding, matching rippled's output.
@@ -2899,9 +2837,7 @@ func TestLedgerEntryUppercaseHex(t *testing.T) {
 		"ledger_hash should be entirely uppercase")
 }
 
-// =============================================================================
 // Escrow Hex Fallback Tests
-// =============================================================================
 
 // TestLedgerEntryEscrowHexFallback tests escrow specifically with hex vs object form
 func TestLedgerEntryEscrowHexFallback(t *testing.T) {
@@ -2946,9 +2882,7 @@ func TestLedgerEntryEscrowHexFallback(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Offer Hex Fallback Tests
-// =============================================================================
 
 // TestLedgerEntryOfferHexFallback tests offer specifically with hex vs object form
 func TestLedgerEntryOfferHexFallback(t *testing.T) {
@@ -2993,9 +2927,7 @@ func TestLedgerEntryOfferHexFallback(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Oracle Hex Fallback Tests
-// =============================================================================
 
 // TestLedgerEntryOracleHexFallback tests oracle with hex vs object form
 func TestLedgerEntryOracleHexFallback(t *testing.T) {
@@ -3040,9 +2972,7 @@ func TestLedgerEntryOracleHexFallback(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // AMM Hex Fallback Tests
-// =============================================================================
 
 // TestLedgerEntryAMMHexFallback tests AMM with hex vs object form
 func TestLedgerEntryAMMHexFallback(t *testing.T) {

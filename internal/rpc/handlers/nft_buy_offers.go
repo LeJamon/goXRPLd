@@ -72,7 +72,6 @@ func (m *NftBuyOffersMethod) Handle(ctx *types.RpcContext, params json.RawMessag
 		}
 	}
 
-	// Get NFT buy offers from the ledger service
 	result, err := types.Services.Ledger.GetNFTBuyOffers(nftID, ledgerIndex, limit, marker)
 	if err != nil {
 		if err.Error() == "ledger not found" {

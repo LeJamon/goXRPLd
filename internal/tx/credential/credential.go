@@ -35,12 +35,10 @@ func NewCredentialAccept(account, issuer, credentialType string) *CredentialAcce
 	}
 }
 
-// TxType returns the transaction type
 func (c *CredentialAccept) TxType() tx.Type {
 	return tx.TypeCredentialAccept
 }
 
-// Validate validates the CredentialAccept transaction
 // Reference: rippled Credentials.cpp CredentialAccept::preflight()
 // Note: The fixInvalidTxFlags-gated flag check is done in Apply() because
 // Validate() has no access to amendment rules.
@@ -83,12 +81,10 @@ func (c *CredentialAccept) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (c *CredentialAccept) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(c)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (c *CredentialAccept) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureCredentials}
 }
@@ -136,7 +132,6 @@ func (c *CredentialAccept) ApplyOnTec(ctx *tx.ApplyContext) tx.Result {
 	return tx.TesSUCCESS
 }
 
-// Apply applies the CredentialAccept transaction to ledger state.
 // Reference: rippled Credentials.cpp CredentialAccept::doApply()
 func (c *CredentialAccept) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Check for invalid flags, gated behind fixInvalidTxFlags
@@ -194,14 +189,12 @@ func (c *CredentialAccept) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TefINTERNAL
 	}
 
-	// Check if already accepted
 	if cred.IsAccepted() {
 		ctx.Log.Warn("credential accept: credential already accepted",
 			"subject", c.Account, "issuer", c.Issuer, "credentialType", c.CredentialType)
 		return tx.TecDUPLICATE
 	}
 
-	// Check if credential is expired
 	closeTime := ctx.Config.ParentCloseTime
 	if CheckCredentialExpired(cred, closeTime) {
 		// Delete expired credentials even if the transaction failed
@@ -232,7 +225,6 @@ func (c *CredentialAccept) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TecINSUFFICIENT_RESERVE
 	}
 
-	// Set accepted flag
 	cred.SetAccepted()
 
 	// Serialize and update the credential

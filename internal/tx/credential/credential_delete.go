@@ -37,12 +37,10 @@ func NewCredentialDelete(account, credentialType string) *CredentialDelete {
 	}
 }
 
-// TxType returns the transaction type
 func (c *CredentialDelete) TxType() tx.Type {
 	return tx.TypeCredentialDelete
 }
 
-// Validate validates the CredentialDelete transaction
 // Reference: rippled Credentials.cpp CredentialDelete::preflight()
 // Note: The fixInvalidTxFlags-gated flag check is done in Apply() because
 // Validate() has no access to amendment rules.
@@ -102,17 +100,14 @@ func (c *CredentialDelete) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (c *CredentialDelete) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(c)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (c *CredentialDelete) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureCredentials}
 }
 
-// Apply applies the CredentialDelete transaction to ledger state.
 // Reference: rippled Credentials.cpp CredentialDelete::doApply()
 func (c *CredentialDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Check for invalid flags, gated behind fixInvalidTxFlags
@@ -188,7 +183,6 @@ func (c *CredentialDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TecNO_PERMISSION
 	}
 
-	// Remove from issuer's owner directory
 	issuerDirKey := keylet.OwnerDir(issuerID)
 	state.DirRemove(ctx.View, issuerDirKey, cred.IssuerNode, credKeylet.Key, false)
 
@@ -198,7 +192,6 @@ func (c *CredentialDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 		state.DirRemove(ctx.View, subjectDirKey, cred.SubjectNode, credKeylet.Key, false)
 	}
 
-	// Delete the credential
 	if err := ctx.View.Erase(credKeylet); err != nil {
 		return tx.TefINTERNAL
 	}

@@ -149,53 +149,43 @@ func serializeCredentialEntry(cred *CredentialEntry) ([]byte, error) {
 		"LedgerEntryType": "Credential",
 	}
 
-	// Add Subject
 	subjectStr, err := state.EncodeAccountID(cred.Subject)
 	if err == nil && subjectStr != "" {
 		jsonObj["Subject"] = subjectStr
 	}
 
-	// Add Issuer
 	issuerStr, err := state.EncodeAccountID(cred.Issuer)
 	if err == nil && issuerStr != "" {
 		jsonObj["Issuer"] = issuerStr
 	}
 
-	// Add CredentialType (hex-encoded)
 	if len(cred.CredentialType) > 0 {
 		jsonObj["CredentialType"] = hex.EncodeToString(cred.CredentialType)
 	}
 
-	// Add Expiration (optional)
 	if cred.Expiration != nil {
 		jsonObj["Expiration"] = *cred.Expiration
 	}
 
-	// Add URI (optional, hex-encoded)
 	if len(cred.URI) > 0 {
 		jsonObj["URI"] = hex.EncodeToString(cred.URI)
 	}
 
-	// Add Flags
 	if cred.Flags != 0 {
 		jsonObj["Flags"] = cred.Flags
 	}
 
-	// Add IssuerNode
 	jsonObj["IssuerNode"] = tx.FormatUint64Hex(cred.IssuerNode)
 
-	// Add SubjectNode (if subject != issuer)
 	if cred.Subject != cred.Issuer {
 		jsonObj["SubjectNode"] = tx.FormatUint64Hex(cred.SubjectNode)
 	}
 
-	// Add PreviousTxnID
 	var zeroHash [32]byte
 	if cred.PreviousTxnID != zeroHash {
 		jsonObj["PreviousTxnID"] = hex.EncodeToString(cred.PreviousTxnID[:])
 	}
 
-	// Add PreviousTxnLgrSeq
 	if cred.PreviousTxnLgrSeq > 0 {
 		jsonObj["PreviousTxnLgrSeq"] = cred.PreviousTxnLgrSeq
 	}
@@ -221,7 +211,6 @@ func CheckCredentialExpired(cred *CredentialEntry, closeTime uint32) bool {
 // issuer's and subject's owner directories and adjusting owner counts.
 // Reference: rippled CredentialHelpers.cpp credentials::deleteSLE()
 func DeleteSLE(view tx.LedgerView, credKey keylet.Keylet, cred *CredentialEntry) error {
-	// Remove from issuer's owner directory
 	issuerDirKey := keylet.OwnerDir(cred.Issuer)
 	_, err := state.DirRemove(view, issuerDirKey, cred.IssuerNode, credKey.Key, false)
 	if err != nil {

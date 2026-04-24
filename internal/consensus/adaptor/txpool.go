@@ -52,10 +52,7 @@ func (p *TxPool) Add(blob []byte) bool {
 		return false
 	}
 
-	// Add to pending
 	p.pending[txID] = blob
-
-	// Add to recently seen
 	p.addRecentLocked(txID)
 
 	return true

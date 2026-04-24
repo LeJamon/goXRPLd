@@ -60,12 +60,10 @@ func NewMPTokenClawback(account, holder, issuanceID string, amount state.Amount)
 	}
 }
 
-// TxType returns the transaction type
 func (c *Clawback) TxType() tx.Type {
 	return tx.TypeClawback
 }
 
-// Validate validates the Clawback transaction
 // Reference: rippled Clawback.cpp preflight()
 func (c *Clawback) Validate() error {
 	if err := c.BaseTx.Validate(); err != nil {
@@ -127,7 +125,6 @@ func (c *Clawback) Validate() error {
 	return nil
 }
 
-// Apply applies the Clawback transaction to ledger state.
 // Reference: rippled Clawback.cpp preclaim() + applyHelper<Issue>() / applyHelper<MPTIssue>()
 func (c *Clawback) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("clawback apply",
@@ -217,17 +214,14 @@ func (c *Clawback) applyMPT(ctx *tx.ApplyContext) tx.Result {
 		actual = requested
 	}
 
-	// Decrement holder's balance
 	token.MPTAmount -= actual
 
-	// Decrement issuance outstanding amount
 	if issuance.OutstandingAmount >= actual {
 		issuance.OutstandingAmount -= actual
 	} else {
 		issuance.OutstandingAmount = 0
 	}
 
-	// Serialize and update MPToken
 	updatedToken, err := state.SerializeMPToken(token)
 	if err != nil {
 		return tx.TefINTERNAL
@@ -236,7 +230,6 @@ func (c *Clawback) applyMPT(ctx *tx.ApplyContext) tx.Result {
 		return tx.TefINTERNAL
 	}
 
-	// Serialize and update issuance
 	updatedIssuance, err := state.SerializeMPTokenIssuance(issuance)
 	if err != nil {
 		return tx.TefINTERNAL
@@ -412,7 +405,6 @@ func (c *Clawback) applyIOU(ctx *tx.ApplyContext) tx.Result {
 		highDirKey := keylet.OwnerDir(highAccountID)
 		state.DirRemove(ctx.View, highDirKey, rs.HighNode, trustKey.Key, false)
 
-		// Delete the trust line
 		if err := ctx.View.Erase(trustKey); err != nil {
 			return tx.TefINTERNAL
 		}
@@ -425,7 +417,6 @@ func (c *Clawback) applyIOU(ctx *tx.ApplyContext) tx.Result {
 			holderAccount.OwnerCount--
 		}
 
-		// Write holder account back to ledger
 		if result := ctx.UpdateAccountRoot(holderID, holderAccount); result != tx.TesSUCCESS {
 			return result
 		}
@@ -442,7 +433,6 @@ func (c *Clawback) applyIOU(ctx *tx.ApplyContext) tx.Result {
 			rs.Flags &^= state.LsfHighReserve
 		}
 
-		// Serialize and update trust line
 		updatedData, serErr := state.SerializeRippleState(rs)
 		if serErr != nil {
 			return tx.TefINTERNAL
@@ -461,12 +451,10 @@ func (c *Clawback) ClawbackAmount() tx.Amount {
 	return c.Amount
 }
 
-// Flatten returns a flat map of all transaction fields
 func (c *Clawback) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(c)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type.
 // Only require FeatureMPTokensV1 when the Amount actually holds an MPT issue,
 // matching rippled's dispatch which checks the Amount type, not the Holder field.
 // Reference: rippled Clawback.cpp:90-94 dispatches preflightHelper<MPTIssue>

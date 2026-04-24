@@ -559,7 +559,6 @@ func (r *Router) handleTransaction(msg *peermanagement.InboundMessage) {
 		return
 	}
 
-	// Add to the adaptor's pending transaction pool
 	r.adaptor.AddPendingTx(blob)
 }
 

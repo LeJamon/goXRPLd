@@ -245,8 +245,6 @@ func TestIdentityRoundTrip(t *testing.T) {
 	assert.True(t, parsedSig.Verify(hash, restored.BtcecPublicKey()))
 }
 
-// ============== PublicKeyToken Tests (from token/) ==============
-
 // Test vectors from rippled PublicKey_test.cpp testBase58
 var base58TestVectors = []struct {
 	name      string

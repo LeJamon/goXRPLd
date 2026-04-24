@@ -46,12 +46,10 @@ func NewVaultCreate(account string, asset tx.Asset) *VaultCreate {
 	}
 }
 
-// TxType returns the transaction type
 func (v *VaultCreate) TxType() tx.Type {
 	return tx.TypeVaultCreate
 }
 
-// Validate validates the VaultCreate transaction
 // Reference: rippled VaultCreate.cpp preflight()
 func (v *VaultCreate) Validate() error {
 	if err := v.BaseTx.Validate(); err != nil {
@@ -126,17 +124,14 @@ func (v *VaultCreate) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (v *VaultCreate) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(v)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (v *VaultCreate) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureSingleAssetVault}
 }
 
-// Apply applies the VaultCreate transaction to the ledger.
 func (v *VaultCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	if v.Asset.Currency == "" {
 		return tx.TemINVALID

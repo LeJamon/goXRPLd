@@ -29,19 +29,16 @@ func NewOracleDelete(account string, oracleDocID uint32) *OracleDelete {
 	}
 }
 
-// TxType returns the transaction type
 func (o *OracleDelete) TxType() tx.Type {
 	return tx.TypeOracleDelete
 }
 
-// Validate validates the OracleDelete transaction (preflight validation)
-// This matches rippled's DeleteOracle::preflight()
+// Validate matches rippled's DeleteOracle::preflight()
 func (o *OracleDelete) Validate() error {
 	if err := o.BaseTx.Validate(); err != nil {
 		return err
 	}
 
-	// Check flags - only universal flags allowed
 	if err := tx.CheckFlags(o.GetFlags(), tx.TfUniversalMask); err != nil {
 		return err
 	}
@@ -49,12 +46,10 @@ func (o *OracleDelete) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (o *OracleDelete) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(o)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (o *OracleDelete) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeaturePriceOracle}
 }

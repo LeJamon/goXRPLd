@@ -11,9 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// =============================================================================
 // WalletPropose Tests
-// =============================================================================
 
 func TestWalletPropose_RandomGeneration(t *testing.T) {
 	handler := &handlers.WalletProposeMethod{}
@@ -251,9 +249,7 @@ func TestWalletPropose_Metadata(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Sign Tests
-// =============================================================================
 
 func TestSign_MissingTxJson(t *testing.T) {
 	mock := newMockLedgerService()
@@ -465,9 +461,7 @@ func TestSign_Metadata(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Sign: fee_mult_max / fee_div_max Tests
-// =============================================================================
 
 func TestSign_FeeMultMax_DefaultAccepted(t *testing.T) {
 	// With default fee_mult_max=10 and fee_div_max=1, a baseFee of 10
@@ -736,9 +730,7 @@ func TestSign_FeeAlreadySet_IgnoresFeeMultMax(t *testing.T) {
 	require.NotNil(t, result)
 }
 
-// =============================================================================
 // Sign: DeliverMax injection Tests
-// =============================================================================
 
 func TestSign_DeliverMax_APIv1(t *testing.T) {
 	// API v1: DeliverMax should be added for Payment, Amount kept
@@ -836,9 +828,7 @@ func TestSign_NoDeliverMax_NonPayment(t *testing.T) {
 	assert.False(t, hasDeliverMax, "Non-Payment should not have DeliverMax")
 }
 
-// =============================================================================
 // SignFor Tests
-// =============================================================================
 
 func TestSignFor_MissingAccount(t *testing.T) {
 	handler := &handlers.SignForMethod{}
@@ -1010,9 +1000,7 @@ func TestSignFor_Metadata(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // SubmitMultisigned Tests
-// =============================================================================
 
 func TestSubmitMultisigned_MissingTxJson(t *testing.T) {
 	mock := newMockLedgerServiceSubmit()

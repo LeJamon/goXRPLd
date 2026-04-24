@@ -63,7 +63,6 @@ type rotatingBackend struct {
 type RotatingDatabase struct {
 	mu sync.RWMutex
 
-	// Configuration
 	config  *RotationConfig
 	factory BackendFactory
 
@@ -77,7 +76,6 @@ type RotatingDatabase struct {
 	open     int64
 	sequence int64
 
-	// Statistics
 	stats struct {
 		rotations        int64
 		primaryReads     int64
@@ -118,7 +116,6 @@ func (rd *RotatingDatabase) Open(createIfMissing bool) error {
 		return fmt.Errorf("rotating database already open")
 	}
 
-	// Create and open the primary backend
 	primary, err := rd.factory(rd.config.PrimaryConfig)
 	if err != nil {
 		atomic.StoreInt64(&rd.open, 0)
@@ -342,7 +339,6 @@ func (rd *RotatingDatabase) Rotate() error {
 		rd.rotating = append(rd.rotating, rb)
 	}
 
-	// Create a new primary backend with unique path
 	newConfig := rd.config.PrimaryConfig.Clone()
 	newConfig.Path = fmt.Sprintf("%s_%d", rd.config.RotatingPath, time.Now().UnixNano())
 
@@ -443,14 +439,12 @@ func (rd *RotatingDatabase) ForEach(fn func(*Node) error) error {
 	rd.mu.RLock()
 	defer rd.mu.RUnlock()
 
-	// Iterate over primary backend
 	if rd.primary != nil {
 		if err := rd.primary.ForEach(fn); err != nil {
 			return err
 		}
 	}
 
-	// Iterate over rotating backends
 	for _, rb := range rd.rotating {
 		if rb.backend != nil {
 			if err := rb.backend.ForEach(fn); err != nil {

@@ -34,7 +34,6 @@ func (m *AccountNftsMethod) Handle(ctx *types.RpcContext, params json.RawMessage
 		ledgerIndex = request.LedgerIndex.String()
 	}
 
-	// Get account NFTs from the ledger service
 	limit := ClampLimit(request.Limit, LimitAccountNFTokens, ctx.IsAdmin)
 	result, err := types.Services.Ledger.GetAccountNFTs(
 		request.Account,
@@ -48,7 +47,6 @@ func (m *AccountNftsMethod) Handle(ctx *types.RpcContext, params json.RawMessage
 				Message: "Account not found.",
 			}
 		}
-		// Check for malformed account address
 		if len(err.Error()) > 24 && err.Error()[:24] == "invalid account address:" {
 			return nil, &types.RpcError{
 				Code:    types.RpcACT_NOT_FOUND,

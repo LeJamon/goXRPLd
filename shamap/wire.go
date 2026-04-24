@@ -118,7 +118,6 @@ func (sm *SHAMap) findNodeByHash(targetHash [32]byte) Node {
 		return nil
 	}
 
-	// Check root first
 	if sm.root.Hash() == targetHash {
 		return sm.root
 	}
@@ -293,7 +292,6 @@ func (sm *SHAMap) BulkGetNodes(hashes [][32]byte) (map[[32]byte]NodeData, error)
 
 		nodeHash := item.node.Hash()
 
-		// Check if this node was requested
 		if _, wanted := requested[nodeHash]; wanted {
 			data, err := item.node.SerializeForWire()
 			if err == nil {
@@ -354,7 +352,6 @@ func (sm *SHAMap) CreateWireMessage(nodeHashes [][32]byte, maxNodes int) (*WireM
 	}
 
 	if nodeHashes != nil {
-		// Get specific nodes
 		nodes, err := sm.BulkGetNodes(nodeHashes)
 		if err != nil {
 			return nil, err
@@ -367,7 +364,6 @@ func (sm *SHAMap) CreateWireMessage(nodeHashes [][32]byte, maxNodes int) (*WireM
 			}
 		}
 	} else {
-		// Get all nodes via traversal
 		if sm.root == nil {
 			return msg, nil
 		}

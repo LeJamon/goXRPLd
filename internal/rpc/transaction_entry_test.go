@@ -14,9 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// =============================================================================
 // Mock helpers for transaction_entry tests
-// =============================================================================
 
 // mockLedgerReaderTE implements types.LedgerReader for transaction_entry tests.
 type mockLedgerReaderTE struct {
@@ -129,9 +127,7 @@ func setupTestServicesTE(mock *mockLedgerServiceTE) func() {
 	}
 }
 
-// =============================================================================
 // Tests
-// =============================================================================
 
 // TestTransactionEntryMissingTxHash tests that missing tx_hash returns an error.
 // Based on rippled TransactionEntry_test.cpp testBadInput (no params case).

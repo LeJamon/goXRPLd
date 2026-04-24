@@ -274,7 +274,6 @@ func TestAccountInfoErrorValidation(t *testing.T) {
 			mock.accountInfo = nil
 			mock.accountInfoErr = nil
 
-			// Setup mock if needed
 			if tc.setupMock != nil {
 				tc.setupMock()
 			}
@@ -287,7 +286,6 @@ func TestAccountInfoErrorValidation(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			// Call the method
 			result, rpcErr := method.Handle(ctx, paramsJSON)
 
 			// Verify error response
@@ -476,7 +474,6 @@ func TestAccountInfoLedgerSpecification(t *testing.T) {
 			paramsJSON, err := json.Marshal(tc.params)
 			require.NoError(t, err)
 
-			// Call the method
 			result, rpcErr := method.Handle(ctx, paramsJSON)
 
 			if tc.expectError {

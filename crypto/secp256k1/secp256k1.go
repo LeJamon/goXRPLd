@@ -284,7 +284,6 @@ func (c SECP256K1CryptoAlgorithm) ValidateDigest(digest [32]byte, pubkeyBytes []
 
 // DerivePublicKeyFromPublicGenerator derives a public key from a public generator.
 func (c SECP256K1CryptoAlgorithm) DerivePublicKeyFromPublicGenerator(pubKey []byte) ([]byte, error) {
-	// Get the curve
 	curve := btcec.S256()
 
 	// Parse the input public key as a point
@@ -318,7 +317,6 @@ func (c SECP256K1CryptoAlgorithm) DerivePublicKeyFromPublicGenerator(pubKey []by
 	// Create the final public key
 	finalPubKey := secp256k1.NewPublicKey(&resultXField, &resultYField)
 
-	// Return compressed format
 	return finalPubKey.SerializeCompressed(), nil
 }
 

@@ -91,7 +91,6 @@ func NewBatch(account string) *Batch {
 	}
 }
 
-// TxType returns the transaction type
 func (b *Batch) TxType() tx.Type {
 	return tx.TypeBatch
 }
@@ -103,7 +102,6 @@ func (b *Batch) InnerTxCount() int {
 	return len(b.RawTransactions)
 }
 
-// Validate validates the Batch transaction
 // Reference: rippled Batch.cpp preflight()
 func (b *Batch) Validate() error {
 	if err := b.BaseTx.Validate(); err != nil {
@@ -174,7 +172,6 @@ func (b *Batch) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields.
 // Inner transactions are flattened to STObject maps via their own Flatten() methods.
 // Reference: rippled stores inner transactions as full STObjects in RawTransactions.
 func (b *Batch) Flatten() (map[string]any, error) {
@@ -253,7 +250,6 @@ func (b *Batch) AddInnerTransaction(innerTx tx.Transaction) {
 	})
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (b *Batch) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureBatch}
 }
@@ -282,7 +278,6 @@ func (b *Batch) GetBatchSigners() []tx.BatchSignerInfo {
 	return result
 }
 
-// Apply applies the Batch transaction to the ledger.
 // It decodes and processes each inner transaction according to the batch mode flag.
 // Reference: rippled apply.cpp applyBatchTransactions()
 func (b *Batch) Apply(ctx *tx.ApplyContext) tx.Result {

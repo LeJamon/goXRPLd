@@ -14,7 +14,6 @@ type MemoryBackend struct {
 	open       int64 // atomic flag for open state
 	deletePath int64 // atomic flag for delete on close
 
-	// Statistics
 	stats struct {
 		reads        int64
 		writes       int64
@@ -83,7 +82,6 @@ func (m *MemoryBackend) Fetch(key Hash256) (*Node, Status) {
 		return nil, NotFound
 	}
 
-	// Update stats
 	atomic.AddInt64(&m.stats.reads, 1)
 	atomic.AddInt64(&m.stats.bytesRead, int64(len(node.Data)))
 
@@ -157,7 +155,6 @@ func (m *MemoryBackend) Store(node *Node) Status {
 	m.data[node.Hash] = nodeCopy
 	m.mu.Unlock()
 
-	// Update stats
 	atomic.AddInt64(&m.stats.writes, 1)
 	atomic.AddInt64(&m.stats.bytesWritten, int64(len(node.Data)))
 

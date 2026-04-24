@@ -92,27 +92,22 @@ func parseUInt64Field(raw json.RawMessage) (uint64, error) {
 	return 0, fmt.Errorf("cannot parse UInt64 field: %s", string(raw))
 }
 
-// NewMPTokenIssuanceCreate creates a new MPTokenIssuanceCreate transaction
 func NewMPTokenIssuanceCreate(account string) *MPTokenIssuanceCreate {
 	return &MPTokenIssuanceCreate{
 		BaseTx: *tx.NewBaseTx(tx.TypeMPTokenIssuanceCreate, account),
 	}
 }
 
-// TxType returns the transaction type
 func (m *MPTokenIssuanceCreate) TxType() tx.Type {
 	return tx.TypeMPTokenIssuanceCreate
 }
 
-// Validate validates the MPTokenIssuanceCreate transaction
 // Reference: rippled MPTokenIssuanceCreate.cpp preflight
 func (m *MPTokenIssuanceCreate) Validate() error {
 	if err := m.BaseTx.Validate(); err != nil {
 		return err
 	}
 
-	// Check for invalid flags
-	// Any flags other than the valid ones are not allowed
 	flags := m.GetFlags()
 	if flags&^tfMPTokenIssuanceCreateValidMask != 0 {
 		return tx.Errorf(tx.TemINVALID_FLAG, "invalid flags for MPTokenIssuanceCreate")
@@ -165,12 +160,10 @@ func (m *MPTokenIssuanceCreate) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (m *MPTokenIssuanceCreate) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(m)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (m *MPTokenIssuanceCreate) RequiredAmendments() [][32]byte {
 	amendments := [][32]byte{amendment.FeatureMPTokensV1}
 	// DomainID requires both PermissionedDomains and SingleAssetVault
@@ -181,7 +174,6 @@ func (m *MPTokenIssuanceCreate) RequiredAmendments() [][32]byte {
 	return amendments
 }
 
-// Apply applies the MPTokenIssuanceCreate transaction to ledger state.
 // Reference: rippled MPTokenIssuanceCreate.cpp doApply() / create()
 func (m *MPTokenIssuanceCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("mptoken issuance create apply",

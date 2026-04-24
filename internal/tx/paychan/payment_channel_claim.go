@@ -51,12 +51,10 @@ func NewPaymentChannelClaim(account, channel string) *PaymentChannelClaim {
 	}
 }
 
-// TxType returns the transaction type
 func (p *PaymentChannelClaim) TxType() tx.Type {
 	return tx.TypePaymentChannelClaim
 }
 
-// Validate validates the PaymentChannelClaim transaction
 // Reference: rippled PayChan.cpp PayChanClaim::preflight()
 func (p *PaymentChannelClaim) Validate() error {
 	if err := p.BaseTx.Validate(); err != nil {
@@ -165,12 +163,10 @@ func (p *PaymentChannelClaim) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (p *PaymentChannelClaim) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(p)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (p *PaymentChannelClaim) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeaturePayChan}
 }
@@ -197,7 +193,6 @@ func (p *PaymentChannelClaim) IsRenew() bool {
 	return p.GetFlags()&tfPayChanRenew != 0
 }
 
-// Apply applies a PaymentChannelClaim transaction
 // Reference: rippled PayChan.cpp PayChanClaim::preclaim() + doApply()
 func (p *PaymentChannelClaim) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("payment channel claim apply",
@@ -402,7 +397,6 @@ func (p *PaymentChannelClaim) Apply(ctx *tx.ApplyContext) tx.Result {
 		}
 	}
 
-	// Update channel SLE
 	updatedChannelData, err := state.SerializePayChannelFromData(channel)
 	if err != nil {
 		return tx.TefINTERNAL
@@ -486,7 +480,6 @@ func validateCredentials(ctx *tx.ApplyContext, credentialIDs []string) tx.Result
 			return tx.TecBAD_CREDENTIALS
 		}
 
-		// Check expiration
 		if credEntry.Expiration != nil && ctx.Config.ParentCloseTime >= *credEntry.Expiration {
 			return tx.TecEXPIRED
 		}
@@ -508,7 +501,6 @@ func verifyDepositPreauth(ctx *tx.ApplyContext, credentialIDs []string, src [20]
 		return tx.TesSUCCESS
 	}
 
-	// Check account-based DepositPreauth
 	preauthKey := keylet.DepositPreauth(dst, src)
 	if exists, _ := ctx.View.Exists(preauthKey); exists {
 		return tx.TesSUCCESS

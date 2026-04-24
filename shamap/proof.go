@@ -33,7 +33,6 @@ func (sm *SHAMap) GetProofPath(key [32]byte) (*ProofPath, error) {
 		return &ProofPath{Key: key, Found: false}, nil
 	}
 
-	// Check if it's a leaf node
 	leafNode, ok := leaf.(LeafNode)
 	if !ok {
 		return &ProofPath{Key: key, Found: false}, nil
@@ -128,7 +127,6 @@ func VerifyProofPath(rootHash [32]byte, key [32]byte, path [][]byte) bool {
 			// Calculate which branch to follow
 			branch := SelectBranch(nodeID, key)
 
-			// Get the hash of the child we should follow
 			childHash, err := innerNode.ChildHash(int(branch))
 			if err != nil {
 				return false
@@ -254,7 +252,6 @@ func VerifyProofPathWithValue(rootHash [32]byte, key [32]byte, path [][]byte) []
 				return nil
 			}
 
-			// Return a copy of the data
 			return item.Data()
 		} else {
 			return nil
@@ -414,7 +411,6 @@ func VerifyProofPathDetailed(rootHash [32]byte, key [32]byte, path [][]byte) err
 				}
 			}
 
-			// Success
 			return nil
 		} else {
 			return &ProofPathError{

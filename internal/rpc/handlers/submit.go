@@ -144,7 +144,6 @@ func (m *SubmitMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (in
 		txJsonMap["hash"] = txHashStr
 	}
 
-	// Get current fees for response
 	baseFee, _, _ := types.Services.Ledger.GetCurrentFees()
 
 	// Build response with independent boolean fields matching rippled's

@@ -50,12 +50,10 @@ func NewSignerListSet(account string, quorum uint32) *SignerListSet {
 	}
 }
 
-// TxType returns the transaction type
 func (s *SignerListSet) TxType() tx.Type {
 	return tx.TypeSignerListSet
 }
 
-// Validate validates the SignerListSet transaction
 func (s *SignerListSet) Validate() error {
 	if err := s.BaseTx.Validate(); err != nil {
 		return err
@@ -113,7 +111,6 @@ func (s *SignerListSet) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (s *SignerListSet) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(s)
 }
@@ -143,12 +140,10 @@ func NewSetRegularKey(account string) *SetRegularKey {
 	}
 }
 
-// TxType returns the transaction type
 func (s *SetRegularKey) TxType() tx.Type {
 	return tx.TypeRegularKeySet
 }
 
-// Validate validates the SetRegularKey transaction
 // Reference: rippled SetRegularKey.cpp preflight() — no type-specific flags allowed
 func (s *SetRegularKey) Validate() error {
 	if err := s.BaseTx.Validate(); err != nil {
@@ -161,7 +156,6 @@ func (s *SetRegularKey) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (s *SetRegularKey) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(s)
 }
@@ -176,7 +170,6 @@ func (s *SetRegularKey) ClearKey() {
 	s.RegularKey = ""
 }
 
-// Apply applies the SetRegularKey transaction to ledger state.
 // Reference: rippled SetRegularKey.cpp preflight + doApply()
 func (s *SetRegularKey) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Amendment-gated preflight check: reject setting RegularKey to own account.
@@ -285,7 +278,6 @@ func signerCountBasedOwnerCountDelta(entryCount int) int {
 	return 2 + entryCount
 }
 
-// Apply applies the SignerListSet transaction to ledger state.
 // Reference: rippled SetSignerList.cpp preflight() + doApply(), replaceSignerList(), destroySignerList()
 func (s *SignerListSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Check for invalid flags, gated behind fixInvalidTxFlags.
@@ -372,7 +364,6 @@ func (s *SignerListSet) Apply(ctx *tx.ApplyContext) tx.Result {
 		return sleEntries[i].Account < sleEntries[j].Account
 	})
 
-	// Serialize and insert the new signer list.
 	signerListData, err := state.SerializeSignerList(s.SignerQuorum, sleEntries, ctx.AccountID, flags)
 	if err != nil {
 		ctx.Log.Error("signer list set: failed to serialize signer list", "error", err)

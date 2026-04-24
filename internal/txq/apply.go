@@ -13,14 +13,9 @@ import (
 
 // ApplyResult represents the result of trying to apply or queue a transaction.
 type ApplyResult struct {
-	// Result is the transaction result code
-	Result tx.Result
-
-	// Applied is true if the transaction was applied to the open ledger
+	Result  tx.Result
 	Applied bool
-
-	// Queued is true if the transaction was added to the queue
-	Queued bool
+	Queued  bool
 }
 
 // ApplyContext provides the context needed to apply a transaction.
@@ -85,23 +80,19 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 	feePaid, _ := strconv.ParseUint(common.Fee, 10, 64)
 	feeLevel := ToFeeLevel(feePaid, baseFee)
 
-	// Get account info
 	acctSeq := ctx.GetAccountSequence(account)
 	txInLedger := ctx.GetTxInLedger()
 	ledgerSeq := ctx.GetLedgerSequence()
 
-	// Determine SeqProxy (sequence or ticket)
 	var seqProxy SeqProxy
 	if common.TicketSequence != nil && *common.TicketSequence != 0 {
 		seqProxy = NewSeqProxyTicket(*common.TicketSequence)
 	} else if common.Sequence != nil {
 		seqProxy = NewSeqProxySequence(*common.Sequence)
 	} else {
-		// No sequence specified
 		return ApplyResult{Result: tx.TefINTERNAL, Applied: false}
 	}
 
-	// Get LastLedgerSequence if set
 	var lastValid uint32
 	if common.LastLedgerSequence != nil {
 		lastValid = *common.LastLedgerSequence
@@ -118,12 +109,9 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 	// Reference: rippled TxQ::tryDirectApply(), TxQ.cpp:1696-1699
 	canDirectApply := seqProxy.IsTicket || seqProxy.Value == acctSeq
 
-	// Check if fee is high enough to apply directly
 	if canDirectApply && feeLevel >= requiredFeeLevel {
-		// Try to apply directly
 		result, applied := ctx.ApplyTransaction(txn)
 		if applied {
-			// If we replaced a queued transaction, remove it
 			if aq, exists := q.byAccount[account]; exists {
 				if c, exists := aq.Transactions[seqProxy]; exists {
 					q.erase(c)
@@ -131,7 +119,6 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 			}
 			return ApplyResult{Result: result, Applied: true}
 		}
-		// Transaction failed to apply, may still be able to queue
 		if !canBeQueued(result) {
 			return ApplyResult{Result: result, Applied: false}
 		}
@@ -144,12 +131,10 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 		return ApplyResult{Result: tx.TelCAN_NOT_QUEUE, Applied: false}
 	}
 
-	// Check if account exists
 	if !ctx.AccountExists(account) {
 		return ApplyResult{Result: tx.TerNO_ACCOUNT, Applied: false}
 	}
 
-	// For ticket-based transactions, verify the ticket exists
 	if seqProxy.IsTicket {
 		if !ctx.TicketExists(account, seqProxy.Value) {
 			if seqProxy.Value < acctSeq {
@@ -159,12 +144,10 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 		}
 	}
 
-	// Check if LastLedgerSequence is far enough in the future
 	if lastValid != 0 && lastValid < ledgerSeq+q.config.MinimumLastLedgerBuffer {
 		return ApplyResult{Result: tx.TelCAN_NOT_QUEUE, Applied: false}
 	}
 
-	// Compute consequences early for blocker detection
 	consequences := computeConsequences(txn, seqProxy)
 
 	// Get or create account queue.
@@ -273,7 +256,6 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 		if requiresMultiTxn && !seqProxy.IsTicket {
 			prevTx := aq.GetPrevTx(seqProxy)
 			goesAtFront := prevTx == nil || seqProxy.Less(prevTx.SeqProxy)
-			// Also treat as front if prevTx is stale (< acctSeqProx)
 			if prevTx != nil && prevTx.SeqProxy.Less(acctSeqProx) {
 				goesAtFront = true
 			}
@@ -399,7 +381,6 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 	// multiTxn.has_value() in rippled corresponds to requiresMultiTxn
 	if !seqProxy.IsTicket && exists && acctTxCount > 0 && requiresMultiTxn &&
 		feeLevel > requiredFeeLevel && requiredFeeLevel > FeeLevel(BaseLevel) {
-		// Check if first queued sequence tx has full retries remaining
 		firstSeqTx := aq.GetFirstSeqTx()
 		if firstSeqTx != nil && firstSeqTx.RetriesRemaining == RetriesAllowed {
 			if result := q.tryClearAccountQueue(ctx, aq, txn, seqProxy, feeLevel, txInLedger, account); result != nil {
@@ -419,7 +400,6 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 	// Check if queue is full (when not replacing).
 	// Reference: rippled TxQ.cpp:1243-1315
 	if replacingCandidate == nil && q.isFull() {
-		// Find the lowest-fee candidate from a different account
 		var lowestOther *Candidate
 		for i := len(q.byFee) - 1; i >= 0; i-- {
 			c := q.byFee[i]
@@ -441,7 +421,6 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 		// Reference: rippled TxQ.cpp:1265-1292
 		endEffectiveFeeLevel := lowestOther.FeeLevel
 		if lowestOther.FeeLevel <= feeLevel && endAccount.Count() > 1 {
-			// Compute average fee level for the target account
 			var sumDiv, sumMod FeeLevel
 			count := FeeLevel(endAccount.Count())
 			overflow := false
@@ -478,12 +457,10 @@ func (q *TxQ) Apply(ctx ApplyContext, txn tx.Transaction, txID [32]byte, account
 		}
 	}
 
-	// Remove the candidate being replaced
 	if replacingCandidate != nil {
 		q.erase(replacingCandidate)
 	}
 
-	// Create and add the new candidate
 	if !exists {
 		aq = NewAccountQueue(account)
 		q.byAccount[account] = aq

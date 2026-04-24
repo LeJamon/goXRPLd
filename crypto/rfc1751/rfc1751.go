@@ -58,7 +58,7 @@ func standard(word string) string {
 	for i := 0; i < len(word); i++ {
 		c := word[i]
 		if c >= 'a' && c <= 'z' {
-			result[i] = c - 32 // toupper
+			result[i] = c - 32
 		} else if c == '1' {
 			result[i] = 'L'
 		} else if c == '0' {

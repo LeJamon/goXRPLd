@@ -274,7 +274,6 @@ func TestAccountCurrenciesBadInput(t *testing.T) {
 			mock.accountCurrenciesResult = nil
 			mock.accountCurrenciesErr = nil
 
-			// Setup mock if needed
 			if tc.setupMock != nil {
 				tc.setupMock()
 			}
@@ -287,7 +286,6 @@ func TestAccountCurrenciesBadInput(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			// Call the method
 			result, rpcErr := method.Handle(ctx, paramsJSON)
 
 			// Verify error response

@@ -160,9 +160,7 @@ func setupNFTOffersTestServices(mock *mockNFTOffersLedgerService) func() {
 	}
 }
 
-// =============================================================================
 // nft_buy_offers Tests
-// =============================================================================
 
 // TestNftBuyOffersErrorValidation tests error handling for invalid inputs
 // Reference: rippled NFTOffers_test.cpp testErrors()
@@ -446,9 +444,7 @@ func TestNftBuyOffersWithPagination(t *testing.T) {
 	assert.Equal(t, "BBB588DC1AB4E7C57F8067A3AB15BEA8B0F1A0DE14678200000099000001F400", respMap["marker"])
 }
 
-// =============================================================================
 // nft_sell_offers Tests
-// =============================================================================
 
 // TestNftSellOffersErrorValidation tests error handling for invalid inputs
 func TestNftSellOffersErrorValidation(t *testing.T) {
@@ -630,9 +626,7 @@ func TestNftSellOffersEmptyResult(t *testing.T) {
 	assert.Len(t, offers, 0)
 }
 
-// =============================================================================
 // Service Unavailable Tests
-// =============================================================================
 
 // TestNftBuyOffersServiceUnavailable tests response when ledger service is unavailable
 func TestNftBuyOffersServiceUnavailable(t *testing.T) {
@@ -688,9 +682,7 @@ func TestNftSellOffersServiceUnavailable(t *testing.T) {
 	assert.Nil(t, resp)
 }
 
-// =============================================================================
 // Method Metadata Tests
-// =============================================================================
 
 // TestNftBuyOffersMethodMetadata tests method metadata (role, API versions)
 func TestNftBuyOffersMethodMetadata(t *testing.T) {

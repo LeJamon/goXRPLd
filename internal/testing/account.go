@@ -115,7 +115,6 @@ func NewAccountWithKeyType(name string, keyType string) *Account {
 		panic("failed to generate address: " + err.Error())
 	}
 
-	// Get the account ID (20 bytes)
 	_, accountIDBytes, err := addresscodec.DecodeClassicAddressToAccountID(address)
 	if err != nil {
 		panic("failed to decode account ID: " + err.Error())
@@ -198,7 +197,6 @@ func NewAccountFromPassphraseWithKeyType(name, passphrase, keyType string) *Acco
 		panic("failed to generate address: " + err.Error())
 	}
 
-	// Get the account ID (20 bytes)
 	_, accountIDBytes, err := addresscodec.DecodeClassicAddressToAccountID(address)
 	if err != nil {
 		panic("failed to decode account ID: " + err.Error())
@@ -310,7 +308,6 @@ func NewAccountFromSeed(name, base58Seed string) *Account {
 		panic("failed to generate address: " + err.Error())
 	}
 
-	// Get the account ID (20 bytes)
 	_, accountIDBytes, err := addresscodec.DecodeClassicAddressToAccountID(address)
 	if err != nil {
 		panic("failed to decode account ID: " + err.Error())

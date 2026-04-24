@@ -27,10 +27,8 @@ func makeTestPayment() tx.Transaction {
 	return p
 }
 
-// =============================================================================
 // Batch Validation Tests
 // Based on rippled Batch.cpp
-// =============================================================================
 
 func TestBatchValidation(t *testing.T) {
 	// Helper to create a valid batch with minimum requirements
@@ -275,9 +273,7 @@ func TestBatchValidation(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Flatten Tests
-// =============================================================================
 
 func TestBatchFlatten(t *testing.T) {
 	t.Run("basic batch", func(t *testing.T) {
@@ -320,9 +316,7 @@ func TestBatchFlatten(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Constructor Tests
-// =============================================================================
 
 func TestBatchConstructors(t *testing.T) {
 	t.Run("NewBatch", func(t *testing.T) {
@@ -335,9 +329,7 @@ func TestBatchConstructors(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // AddInnerTransaction Test
-// =============================================================================
 
 func TestBatchAddInnerTransaction(t *testing.T) {
 	b := NewBatch("rOuter")
@@ -352,9 +344,7 @@ func TestBatchAddInnerTransaction(t *testing.T) {
 	assert.Equal(t, tx2, b.RawTransactions[1].RawTransaction.InnerTx)
 }
 
-// =============================================================================
 // Amendment Tests
-// =============================================================================
 
 func TestBatchRequiredAmendments(t *testing.T) {
 	b := NewBatch("rOuter")
@@ -362,9 +352,7 @@ func TestBatchRequiredAmendments(t *testing.T) {
 	assert.Contains(t, amendments, amendment.FeatureBatch)
 }
 
-// =============================================================================
 // Constants Tests
-// =============================================================================
 
 func TestBatchConstants(t *testing.T) {
 	assert.Equal(t, 8, MaxBatchTransactions)

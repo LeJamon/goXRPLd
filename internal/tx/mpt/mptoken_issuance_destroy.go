@@ -29,7 +29,6 @@ const (
 	tfMPTokenIssuanceDestroyValidMask uint32 = tx.TfUniversal
 )
 
-// NewMPTokenIssuanceDestroy creates a new MPTokenIssuanceDestroy transaction
 func NewMPTokenIssuanceDestroy(account, issuanceID string) *MPTokenIssuanceDestroy {
 	return &MPTokenIssuanceDestroy{
 		BaseTx:            *tx.NewBaseTx(tx.TypeMPTokenIssuanceDestroy, account),
@@ -37,19 +36,16 @@ func NewMPTokenIssuanceDestroy(account, issuanceID string) *MPTokenIssuanceDestr
 	}
 }
 
-// TxType returns the transaction type
 func (m *MPTokenIssuanceDestroy) TxType() tx.Type {
 	return tx.TypeMPTokenIssuanceDestroy
 }
 
-// Validate validates the MPTokenIssuanceDestroy transaction
 // Reference: rippled MPTokenIssuanceDestroy.cpp preflight
 func (m *MPTokenIssuanceDestroy) Validate() error {
 	if err := m.BaseTx.Validate(); err != nil {
 		return err
 	}
 
-	// Check for invalid flags
 	flags := m.GetFlags()
 	if flags&^tfMPTokenIssuanceDestroyValidMask != 0 {
 		return tx.Errorf(tx.TemINVALID_FLAG, "invalid flags for MPTokenIssuanceDestroy")
@@ -72,17 +68,14 @@ func (m *MPTokenIssuanceDestroy) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (m *MPTokenIssuanceDestroy) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(m)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (m *MPTokenIssuanceDestroy) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureMPTokensV1}
 }
 
-// Apply applies the MPTokenIssuanceDestroy transaction to ledger state.
 // Reference: rippled MPTokenIssuanceDestroy.cpp preclaim() + doApply()
 func (m *MPTokenIssuanceDestroy) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("mptoken issuance destroy apply",
@@ -145,7 +138,6 @@ func (m *MPTokenIssuanceDestroy) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TefINTERNAL
 	}
 
-	// Decrement owner count
 	if ctx.Account.OwnerCount > 0 {
 		ctx.Account.OwnerCount--
 	}

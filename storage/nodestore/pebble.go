@@ -60,7 +60,6 @@ func (p *PebbleBackend) Open(createIfMissing bool) error {
 		return fmt.Errorf("backend already open")
 	}
 
-	// Create directory if needed
 	if createIfMissing {
 		if err := os.MkdirAll(p.config.Path, 0755); err != nil {
 			atomic.StoreInt64(&p.open, 0)
@@ -71,7 +70,6 @@ func (p *PebbleBackend) Open(createIfMissing bool) error {
 	// Configure optimized PebbleDB options for XRPL workload
 	opts := p.buildOptimizedOptions()
 
-	// Open the database
 	db, err := pebble.Open(p.config.Path, opts)
 	if err != nil {
 		atomic.StoreInt64(&p.open, 0)
@@ -201,7 +199,6 @@ func (p *PebbleBackend) Fetch(key Hash256) (*Node, Status) {
 	// Use Hash256 directly as key - no allocation needed
 	keySlice := (*[32]byte)(unsafe.Pointer(&key[0]))[:]
 
-	// Read from PebbleDB
 	value, closer, err := p.db.Get(keySlice)
 	if err != nil {
 		if err == pebble.ErrNotFound {
@@ -211,13 +208,11 @@ func (p *PebbleBackend) Fetch(key Hash256) (*Node, Status) {
 	}
 	defer closer.Close()
 
-	// Decode the stored data
 	node, err := p.decodeNode(key, value)
 	if err != nil {
 		return nil, DataCorrupt
 	}
 
-	// Update stats
 	atomic.AddInt64(&p.stats.reads, 1)
 	atomic.AddInt64(&p.stats.bytesRead, int64(len(value)))
 
@@ -254,7 +249,6 @@ func (p *PebbleBackend) Store(node *Node) Status {
 		return BackendError
 	}
 
-	// Encode the node
 	value := encodeNode(node)
 
 	keySlice := (*[32]byte)(unsafe.Pointer(&node.Hash[0]))[:]
@@ -264,7 +258,6 @@ func (p *PebbleBackend) Store(node *Node) Status {
 		return BackendError
 	}
 
-	// Update stats
 	atomic.AddInt64(&p.stats.writes, 1)
 	atomic.AddInt64(&p.stats.bytesWritten, int64(len(value)))
 
@@ -312,7 +305,6 @@ func (p *PebbleBackend) StoreBatch(nodes []*Node) Status {
 		return BackendError
 	}
 
-	// Update stats
 	atomic.AddInt64(&p.stats.writes, int64(len(nodes)))
 	atomic.AddInt64(&p.stats.bytesWritten, totalBytes)
 
@@ -355,13 +347,11 @@ func (p *PebbleBackend) ForEach(fn func(*Node) error) error {
 		var hash Hash256
 		copy(hash[:], key)
 
-		// Decode the node
 		node, err := p.decodeNode(hash, value)
 		if err != nil {
 			continue // Skip corrupted entries
 		}
 
-		// Call the callback function
 		if err := fn(node); err != nil {
 			return err
 		}

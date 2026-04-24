@@ -216,8 +216,6 @@ func TestDiscoveryBootstrapPeers(t *testing.T) {
 	d.Stop()
 }
 
-// ============== Slot Tests ==============
-
 func TestNewInboundSlot(t *testing.T) {
 	localAddr := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 51235}
 	remoteAddr := &net.TCPAddr{IP: net.ParseIP("192.168.1.1"), Port: 51235}
@@ -307,8 +305,6 @@ func TestSlotStateString(t *testing.T) {
 	}
 }
 
-// ============== Recent Endpoints Tests ==============
-
 func TestRecentEndpoints(t *testing.T) {
 	recent := NewRecentEndpoints()
 
@@ -357,8 +353,6 @@ func TestRecentEndpointsExpire(t *testing.T) {
 		t.Error("Expired endpoint should be removed")
 	}
 }
-
-// ============== Boot Cache Tests ==============
 
 func TestBootCache(t *testing.T) {
 	// Use temp directory for test
@@ -429,7 +423,6 @@ func TestBootCacheGetEndpointsSorted(t *testing.T) {
 	}
 }
 
-// ============== PeerFinder Backoff Tests ==============
 // Reference: rippled src/test/peerfinder/PeerFinder_test.cpp
 
 // TestBackoffValenceDecrease tests that repeated failures decrease valence

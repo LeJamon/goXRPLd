@@ -58,7 +58,6 @@ func indexHash(space uint16, data ...[]byte) [32]byte {
 	spaceBytes := make([]byte, 2)
 	binary.BigEndian.PutUint16(spaceBytes, space)
 
-	// Collect all inputs for hashing
 	inputs := make([][]byte, 0, len(data)+1)
 	inputs = append(inputs, spaceBytes)
 	inputs = append(inputs, data...)
@@ -348,7 +347,7 @@ func BookDirWithDomain(takerPaysCurrency, takerPaysIssuer, takerGetsCurrency, ta
 func Quality(k Keylet, quality uint64) Keylet {
 	result := Keylet{
 		Type: k.Type,
-		Key:  k.Key, // Copy the key
+		Key:  k.Key,
 	}
 	// Encode quality in the last 8 bytes (big-endian)
 	binary.BigEndian.PutUint64(result.Key[24:], quality)

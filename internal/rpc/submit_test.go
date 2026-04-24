@@ -146,7 +146,6 @@ func TestSubmitMethodErrorValidation(t *testing.T) {
 				Applied:             true,
 			}
 
-			// Setup mock if needed
 			if tc.setupMock != nil {
 				tc.setupMock()
 			}
@@ -159,7 +158,6 @@ func TestSubmitMethodErrorValidation(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			// Call the method
 			result, rpcErr := method.Handle(ctx, paramsJSON)
 
 			// Verify error response

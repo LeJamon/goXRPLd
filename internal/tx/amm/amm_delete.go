@@ -31,12 +31,10 @@ func NewAMMDelete(account string, asset, asset2 tx.Asset) *AMMDelete {
 	}
 }
 
-// TxType returns the transaction type
 func (a *AMMDelete) TxType() tx.Type {
 	return tx.TypeAMMDelete
 }
 
-// Validate validates the AMMDelete transaction
 // Reference: rippled AMMDelete.cpp preflight
 func (a *AMMDelete) Validate() error {
 	if err := a.BaseTx.Validate(); err != nil {
@@ -60,17 +58,14 @@ func (a *AMMDelete) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (a *AMMDelete) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(a)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (a *AMMDelete) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureAMM, amendment.FeatureFixUniversalNumber}
 }
 
-// Apply applies the AMMDelete transaction to ledger state.
 // Reference: rippled AMMDelete.cpp preclaim + doApply
 func (a *AMMDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("amm delete apply",

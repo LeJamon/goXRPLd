@@ -46,7 +46,6 @@ func (m *AccountCurrenciesMethod) Handle(ctx *types.RpcContext, params json.RawM
 				Message: "Account not found.",
 			}
 		}
-		// Check for malformed account address
 		if len(err.Error()) > 24 && err.Error()[:24] == "invalid account address:" {
 			return nil, &types.RpcError{
 				Code:    types.RpcACT_NOT_FOUND,

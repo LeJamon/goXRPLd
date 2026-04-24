@@ -53,12 +53,10 @@ func NewNFTokenCreateOffer(account, nftokenID string, amount tx.Amount) *NFToken
 	}
 }
 
-// TxType returns the transaction type
 func (n *NFTokenCreateOffer) TxType() tx.Type {
 	return tx.TypeNFTokenCreateOffer
 }
 
-// Validate validates the NFTokenCreateOffer transaction
 // Reference: rippled NFTokenCreateOffer.cpp preflight and tokenOfferCreatePreflight
 // IMPORTANT: validation order must match rippled exactly (amount → expiration → owner → destination)
 func (n *NFTokenCreateOffer) Validate() error {
@@ -66,7 +64,6 @@ func (n *NFTokenCreateOffer) Validate() error {
 		return err
 	}
 
-	// Check for invalid flags
 	if n.GetFlags()&tfNFTokenCreateOfferMask != 0 {
 		return tx.Errorf(tx.TemINVALID_FLAG, "invalid NFTokenCreateOffer flags")
 	}
@@ -142,7 +139,6 @@ func (n *NFTokenCreateOffer) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (n *NFTokenCreateOffer) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(n)
 }
@@ -153,12 +149,10 @@ func (n *NFTokenCreateOffer) SetSellOffer() {
 	n.SetFlags(flags)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (n *NFTokenCreateOffer) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureNonFungibleTokensV1}
 }
 
-// Apply applies the NFTokenCreateOffer transaction to the ledger.
 // Reference: rippled NFTokenCreateOffer.cpp doApply
 func (n *NFTokenCreateOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("nftoken create offer apply",
@@ -193,7 +187,6 @@ func (n *NFTokenCreateOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TemMALFORMED
 	}
 
-	// Check expiration
 	if n.Expiration != nil && *n.Expiration <= ctx.Config.ParentCloseTime {
 		ctx.Log.Warn("nftoken create offer: offer expired")
 		return tx.TecEXPIRED
@@ -351,7 +344,6 @@ func (n *NFTokenCreateOffer) Apply(ctx *tx.ApplyContext) tx.Result {
 	// — the buyer's balance is only checked, not held.
 	// Reference: rippled NFTokenUtils.cpp tokenOfferCreateApply — no balance deduction
 
-	// Create the offer
 	sequence := n.GetCommon().SeqProxy()
 	offerKey := keylet.NFTokenOffer(accountID, sequence)
 

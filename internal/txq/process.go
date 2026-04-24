@@ -26,10 +26,8 @@ func (q *TxQ) ProcessClosedLedger(ctx ClosedLedgerContext, timeLeap bool) uint32
 	ledgerSeq := ctx.GetLedgerSequence()
 	feeLevels := ctx.GetTransactionFeeLevels()
 
-	// Update fee metrics and get transaction count
 	txCount := q.feeMetrics.Update(feeLevels, timeLeap, q.config)
 
-	// Update maximum queue size
 	// Reference: rippled sets maxSize_ = max(txnsExpected * ledgersInQueue, queueSizeMin)
 	if !timeLeap {
 		snapshot := q.feeMetrics.GetSnapshot()

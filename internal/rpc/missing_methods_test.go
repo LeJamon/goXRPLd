@@ -11,9 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// =============================================================================
 // Test Helpers
-// =============================================================================
 
 // mockLedgerServiceMissingMethods extends mockLedgerService for testing new methods
 type mockLedgerServiceMissingMethods struct {
@@ -37,10 +35,8 @@ func setupTestServicesMissingMethods(mock *mockLedgerServiceMissingMethods) func
 	}
 }
 
-// =============================================================================
 // FetchInfoMethod Tests
 // Reference: rippled/src/xrpld/rpc/handlers/FetchInfo.cpp
-// =============================================================================
 
 func TestFetchInfoMethod(t *testing.T) {
 	mock := newMockLedgerServiceMissingMethods()
@@ -91,10 +87,8 @@ func TestFetchInfoMethod(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // OwnerInfoMethod Tests
 // Reference: rippled/src/test/rpc/OwnerInfo_test.cpp
-// =============================================================================
 
 func TestOwnerInfoMethod(t *testing.T) {
 	mock := newMockLedgerServiceMissingMethods()
@@ -153,10 +147,8 @@ func TestOwnerInfoMethod(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // LedgerHeaderMethod Tests
 // Reference: rippled/src/test/rpc/LedgerHeader_test.cpp
-// =============================================================================
 
 func TestLedgerHeaderMethod(t *testing.T) {
 	mock := newMockLedgerServiceMissingMethods()
@@ -209,10 +201,8 @@ func TestLedgerHeaderMethod(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // LedgerRequestMethod Tests
 // Reference: rippled/src/test/rpc/LedgerRequestRPC_test.cpp
-// =============================================================================
 
 func TestLedgerRequestMethod(t *testing.T) {
 	mock := newMockLedgerServiceMissingMethods()
@@ -243,9 +233,7 @@ func TestLedgerRequestMethod(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // LedgerCleanerMethod Tests
-// =============================================================================
 
 func TestLedgerCleanerMethod(t *testing.T) {
 	mock := newMockLedgerServiceMissingMethods()
@@ -274,9 +262,7 @@ func TestLedgerCleanerMethod(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // LedgerDiffMethod Tests
-// =============================================================================
 
 func TestLedgerDiffMethod(t *testing.T) {
 	mock := newMockLedgerServiceMissingMethods()
@@ -305,10 +291,8 @@ func TestLedgerDiffMethod(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // SimulateMethod Tests
 // Reference: rippled/src/test/rpc/Simulate_test.cpp
-// =============================================================================
 
 func TestSimulateMethod(t *testing.T) {
 	mock := newMockLedgerServiceMissingMethods()
@@ -362,9 +346,7 @@ func TestSimulateMethod(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // TxReduceRelayMethod Tests
-// =============================================================================
 
 func TestTxReduceRelayMethod(t *testing.T) {
 	mock := newMockLedgerServiceMissingMethods()
@@ -399,10 +381,8 @@ func TestTxReduceRelayMethod(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // ConnectMethod Tests
 // Reference: rippled/src/test/rpc/Connect_test.cpp
-// =============================================================================
 
 func TestConnectMethod(t *testing.T) {
 	mock := newMockLedgerServiceMissingMethods()
@@ -449,9 +429,7 @@ func TestConnectMethod(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // PrintMethod Tests
-// =============================================================================
 
 func TestPrintMethod(t *testing.T) {
 	mock := newMockLedgerServiceMissingMethods()
@@ -484,10 +462,8 @@ func TestPrintMethod(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // ValidatorInfoMethod Tests
 // Reference: rippled/src/test/rpc/ValidatorInfo_test.cpp
-// =============================================================================
 
 func TestValidatorInfoMethod(t *testing.T) {
 	mock := newMockLedgerServiceMissingMethods()
@@ -518,9 +494,7 @@ func TestValidatorInfoMethod(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // CanDeleteMethod Tests
-// =============================================================================
 
 func TestCanDeleteMethod(t *testing.T) {
 	mock := newMockLedgerServiceMissingMethods()
@@ -549,10 +523,8 @@ func TestCanDeleteMethod(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // GetAggregatePriceMethod Tests
 // Reference: rippled/src/test/rpc/GetAggregatePrice_test.cpp
-// =============================================================================
 
 func TestGetAggregatePriceMethod(t *testing.T) {
 	mock := newMockLedgerServiceMissingMethods()
@@ -770,10 +742,8 @@ func TestGetAggregatePriceMethod(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // GetCountsMethod Tests
 // Reference: rippled/src/test/rpc/GetCounts_test.cpp
-// =============================================================================
 
 func TestGetCountsMethod(t *testing.T) {
 	mock := newMockLedgerServiceMissingMethods()
@@ -803,9 +773,7 @@ func TestGetCountsMethod(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // LogLevelMethod Tests
-// =============================================================================
 
 func TestLogLevelMethod(t *testing.T) {
 	mock := newMockLedgerServiceMissingMethods()
@@ -867,9 +835,7 @@ func TestLogLevelMethod(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // LogRotateMethod Tests
-// =============================================================================
 
 func TestLogRotateMethod(t *testing.T) {
 	mock := newMockLedgerServiceMissingMethods()
@@ -899,10 +865,8 @@ func TestLogRotateMethod(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // AMMInfoMethod Tests
 // Reference: rippled/src/test/rpc/AMMInfo_test.cpp
-// =============================================================================
 
 func TestAMMInfoMethod(t *testing.T) {
 	mock := newMockLedgerServiceMissingMethods()
@@ -987,9 +951,7 @@ func TestAMMInfoMethod(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // VaultInfoMethod Tests
-// =============================================================================
 
 func TestVaultInfoMethod(t *testing.T) {
 	mock := newMockLedgerServiceMissingMethods()
@@ -1084,9 +1046,7 @@ func TestVaultInfoMethod(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // UnlListMethod Tests
-// =============================================================================
 
 func TestUnlListMethod(t *testing.T) {
 	mock := newMockLedgerServiceMissingMethods()
@@ -1116,9 +1076,7 @@ func TestUnlListMethod(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // BlackListMethod Tests
-// =============================================================================
 
 func TestBlackListMethod(t *testing.T) {
 	mock := newMockLedgerServiceMissingMethods()
@@ -1162,9 +1120,7 @@ func TestBlackListMethod(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Service Unavailable Tests
-// =============================================================================
 
 func TestMissingMethodsServiceUnavailable(t *testing.T) {
 	// Test all methods handle nil Services gracefully
@@ -1220,9 +1176,7 @@ func TestMissingMethodsServiceUnavailable(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Nil Ledger Service Tests
-// =============================================================================
 
 func TestMissingMethodsNilLedgerService(t *testing.T) {
 	// Test all methods handle nil Ledger gracefully

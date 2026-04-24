@@ -54,7 +54,6 @@ func (m *LedgerDataMethod) Handle(ctx *types.RpcContext, params json.RawMessage)
 		}
 	}
 
-	// Get ledger data from the ledger service
 	result, err := types.Services.Ledger.GetLedgerData(ledgerIndex, limit, markerStr)
 	if err != nil {
 		return nil, types.RpcErrorInternal("Failed to get ledger data: " + err.Error())
@@ -82,7 +81,6 @@ func (m *LedgerDataMethod) Handle(ctx *types.RpcContext, params json.RawMessage)
 					"index": upperIndex,
 				}
 			} else {
-				// Add index field to the deserialized object
 				if objMap, ok := jsonObj.(map[string]interface{}); ok {
 					objMap["index"] = upperIndex
 					state[i] = objMap

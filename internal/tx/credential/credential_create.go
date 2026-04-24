@@ -42,12 +42,10 @@ func NewCredentialCreate(account, subject, credentialType string) *CredentialCre
 	}
 }
 
-// TxType returns the transaction type
 func (c *CredentialCreate) TxType() tx.Type {
 	return tx.TypeCredentialCreate
 }
 
-// Validate validates the CredentialCreate transaction
 // Reference: rippled Credentials.cpp CredentialCreate::preflight()
 // Note: The fixInvalidTxFlags-gated flag check is done in Apply() because
 // Validate() has no access to amendment rules.
@@ -106,17 +104,14 @@ func (c *CredentialCreate) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (c *CredentialCreate) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(c)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (c *CredentialCreate) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureCredentials}
 }
 
-// Apply applies the CredentialCreate transaction to ledger state.
 // Reference: rippled Credentials.cpp CredentialCreate::doApply()
 func (c *CredentialCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	// Check for invalid flags, gated behind fixInvalidTxFlags
@@ -185,19 +180,16 @@ func (c *CredentialCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TecINSUFFICIENT_RESERVE
 	}
 
-	// Create the credential entry
 	cred := &CredentialEntry{
 		Subject:        subjectID,
 		Issuer:         ctx.AccountID,
 		CredentialType: credTypeBytes,
 	}
 
-	// Set expiration if provided
 	if c.Expiration != nil {
 		cred.Expiration = c.Expiration
 	}
 
-	// Set URI if provided
 	if c.URI != "" {
 		uriBytes, err := hex.DecodeString(c.URI)
 		if err == nil {

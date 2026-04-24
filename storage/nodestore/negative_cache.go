@@ -14,7 +14,6 @@ type NegativeCache struct {
 	entries map[Hash256]time.Time // Hash -> expiration time
 	ttl     time.Duration
 
-	// Statistics
 	stats struct {
 		hits        int64 // Number of cache hits (confirmed missing)
 		misses      int64 // Number of cache misses (not in negative cache)
@@ -23,7 +22,6 @@ type NegativeCache struct {
 		evictions   int64 // Number of entries evicted
 	}
 
-	// Configuration
 	maxSize int // Maximum number of entries (0 = unlimited)
 	closed  int64
 }
@@ -86,7 +84,6 @@ func (nc *NegativeCache) MarkMissing(hash Hash256) {
 		nc.evictOldestLocked()
 	}
 
-	// Add or update entry
 	_, exists := nc.entries[hash]
 	nc.entries[hash] = time.Now().Add(nc.ttl)
 
@@ -111,7 +108,6 @@ func (nc *NegativeCache) IsMissing(hash Hash256) bool {
 		return false
 	}
 
-	// Check if expired
 	if time.Now().After(expiresAt) {
 		// Entry expired, remove it
 		nc.mu.Lock()
@@ -207,7 +203,6 @@ func (nc *NegativeCache) evictOldestLocked() {
 		}
 	}
 
-	// Delete the oldest entries
 	for _, e := range oldest {
 		delete(nc.entries, e.hash)
 		atomic.AddInt64(&nc.stats.evictions, 1)

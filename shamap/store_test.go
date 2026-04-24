@@ -505,8 +505,6 @@ func TestDeserializeFromPrefix_AccountStateLeaf(t *testing.T) {
 	}
 }
 
-// ===== Phase 2: Backed SHAMap + Lazy Loading Tests =====
-
 // TestBacked_NewFromRootHash creates a map, flushes it, then recreates from root hash
 // and verifies all data is accessible via lazy loading.
 func TestBacked_NewFromRootHash(t *testing.T) {

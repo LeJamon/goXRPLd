@@ -290,7 +290,6 @@ func (sm *SHAMap) insertNodeRecursive(current Node, targetHash [32]byte, newNode
 		return ErrInvalidType
 	}
 
-	// Check each branch for a matching hash
 	for branch := 0; branch < BranchFactor; branch++ {
 		if inner.IsEmptyBranch(branch) {
 			continue
@@ -306,7 +305,6 @@ func (sm *SHAMap) insertNodeRecursive(current Node, targetHash [32]byte, newNode
 			return inner.SetChild(branch, newNode)
 		}
 
-		// Check if we need to recurse into this child
 		child, err := inner.Child(branch)
 		if err != nil {
 			continue
@@ -339,7 +337,6 @@ func (sm *SHAMap) AddRootNode(hash [32]byte, data []byte) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// Check if we already have a root with content
 	if sm.root != nil && sm.root.HasChildren() {
 		return ErrRootAlreadySet
 	}
@@ -360,7 +357,6 @@ func (sm *SHAMap) AddRootNode(hash [32]byte, data []byte) error {
 		return fmt.Errorf("root must be an inner node, got %T", node)
 	}
 
-	// Verify the hash matches
 	if err := innerNode.UpdateHash(); err != nil {
 		return fmt.Errorf("failed to compute node hash: %w", err)
 	}
@@ -370,7 +366,6 @@ func (sm *SHAMap) AddRootNode(hash [32]byte, data []byte) error {
 		return ErrNodeHashMismatch
 	}
 
-	// Set the root
 	sm.root = innerNode
 	sm.state = StateSyncing
 

@@ -122,9 +122,7 @@ func allUserMethods() []userMethodEntry {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 // TestAdminMethodsRequireAdminRole iterates over every handler that should
 // declare RoleAdmin and asserts that RequiredRole() returns RoleAdmin.

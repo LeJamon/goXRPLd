@@ -37,12 +37,10 @@ func NewPermissionedDomainSet(account string) *PermissionedDomainSet {
 	}
 }
 
-// TxType returns the transaction type
 func (p *PermissionedDomainSet) TxType() tx.Type {
 	return tx.TypePermissionedDomainSet
 }
 
-// Validate validates the PermissionedDomainSet transaction
 // Reference: rippled PermissionedDomainSet.cpp preflight()
 func (p *PermissionedDomainSet) Validate() error {
 	if err := p.BaseTx.Validate(); err != nil {
@@ -83,7 +81,6 @@ func (p *PermissionedDomainSet) Validate() error {
 		return ErrPermDomainTooManyCredentials
 	}
 
-	// Check for duplicates and validate each credential
 	seen := make(map[string]bool)
 	for _, cred := range p.AcceptedCredentials {
 		data := cred.Credential
@@ -117,7 +114,6 @@ func (p *PermissionedDomainSet) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (p *PermissionedDomainSet) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(p)
 }
@@ -132,12 +128,10 @@ func (p *PermissionedDomainSet) AddAcceptedCredential(issuer, credentialType str
 	})
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (p *PermissionedDomainSet) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeaturePermissionedDomains, amendment.FeatureCredentials}
 }
 
-// Apply applies the PermissionedDomainSet transaction to the ledger.
 // Reference: rippled PermissionedDomainSet.cpp preclaim() + doApply()
 func (p *PermissionedDomainSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("permissioned domain set apply",

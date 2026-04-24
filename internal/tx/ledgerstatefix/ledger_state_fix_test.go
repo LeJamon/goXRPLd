@@ -9,10 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// =============================================================================
 // LedgerStateFix Validation Tests
 // Based on rippled LedgerStateFix.cpp
-// =============================================================================
 
 func TestLedgerStateFixValidation(t *testing.T) {
 	tests := []struct {
@@ -94,9 +92,7 @@ func TestLedgerStateFixValidation(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Flatten Tests
-// =============================================================================
 
 func TestLedgerStateFixFlatten(t *testing.T) {
 	t.Run("nfTokenPageLink fix", func(t *testing.T) {
@@ -123,9 +119,7 @@ func TestLedgerStateFixFlatten(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Constructor Tests
-// =============================================================================
 
 func TestLedgerStateFixConstructors(t *testing.T) {
 	t.Run("NewLedgerStateFix", func(t *testing.T) {
@@ -147,9 +141,7 @@ func TestLedgerStateFixConstructors(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Amendment Tests
-// =============================================================================
 
 func TestLedgerStateFixRequiredAmendments(t *testing.T) {
 	lsf := NewNFTokenPageLinkFix("rAdmin", "rOwner")
@@ -157,9 +149,7 @@ func TestLedgerStateFixRequiredAmendments(t *testing.T) {
 	assert.Contains(t, amendments, amendment.FeatureFixNFTokenPageLinks)
 }
 
-// =============================================================================
 // Constants Tests
-// =============================================================================
 
 func TestLedgerStateFixConstants(t *testing.T) {
 	assert.Equal(t, uint8(1), LedgerFixTypeNFTokenPageLink)

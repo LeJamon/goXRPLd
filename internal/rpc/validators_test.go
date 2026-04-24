@@ -11,10 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// =============================================================================
 // ValidatorsMethod tests
 // Based on rippled ValidatorRPC_test.cpp
-// =============================================================================
 
 // TestValidatorsResponseStructure tests that the validators method returns
 // the expected response structure with all required fields.
@@ -143,10 +141,8 @@ func TestValidatorsWithParams(t *testing.T) {
 	require.NotNil(t, result, "Should still return a result")
 }
 
-// =============================================================================
 // ValidationCreateMethod tests
 // Based on rippled ValidatorRPC_test.cpp test_validation_create
-// =============================================================================
 
 // TestValidationCreateReturnsKeyPair tests that validation_create returns
 // a response (currently a notImplemented error since it's a stub).
@@ -232,9 +228,7 @@ func TestValidationCreateMethodMetadata(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // ConsensusInfoMethod tests
-// =============================================================================
 
 // TestConsensusInfoResponseStructure tests that consensus_info returns
 // the expected response structure with an "info" field.
@@ -322,9 +316,7 @@ func TestConsensusInfoWithParams(t *testing.T) {
 	require.NotNil(t, result, "Should still return a result")
 }
 
-// =============================================================================
 // StopMethod tests
-// =============================================================================
 
 // TestStopReturnsStoppingMessage tests that the stop method returns
 // the expected "ripple server stopping" message.

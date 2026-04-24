@@ -29,12 +29,10 @@ type UNLModify struct {
 	UNLModifyValidator string `json:"UNLModifyValidator,omitempty" xrpl:"UNLModifyValidator,omitempty"`
 }
 
-// TxType returns the transaction type
 func (u *UNLModify) TxType() tx.Type {
 	return tx.TypeUNLModify
 }
 
-// Validate validates the UNLModify transaction.
 // Reference: rippled Change.cpp preflight()
 func (u *UNLModify) Validate() error {
 	// Pseudo-transaction: minimal validation
@@ -42,7 +40,6 @@ func (u *UNLModify) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (u *UNLModify) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(u)
 }
@@ -52,7 +49,6 @@ func (u *UNLModify) IsPseudoTransaction() bool {
 	return true
 }
 
-// Apply applies the UNLModify transaction to ledger state.
 // Reference: rippled Change.cpp applyUNLModify() lines 388-512
 func (u *UNLModify) Apply(ctx *tx.ApplyContext) tx.Result {
 	// 1. Validate flag ledger

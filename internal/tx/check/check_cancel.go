@@ -32,7 +32,6 @@ func NewCheckCancel(account, checkID string) *CheckCancel {
 	}
 }
 
-// TxType returns the transaction type
 func (c *CheckCancel) TxType() tx.Type {
 	return tx.TypeCheckCancel
 }
@@ -56,12 +55,10 @@ func (c *CheckCancel) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (c *CheckCancel) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(c)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (c *CheckCancel) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureChecks}
 }

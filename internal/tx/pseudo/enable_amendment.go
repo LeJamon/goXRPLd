@@ -41,12 +41,10 @@ const (
 	tfLostMajority uint32 = 0x00020000
 )
 
-// TxType returns the transaction type
 func (e *EnableAmendment) TxType() tx.Type {
 	return tx.TypeAmendment
 }
 
-// Validate validates the EnableAmendment transaction.
 // Reference: rippled Change.cpp preflight()
 func (e *EnableAmendment) Validate() error {
 	// Pseudo-transaction: minimal validation
@@ -56,7 +54,6 @@ func (e *EnableAmendment) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (e *EnableAmendment) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(e)
 }
@@ -66,10 +63,8 @@ func (e *EnableAmendment) IsPseudoTransaction() bool {
 	return true
 }
 
-// Apply applies the EnableAmendment transaction to ledger state.
 // Reference: rippled Change.cpp applyAmendment() lines 248-345
 func (e *EnableAmendment) Apply(ctx *tx.ApplyContext) tx.Result {
-	// Parse the amendment hash from the transaction
 	// Reference: rippled line 251: uint256 amendment(ctx_.tx.getFieldH256(sfAmendment))
 	amendmentHash, err := parseAmendmentHash(e.Amendment)
 	if err != nil {
@@ -169,11 +164,9 @@ func (e *EnableAmendment) Apply(ctx *tx.ApplyContext) tx.Result {
 		// The amendment is recorded in the ledger state which is the primary goal.
 	}
 
-	// Update the majorities list
 	// Reference: rippled lines 337-340
 	sle.Majorities = newMajorities
 
-	// Serialize and write back
 	serialized, serErr := SerializeAmendmentsSLE(sle)
 	if serErr != nil {
 		return tx.TefINTERNAL

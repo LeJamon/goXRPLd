@@ -41,7 +41,6 @@ func NewCheckCreate(account, destination string, sendMax tx.Amount) *CheckCreate
 	}
 }
 
-// TxType returns the transaction type
 func (c *CheckCreate) TxType() tx.Type {
 	return tx.TypeCheckCreate
 }
@@ -87,12 +86,10 @@ func (c *CheckCreate) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (c *CheckCreate) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(c)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (c *CheckCreate) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureChecks}
 }

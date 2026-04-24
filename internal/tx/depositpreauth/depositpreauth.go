@@ -74,12 +74,10 @@ func NewDepositPreauth(account string) *DepositPreauth {
 	}
 }
 
-// TxType returns the transaction type
 func (d *DepositPreauth) TxType() tx.Type {
 	return tx.TypeDepositPreauth
 }
 
-// RequiredAmendments returns the amendments required for this transaction type.
 // Reference: rippled DepositPreauth::preflight() amendment checks
 func (d *DepositPreauth) RequiredAmendments() [][32]byte {
 	amendments := [][32]byte{amendment.FeatureDepositPreauth}
@@ -89,7 +87,6 @@ func (d *DepositPreauth) RequiredAmendments() [][32]byte {
 	return amendments
 }
 
-// Validate validates the DepositPreauth transaction fields.
 // Reference: rippled DepositPreauth::preflight()
 func (d *DepositPreauth) Validate() error {
 	if err := d.BaseTx.Validate(); err != nil {
@@ -195,7 +192,6 @@ func checkCredentialArray(creds []CredentialWrapper) error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (d *DepositPreauth) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(d)
 }
@@ -268,7 +264,6 @@ func toKeyletPairs(pairs []sortedCredPair) []keylet.CredentialPair {
 	return result
 }
 
-// Apply applies the DepositPreauth transaction to ledger state.
 // Combines preclaim checks and doApply logic.
 // Reference: rippled DepositPreauth::preclaim() + DepositPreauth::doApply()
 func (d *DepositPreauth) Apply(ctx *tx.ApplyContext) tx.Result {
@@ -352,7 +347,6 @@ func (d *DepositPreauth) applyAuthorize(ctx *tx.ApplyContext) tx.Result {
 		return tx.TecDIR_FULL
 	}
 
-	// Update OwnerNode on the preauth entry
 	if dirResult.Page != 0 {
 		if err := updateOwnerNode(ctx, preauthKey, dirResult.Page); err != nil {
 			ctx.Log.Error("deposit preauth authorize: failed to update owner node", "error", err)
@@ -508,7 +502,6 @@ func removeFromLedger(ctx *tx.ApplyContext, preauthKey keylet.Keylet) tx.Result 
 	}
 	// If parsing fails, default to page 0 which handles the common case
 
-	// Remove from owner directory
 	ownerDirKey := keylet.OwnerDir(ctx.AccountID)
 	_, err = state.DirRemove(ctx.View, ownerDirKey, ownerNode, preauthKey.Key, false)
 	if err != nil {
@@ -522,7 +515,6 @@ func removeFromLedger(ctx *tx.ApplyContext, preauthKey keylet.Keylet) tx.Result 
 		return tx.TefINTERNAL
 	}
 
-	// Decrement owner count
 	if ctx.Account.OwnerCount > 0 {
 		ctx.Account.OwnerCount--
 	}

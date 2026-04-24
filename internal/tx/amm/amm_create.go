@@ -37,7 +37,6 @@ func NewAMMCreate(account string, amount1, amount2 tx.Amount, tradingFee uint16)
 	}
 }
 
-// TxType returns the transaction type
 func (a *AMMCreate) TxType() tx.Type {
 	return tx.TypeAMMCreate
 }
@@ -54,7 +53,6 @@ func (a *AMMCreate) GetAmount2Asset() tx.Asset {
 	return tx.Asset{Currency: a.Amount2.Currency, Issuer: a.Amount2.Issuer}
 }
 
-// Validate validates the AMMCreate transaction
 // Reference: rippled AMMCreate.cpp preflight
 func (a *AMMCreate) Validate() error {
 	if err := a.BaseTx.Validate(); err != nil {
@@ -90,7 +88,6 @@ func (a *AMMCreate) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (a *AMMCreate) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(a)
 }
@@ -102,12 +99,10 @@ func (a *AMMCreate) CalculateBaseFee(_ tx.LedgerView, config tx.EngineConfig) ui
 	return config.ReserveIncrement
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (a *AMMCreate) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureAMM, amendment.FeatureFixUniversalNumber}
 }
 
-// Apply applies the AMMCreate transaction to ledger state.
 // Reference: rippled AMMCreate.cpp preclaim + doApply/applyCreate
 func (a *AMMCreate) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("amm create apply",

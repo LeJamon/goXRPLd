@@ -37,19 +37,16 @@ func NewNFTokenModify(account, nftokenID string) *NFTokenModify {
 	}
 }
 
-// TxType returns the transaction type
 func (n *NFTokenModify) TxType() tx.Type {
 	return tx.TypeNFTokenModify
 }
 
-// Validate validates the NFTokenModify transaction
 // Reference: rippled NFTokenModify.cpp preflight
 func (n *NFTokenModify) Validate() error {
 	if err := n.BaseTx.Validate(); err != nil {
 		return err
 	}
 
-	// Check for invalid flags
 	// Reference: rippled NFTokenModify.cpp:38 - if (ctx.tx.getFlags() & tfUniversalMask)
 	if err := tx.CheckFlags(n.GetFlags(), tx.TfUniversalMask); err != nil {
 		return err
@@ -81,18 +78,15 @@ func (n *NFTokenModify) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (n *NFTokenModify) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(n)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type.
 // Reference: rippled NFTokenModify.cpp preflight — requires both NonFungibleTokensV1_1 and DynamicNFT.
 func (n *NFTokenModify) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureNonFungibleTokensV1_1, amendment.FeatureDynamicNFT}
 }
 
-// Apply applies the NFTokenModify transaction to the ledger.
 // Reference: rippled NFTokenModify.cpp preclaim + doApply
 func (n *NFTokenModify) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("nftoken modify apply",
@@ -130,7 +124,6 @@ func (n *NFTokenModify) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TecNO_ENTRY
 	}
 
-	// Check if the NFT is mutable
 	// Reference: rippled NFTokenModify.cpp preclaim:64
 	if getNFTFlagsFromID(tokenID)&nftFlagMutable == 0 {
 		return tx.TecNO_PERMISSION
@@ -175,7 +168,6 @@ func (n *NFTokenModify) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TecINTERNAL
 	}
 
-	// Update or remove the URI
 	// Reference: rippled NFTokenModify.cpp doApply:88 — ctx_.tx[~sfURI]
 	// If URI is present in the tx, set it on the token.
 	// If URI is absent, remove the existing URI from the token.

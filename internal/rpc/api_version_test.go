@@ -117,7 +117,6 @@ func allHandlers() map[string]types.MethodHandler {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Test 1: TestApiVersionConstants
 // Verify the API version constants are reasonable and match rippled's ranges.
 //
@@ -128,7 +127,6 @@ func allHandlers() map[string]types.MethodHandler {
 //   apiVersionIfUnspecified     = 1
 //
 // goXRPL mirrors these as ApiVersion1..ApiVersion3 plus DefaultApiVersion.
-// ---------------------------------------------------------------------------
 
 func TestApiVersionConstants(t *testing.T) {
 	// Verify the symbolic constants have their expected numeric values.
@@ -186,10 +184,8 @@ func TestApiVersionConstants(t *testing.T) {
 		"version.good should match ApiVersion2")
 }
 
-// ---------------------------------------------------------------------------
 // Test 2: TestApiVersionAllMethodsDeclareVersions
 // Every handler must declare at least one supported API version.
-// ---------------------------------------------------------------------------
 
 func TestApiVersionAllMethodsDeclareVersions(t *testing.T) {
 	for name, handler := range allHandlers() {
@@ -201,12 +197,10 @@ func TestApiVersionAllMethodsDeclareVersions(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Test 3: TestApiVersionAllMethodsSupportV1
 // API version 1 is the base version.  All methods must support it so that
 // callers who do not specify an api_version (defaulting to 1) can reach
 // every endpoint.
-// ---------------------------------------------------------------------------
 
 func TestApiVersionAllMethodsSupportV1(t *testing.T) {
 	for name, handler := range allHandlers() {
@@ -218,13 +212,11 @@ func TestApiVersionAllMethodsSupportV1(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Test 4: TestApiVersionMethodsWorkWithEachVersion
 // For key methods (account_info, tx, ledger, server_info, ping), call
 // Handle() with each supported API version and verify no version-related
 // error is returned.  We set up a mock so the handlers have enough context
 // to proceed past the initial dispatch.
-// ---------------------------------------------------------------------------
 
 func TestApiVersionMethodsWorkWithEachVersion(t *testing.T) {
 	mock := newMockLedgerService()
@@ -300,12 +292,10 @@ func TestApiVersionMethodsWorkWithEachVersion(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Test 5: TestApiVersionRpcContextCarriesVersion
 // Ensure an RpcContext constructed with a given API version faithfully
 // delivers that version to the handler.  We verify by inspecting the
 // context in a trivial handler (ping).
-// ---------------------------------------------------------------------------
 
 func TestApiVersionRpcContextCarriesVersion(t *testing.T) {
 	apiVersions := []int{types.ApiVersion1, types.ApiVersion2, types.ApiVersion3}
@@ -329,7 +319,6 @@ func TestApiVersionRpcContextCarriesVersion(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Test 6: TestApiVersionDeprecatedMethodRanges
 // Some methods may have restricted API version support. For instance,
 // tx_history is deprecated in rippled v2. This test documents the expected
@@ -339,7 +328,6 @@ func TestApiVersionRpcContextCarriesVersion(t *testing.T) {
 // Currently all goXRPL handlers declare support for all three versions.
 // When a method is deprecated (e.g., tx_history removed from v2+), this
 // test should be updated to verify the tighter range.
-// ---------------------------------------------------------------------------
 
 func TestApiVersionDeprecatedMethodRanges(t *testing.T) {
 	type versionRange struct {

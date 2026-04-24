@@ -72,12 +72,10 @@ func NewDelegateSet(account string) *DelegateSet {
 	}
 }
 
-// TxType returns the transaction type
 func (d *DelegateSet) TxType() tx.Type {
 	return tx.TypeDelegateSet
 }
 
-// Validate validates the DelegateSet transaction.
 // Reference: rippled DelegateSet.cpp preflight()
 func (d *DelegateSet) Validate() error {
 	if err := d.BaseTx.Validate(); err != nil {
@@ -113,7 +111,6 @@ func (d *DelegateSet) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields.
 // Custom implementation to properly format Permissions as:
 //
 //	[{"Permission": {"PermissionValue": <uint32>}}, ...]
@@ -143,12 +140,10 @@ func (d *DelegateSet) Flatten() (map[string]any, error) {
 	return m, nil
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (d *DelegateSet) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeaturePermissionDelegation}
 }
 
-// Apply applies the DelegateSet transaction to the ledger.
 // Reference: rippled DelegateSet.cpp preclaim() + doApply()
 func (d *DelegateSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("delegate set apply",
@@ -178,7 +173,6 @@ func (d *DelegateSet) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	delegateKey := keylet.DelegateKeylet(ctx.AccountID, authorizeID)
 
-	// Check if delegate SLE already exists
 	existingData, readErr := ctx.View.Read(delegateKey)
 	if readErr == nil && existingData != nil {
 		// Delegate SLE exists -- update or delete
@@ -222,7 +216,6 @@ func (d *DelegateSet) Apply(ctx *tx.ApplyContext) tx.Result {
 		return tx.TecINSUFFICIENT_RESERVE
 	}
 
-	// Create the delegate SLE
 	delegateData, serErr := state.SerializeDelegate(ctx.AccountID, authorizeID, permValues, 0)
 	if serErr != nil {
 		return tx.TefINTERNAL
@@ -270,7 +263,6 @@ func deleteDelegate(ctx *tx.ApplyContext, delegateKey keylet.Keylet, account [20
 		return tx.TefINTERNAL
 	}
 
-	// Remove from owner directory
 	ownerDirKey := keylet.OwnerDir(account)
 	state.DirRemove(ctx.View, ownerDirKey, existingEntry.OwnerNode, delegateKey.Key, false)
 

@@ -174,9 +174,7 @@ func setupNoRippleCheckTestServices(mock *mockNoRippleCheckLedgerService) func()
 	}
 }
 
-// =============================================================================
 // Error Validation Tests
-// =============================================================================
 
 // TestNoRippleCheckErrorValidation tests error handling for invalid inputs
 // Based on rippled NoRippleCheck_test.cpp testBadInput()
@@ -271,9 +269,7 @@ func TestNoRippleCheckErrorValidation(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // User Role Tests - No Problems
-// =============================================================================
 
 // TestNoRippleCheckUserRoleNoProblems tests user role with properly configured account
 // Based on rippled NoRippleCheck_test.cpp testBasic(user=true, problems=false)
@@ -323,9 +319,7 @@ func TestNoRippleCheckUserRoleNoProblems(t *testing.T) {
 	assert.Contains(t, respMap, "validated")
 }
 
-// =============================================================================
 // User Role Tests - With Problems
-// =============================================================================
 
 // TestNoRippleCheckUserRoleWithProblems tests user role with misconfigured account
 // Based on rippled NoRippleCheck_test.cpp testBasic(user=true, problems=true)
@@ -377,9 +371,7 @@ func TestNoRippleCheckUserRoleWithProblems(t *testing.T) {
 	assert.Contains(t, problems[1], "set the no ripple flag")
 }
 
-// =============================================================================
 // Gateway Role Tests - No Problems
-// =============================================================================
 
 // TestNoRippleCheckGatewayRoleNoProblems tests gateway role with properly configured account
 // Based on rippled NoRippleCheck_test.cpp testBasic(user=false, problems=false)
@@ -424,9 +416,7 @@ func TestNoRippleCheckGatewayRoleNoProblems(t *testing.T) {
 	assert.Empty(t, problems, "Expected no problems for properly configured gateway")
 }
 
-// =============================================================================
 // Gateway Role Tests - With Problems
-// =============================================================================
 
 // TestNoRippleCheckGatewayRoleWithProblems tests gateway role with misconfigured account
 // Based on rippled NoRippleCheck_test.cpp testBasic(user=false, problems=true)
@@ -478,9 +468,7 @@ func TestNoRippleCheckGatewayRoleWithProblems(t *testing.T) {
 	assert.Contains(t, problems[1], "clear the no ripple flag")
 }
 
-// =============================================================================
 // Transaction Generation Tests
-// =============================================================================
 
 // TestNoRippleCheckWithTransactionsUser tests transaction generation for user role
 // Based on rippled NoRippleCheck_test.cpp testBasic with transactions=true
@@ -622,9 +610,7 @@ func TestNoRippleCheckWithTransactionsGateway(t *testing.T) {
 	assert.Contains(t, transactions[1], "LimitAmount")
 }
 
-// =============================================================================
 // API Version Tests
-// =============================================================================
 
 // TestNoRippleCheckTransactionsFieldValidationAPIv2 tests that API v2+ validates transactions field is boolean
 // Based on rippled NoRippleCheck.cpp API version check
@@ -681,9 +667,7 @@ func TestNoRippleCheckTransactionsFieldAPIv1(t *testing.T) {
 	require.NotNil(t, resp)
 }
 
-// =============================================================================
 // Service Unavailable Tests
-// =============================================================================
 
 // TestNoRippleCheckServiceUnavailable tests response when ledger service is unavailable
 func TestNoRippleCheckServiceUnavailable(t *testing.T) {
@@ -714,9 +698,7 @@ func TestNoRippleCheckServiceUnavailable(t *testing.T) {
 	assert.Nil(t, resp)
 }
 
-// =============================================================================
 // Limit Parameter Tests
-// =============================================================================
 
 // TestNoRippleCheckWithLimit tests the limit parameter
 func TestNoRippleCheckWithLimit(t *testing.T) {
@@ -751,9 +733,7 @@ func TestNoRippleCheckWithLimit(t *testing.T) {
 	require.NotNil(t, resp)
 }
 
-// =============================================================================
 // Method Metadata Tests
-// =============================================================================
 
 // TestNoRippleCheckMethodMetadata tests method metadata (role, API versions)
 func TestNoRippleCheckMethodMetadata(t *testing.T) {

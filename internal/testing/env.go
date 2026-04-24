@@ -160,7 +160,6 @@ func NewTestEnv(t *testing.T) *TestEnv {
 		t.Fatalf("Failed to create genesis ledger: %v", err)
 	}
 
-	// Create the ledger from genesis
 	// Note: drops.Fees has unexported fields, so we use a zero value
 	var fees drops.Fees
 	genesisLedger := ledger.FromGenesis(
@@ -170,7 +169,6 @@ func NewTestEnv(t *testing.T) *TestEnv {
 		fees,
 	)
 
-	// Create the first open ledger
 	clock := NewManualClock()
 	openLedger, err := ledger.NewOpen(genesisLedger, clock.Now())
 	if err != nil {

@@ -11,9 +11,7 @@ import (
 	"github.com/LeJamon/goXRPLd/keylet"
 )
 
-// ============================================================================
 // Test Helpers - Mock LedgerView for testing
-// ============================================================================
 
 // paymentMockLedgerView implements LedgerView for testing
 type paymentMockLedgerView struct {
@@ -125,9 +123,7 @@ func (m *paymentMockLedgerView) createTrustLine(low, high [20]byte, currency str
 	m.data[key.Key] = data
 }
 
-// ============================================================================
 // EitherAmount Tests
-// ============================================================================
 
 func TestEitherAmount_XRP(t *testing.T) {
 	// Test XRP amount creation
@@ -201,9 +197,7 @@ func TestEitherAmount_Compare(t *testing.T) {
 	}
 }
 
-// ============================================================================
 // Quality Tests
-// ============================================================================
 
 func TestQuality_FromAmounts(t *testing.T) {
 	// Quality = in / out
@@ -235,9 +229,7 @@ func TestQuality_BetterThan(t *testing.T) {
 	}
 }
 
-// ============================================================================
 // PaymentSandbox Tests
-// ============================================================================
 
 func TestPaymentSandbox_Isolation(t *testing.T) {
 	// Create base view with an account
@@ -319,9 +311,7 @@ func TestPaymentSandbox_ChildSandbox(t *testing.T) {
 	}
 }
 
-// ============================================================================
 // XRPEndpointStep Tests
-// ============================================================================
 
 func TestXRPEndpointStep_Source(t *testing.T) {
 	view := newPaymentMockLedgerView()
@@ -396,9 +386,7 @@ func TestXRPEndpointStep_QualityUpperBound(t *testing.T) {
 	}
 }
 
-// ============================================================================
 // DirectStepI Tests
-// ============================================================================
 
 func TestDirectStepI_Basic(t *testing.T) {
 	view := newPaymentMockLedgerView()
@@ -425,9 +413,7 @@ func TestDirectStepI_Basic(t *testing.T) {
 	}
 }
 
-// ============================================================================
 // Strand Tests
-// ============================================================================
 
 func TestToStrand_XRPToXRP(t *testing.T) {
 	view := newPaymentMockLedgerView()
@@ -492,9 +478,7 @@ func TestToStrands_WithPaths(t *testing.T) {
 	}
 }
 
-// ============================================================================
 // ExecuteStrand Tests
-// ============================================================================
 
 func TestExecuteStrand_XRPPayment(t *testing.T) {
 	view := newPaymentMockLedgerView()
@@ -529,9 +513,7 @@ func TestExecuteStrand_XRPPayment(t *testing.T) {
 	}
 }
 
-// ============================================================================
 // Flow Tests
-// ============================================================================
 
 func TestFlow_SingleStrand(t *testing.T) {
 	view := newPaymentMockLedgerView()
@@ -653,9 +635,7 @@ func TestFlow_SendMaxLimit(t *testing.T) {
 	}
 }
 
-// ============================================================================
 // RippleCalculate Integration Test
-// ============================================================================
 
 func TestRippleCalculate_XRPPayment(t *testing.T) {
 	view := newPaymentMockLedgerView()
@@ -699,9 +679,7 @@ func TestRippleCalculate_XRPPayment(t *testing.T) {
 	}
 }
 
-// ============================================================================
 // Issue and Book Tests
-// ============================================================================
 
 func TestIssue_IsXRP(t *testing.T) {
 	xrpIssue := Issue{Currency: "XRP"}
@@ -734,9 +712,7 @@ func TestBook_Creation(t *testing.T) {
 	}
 }
 
-// ============================================================================
 // MulRatio Tests
-// ============================================================================
 
 func TestMulRatio_XRP(t *testing.T) {
 	amt := NewXRPEitherAmount(100)
@@ -772,9 +748,7 @@ func TestMulRatio_IOU(t *testing.T) {
 	}
 }
 
-// ============================================================================
 // Strand Quality Tests
-// ============================================================================
 
 func TestGetStrandQuality(t *testing.T) {
 	view := newPaymentMockLedgerView()
@@ -807,9 +781,7 @@ func TestGetStrandQuality(t *testing.T) {
 	}
 }
 
-// ============================================================================
 // DebtDirection Tests
-// ============================================================================
 
 func TestDebtDirection(t *testing.T) {
 	if !Issues(DebtDirectionIssues) {

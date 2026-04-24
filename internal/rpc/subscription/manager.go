@@ -69,7 +69,6 @@ func (sm *Manager) HandleSubscribe(conn *types.Connection, request types.Subscri
 		conn.Subscriptions[stream] = types.SubscriptionConfig{}
 	}
 
-	// Add account subscriptions
 	if len(request.Accounts) > 0 {
 		// Validate all accounts first
 		for _, acc := range request.Accounts {
@@ -101,7 +100,6 @@ func (sm *Manager) HandleSubscribe(conn *types.Connection, request types.Subscri
 		}
 	}
 
-	// Add accounts_proposed subscriptions
 	if len(request.AccountsProposed) > 0 {
 		// Validate all accounts first
 		for _, acc := range request.AccountsProposed {
@@ -118,7 +116,6 @@ func (sm *Manager) HandleSubscribe(conn *types.Connection, request types.Subscri
 		}
 	}
 
-	// Add book subscriptions
 	if len(request.Books) > 0 {
 		for _, book := range request.Books {
 			// Validate taker_gets
@@ -207,15 +204,12 @@ func (sm *Manager) HandleUnsubscribe(conn *types.Connection, request types.Subsc
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	// Remove stream subscriptions
 	for _, stream := range request.Streams {
 		delete(conn.Subscriptions, stream)
 	}
 
-	// Remove specific account subscriptions
 	if len(request.Accounts) > 0 {
 		if existing, ok := conn.Subscriptions[types.SubAccounts]; ok {
-			// Remove specific accounts from the subscription
 			accountsToRemove := make(map[string]bool)
 			for _, acc := range request.Accounts {
 				accountsToRemove[acc] = true
@@ -259,7 +253,6 @@ func (sm *Manager) HandleUnsubscribe(conn *types.Connection, request types.Subsc
 		}
 	}
 
-	// Remove book subscriptions
 	if len(request.Books) > 0 {
 		delete(conn.Subscriptions, types.SubOrderBooks)
 	}

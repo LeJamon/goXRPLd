@@ -9,10 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// =============================================================================
 // Binary Format Tests derived from rippled protocol specification
 // These tests verify VL encoding, field ID encoding, and other binary format details.
-// =============================================================================
 
 // TestVariableLengthEncoding tests the Variable Length (VL) encoding scheme.
 // VL encoding is used for fields like Blob, AccountID, and other variable-length types.
@@ -584,7 +582,6 @@ func TestVLEncodedFieldTypes(t *testing.T) {
 func TestSerializedFieldOrder(t *testing.T) {
 	defs := definitions.Get()
 
-	// Get field instances and verify ordering
 	fields := []string{
 		"TransactionType", // type=1, field=2
 		"Flags",           // type=2, field=2

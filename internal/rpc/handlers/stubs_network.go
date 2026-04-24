@@ -7,15 +7,6 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/rpc/types"
 )
 
-// =============================================================================
-// NETWORK STUB HANDLERS
-// =============================================================================
-//
-// These handlers require P2P networking infrastructure to implement.
-// They return placeholder data or errors in standalone mode.
-// TODO [network]: Implement when adding P2P networking layer.
-// =============================================================================
-
 // FetchInfoMethod handles the fetch_info RPC method.
 // STUB: Returns empty info. Network-only — not needed for standalone mode.
 //

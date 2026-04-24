@@ -11,11 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// =============================================================================
 // Rippled Seed_test.cpp Test Vectors
 // These test vectors are extracted from the rippled reference implementation
 // to ensure compatibility with the official XRPL protocol.
-// =============================================================================
 
 // TestRippledSeedEncodingVectors tests seed generation from passphrases using
 // exact test vectors from rippled's Seed_test.cpp.

@@ -17,9 +17,6 @@ type LeafNode interface {
 	SetItem(item *Item) (bool, error)
 }
 
-// -----------------------------------------------------------------------------
-// AccountStateLeafNode
-
 // AccountStateLeafNode represents a leaf node containing account state data
 type AccountStateLeafNode struct {
 	BaseNode
@@ -222,9 +219,6 @@ func (n *AccountStateLeafNode) Clone() (Node, error) {
 	return NewAccountStateLeafNode(clonedItem)
 }
 
-// -----------------------------------------------------------------------------
-// TransactionLeafNode (transaction without metadata)
-
 // TransactionLeafNode represents a leaf node containing transaction data without metadata
 type TransactionLeafNode struct {
 	BaseNode
@@ -406,9 +400,6 @@ func (n *TransactionLeafNode) Clone() (Node, error) {
 
 	return NewTransactionLeafNode(clonedItem)
 }
-
-// -----------------------------------------------------------------------------
-// TransactionWithMetaLeafNode (transaction with metadata)
 
 // TransactionWithMetaLeafNode represents a leaf node containing transaction data with metadata
 type TransactionWithMetaLeafNode struct {
@@ -603,9 +594,6 @@ func (n *TransactionWithMetaLeafNode) Clone() (Node, error) {
 
 	return NewTransactionWithMetaLeafNode(clonedItem)
 }
-
-// -----------------------------------------------------------------------------
-// Helper Functions
 
 // ItemFromLeafNode extracts the item from any leaf node type
 func ItemFromLeafNode(node Node) *Item {

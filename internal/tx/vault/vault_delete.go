@@ -30,12 +30,10 @@ func NewVaultDelete(account, vaultID string) *VaultDelete {
 	}
 }
 
-// TxType returns the transaction type
 func (v *VaultDelete) TxType() tx.Type {
 	return tx.TypeVaultDelete
 }
 
-// Validate validates the VaultDelete transaction
 // Reference: rippled VaultDelete.cpp preflight()
 func (v *VaultDelete) Validate() error {
 	if err := v.BaseTx.Validate(); err != nil {
@@ -71,17 +69,14 @@ func (v *VaultDelete) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (v *VaultDelete) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(v)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (v *VaultDelete) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeatureSingleAssetVault}
 }
 
-// Apply applies the VaultDelete transaction to the ledger.
 func (v *VaultDelete) Apply(ctx *tx.ApplyContext) tx.Result {
 	if v.VaultID == "" {
 		return tx.TemINVALID

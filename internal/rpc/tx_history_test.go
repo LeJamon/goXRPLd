@@ -12,9 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// =============================================================================
 // Mock helpers for tx_history tests
-// =============================================================================
 
 // mockLedgerServiceTxHistory extends mockLedgerService with tx_history-specific behavior.
 type mockLedgerServiceTxHistory struct {
@@ -52,9 +50,7 @@ func setupTestServicesTxHistory(mock *mockLedgerServiceTxHistory) func() {
 	}
 }
 
-// =============================================================================
 // Tests
-// =============================================================================
 
 // TestTxHistoryBasicRequest tests basic request handling with start parameter.
 // Based on rippled TransactionHistory_test.cpp testRequest.

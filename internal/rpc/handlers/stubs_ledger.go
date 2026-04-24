@@ -6,13 +6,6 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/rpc/types"
 )
 
-// =============================================================================
-// LEDGER STUB HANDLERS
-// =============================================================================
-//
-// These handlers require additional ledger query capabilities.
-// =============================================================================
-
 // OwnerInfoMethod handles the owner_info RPC method.
 // STUB: Returns notImplemented. Requires NetworkOPs integration.
 //

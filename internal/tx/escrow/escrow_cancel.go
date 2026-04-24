@@ -24,7 +24,6 @@ type EscrowCancel struct {
 	OfferSequence uint32 `json:"OfferSequence" xrpl:"OfferSequence"`
 }
 
-// NewEscrowCancel creates a new EscrowCancel transaction
 func NewEscrowCancel(account, owner string, offerSequence uint32) *EscrowCancel {
 	return &EscrowCancel{
 		BaseTx:        *tx.NewBaseTx(tx.TypeEscrowCancel, account),
@@ -33,19 +32,16 @@ func NewEscrowCancel(account, owner string, offerSequence uint32) *EscrowCancel 
 	}
 }
 
-// TxType returns the transaction type
 func (e *EscrowCancel) TxType() tx.Type {
 	return tx.TypeEscrowCancel
 }
 
-// Validate validates the EscrowCancel transaction
 // Reference: rippled Escrow.cpp EscrowCancel::preflight()
 func (e *EscrowCancel) Validate() error {
 	if err := e.BaseTx.Validate(); err != nil {
 		return err
 	}
 
-	// Check for invalid flags
 	if err := tx.CheckFlags(e.GetFlags(), tx.TfUniversalMask); err != nil {
 		return err
 	}
@@ -57,7 +53,6 @@ func (e *EscrowCancel) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (e *EscrowCancel) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(e)
 }
@@ -73,7 +68,6 @@ func (e *EscrowCancel) Apply(ctx *tx.ApplyContext) tx.Result {
 
 	rules := ctx.Rules()
 
-	// Get the escrow owner's account ID
 	ownerID, err := state.DecodeAccountID(e.Owner)
 	if err != nil {
 		return tx.TemINVALID

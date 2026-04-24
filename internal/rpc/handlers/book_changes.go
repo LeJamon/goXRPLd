@@ -102,7 +102,6 @@ func (m *BookChangesMethod) Handle(ctx *types.RpcContext, params json.RawMessage
 			}
 		}
 
-		// Get AffectedNodes from metadata
 		affectedNodes, ok := storedTx.Meta["AffectedNodes"].([]interface{})
 		if !ok {
 			return true
@@ -194,7 +193,6 @@ func (m *BookChangesMethod) Handle(ctx *types.RpcContext, params json.RawMessage
 				pairKey = p + "|" + g
 			}
 
-			// Skip if second is zero
 			if second.Sign() == 0 {
 				continue
 			}
@@ -216,7 +214,6 @@ func (m *BookChangesMethod) Handle(ctx *types.RpcContext, params json.RawMessage
 				currB = g
 			}
 
-			// Update or create change entry
 			bc, exists := changes[pairKey]
 			if !exists {
 				bc = &bookChange{
@@ -231,7 +228,6 @@ func (m *BookChangesMethod) Handle(ctx *types.RpcContext, params json.RawMessage
 				}
 				changes[pairKey] = bc
 			} else {
-				// Update OHLCV
 				if rate.Cmp(bc.High) > 0 {
 					bc.High.Set(rate)
 				}
@@ -341,7 +337,6 @@ func formatBigFloat(f *big.Float) string {
 	if f == nil {
 		return "0"
 	}
-	// Check if it's an integer
 	if f64, _ := f.Float64(); f64 == math.Trunc(f64) && !math.IsInf(f64, 0) {
 		return strconv.FormatInt(int64(f64), 10)
 	}

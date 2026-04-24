@@ -51,12 +51,10 @@ func NewKVDatabaseWithConfig(store kvstore.KeyValueStore, name string, config *D
 		name:  name,
 	}
 
-	// Initialize positive cache
 	if config.CacheSize > 0 {
 		db.cache = NewCache(config.CacheSize, config.CacheTTL)
 	}
 
-	// Initialize negative cache
 	if config.NegativeCacheTTL > 0 {
 		db.negativeCache = NewNegativeCacheWithConfig(&NegativeCacheConfig{
 			TTL:     config.NegativeCacheTTL,
@@ -83,7 +81,6 @@ func (d *KVDatabaseImpl) Store(ctx context.Context, node *Node) error {
 	atomic.AddUint64(&d.stats.writes, 1)
 	atomic.AddUint64(&d.stats.writeBytes, uint64(len(node.Data)))
 
-	// Update positive cache
 	if d.cache != nil {
 		d.cache.Put(node)
 	}
@@ -106,7 +103,6 @@ func (d *KVDatabaseImpl) Fetch(ctx context.Context, hash Hash256) (*Node, error)
 
 	atomic.AddUint64(&d.stats.reads, 1)
 
-	// Check positive cache first
 	if d.cache != nil {
 		if node, found := d.cache.Get(hash); found {
 			atomic.AddUint64(&d.stats.cacheHits, 1)
@@ -115,7 +111,6 @@ func (d *KVDatabaseImpl) Fetch(ctx context.Context, hash Hash256) (*Node, error)
 		atomic.AddUint64(&d.stats.cacheMisses, 1)
 	}
 
-	// Check negative cache
 	if d.negativeCache != nil {
 		if d.negativeCache.IsMissing(hash) {
 			atomic.AddUint64(&d.stats.negativeCacheHits, 1)
@@ -141,7 +136,6 @@ func (d *KVDatabaseImpl) Fetch(ctx context.Context, hash Hash256) (*Node, error)
 	}
 
 	atomic.AddUint64(&d.stats.readBytes, uint64(len(node.Data)))
-	// Update positive cache
 	if d.cache != nil {
 		d.cache.Put(node)
 	}

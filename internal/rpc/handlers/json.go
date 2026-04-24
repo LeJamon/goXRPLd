@@ -36,7 +36,6 @@ func (m *JsonMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (inte
 	// - A JSON array with one element (XRPL-style params: [{...}])
 	var forwardParams []byte
 	if len(request.Params) > 0 {
-		// Check if it's an array
 		var arr []json.RawMessage
 		if json.Unmarshal(request.Params, &arr) == nil && len(arr) > 0 {
 			forwardParams = arr[0]

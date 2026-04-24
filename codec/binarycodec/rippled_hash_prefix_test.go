@@ -8,10 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// =============================================================================
 // Hash Prefix Tests derived from rippled include/xrpl/protocol/HashPrefix.h
 // These tests verify hash prefixes match rippled exactly for protocol compatibility.
-// =============================================================================
 
 // Hash prefixes from rippled - these are critical for signing and hashing.
 // Each prefix is computed as: (char1 << 24) + (char2 << 16) + (char3 << 8)

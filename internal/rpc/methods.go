@@ -83,10 +83,6 @@ func (s *Server) registerAllMethods() {
 	s.registry.Register("validator_list_sites", &handlers.ValidatorListSitesMethod{})
 	s.registry.Register("validators", &handlers.ValidatorsMethod{})
 
-	// =========================================================================
-	// Additional Methods (added for rippled compatibility)
-	// =========================================================================
-
 	// Server/Network Methods
 	s.registry.Register("fetch_info", &handlers.FetchInfoMethod{})
 	s.registry.Register("connect", &handlers.ConnectMethod{})

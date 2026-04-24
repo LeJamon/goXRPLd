@@ -6,9 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// =============================================================================
 // rippleEpochToISO8601 Tests
-// =============================================================================
 
 func TestRippleEpochToISO8601_Epoch(t *testing.T) {
 	// Ripple epoch 0 = 2000-01-01T00:00:00 UTC
@@ -31,10 +29,8 @@ func TestRippleEpochToISO8601_RecentTimestamp(t *testing.T) {
 	assert.Contains(t, result, "+0000")
 }
 
-// =============================================================================
 // ammAuctionTimeSlot Tests
 // Based on rippled's ammAuctionTimeSlot() in AMMCore.cpp
-// =============================================================================
 
 func TestAmmAuctionTimeSlot_ActiveSlot(t *testing.T) {
 	// Auction expiration = 86400 + 86400 = 172800 (start = 86400)
@@ -85,9 +81,7 @@ func TestAmmAuctionTimeSlot_ZeroParentCloseTime(t *testing.T) {
 	assert.Equal(t, uint32(auctionSlotTimeIntervals), interval, "Before start should return 20")
 }
 
-// =============================================================================
 // toUint32 Tests
-// =============================================================================
 
 func TestToUint32_Float64(t *testing.T) {
 	assert.Equal(t, uint32(42), toUint32(float64(42)))
@@ -121,9 +115,7 @@ func TestToUint32_Unsupported(t *testing.T) {
 	assert.Equal(t, uint32(0), toUint32(true))
 }
 
-// =============================================================================
 // buildAuctionSlot Tests
-// =============================================================================
 
 func TestBuildAuctionSlot_NoAccount(t *testing.T) {
 	// rippled: only includes auction_slot if Account is present

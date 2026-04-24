@@ -363,7 +363,6 @@ func (m *LedgerEntryMethod) Handle(ctx *types.RpcContext, params json.RawMessage
 		return nil, types.RpcErrorUnknownOption("Must specify object to look up")
 	}
 
-	// Get ledger entry
 	result, err := types.Services.Ledger.GetLedgerEntry(entryKey, ledgerIndex)
 	if err != nil {
 		if err.Error() == "entry not found" {
@@ -566,7 +565,6 @@ func parseDepositPreauthKeylet(raw json.RawMessage) ([32]byte, *types.RpcError) 
 // parseDirectoryKeylet parses a directory specifier: string (hex) or { owner, sub_index }
 // Reference: rippled LedgerEntry.cpp parseDirectory()
 func parseDirectoryKeylet(raw json.RawMessage) ([32]byte, *types.RpcError) {
-	// Check for null/non-value
 	if raw == nil || string(raw) == "null" {
 		return [32]byte{}, types.RpcErrorInvalidParams("Invalid directory params")
 	}

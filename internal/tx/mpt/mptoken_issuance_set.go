@@ -58,7 +58,6 @@ func (m *MPTokenIssuanceSet) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// NewMPTokenIssuanceSet creates a new MPTokenIssuanceSet transaction
 func NewMPTokenIssuanceSet(account, issuanceID string) *MPTokenIssuanceSet {
 	return &MPTokenIssuanceSet{
 		BaseTx:            *tx.NewBaseTx(tx.TypeMPTokenIssuanceSet, account),
@@ -66,12 +65,10 @@ func NewMPTokenIssuanceSet(account, issuanceID string) *MPTokenIssuanceSet {
 	}
 }
 
-// TxType returns the transaction type
 func (m *MPTokenIssuanceSet) TxType() tx.Type {
 	return tx.TypeMPTokenIssuanceSet
 }
 
-// Validate validates the MPTokenIssuanceSet transaction (rules-independent checks).
 // Reference: rippled MPTokenIssuanceSet.cpp preflight
 func (m *MPTokenIssuanceSet) Validate() error {
 	if err := m.BaseTx.Validate(); err != nil {
@@ -86,7 +83,6 @@ func (m *MPTokenIssuanceSet) Validate() error {
 
 	flags := m.GetFlags()
 
-	// Check for invalid flags
 	if flags&^tfMPTokenIssuanceSetValidMask != 0 {
 		return tx.Errorf(tx.TemINVALID_FLAG, "invalid flags for MPTokenIssuanceSet")
 	}
@@ -117,12 +113,10 @@ func (m *MPTokenIssuanceSet) Validate() error {
 	return nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (m *MPTokenIssuanceSet) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(m)
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (m *MPTokenIssuanceSet) RequiredAmendments() [][32]byte {
 	amendments := [][32]byte{amendment.FeatureMPTokensV1}
 	// DomainID requires both PermissionedDomains and SingleAssetVault
@@ -133,7 +127,6 @@ func (m *MPTokenIssuanceSet) RequiredAmendments() [][32]byte {
 	return amendments
 }
 
-// Apply applies the MPTokenIssuanceSet transaction to ledger state.
 // Reference: rippled MPTokenIssuanceSet.cpp preclaim() + doApply()
 func (m *MPTokenIssuanceSet) Apply(ctx *tx.ApplyContext) tx.Result {
 	ctx.Log.Trace("mptoken issuance set apply",
@@ -301,7 +294,6 @@ func (m *MPTokenIssuanceSet) setIssuance(ctx *tx.ApplyContext, issuanceKey keyle
 	// Reference: rippled MPTokenIssuanceSet.cpp:186-202
 	if m.hasDomainID && m.DomainID != nil {
 		if *m.DomainID != zeroHash256 {
-			// Set the DomainID
 			issuance.DomainID = m.DomainID
 		} else {
 			// Clear the DomainID (zero hash means remove)

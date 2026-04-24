@@ -150,7 +150,6 @@ func (m *AccountInfoMethod) Handle(ctx *types.RpcContext, params json.RawMessage
 		}
 	}
 
-	// Add index field (SLE key) to account_data
 	if info.Index != "" {
 		accountData["index"] = strings.ToUpper(info.Index)
 	}
@@ -236,7 +235,6 @@ func (m *AccountInfoMethod) loadSignerLists(account string, ledgerIndex string) 
 		if err != nil {
 			continue
 		}
-		// Add the index field
 		decoded["index"] = strings.ToUpper(obj.Index)
 		signerLists = append(signerLists, decoded)
 	}

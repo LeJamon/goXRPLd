@@ -70,19 +70,16 @@ func NewOracleSet(account string, oracleDocID uint32, lastUpdateTime uint32) *Or
 	}
 }
 
-// TxType returns the transaction type
 func (o *OracleSet) TxType() tx.Type {
 	return tx.TypeOracleSet
 }
 
-// Validate validates the OracleSet transaction (preflight validation)
-// This matches rippled's SetOracle::preflight()
+// Validate matches rippled's SetOracle::preflight()
 func (o *OracleSet) Validate() error {
 	if err := o.BaseTx.Validate(); err != nil {
 		return err
 	}
 
-	// Check flags - only universal flags allowed
 	if err := tx.CheckFlags(o.GetFlags(), tx.TfUniversalMask); err != nil {
 		return err
 	}
@@ -167,7 +164,6 @@ func (o *OracleSet) Validate() error {
 			return tx.Errorf(tx.TemMALFORMED, "Scale cannot exceed %d", MaxPriceScale)
 		}
 
-		// Check for duplicate token pairs
 		pairKey := entry.BaseAsset + ":" + entry.QuoteAsset
 		if seenPairs[pairKey] {
 			return tx.Errorf(tx.TemMALFORMED, "duplicate token pair in PriceDataSeries")
@@ -195,7 +191,6 @@ func (o *OracleSet) ValidatePriceDataSeries(isUpdate bool) (map[string]PriceData
 
 		key := entry.TokenPairKey()
 
-		// Check for duplicates in both sets
 		if _, exists := pairsToAdd[key]; exists {
 			return nil, nil, tx.Errorf(tx.TemMALFORMED, "duplicate token pair in PriceDataSeries")
 		}
@@ -225,7 +220,6 @@ func (o *OracleSet) ValidatePriceDataSeries(isUpdate bool) (map[string]PriceData
 	return pairsToAdd, pairsToDelete, nil
 }
 
-// Flatten returns a flat map of all transaction fields
 func (o *OracleSet) Flatten() (map[string]any, error) {
 	return tx.ReflectFlatten(o)
 }
@@ -253,7 +247,6 @@ func (o *OracleSet) AddPriceDataDelete(baseAsset, quoteAsset string) {
 	})
 }
 
-// RequiredAmendments returns the amendments required for this transaction type
 func (o *OracleSet) RequiredAmendments() [][32]byte {
 	return [][32]byte{amendment.FeaturePriceOracle}
 }
@@ -359,7 +352,6 @@ func (o *OracleSet) Apply(ctx *tx.ApplyContext) tx.Result {
 			return tx.TecINVALID_UPDATE_TIME
 		}
 
-		// Check provider/assetClass consistency
 		// If field is present in tx, it must match existing value
 		if o.isFieldPresent("Provider") && o.Provider != existingOracle.Provider {
 			return tx.TemMALFORMED
@@ -479,14 +471,11 @@ func (o *OracleSet) doApplyUpdate(ctx *tx.ApplyContext, oracleKey keylet.Keylet,
 		key := entry.TokenPairKey()
 
 		if entry.AssetPrice == nil {
-			// Delete pair
 			delete(orderedPairs, key)
 		} else if existing, ok := orderedPairs[key]; ok {
-			// Update existing pair
 			existing.price = entry.AssetPrice
 			existing.scale = entry.Scale
 		} else {
-			// Add new pair
 			orderedPairs[key] = &orderedPair{
 				baseAsset:  entry.BaseAsset,
 				quoteAsset: entry.QuoteAsset,
@@ -522,7 +511,6 @@ func (o *OracleSet) doApplyUpdate(ctx *tx.ApplyContext, oracleKey keylet.Keylet,
 		updatedSeries = append(updatedSeries, pd)
 	}
 
-	// Update oracle SLE fields
 	existingOracle.PriceDataSeries = updatedSeries
 	existingOracle.LastUpdateTime = o.LastUpdateTime
 	if o.isFieldPresent("URI") || o.URI != "" {

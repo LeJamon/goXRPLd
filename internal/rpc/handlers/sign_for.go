@@ -96,7 +96,6 @@ func (m *SignForMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (i
 		}
 	}
 
-	// Check if this account has already signed
 	for _, signerWrapper := range signers {
 		if signer, ok := signerWrapper["Signer"].(map[string]interface{}); ok {
 			if signer["Account"] == request.Account {
@@ -105,8 +104,6 @@ func (m *SignForMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (i
 		}
 	}
 
-	// Create signing payload for multisigning
-	// Remove Signers from the map for signing
 	txMapForSigning := make(map[string]interface{})
 	for k, v := range txMap {
 		if k != "Signers" {
@@ -126,7 +123,6 @@ func (m *SignForMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (i
 		return nil, types.RpcErrorInternal("Failed to sign transaction: " + err.Error())
 	}
 
-	// Create new signer entry
 	newSigner := map[string]interface{}{
 		"Signer": map[string]interface{}{
 			"Account":       request.Account,
@@ -135,7 +131,6 @@ func (m *SignForMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (i
 		},
 	}
 
-	// Add new signer to the list
 	signers = append(signers, newSigner)
 
 	// Sort signers by account (required by XRPL protocol)
@@ -151,19 +146,14 @@ func (m *SignForMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (i
 		return iAccount < jAccount
 	})
 
-	// Update transaction with sorted signers
 	txMap["Signers"] = signers
 
-	// Encode the transaction to binary
 	txBlob, err := binarycodec.Encode(txMap)
 	if err != nil {
 		return nil, types.RpcErrorInternal("Failed to encode transaction: " + err.Error())
 	}
 
-	// Calculate transaction hash
 	txHash := CalculateTxHash(txBlob)
-
-	// Add hash to response tx_json
 	txMap["hash"] = txHash
 
 	// Inject DeliverMax for Payment transactions, matching rippled's
