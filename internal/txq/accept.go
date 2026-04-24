@@ -39,7 +39,6 @@ func (q *TxQ) Accept(ctx AcceptContext) bool {
 		candidate := q.byFee[i]
 		account := candidate.Account
 
-		// Get account queue
 		aq, exists := q.byAccount[account]
 		if !exists {
 			// Shouldn't happen, but handle it
@@ -58,7 +57,6 @@ func (q *TxQ) Accept(ctx AcceptContext) bool {
 			}
 		}
 
-		// Check if the fee level is still sufficient
 		txInLedger := ctx.GetTxInLedger()
 		snapshot := q.feeMetrics.GetSnapshot()
 		requiredFeeLevel := ScaleFeeLevel(snapshot, txInLedger)
@@ -160,7 +158,6 @@ func (q *TxQ) eraseAndAdvance(idx *int, c *Candidate) {
 		nextCandidate.SeqProxy.Value > c.SeqProxy.Value &&
 		(feeNext == nil || q.candidateLess(nextCandidate, feeNext))
 
-	// Remove the current candidate
 	q.erase(c)
 
 	if useAccountNext {
