@@ -9,10 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// =============================================================================
 // Binary Format Tests derived from rippled protocol specification
 // These tests verify VL encoding, field ID encoding, and other binary format details.
-// =============================================================================
 
 // TestVariableLengthEncoding tests the Variable Length (VL) encoding scheme.
 // VL encoding is used for fields like Blob, AccountID, and other variable-length types.

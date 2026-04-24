@@ -43,10 +43,8 @@ func setupTestServicesAccountTx(mock *accountTxMock) func() {
 	}
 }
 
-// =============================================================================
 // Error Validation Tests
 // Based on rippled AccountTx_test.cpp testParameters()
-// =============================================================================
 
 // TestAccountTxErrorValidation tests error handling for invalid inputs
 func TestAccountTxErrorValidation(t *testing.T) {
@@ -187,10 +185,8 @@ func TestAccountTxErrorValidation(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Ledger Index Min/Max Handling Tests
 // Based on rippled AccountTx_test.cpp testParameters() ledger_index_min/max sections
-// =============================================================================
 
 func TestAccountTxLedgerIndexMinMax(t *testing.T) {
 	mock := newAccountTxMock()
@@ -306,10 +302,8 @@ func TestAccountTxLedgerIndexMinMax(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Binary vs JSON Mode Tests
 // Based on rippled AccountTx_test.cpp binary parameter
-// =============================================================================
 
 func TestAccountTxBinaryMode(t *testing.T) {
 	mock := newAccountTxMock()
@@ -446,10 +440,8 @@ func TestAccountTxBinaryMode(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Forward / Reverse Ordering Tests
 // Based on rippled AccountTx_test.cpp forward parameter
-// =============================================================================
 
 func TestAccountTxForwardReverse(t *testing.T) {
 	mock := newAccountTxMock()
@@ -539,10 +531,8 @@ func TestAccountTxForwardReverse(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Marker-Based Pagination Tests
 // Based on rippled AccountTx_test.cpp marker handling
-// =============================================================================
 
 func TestAccountTxMarkerPagination(t *testing.T) {
 	mock := newAccountTxMock()
@@ -638,10 +628,8 @@ func TestAccountTxMarkerPagination(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Response Structure Tests
 // Based on rippled AccountTx_test.cpp - validates response fields
-// =============================================================================
 
 func TestAccountTxResponseStructure(t *testing.T) {
 	mock := newAccountTxMock()
@@ -775,9 +763,7 @@ func TestAccountTxResponseStructure(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Empty Account (No Transactions) Tests
-// =============================================================================
 
 func TestAccountTxEmptyAccount(t *testing.T) {
 	mock := newAccountTxMock()
@@ -825,9 +811,7 @@ func TestAccountTxEmptyAccount(t *testing.T) {
 	assert.Equal(t, true, resp["validated"])
 }
 
-// =============================================================================
 // Multiple Transactions with Correct Hash Formatting Tests
-// =============================================================================
 
 func TestAccountTxMultipleTransactions(t *testing.T) {
 	mock := newAccountTxMock()
@@ -963,9 +947,7 @@ func TestAccountTxMultipleTransactions(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Service Unavailable / Nil Ledger Tests
-// =============================================================================
 
 func TestAccountTxServiceUnavailable(t *testing.T) {
 	method := &handlers.AccountTxMethod{}
@@ -1008,9 +990,7 @@ func TestAccountTxServiceUnavailable(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Transaction History Not Available Tests
-// =============================================================================
 
 func TestAccountTxTransactionHistoryNotAvailable(t *testing.T) {
 	mock := newAccountTxMock()
@@ -1042,9 +1022,7 @@ func TestAccountTxTransactionHistoryNotAvailable(t *testing.T) {
 	assert.Contains(t, rpcErr.Message, "Transaction history not available")
 }
 
-// =============================================================================
 // Method Metadata Tests
-// =============================================================================
 
 func TestAccountTxMethodMetadata(t *testing.T) {
 	method := &handlers.AccountTxMethod{}
@@ -1062,9 +1040,7 @@ func TestAccountTxMethodMetadata(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Limit Parameter Tests
-// =============================================================================
 
 func TestAccountTxLimitParameter(t *testing.T) {
 	mock := newAccountTxMock()
@@ -1137,9 +1113,7 @@ func TestAccountTxLimitParameter(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // InjectDeliveredAmount Tests
-// =============================================================================
 
 func TestAccountTxInjectDeliveredAmount(t *testing.T) {
 	// Test the InjectDeliveredAmount function directly via exported function name
@@ -1216,9 +1190,7 @@ func TestAccountTxInjectDeliveredAmount(t *testing.T) {
 	assert.Equal(t, expectedHash, tx0["hash"])
 }
 
-// =============================================================================
 // Service Error Propagation Tests
-// =============================================================================
 
 func TestAccountTxServiceErrors(t *testing.T) {
 	mock := newAccountTxMock()
@@ -1288,10 +1260,8 @@ func TestAccountTxServiceErrors(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Validated Field Tests
 // Based on rippled AccountTx_test.cpp - validated flag in each transaction
-// =============================================================================
 
 func TestAccountTxValidatedField(t *testing.T) {
 	mock := newAccountTxMock()
@@ -1352,9 +1322,7 @@ func TestAccountTxValidatedField(t *testing.T) {
 		"Each transaction entry should have validated=true")
 }
 
-// =============================================================================
 // Account parameter passed to service correctly
-// =============================================================================
 
 func TestAccountTxAccountPassedToService(t *testing.T) {
 	mock := newAccountTxMock()

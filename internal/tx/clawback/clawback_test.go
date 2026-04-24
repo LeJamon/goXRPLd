@@ -10,10 +10,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// =============================================================================
 // Clawback Validation Tests
 // Based on rippled Clawback_test.cpp
-// =============================================================================
 
 func TestClawbackValidation(t *testing.T) {
 	tests := []struct {
@@ -132,9 +130,7 @@ func TestClawbackValidation(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Flatten Tests
-// =============================================================================
 
 func TestClawbackFlatten(t *testing.T) {
 	t.Run("IOU clawback", func(t *testing.T) {
@@ -171,9 +167,7 @@ func TestClawbackFlatten(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Constructor Tests
-// =============================================================================
 
 func TestClawbackConstructors(t *testing.T) {
 	t.Run("NewClawback (IOU)", func(t *testing.T) {
@@ -195,9 +189,7 @@ func TestClawbackConstructors(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Amendment Tests
-// =============================================================================
 
 func TestClawbackRequiredAmendments(t *testing.T) {
 	t.Run("IOU clawback requires Clawback amendment", func(t *testing.T) {
@@ -215,9 +207,7 @@ func TestClawbackRequiredAmendments(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Transaction Type Tests
-// =============================================================================
 
 func TestClawbackTransactionType(t *testing.T) {
 	clawbackTx := &Clawback{}

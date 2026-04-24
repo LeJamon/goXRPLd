@@ -4,8 +4,6 @@ import (
 	"testing"
 )
 
-// ============== Traffic Counter Tests ==============
-
 func TestTrafficCounterBasic(t *testing.T) {
 	tc := NewTrafficCounter()
 
@@ -118,8 +116,6 @@ func TestTrafficCounterTotalStats(t *testing.T) {
 		t.Errorf("Expected total MessagesIn 2, got %d", total.MessagesIn)
 	}
 }
-
-// ============== Peer Score Tests ==============
 
 func TestPeerScoreBasic(t *testing.T) {
 	ps := NewPeerScore()

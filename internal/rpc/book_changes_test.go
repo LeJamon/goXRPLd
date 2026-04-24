@@ -14,9 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// =============================================================================
 // Mock helpers for book_changes tests
-// =============================================================================
 
 // mockLedgerReaderBC implements types.LedgerReader for book_changes tests.
 type mockLedgerReaderBC struct {
@@ -118,9 +116,7 @@ func setupTestServicesBC(mock *mockLedgerServiceBC) func() {
 	}
 }
 
-// =============================================================================
 // Tests
-// =============================================================================
 
 // TestBookChangesValidLedgerIndexVariants tests with "validated", "current", and "closed".
 // Based on rippled BookChanges_test.cpp testConventionalLedgerInputStrings.

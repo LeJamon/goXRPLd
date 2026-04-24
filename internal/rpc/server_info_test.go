@@ -66,10 +66,8 @@ func setupTestServicesServerInfo(mock *mockLedgerServiceServerInfo) func() {
 	}
 }
 
-// =============================================================================
 // Response Field Tests
 // Based on rippled ServerInfo_test.cpp testServerInfo()
-// =============================================================================
 
 // TestServerInfoResponseFields tests that server_info returns all expected fields
 // Based on rippled ServerInfo_test.cpp: BEAST_EXPECT(info.isMember(jss::build_version));
@@ -397,9 +395,7 @@ func TestServerInfoValidatedLedgerFields(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Server State Tests
-// =============================================================================
 
 // TestServerInfoServerStates tests different server state values
 // Based on rippled's NetworkOPs operating modes
@@ -498,9 +494,7 @@ func TestServerInfoStandaloneMode(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // API Version Tests
-// =============================================================================
 
 // TestServerInfoApiVersions tests server_info across different API versions
 func TestServerInfoApiVersions(t *testing.T) {
@@ -548,9 +542,7 @@ func TestServerInfoMethodSupportedApiVersions(t *testing.T) {
 	assert.Contains(t, versions, types.ApiVersion3, "Should support API version 3")
 }
 
-// =============================================================================
 // Error Cases
-// =============================================================================
 
 // TestServerInfoServiceUnavailable tests behavior when ledger service is not available
 func TestServerInfoServiceUnavailable(t *testing.T) {
@@ -596,9 +588,7 @@ func TestServerInfoServiceNilLedger(t *testing.T) {
 	assert.Contains(t, rpcErr.Message, "Ledger service not available")
 }
 
-// =============================================================================
 // Method Metadata Tests
-// =============================================================================
 
 // TestServerInfoMethodMetadata tests the method's metadata functions
 func TestServerInfoMethodMetadata(t *testing.T) {
@@ -617,9 +607,7 @@ func TestServerInfoMethodMetadata(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Complete Ledgers String Format Tests
-// =============================================================================
 
 // TestServerInfoCompleteLedgersFormat tests various complete_ledgers string formats
 func TestServerInfoCompleteLedgersFormat(t *testing.T) {
@@ -679,9 +667,7 @@ func TestServerInfoCompleteLedgersFormat(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // State Accounting Tests
-// =============================================================================
 
 // TestServerInfoStateAccounting tests the state_accounting field
 func TestServerInfoStateAccounting(t *testing.T) {
@@ -720,9 +706,7 @@ func TestServerInfoStateAccounting(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Time Field Tests
-// =============================================================================
 
 // TestServerInfoTimeField tests the time field format
 func TestServerInfoTimeField(t *testing.T) {
@@ -755,9 +739,7 @@ func TestServerInfoTimeField(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Fee Calculation Tests
-// =============================================================================
 
 // TestServerInfoFeeCalculations tests fee conversions from drops to XRP
 func TestServerInfoFeeCalculations(t *testing.T) {
@@ -836,9 +818,7 @@ func TestServerInfoFeeCalculations(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Server State Method Tests
-// =============================================================================
 
 // TestServerStateMethod tests the server_state RPC method
 func TestServerStateMethod(t *testing.T) {
@@ -933,9 +913,7 @@ func TestServerStateServiceUnavailable(t *testing.T) {
 	assert.Contains(t, rpcErr.Message, "Ledger service not available")
 }
 
-// =============================================================================
 // Integration-like Tests
-// =============================================================================
 
 // TestServerInfoWithDifferentLedgerStates tests server_info with various ledger states
 func TestServerInfoWithDifferentLedgerStates(t *testing.T) {
@@ -1006,9 +984,7 @@ func TestServerInfoWithDifferentLedgerStates(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Parameterless Call Tests
-// =============================================================================
 
 // TestServerInfoWithParams tests that server_info ignores any parameters passed
 func TestServerInfoWithParams(t *testing.T) {

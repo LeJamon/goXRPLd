@@ -255,7 +255,6 @@ func TestAccountChannelsErrorValidation(t *testing.T) {
 			mock.accountChannelsResult = nil
 			mock.accountChannelsErr = nil
 
-			// Setup mock if needed
 			if tc.setupMock != nil {
 				tc.setupMock()
 			}
@@ -268,7 +267,6 @@ func TestAccountChannelsErrorValidation(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			// Call the method
 			result, rpcErr := method.Handle(ctx, paramsJSON)
 
 			// Verify error response

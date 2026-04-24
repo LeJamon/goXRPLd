@@ -25,10 +25,8 @@ func makeCredTypeHex(byteLen int) string {
 	return strings.Repeat("AB", byteLen)
 }
 
-// =============================================================================
 // PermissionedDomainSet Validation Tests
 // Based on rippled PermissionedDomains_test.cpp
-// =============================================================================
 
 func TestPermissionedDomainSetValidation(t *testing.T) {
 	tests := []struct {
@@ -225,9 +223,7 @@ func TestPermissionedDomainSetValidation(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // PermissionedDomainDelete Validation Tests
-// =============================================================================
 
 func TestPermissionedDomainDeleteValidation(t *testing.T) {
 	tests := []struct {
@@ -300,9 +296,7 @@ func TestPermissionedDomainDeleteValidation(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Flatten Tests
-// =============================================================================
 
 func TestPermissionedDomainSetFlatten(t *testing.T) {
 	t.Run("create new domain", func(t *testing.T) {
@@ -347,9 +341,7 @@ func TestPermissionedDomainDeleteFlatten(t *testing.T) {
 	assert.Equal(t, makeValidDomainID(), flat["DomainID"])
 }
 
-// =============================================================================
 // Constructor Tests
-// =============================================================================
 
 func TestPermissionedDomainConstructors(t *testing.T) {
 	t.Run("NewPermissionedDomainSet", func(t *testing.T) {
@@ -370,9 +362,7 @@ func TestPermissionedDomainConstructors(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // AddAcceptedCredential Test
-// =============================================================================
 
 func TestPermissionedDomainSetAddAcceptedCredential(t *testing.T) {
 	tx := NewPermissionedDomainSet("rOwner")
@@ -389,9 +379,7 @@ func TestPermissionedDomainSetAddAcceptedCredential(t *testing.T) {
 	assert.Equal(t, "4647484950", tx.AcceptedCredentials[1].Credential.CredentialType)
 }
 
-// =============================================================================
 // Amendment Tests
-// =============================================================================
 
 func TestPermissionedDomainRequiredAmendments(t *testing.T) {
 	t.Run("PermissionedDomainSet", func(t *testing.T) {
@@ -408,9 +396,7 @@ func TestPermissionedDomainRequiredAmendments(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Constants Tests
-// =============================================================================
 
 func TestPermissionedDomainConstants(t *testing.T) {
 	assert.Equal(t, 10, MaxPermissionedDomainCredentials)

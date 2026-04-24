@@ -516,8 +516,6 @@ func TestCrawlHeader(t *testing.T) {
 	assert.Equal(t, "public", publicReq.Header.Get(HeaderCrawl))
 }
 
-// ============== Feature Tests ==============
-
 // TestFeatureString tests the Feature String method
 func TestFeatureString(t *testing.T) {
 	tests := []struct {
@@ -622,7 +620,6 @@ func TestPeerCapabilities(t *testing.T) {
 	assert.True(t, pc.SupportsReduceRelay())
 }
 
-// ============== X-Protocol-Ctl Header Tests ==============
 // Reference: rippled src/test/overlay/handshake_test.cpp
 
 // TestXProtocolCtlParsing tests X-Protocol-Ctl header parsing

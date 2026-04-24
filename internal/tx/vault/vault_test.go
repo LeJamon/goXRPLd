@@ -20,10 +20,8 @@ func makeZeroVaultID() string {
 	return strings.Repeat("00", 32)
 }
 
-// =============================================================================
 // VaultCreate Validation Tests
 // Based on rippled VaultCreate.cpp
-// =============================================================================
 
 func TestVaultCreateValidation(t *testing.T) {
 	tests := []struct {
@@ -222,10 +220,8 @@ func TestVaultCreateValidation(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // VaultSet Validation Tests
 // Based on rippled VaultSet.cpp
-// =============================================================================
 
 func TestVaultSetValidation(t *testing.T) {
 	tests := []struct {
@@ -343,10 +339,8 @@ func TestVaultSetValidation(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // VaultDelete Validation Tests
 // Based on rippled VaultDelete.cpp
-// =============================================================================
 
 func TestVaultDeleteValidation(t *testing.T) {
 	tests := []struct {
@@ -413,10 +407,8 @@ func TestVaultDeleteValidation(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // VaultDeposit Validation Tests
 // Based on rippled VaultDeposit.cpp
-// =============================================================================
 
 func TestVaultDepositValidation(t *testing.T) {
 	tests := []struct {
@@ -500,10 +492,8 @@ func TestVaultDepositValidation(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // VaultWithdraw Validation Tests
 // Based on rippled VaultWithdraw.cpp
-// =============================================================================
 
 func TestVaultWithdrawValidation(t *testing.T) {
 	tests := []struct {
@@ -619,10 +609,8 @@ func TestVaultWithdrawValidation(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // VaultClawback Validation Tests
 // Based on rippled VaultClawback.cpp
-// =============================================================================
 
 func TestVaultClawbackValidation(t *testing.T) {
 	tests := []struct {
@@ -748,9 +736,7 @@ func TestVaultClawbackValidation(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Flatten Tests
-// =============================================================================
 
 func TestVaultFlatten(t *testing.T) {
 	t.Run("VaultCreate", func(t *testing.T) {
@@ -834,9 +820,7 @@ func TestVaultFlatten(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Constructor Tests
-// =============================================================================
 
 func TestVaultConstructors(t *testing.T) {
 	t.Run("NewVaultCreate", func(t *testing.T) {
@@ -891,9 +875,7 @@ func TestVaultConstructors(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Amendment Tests
-// =============================================================================
 
 func TestVaultRequiredAmendments(t *testing.T) {
 	t.Run("VaultCreate", func(t *testing.T) {
@@ -933,9 +915,7 @@ func TestVaultRequiredAmendments(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Constants Tests
-// =============================================================================
 
 func TestVaultConstants(t *testing.T) {
 	assert.Equal(t, 256, MaxVaultDataLength)

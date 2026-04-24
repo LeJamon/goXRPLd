@@ -254,7 +254,6 @@ func TestAccountNFTsErrorValidation(t *testing.T) {
 			mock.accountNFTsResult = nil
 			mock.accountNFTsErr = nil
 
-			// Setup mock if needed
 			if tc.setupMock != nil {
 				tc.setupMock()
 			}
@@ -267,7 +266,6 @@ func TestAccountNFTsErrorValidation(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			// Call the method
 			result, rpcErr := method.Handle(ctx, paramsJSON)
 
 			// Verify error response

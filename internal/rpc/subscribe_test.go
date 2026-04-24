@@ -28,10 +28,8 @@ func newTestConnection(id string) *types.Connection {
 	}
 }
 
-// =============================================================================
 // Stream Subscription Tests
 // Based on rippled Subscribe_test.cpp testServer(), testLedger(), testTransactions_APIv1()
-// =============================================================================
 
 // TestSubscribeStreamTypes tests subscribing to various stream types
 func TestSubscribeStreamTypes(t *testing.T) {
@@ -198,10 +196,8 @@ func TestSubscribeInvalidStreamName(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Account Subscription Tests
 // Based on rippled Subscribe_test.cpp testTransactions_APIv1() account subscription section
-// =============================================================================
 
 // TestSubscribeAccounts tests subscribing to specific accounts
 func TestSubscribeAccounts(t *testing.T) {
@@ -363,10 +359,8 @@ func TestSubscribeAccountsProposedInvalidFormat(t *testing.T) {
 	sm.RemoveConnection(conn.ID)
 }
 
-// =============================================================================
 // Book Subscription Tests
 // Based on rippled Subscribe_test.cpp testSubErrors() for books
-// =============================================================================
 
 // TestSubscribeBooks tests subscribing to order books with taker_gets/taker_pays
 func TestSubscribeBooks(t *testing.T) {
@@ -612,10 +606,8 @@ func TestSubscribeBooksMultiple(t *testing.T) {
 	sm.RemoveConnection(conn.ID)
 }
 
-// =============================================================================
 // Unsubscribe Tests
 // Based on rippled Subscribe_test.cpp unsubscribe sections
-// =============================================================================
 
 // TestUnsubscribeFromStreams tests unsubscribing from streams
 func TestUnsubscribeFromStreams(t *testing.T) {
@@ -821,10 +813,8 @@ func TestUnsubscribeFromNonSubscribedAccount(t *testing.T) {
 	sm.RemoveConnection(conn.ID)
 }
 
-// =============================================================================
 // Additional Error Cases
 // Based on rippled Subscribe_test.cpp testSubErrors()
-// =============================================================================
 
 // TestSubscribeMissingTakerPays tests book subscription without taker_pays
 func TestSubscribeMissingTakerPays(t *testing.T) {
@@ -932,9 +922,7 @@ func TestSubscribeInvalidTakerGetsJSON(t *testing.T) {
 	sm.RemoveConnection(conn.ID)
 }
 
-// =============================================================================
 // Subscription Manager State Tests
-// =============================================================================
 
 // TestSubscriptionManagerAddRemoveConnection tests connection management
 func TestSubscriptionManagerAddRemoveConnection(t *testing.T) {
@@ -1040,9 +1028,7 @@ func TestGetConnectionSubscriptions(t *testing.T) {
 	sm.RemoveConnection(conn.ID)
 }
 
-// =============================================================================
 // IsValidXRPLAddress Tests
-// =============================================================================
 
 // TestIsValidXRPLAddress tests the address validation function
 func TestIsValidXRPLAddress(t *testing.T) {
@@ -1136,9 +1122,7 @@ func TestIsValidXRPLAddress(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Subscribe Response Tests
-// =============================================================================
 
 // TestGetSubscribeResponse tests generating a subscribe confirmation response
 func TestGetSubscribeResponse(t *testing.T) {
@@ -1162,9 +1146,7 @@ func TestGetSubscribeResponse(t *testing.T) {
 	assert.Equal(t, uint64(2000000), response.ReserveInc)
 }
 
-// =============================================================================
 // Subscribe/Unsubscribe Method Tests (RPC Handler level)
-// =============================================================================
 
 // TestSubscribeMethodRequiresWebSocket tests that subscribe returns error via HTTP
 func TestSubscribeMethodRequiresWebSocket(t *testing.T) {
@@ -1230,9 +1212,7 @@ func TestUnsubscribeMethodMetadata(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Broadcast Tests
-// =============================================================================
 
 // TestBroadcastToStream tests broadcasting to stream subscribers
 func TestBroadcastToStream(t *testing.T) {
@@ -1405,9 +1385,7 @@ func TestBookMatchesCurrency(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Duplicate Subscription Tests
-// =============================================================================
 
 // TestSubscribeDuplicateStreamIdempotent tests that subscribing to the same stream twice is idempotent
 func TestSubscribeDuplicateStreamIdempotent(t *testing.T) {
@@ -1470,9 +1448,7 @@ func TestSubscribeDuplicateAccountsMerged(t *testing.T) {
 	sm.RemoveConnection(conn.ID)
 }
 
-// =============================================================================
 // Mixed Subscription Tests
-// =============================================================================
 
 // TestSubscribeMixedStreamsAndAccounts tests subscribing to both streams and accounts
 func TestSubscribeMixedStreamsAndAccounts(t *testing.T) {
@@ -1531,9 +1507,7 @@ func TestSubscribeMixedStreamsAccountsAndBooks(t *testing.T) {
 	sm.RemoveConnection(conn.ID)
 }
 
-// =============================================================================
 // URL Subscription Tests
-// =============================================================================
 
 // TestSubscribeWithURL tests subscribing with URL callback
 func TestSubscribeWithURL(t *testing.T) {

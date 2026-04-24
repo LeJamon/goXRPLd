@@ -21,10 +21,8 @@ func makeValidChannelID() string {
 	return strings.Repeat("AB", 32) // 32 bytes
 }
 
-// =============================================================================
 // PaymentChannelCreate Validation Tests
 // Based on rippled PayChan_test.cpp
-// =============================================================================
 
 func TestPaymentChannelCreateValidation(t *testing.T) {
 	tests := []struct {
@@ -223,9 +221,7 @@ func TestPaymentChannelCreateValidation(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // PaymentChannelFund Validation Tests
-// =============================================================================
 
 func TestPaymentChannelFundValidation(t *testing.T) {
 	tests := []struct {
@@ -340,9 +336,7 @@ func TestPaymentChannelFundValidation(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // PaymentChannelClaim Validation Tests
-// =============================================================================
 
 func TestPaymentChannelClaimValidation(t *testing.T) {
 	tests := []struct {
@@ -516,9 +510,7 @@ func TestPaymentChannelClaimValidation(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Flatten Tests
-// =============================================================================
 
 func TestPaymentChannelCreateFlatten(t *testing.T) {
 	cancelAfter := uint32(750000000)
@@ -594,9 +586,7 @@ func TestPaymentChannelClaimFlatten(t *testing.T) {
 	assert.Equal(t, makeValidPublicKey(), flat["PublicKey"])
 }
 
-// =============================================================================
 // Constructor Tests
-// =============================================================================
 
 func TestPaymentChannelConstructors(t *testing.T) {
 	t.Run("NewPaymentChannelCreate", func(t *testing.T) {
@@ -627,9 +617,7 @@ func TestPaymentChannelConstructors(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Flag Tests
-// =============================================================================
 
 func TestPaymentChannelClaimFlags(t *testing.T) {
 	t.Run("SetClose", func(t *testing.T) {
@@ -647,9 +635,7 @@ func TestPaymentChannelClaimFlags(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Amendment Tests
-// =============================================================================
 
 func TestPaymentChannelRequiredAmendments(t *testing.T) {
 	t.Run("PaymentChannelCreate", func(t *testing.T) {

@@ -10,14 +10,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// =============================================================================
 // Amendment Blocked Conformance Tests
 // Reference: rippled/src/test/rpc/AmendmentBlocked_test.cpp
 //
 // When the server is amendment-blocked, methods with any Condition other than
 // NoCondition are blocked with rpcAMENDMENT_BLOCKED (code 40).
 // Methods with NoCondition continue to work normally.
-// =============================================================================
 
 // blockedMethods are methods that require a condition (NEEDS_CURRENT_LEDGER,
 // NEEDS_CLOSED_LEDGER, or NEEDS_NETWORK_CONNECTION) and should be blocked.

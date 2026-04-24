@@ -47,10 +47,8 @@ func setupAccountObjectsTestServices(mock *accountObjectsMock) func() {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Test: Error cases – missing / invalid / malformed account
 // Based on rippled AccountObjects_test.cpp testErrors()
-// ---------------------------------------------------------------------------
 
 func TestAccountObjectsErrorValidation(t *testing.T) {
 	mock := newAccountObjectsMock()
@@ -193,10 +191,8 @@ func TestAccountObjectsErrorValidation(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Test: Response structure validation
 // Based on rippled AccountObjects_test.cpp – verify the response shape
-// ---------------------------------------------------------------------------
 
 func TestAccountObjectsResponseStructure(t *testing.T) {
 	mock := newAccountObjectsMock()
@@ -319,10 +315,8 @@ func TestAccountObjectsResponseStructure(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
 // Test: Empty objects for funded account with no owned objects
 // Based on rippled AccountObjects_test.cpp – empty account checks
-// ---------------------------------------------------------------------------
 
 func TestAccountObjectsEmptyAccount(t *testing.T) {
 	mock := newAccountObjectsMock()
@@ -380,10 +374,8 @@ func TestAccountObjectsEmptyAccount(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Test: Type filtering passes through to service layer
 // Based on rippled AccountObjects_test.cpp testObjectTypes()
-// ---------------------------------------------------------------------------
 
 func TestAccountObjectsTypeFiltering(t *testing.T) {
 	mock := newAccountObjectsMock()
@@ -458,10 +450,8 @@ func TestAccountObjectsTypeFiltering(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
 // Test: deletion_blockers_only flag
 // Based on rippled AccountObjects_test.cpp testObjectTypes() – deletion_blockers_only
-// ---------------------------------------------------------------------------
 
 func TestAccountObjectsDeletionBlockersOnly(t *testing.T) {
 	mock := newAccountObjectsMock()
@@ -530,10 +520,8 @@ func TestAccountObjectsDeletionBlockersOnly(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
 // Test: Pagination with limit and marker
 // Based on rippled AccountObjects_test.cpp testUnsteppedThenStepped()
-// ---------------------------------------------------------------------------
 
 func TestAccountObjectsPagination(t *testing.T) {
 	mock := newAccountObjectsMock()
@@ -676,10 +664,8 @@ func TestAccountObjectsPagination(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
 // Test: Ledger specification
 // Based on rippled's ledger specifier behavior
-// ---------------------------------------------------------------------------
 
 func TestAccountObjectsLedgerSpecification(t *testing.T) {
 	mock := newAccountObjectsMock()
@@ -776,9 +762,7 @@ func TestAccountObjectsLedgerSpecification(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
 // Test: Service unavailable / nil ledger
-// ---------------------------------------------------------------------------
 
 func TestAccountObjectsServiceUnavailable(t *testing.T) {
 	method := &handlers.AccountObjectsMethod{}
@@ -821,9 +805,7 @@ func TestAccountObjectsServiceUnavailable(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
 // Test: Method metadata
-// ---------------------------------------------------------------------------
 
 func TestAccountObjectsMethodMetadata(t *testing.T) {
 	method := &handlers.AccountObjectsMethod{}
@@ -841,10 +823,8 @@ func TestAccountObjectsMethodMetadata(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
 // Test: Invalid account types (expanded)
 // Based on rippled AccountObjects_test.cpp testInvalidAccountParam lambda
-// ---------------------------------------------------------------------------
 
 func TestAccountObjectsInvalidAccountTypes(t *testing.T) {
 	mock := newAccountObjectsMock()
@@ -894,10 +874,8 @@ func TestAccountObjectsInvalidAccountTypes(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Test: Malformed address formats
 // Based on rippled AccountObjects_test.cpp malformed account tests
-// ---------------------------------------------------------------------------
 
 func TestAccountObjectsMalformedAddresses(t *testing.T) {
 	mock := newAccountObjectsMock()
@@ -958,10 +936,8 @@ func TestAccountObjectsMalformedAddresses(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
 // Test: Service error propagation
 // Based on rippled error semantics for account_objects
-// ---------------------------------------------------------------------------
 
 func TestAccountObjectsServiceErrors(t *testing.T) {
 	mock := newAccountObjectsMock()
@@ -1016,10 +992,8 @@ func TestAccountObjectsServiceErrors(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
 // Test: Account field returned matches request account
 // Based on rippled – response account should echo the request account
-// ---------------------------------------------------------------------------
 
 func TestAccountObjectsAccountEcho(t *testing.T) {
 	mock := newAccountObjectsMock()
@@ -1064,9 +1038,7 @@ func TestAccountObjectsAccountEcho(t *testing.T) {
 		"Response account should echo the request account")
 }
 
-// ---------------------------------------------------------------------------
 // Test: Multiple API versions
-// ---------------------------------------------------------------------------
 
 func TestAccountObjectsApiVersions(t *testing.T) {
 	mock := newAccountObjectsMock()

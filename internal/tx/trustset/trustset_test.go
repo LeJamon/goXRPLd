@@ -18,7 +18,6 @@ func TestTrustSetValidation(t *testing.T) {
 		expectError bool
 		errorMsg    string
 	}{
-		// === Valid Trust Line Creation Tests ===
 		{
 			name: "valid trust line creation with positive limit",
 			trustSet: &TrustSet{
@@ -52,7 +51,6 @@ func TestTrustSetValidation(t *testing.T) {
 			expectError: false,
 		},
 
-		// === Remove Trust Line (Zero Limit) Tests ===
 		{
 			name: "valid remove trust line with zero limit",
 			trustSet: &TrustSet{
@@ -62,7 +60,6 @@ func TestTrustSetValidation(t *testing.T) {
 			expectError: false,
 		},
 
-		// === Missing LimitAmount Tests ===
 		{
 			name: "missing LimitAmount currency - should fail",
 			trustSet: &TrustSet{
@@ -109,7 +106,6 @@ func TestTrustSetValidation(t *testing.T) {
 			errorMsg:    "temBAD_LIMIT: negative credit limit",
 		},
 
-		// === Trust Line to Self Tests ===
 		{
 			name: "trust line to self - should fail",
 			trustSet: &TrustSet{
@@ -120,7 +116,6 @@ func TestTrustSetValidation(t *testing.T) {
 			errorMsg:    "temDST_IS_SRC: cannot create trust line to self",
 		},
 
-		// === Missing Account Tests ===
 		{
 			name: "missing account - should fail",
 			trustSet: &TrustSet{
@@ -131,7 +126,6 @@ func TestTrustSetValidation(t *testing.T) {
 			errorMsg:    "Account is required",
 		},
 
-		// === QualityIn and QualityOut Tests ===
 		{
 			name: "valid trust line with QualityIn",
 			trustSet: &TrustSet{

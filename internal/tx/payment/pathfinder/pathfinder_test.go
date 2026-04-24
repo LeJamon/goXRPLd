@@ -13,9 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ---------------------------------------------------------------------------
 // Mock LedgerView
-// ---------------------------------------------------------------------------
 
 // mockLedgerView is an in-memory implementation of tx.LedgerView for unit tests.
 type mockLedgerView struct {
@@ -98,9 +96,7 @@ func compareKeys(a, b [32]byte) int {
 	return 0
 }
 
-// ---------------------------------------------------------------------------
 // Test helper: create deterministic test account IDs
-// ---------------------------------------------------------------------------
 
 // testAccountID creates a deterministic 20-byte account ID from a seed byte.
 func testAccountID(seed byte) [20]byte {
@@ -118,9 +114,7 @@ func testAccountAddress(id [20]byte) string {
 	return state.EncodeAccountIDSafe(id)
 }
 
-// ---------------------------------------------------------------------------
 // Test helper: populate a mock ledger with ledger entries
-// ---------------------------------------------------------------------------
 
 // addAccount stores a serialized AccountRoot at the proper keylet.
 func addAccount(t *testing.T, ledger *mockLedgerView, accountID [20]byte, balance uint64, flags uint32) {
@@ -248,9 +242,7 @@ func addBookDir(t *testing.T, ledger *mockLedgerView, takerPays, takerGets payme
 	ledger.entries[k.Key] = data
 }
 
-// ===========================================================================
 // Test 1: Path type tables
-// ===========================================================================
 
 func TestPathTable_Entries(t *testing.T) {
 	// Verify all 5 payment types have entries in the table
@@ -309,9 +301,7 @@ func TestPathTable_NonXRPToSame_HasDirectAccount(t *testing.T) {
 		"first nonXRP-to-same pattern should be source->accounts->dest")
 }
 
-// ===========================================================================
 // Test 2: PaymentType classification
-// ===========================================================================
 
 func TestClassifyPayment_XRPToXRP(t *testing.T) {
 	src := testAccountID(1)
@@ -397,9 +387,7 @@ func TestClassifyPayment_EmptySrcCurrencyIsXRP(t *testing.T) {
 	require.Equal(t, ptXRP_to_XRP, pf.classifyPayment())
 }
 
-// ===========================================================================
 // Test 3: RippleLineCache
-// ===========================================================================
 
 func TestRippleLineCache_GetLedger(t *testing.T) {
 	ledger := newMockLedger()
@@ -560,9 +548,7 @@ func TestRippleLineCache_MultipleCurrencies(t *testing.T) {
 	require.True(t, currencies["EUR"])
 }
 
-// ===========================================================================
 // Test 4: AccountCurrencies
-// ===========================================================================
 
 func TestAccountSourceCurrencies_AlwaysIncludesXRP(t *testing.T) {
 	ledger := newMockLedger()
@@ -669,9 +655,7 @@ func TestAccountDestCurrencies_WithAvailableCapacity(t *testing.T) {
 		"bob should be able to receive USD (balance < limit)")
 }
 
-// ===========================================================================
 // Test 5: BookIndex
-// ===========================================================================
 
 func TestBookIndex_EmptyLedger(t *testing.T) {
 	ledger := newMockLedger()
@@ -753,9 +737,7 @@ func TestBookIndex_LazyBuild(t *testing.T) {
 	require.True(t, bi.built)
 }
 
-// ===========================================================================
 // Test 6: pathHasSeen and pathHasSeenIssue (loop detection)
-// ===========================================================================
 
 func TestPathHasSeen_EmptyPath(t *testing.T) {
 	acct := testAccountID(1)
@@ -839,9 +821,7 @@ func TestPathHasSeenIssue_DifferentCurrency(t *testing.T) {
 		"different currency should not match")
 }
 
-// ===========================================================================
 // Test 7: addUniquePath (deduplication)
-// ===========================================================================
 
 func TestAddUniquePath_NoDuplicates(t *testing.T) {
 	pf := &Pathfinder{}
@@ -880,9 +860,7 @@ func TestAddUniquePath_MakesCopy(t *testing.T) {
 		"stored path should be independent copy")
 }
 
-// ===========================================================================
 // Test 8: isNoRipple
-// ===========================================================================
 
 func TestIsNoRipple_XRPCurrency(t *testing.T) {
 	ledger := newMockLedger()
@@ -949,9 +927,7 @@ func TestIsNoRipple_FlagNotSet(t *testing.T) {
 		"NoRipple on from's side should not trigger")
 }
 
-// ===========================================================================
 // Test 9: pathsEqual
-// ===========================================================================
 
 func TestPathsEqual_Empty(t *testing.T) {
 	require.True(t, pathsEqual(nil, nil))
@@ -982,9 +958,7 @@ func TestPathsEqual_DifferentSteps(t *testing.T) {
 	require.False(t, pathsEqual(a, b))
 }
 
-// ===========================================================================
 // Test 10: pathTypeKey
-// ===========================================================================
 
 func TestPathTypeKey_DeterministicAndUnique(t *testing.T) {
 	pt1 := PathType{ntSOURCE, ntACCOUNTS, ntDESTINATION}
@@ -999,9 +973,7 @@ func TestPathTypeKey_DeterministicAndUnique(t *testing.T) {
 	require.NotEqual(t, k1, k2, "different PathType should produce different key")
 }
 
-// ===========================================================================
 // Test 11: currencyTo20
-// ===========================================================================
 
 func TestCurrencyTo20_XRP(t *testing.T) {
 	result := currencyTo20("XRP")
@@ -1028,9 +1000,7 @@ func TestCurrencyTo20_Standard3Char(t *testing.T) {
 	}
 }
 
-// ===========================================================================
 // Test 12: issueFromAmount
-// ===========================================================================
 
 func TestIssueFromAmount_XRP(t *testing.T) {
 	amt := state.NewXRPAmountFromInt(1000000)
@@ -1048,9 +1018,7 @@ func TestIssueFromAmount_IOU(t *testing.T) {
 	require.Equal(t, gw, issue.Issuer)
 }
 
-// ===========================================================================
 // Test 13: FindPaths — basic scenarios
-// ===========================================================================
 
 func TestFindPaths_ZeroDstAmount(t *testing.T) {
 	ledger := newMockLedger()
@@ -1303,9 +1271,7 @@ func TestFindPaths_SourceIsEffectiveDst_DefaultPath(t *testing.T) {
 	require.Empty(t, pf.CompletePaths(), "should have no explicit paths (default path suffices)")
 }
 
-// ===========================================================================
 // Test 14: BookIndex with offers for pathfinding
-// ===========================================================================
 
 func TestFindPaths_XRPToIOU_ThroughOfferBook(t *testing.T) {
 	// Alice sends XRP, Bob receives USD. There's an offer: XRP -> USD.
@@ -1361,9 +1327,7 @@ func TestFindPaths_XRPToIOU_ThroughOfferBook(t *testing.T) {
 	t.Logf("Found %d complete paths for XRP->USD", len(paths))
 }
 
-// ===========================================================================
 // Test 15: PathRank sorting
-// ===========================================================================
 
 func TestPathRank_QualitySorting(t *testing.T) {
 	ranks := []PathRank{
@@ -1435,9 +1399,7 @@ func TestPathRank_IndexTiebreaker(t *testing.T) {
 	require.Equal(t, 1, ranks[2].Index)
 }
 
-// ===========================================================================
 // Test 16: NewPathfinder constructor
-// ===========================================================================
 
 func TestNewPathfinder_SourceStep(t *testing.T) {
 	ledger := newMockLedger()
@@ -1475,9 +1437,7 @@ func TestNewPathfinder_XRPSourceHasNoIssuer(t *testing.T) {
 	require.Empty(t, pf.source.Issuer, "XRP source should have no issuer")
 }
 
-// ===========================================================================
 // Test 17: PathRequest
-// ===========================================================================
 
 func TestNewPathRequest_Defaults(t *testing.T) {
 	src := testAccountID(1)
@@ -1501,9 +1461,7 @@ func TestNewPathRequest_WithSendMax(t *testing.T) {
 	require.NotNil(t, pr.sendMax)
 }
 
-// ===========================================================================
 // Test 18: AccountExists
-// ===========================================================================
 
 func TestAccountExists_Exists(t *testing.T) {
 	ledger := newMockLedger()
@@ -1519,9 +1477,7 @@ func TestAccountExists_DoesNotExist(t *testing.T) {
 	require.False(t, AccountExists(ledger, acct))
 }
 
-// ===========================================================================
 // Test 19: addPathsForType memoization
-// ===========================================================================
 
 func TestAddPathsForType_Memoization(t *testing.T) {
 	ledger := newMockLedger()
@@ -1580,9 +1536,7 @@ func TestAddPathsForType_EmptyPathType(t *testing.T) {
 	require.Len(t, result, 1, "empty PathType should produce one empty path")
 }
 
-// ===========================================================================
 // Test 20: Integration scenario — IOU-to-same-IOU path discovery
-// ===========================================================================
 
 func TestFindPaths_IOUSameIOU_MultipleTrustLines(t *testing.T) {
 	// Setup:
@@ -1645,9 +1599,7 @@ func TestFindPaths_IOUSameIOU_MultipleTrustLines(t *testing.T) {
 	// With multiple intermediaries, we expect paths through gw and possibly through carol.
 }
 
-// ===========================================================================
 // Test 21: getPathsOut
-// ===========================================================================
 
 func TestGetPathsOut_AccountNotFound(t *testing.T) {
 	ledger := newMockLedger()
@@ -1704,9 +1656,7 @@ func TestGetPathsOut_Caching(t *testing.T) {
 	require.True(t, ok, "result should be cached")
 }
 
-// ===========================================================================
 // Test 22: isNoRippleOut
-// ===========================================================================
 
 func TestIsNoRippleOut_EmptyPath(t *testing.T) {
 	pf := &Pathfinder{}
@@ -1721,9 +1671,7 @@ func TestIsNoRippleOut_LastStepNoAccount(t *testing.T) {
 	require.False(t, pf.isNoRippleOut(path), "step without account has no NoRipple")
 }
 
-// ===========================================================================
 // Test 23: buildPathFindTrustLine
-// ===========================================================================
 
 func TestBuildPathFindTrustLine_ViewAsLow(t *testing.T) {
 	low := testAccountID(1)
@@ -1781,9 +1729,7 @@ func TestBuildPathFindTrustLine_ViewAsHigh(t *testing.T) {
 	require.False(t, line.AuthPeer, "low's Auth should not be set")
 }
 
-// ===========================================================================
 // Utility: compareAccountIDs (used by helpers above)
-// ===========================================================================
 
 func compareAccountIDs(a, b [20]byte) int {
 	for i := 0; i < 20; i++ {
@@ -1797,9 +1743,7 @@ func compareAccountIDs(a, b [20]byte) int {
 	return 0
 }
 
-// ===========================================================================
 // Test 24: issueFromTxAmount
-// ===========================================================================
 
 func TestIssueFromTxAmount_XRP(t *testing.T) {
 	amt := tx.NewXRPAmount(1000000)
@@ -1816,9 +1760,7 @@ func TestIssueFromTxAmount_IOU(t *testing.T) {
 	require.Equal(t, gw, issue.Issuer)
 }
 
-// ===========================================================================
 // Test 25: Constants
-// ===========================================================================
 
 func TestConstants(t *testing.T) {
 	require.Equal(t, 10000, highPriority)
@@ -1837,9 +1779,7 @@ func TestAddFlags(t *testing.T) {
 	require.Equal(t, uint32(0x080), afAC_LAST)
 }
 
-// ===========================================================================
 // Test 26: Additional path type table coverage
-// ===========================================================================
 
 func TestPathTable_AllEntriesEndWithDestination(t *testing.T) {
 	for pt, entries := range pathTable {
@@ -1922,9 +1862,7 @@ func TestPathTable_NonXRPToXRP_KnownSecondEntry(t *testing.T) {
 	require.Equal(t, expected, second.Type)
 }
 
-// ===========================================================================
 // Test 27: Additional classifyPayment edge cases
-// ===========================================================================
 
 func TestClassifyPayment_XRP_EmptyString(t *testing.T) {
 	// Empty source currency plus native dest should be XRP-to-XRP
@@ -1937,9 +1875,7 @@ func TestClassifyPayment_XRP_EmptyString(t *testing.T) {
 	require.Equal(t, ptXRP_to_XRP, pf.classifyPayment())
 }
 
-// ===========================================================================
 // Test 28: Additional RippleLineCache — multiple peers
-// ===========================================================================
 
 func TestRippleLineCache_MultiplePeers(t *testing.T) {
 	ledger := newMockLedger()
@@ -1979,9 +1915,7 @@ func TestRippleLineCache_MultiplePeers(t *testing.T) {
 	require.True(t, currencies["EUR"])
 }
 
-// ===========================================================================
 // Test 29: Additional AccountCurrencies — exhausted credit
-// ===========================================================================
 
 func TestAccountSourceCurrencies_ExhaustedCredit(t *testing.T) {
 	ledger := newMockLedger()
@@ -2103,9 +2037,7 @@ func TestAccountDestCurrencies_AtCapacity(t *testing.T) {
 	require.True(t, currencies[payment.Issue{Currency: "XRP"}])
 }
 
-// ===========================================================================
 // Test 30: Additional BookIndex coverage
-// ===========================================================================
 
 func TestBookIndex_MultipleOffersForSameBook(t *testing.T) {
 	// Two offers with the same taker_pays issue should deduplicate to one book entry.
@@ -2192,9 +2124,7 @@ func TestBookIndex_IsBookToXRP_NotXRP(t *testing.T) {
 	require.False(t, bi.IsBookToXRP(usdIssue), "USD->EUR should not be a book to XRP")
 }
 
-// ===========================================================================
 // Test 31: Additional pathHasSeen with multiple steps
-// ===========================================================================
 
 func TestPathHasSeen_MultiStepPath(t *testing.T) {
 	acct1 := testAccountID(1)
@@ -2228,9 +2158,7 @@ func TestPathHasSeenIssue_MultipleSteps(t *testing.T) {
 	require.False(t, pathHasSeenIssue(path, payment.Issue{Currency: "USD", Issuer: acct2}))
 }
 
-// ===========================================================================
 // Test 32: PathRank sorting with liquidity
-// ===========================================================================
 
 func TestPathRank_LiquiditySorting(t *testing.T) {
 	// Same quality, different liquidity: higher liquidity should come first.
@@ -2292,9 +2220,7 @@ func TestPathRank_MixedCriteria(t *testing.T) {
 	require.Equal(t, 0, ranks[2].Index, "worst quality last despite high liquidity")
 }
 
-// ===========================================================================
 // Test 33: currencyTo20 additional cases
-// ===========================================================================
 
 func TestCurrencyTo20_EUR(t *testing.T) {
 	result := currencyTo20("EUR")
@@ -2312,9 +2238,7 @@ func TestCurrencyTo20_DifferentCurrenciesAreDifferent(t *testing.T) {
 	require.NotEqual(t, eur, btc)
 }
 
-// ===========================================================================
 // Test 34: FindPaths — XRP destination when dest doesn't exist
-// ===========================================================================
 
 func TestFindPaths_DestNotExist_XRPAllowed(t *testing.T) {
 	// XRP payments to non-existent destination may still proceed
@@ -2339,9 +2263,7 @@ func TestFindPaths_DestNotExist_XRPAllowed(t *testing.T) {
 	require.True(t, result, "XRP payment to non-existent dest should not fail at pathfinding stage")
 }
 
-// ===========================================================================
 // Test 35: buildPathFindTrustLine balance negation
-// ===========================================================================
 
 func TestBuildPathFindTrustLine_BalanceNegation(t *testing.T) {
 	low := testAccountID(1)
@@ -2414,9 +2336,7 @@ func TestBuildPathFindTrustLine_AllFlags(t *testing.T) {
 	require.True(t, highLine.AuthPeer, "high: LowAuth -> AuthPeer")
 }
 
-// ===========================================================================
 // Test 36: getPathsOut with trust lines and books
-// ===========================================================================
 
 func TestGetPathsOut_WithTrustLines(t *testing.T) {
 	ledger := newMockLedger()
@@ -2487,9 +2407,7 @@ func TestGetPathsOut_FrozenPeerExcluded(t *testing.T) {
 	require.Equal(t, 0, count, "frozen peer should be excluded from paths out")
 }
 
-// ===========================================================================
 // Test 37: Issue.IsXRP
-// ===========================================================================
 
 func TestIssue_IsXRP(t *testing.T) {
 	require.True(t, payment.Issue{Currency: "XRP"}.IsXRP())
@@ -2498,9 +2416,7 @@ func TestIssue_IsXRP(t *testing.T) {
 	require.False(t, payment.Issue{Currency: "EUR", Issuer: testAccountID(1)}.IsXRP())
 }
 
-// ===========================================================================
 // Test 38: PathRequest with explicit source currencies
-// ===========================================================================
 
 func TestNewPathRequest_WithSourceCurrencies(t *testing.T) {
 	src := testAccountID(1)
@@ -2517,9 +2433,7 @@ func TestNewPathRequest_WithSourceCurrencies(t *testing.T) {
 	require.True(t, pr.convertAll)
 }
 
-// ===========================================================================
 // Test 39: CompletePaths and PathRanks accessors
-// ===========================================================================
 
 func TestPathfinder_Accessors(t *testing.T) {
 	pf := &Pathfinder{}
@@ -2527,9 +2441,7 @@ func TestPathfinder_Accessors(t *testing.T) {
 	require.Nil(t, pf.PathRanks(), "new pathfinder should have nil path ranks")
 }
 
-// ===========================================================================
 // Test 40: isNoRippleOut with single-step path from source
-// ===========================================================================
 
 func TestIsNoRippleOut_SingleStep_FromSource(t *testing.T) {
 	ledger := newMockLedger()

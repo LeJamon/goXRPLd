@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ============== Compression Roundtrip Tests ==============
 // Reference: rippled src/test/overlay/compression_test.cpp
 
 // Compression constants (matching rippled)
@@ -217,8 +216,6 @@ func sha512Half(data []byte) []byte {
 	h := sha512.Sum512(data)
 	return h[:32]
 }
-
-// ============== Test Cases ==============
 
 // TestCompressionRoundtrip_Manifests tests manifest compression roundtrip
 // Reference: rippled compression_test.cpp - testManifests()

@@ -75,9 +75,7 @@ func setupTestServicesTx(mock *mockLedgerServiceTx) func() {
 	}
 }
 
-// =============================================================================
 // Transaction Lookup Tests
-// =============================================================================
 
 // TestTxMethodErrorValidation tests error handling for invalid inputs
 // Based on rippled Transaction_test.cpp
@@ -249,7 +247,6 @@ func TestTxMethodErrorValidation(t *testing.T) {
 			// Reset mock state
 			mock.txLookupError = nil
 
-			// Setup mock if needed
 			if tc.setupMock != nil {
 				tc.setupMock()
 			}
@@ -262,7 +259,6 @@ func TestTxMethodErrorValidation(t *testing.T) {
 				require.NoError(t, err)
 			}
 
-			// Call the method
 			result, rpcErr := method.Handle(ctx, paramsJSON)
 
 			// Verify error response
@@ -508,10 +504,8 @@ func TestTxMethodBinaryOption(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // CTID (Concise Transaction ID) Tests
 // Based on rippled Transaction_test.cpp testCTIDValidation
-// =============================================================================
 
 // EncodeCTID encodes ledger_seq, txn_index, and network_id into a CTID string
 // CTID format: C + ledger_seq (7 hex nibbles) + txn_index (4 hex nibbles) + network_id (4 hex nibbles) = 16 chars total
@@ -1026,10 +1020,8 @@ func TestCTIDFormatValidation(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Range Search Tests
 // Based on rippled Transaction_test.cpp testRangeRequest
-// =============================================================================
 
 // TestTxMethodLedgerRange tests min_ledger and max_ledger parameters
 // Based on rippled Transaction_test.cpp testRangeRequest
@@ -1274,9 +1266,7 @@ func boolPtr(b bool) *bool {
 	return &b
 }
 
-// =============================================================================
 // Response Field Tests
-// =============================================================================
 
 // TestTxMethodResponseFields tests that response contains expected fields
 // Based on rippled Transaction_test.cpp testRequest and testBinaryRequest
@@ -1427,9 +1417,7 @@ func TestTxMethodResponseFields(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // Service Availability Tests
-// =============================================================================
 
 // TestTxMethodServiceUnavailable tests behavior when ledger service is not available
 func TestTxMethodServiceUnavailable(t *testing.T) {
@@ -1487,9 +1475,7 @@ func TestTxMethodServiceNilLedger(t *testing.T) {
 	assert.Contains(t, rpcErr.Message, "Ledger service not available")
 }
 
-// =============================================================================
 // Method Metadata Tests
-// =============================================================================
 
 // TestTxMethodMetadata tests the method's metadata functions
 func TestTxMethodMetadata(t *testing.T) {
@@ -1508,9 +1494,7 @@ func TestTxMethodMetadata(t *testing.T) {
 	})
 }
 
-// =============================================================================
 // API Version Tests
-// =============================================================================
 
 // TestTxMethodApiVersions tests behavior across different API versions
 // Based on rippled Transaction_test.cpp testRequest with api_version parameter
@@ -1573,10 +1557,8 @@ func TestTxMethodApiVersions(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // CTID Lookup Tests (when implemented)
 // Based on rippled Transaction_test.cpp testCTIDRPC
-// =============================================================================
 
 // TestTxMethodLookupByCTID documents expected CTID lookup behavior
 // Based on rippled Transaction_test.cpp testCTIDRPC
@@ -1666,9 +1648,7 @@ func TestCTIDNetworkIDInResponse(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Edge Cases and Error Conditions
-// =============================================================================
 
 // TestTxMethodEdgeCases tests various edge cases
 func TestTxMethodEdgeCases(t *testing.T) {

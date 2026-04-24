@@ -24,12 +24,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// =============================================================================
 // Bad Market Tests
 // Based on rippled Subscribe_test.cpp testSubErrors(): badMarket
 // rippled returns "badMarket" / "No such market." when taker_pays and
 // taker_gets specify the same currency+issuer pair.
-// =============================================================================
 
 // TestSubscribeConformanceBadMarket tests that subscribing to a book where both
 // sides are the same currency/issuer is rejected.
@@ -105,12 +103,10 @@ func TestSubscribeConformanceBadMarketXRP(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Unsubscribe Stops Message Delivery Tests
 // Based on rippled Subscribe_test.cpp testServer() and testTransactions_APIv1()
 // After unsubscribing from a stream, the connection should NOT receive messages
 // that are subsequently broadcast to that stream.
-// =============================================================================
 
 // TestSubscribeConformanceUnsubscribeStopsDelivery verifies that after
 // unsubscribing from a stream, no further messages are delivered.
@@ -204,10 +200,8 @@ func TestSubscribeConformanceUnsubscribeAccountStopsDelivery(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Multiple Connections: One Unsubscribes, Others Still Receive
 // Based on rippled testLedger() / testTransactions_APIv1() patterns
-// =============================================================================
 
 // TestSubscribeConformancePartialUnsubscribe verifies that when one connection
 // unsubscribes, other connections still receive messages.
@@ -250,11 +244,9 @@ func TestSubscribeConformancePartialUnsubscribe(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Subscribe/Unsubscribe Full Lifecycle on Same Connection
 // Based on rippled testTransactions_APIv1(): subscribe transactions, unsub,
 // subscribe accounts, unsub
-// =============================================================================
 
 // TestSubscribeConformanceFullLifecycle tests the full lifecycle of
 // subscribe -> receive -> unsubscribe -> re-subscribe to different stream.
@@ -324,10 +316,8 @@ func TestSubscribeConformanceFullLifecycle(t *testing.T) {
 	require.Nil(t, err)
 }
 
-// =============================================================================
 // Accounts Proposed Unsubscribe Tests
 // Based on rippled Subscribe_test.cpp testSubErrors() for accounts_proposed
-// =============================================================================
 
 // TestSubscribeConformanceAccountsProposedUnsubscribe tests the full lifecycle
 // of subscribing and unsubscribing from accounts_proposed.
@@ -361,10 +351,8 @@ func TestSubscribeConformanceAccountsProposedUnsubscribe(t *testing.T) {
 	assert.False(t, exists, "accounts_proposed subscription should be removed")
 }
 
-// =============================================================================
 // Empty Subscription Request Tests
 // Based on rippled: sending subscribe with no params still returns success
-// =============================================================================
 
 // TestSubscribeConformanceEmptyRequest verifies that subscribing with an empty
 // request (no streams, accounts, or books) succeeds.
@@ -400,12 +388,10 @@ func TestSubscribeConformanceEmptyUnsubscribeRequest(t *testing.T) {
 	assert.Equal(t, 1, len(conn.Subscriptions), "Existing subscriptions should remain")
 }
 
-// =============================================================================
 // Subscribe Response Contains Ledger Info Tests
 // Based on rippled Subscribe_test.cpp testLedger():
 //   jv[result][ledger_index] == 2
 //   jv[result][network_id] == env.app().config().NETWORK_ID
-// =============================================================================
 
 // TestSubscribeConformanceLedgerResponseFields verifies that the subscribe
 // response for a ledger stream contains the expected fields.
@@ -431,10 +417,8 @@ func TestSubscribeConformanceLedgerResponseFields(t *testing.T) {
 	assert.Equal(t, uint64(2000000), response.ReserveInc, "ReserveInc should match")
 }
 
-// =============================================================================
 // book_changes Stream Tests
 // Based on rippled Subscribe_test.cpp testSubBookChanges()
-// =============================================================================
 
 // TestSubscribeConformanceBookChangesStream verifies that subscribing to the
 // book_changes stream works correctly, matching the SubOrderBooks constant.
@@ -476,11 +460,9 @@ func TestSubscribeConformanceBookChangesStream(t *testing.T) {
 	assert.False(t, exists, "book_changes subscription should be removed")
 }
 
-// =============================================================================
 // Concurrent Safety Tests
 // Subscription management must be safe for concurrent access since multiple
 // WebSocket connections will subscribe/unsubscribe simultaneously.
-// =============================================================================
 
 // TestSubscribeConformanceConcurrentAccess tests that concurrent subscribe and
 // unsubscribe operations do not cause data races or panics.
@@ -539,11 +521,9 @@ func TestSubscribeConformanceConcurrentAccess(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Unsubscribe From Invalid Stream Tests
 // Based on rippled Subscribe_test.cpp testSubErrors(false) - unsubscribe also
 // validates stream names the same way subscribe does.
-// =============================================================================
 
 // TestSubscribeConformanceUnsubscribeInvalidStream verifies that unsubscribing
 // from an invalid stream name does not produce an error (current behavior is
@@ -573,9 +553,7 @@ func TestSubscribeConformanceUnsubscribeInvalidStream(t *testing.T) {
 	assert.True(t, exists, "Ledger subscription should remain intact")
 }
 
-// =============================================================================
 // Connection Removal Cleans Up Subscriptions
-// =============================================================================
 
 // TestSubscribeConformanceConnectionRemovalCleansUp verifies that removing a
 // connection cleans up its subscriptions so broadcast no longer targets it.
@@ -607,10 +585,8 @@ func TestSubscribeConformanceConnectionRemovalCleansUp(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Subscribe Re-subscribe After Unsubscribe
 // Based on rippled behavior: a connection can re-subscribe after unsubscribing
-// =============================================================================
 
 // TestSubscribeConformanceResubscribeAfterUnsubscribe verifies that a connection
 // can subscribe again after unsubscribing.
@@ -650,9 +626,7 @@ func TestSubscribeConformanceResubscribeAfterUnsubscribe(t *testing.T) {
 	}
 }
 
-// =============================================================================
 // Unsubscribe All Streams At Once
-// =============================================================================
 
 // TestSubscribeConformanceUnsubscribeAllStreams verifies that unsubscribing from
 // multiple streams in a single request removes all of them.
@@ -688,10 +662,8 @@ func TestSubscribeConformanceUnsubscribeAllStreams(t *testing.T) {
 		"All subscriptions should be removed")
 }
 
-// =============================================================================
 // Mixed Subscribe and Unsubscribe in Single Request
 // Based on rippled: unsubscribe from some streams while keeping others
-// =============================================================================
 
 // TestSubscribeConformanceSelectiveUnsubscribe verifies selective unsubscription
 // while keeping other subscription types intact.
