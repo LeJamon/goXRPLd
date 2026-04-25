@@ -243,7 +243,7 @@ func (a *Archive) run() {
 				if v == nil {
 					continue
 				}
-				rec := toRecord(v)
+				rec := toRecord(v, a.lastSeq.Load())
 				if rec == nil {
 					continue
 				}
@@ -275,7 +275,7 @@ func (a *Archive) run() {
 			if v == nil {
 				continue
 			}
-			rec := toRecord(v)
+			rec := toRecord(v, a.lastSeq.Load())
 			if rec == nil {
 				continue
 			}
@@ -306,7 +306,18 @@ func (a *Archive) run() {
 
 // toRecord marshals a Validation into the archive row shape. Returns nil
 // on anything invalid so a single bad validation can't poison the batch.
-func toRecord(v *consensus.Validation) *relationaldb.ValidationRecord {
+//
+// initialSeq is the most-recent fully-validated ledger seq AT THE TIME
+// the row is committed — matching rippled's column comment ("the current
+// ledger seq when the row is inserted; only relevant during online
+// delete"). Pass 0 if no fully-validated pivot has been observed yet;
+// the column then degenerates to LedgerSeq, which is harmless.
+//
+// Non-Full validations are filtered upstream at ValidationTracker.Add
+// (validations.go:297) — they never enter the tracker, so the OnStale
+// stream never carries them. We don't re-filter here; rippled's
+// historical doStaleWrite filter is therefore moot for goXRPL.
+func toRecord(v *consensus.Validation, initialSeq uint32) *relationaldb.ValidationRecord {
 	if v == nil {
 		return nil
 	}
@@ -326,9 +337,13 @@ func toRecord(v *consensus.Validation) *relationaldb.ValidationRecord {
 		flags |= 0x80000001
 	}
 
+	if initialSeq == 0 {
+		initialSeq = v.LedgerSeq
+	}
+
 	rec := &relationaldb.ValidationRecord{
 		LedgerSeq:  relationaldb.LedgerIndex(v.LedgerSeq),
-		InitialSeq: relationaldb.LedgerIndex(v.LedgerSeq),
+		InitialSeq: relationaldb.LedgerIndex(initialSeq),
 		NodePubKey: append([]byte(nil), v.NodeID[:]...),
 		Signature:  append([]byte(nil), v.Signature...),
 		SignTime:   v.SignTime,
