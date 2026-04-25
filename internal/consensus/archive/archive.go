@@ -131,16 +131,22 @@ func (a *Archive) NoteFullyValidated(seq uint32) {
 }
 
 // Flush blocks until every stale validation enqueued before the call has
-// been committed. After Close, Flush is a no-op.
+// been committed. Returns ErrClosed if called after Close so callers
+// notice attempts to flush a stopped archive (the previous silent-nil
+// behaviour hid bugs); returns nil for a nil receiver or a nil-repo
+// archive (those are configured no-ops, not error states).
 //
-// Implemented as a two-barrier sync: we send an ack channel on flushReq
-// AFTER every previously-enqueued OnStale has landed in ch (FIFO on the
-// same goroutine ordering), and the writer loop closes the ack only
-// after it has fully drained ch up to that point and committed the
-// resulting batch.
+// Implemented as an ack-channel barrier: we send an ack channel on
+// flushReq AFTER every previously-enqueued OnStale has landed in ch
+// (FIFO on the same goroutine ordering), and the writer loop closes the
+// ack only after it has fully drained ch up to that point and committed
+// the resulting batch.
 func (a *Archive) Flush(ctx context.Context) error {
-	if a == nil || a.repo == nil || a.closed.Load() {
+	if a == nil || a.repo == nil {
 		return nil
+	}
+	if a.closed.Load() {
+		return ErrClosed
 	}
 	ack := make(chan struct{})
 	select {
@@ -195,10 +201,27 @@ func (a *Archive) Close(ctx context.Context) error {
 	return nil
 }
 
+// retentionMinInterval is the minimum wall-clock gap between two
+// retention sweeps. Decoupling retention from the per-batch flush rate
+// caps DELETE pressure under sustained load: with BatchSize=128 and
+// FlushInterval=1s the writer can commit every second, but retention
+// only runs ~once per minute. The bounded DeleteBatch keeps each sweep
+// cheap, so the archive size still tracks RetentionLedgers within a
+// minute of any seq advance.
+const retentionMinInterval = time.Minute
+
+// saveBatchMaxAttempts is how many times the writer retries a failed
+// SaveBatch before logging and dropping the batch. One retry catches
+// transient lock contention / connection blips; persistent failure
+// (disk full, schema drift) gets logged at Error level so the operator
+// notices, then dropped to avoid unbounded memory growth.
+const saveBatchMaxAttempts = 2
+
 // run is the writer goroutine. It accumulates up to BatchSize rows or
 // waits FlushInterval, whichever comes first, then commits. Retention
-// runs after every non-empty commit so the archive size is bounded even
-// under a steady stale-validation stream.
+// runs after every non-empty commit BUT only if at least
+// retentionMinInterval has elapsed since the last sweep — see comment
+// on retentionMinInterval for why per-flush retention is too aggressive.
 func (a *Archive) run() {
 	defer a.wg.Done()
 	defer close(a.flushed)
@@ -206,29 +229,56 @@ func (a *Archive) run() {
 	ticker := time.NewTicker(a.cfg.FlushInterval)
 	defer ticker.Stop()
 
+	var lastRetention time.Time
+
 	batch := make([]*relationaldb.ValidationRecord, 0, a.cfg.BatchSize)
 	flush := func(reason string) {
 		if len(batch) == 0 {
 			return
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		err := a.repo.SaveBatch(ctx, batch)
-		cancel()
+
+		// Retry-once on SaveBatch error. Most failures are transient
+		// (SQLite SQLITE_BUSY under contention, brief Postgres
+		// disconnects) and a single 50ms backoff clears them.
+		var err error
+		for attempt := 1; attempt <= saveBatchMaxAttempts; attempt++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			err = a.repo.SaveBatch(ctx, batch)
+			cancel()
+			if err == nil {
+				break
+			}
+			if attempt < saveBatchMaxAttempts {
+				a.logger.Warn("validation archive: batch write failed; retrying",
+					slog.Int("rows", len(batch)), slog.Int("attempt", attempt), slog.String("err", err.Error()))
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
 		if err != nil {
-			a.logger.Error("validation archive: batch write failed",
-				slog.Int("rows", len(batch)), slog.String("reason", reason), slog.String("err", err.Error()))
+			// Persistent failure: log at Error so operators notice, then
+			// drop the batch. Re-queueing indefinitely would let memory
+			// grow without bound on a permanently broken backend, which
+			// is strictly worse than visible data loss with a paper
+			// trail.
+			a.logger.Error("validation archive: batch write failed permanently; dropping rows",
+				slog.Int("rows", len(batch)),
+				slog.Int("attempts", saveBatchMaxAttempts),
+				slog.String("reason", reason),
+				slog.String("err", err.Error()))
 		} else {
 			a.logger.Debug("validation archive: batch committed",
 				slog.Int("rows", len(batch)), slog.String("reason", reason))
 		}
 		batch = batch[:0]
 
-		// Bounded retention sweep after each commit. Errors are logged
-		// but don't stop the writer — retention lag is recoverable.
-		if a.cfg.RetentionLedgers > 0 {
+		// Retention sweep — gated on retentionMinInterval to keep
+		// DELETE pressure off the hot path under sustained flush
+		// activity. Errors are logged but don't stop the writer.
+		if a.cfg.RetentionLedgers > 0 && time.Since(lastRetention) >= retentionMinInterval {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			_, rerr := a.ApplyRetention(ctx)
 			cancel()
+			lastRetention = time.Now()
 			if rerr != nil {
 				a.logger.Warn("validation archive: retention sweep failed",
 					slog.String("err", rerr.Error()))
