@@ -13,11 +13,12 @@ func mkValidationRecord(ledgerSeq uint32, nodeByte byte) *relationaldb.Validatio
 		LedgerSeq:  relationaldb.LedgerIndex(ledgerSeq),
 		InitialSeq: relationaldb.LedgerIndex(ledgerSeq - 1),
 		NodePubKey: make([]byte, 33),
-		Signature:  []byte{0xAB, 0xCD, 0xEF, byte(ledgerSeq)},
 		SignTime:   time.Unix(1700000000, 0).UTC(),
 		SeenTime:   time.Unix(1700000005, 0).UTC(),
 		Flags:      0x80000001,
-		Raw:        []byte{0xDE, 0xAD, 0xBE, 0xEF, byte(ledgerSeq), nodeByte},
+		// Raw includes the signature in the canonical wire format —
+		// the schema has no separate signature column.
+		Raw: []byte{0xDE, 0xAD, 0xBE, 0xEF, byte(ledgerSeq), nodeByte},
 	}
 	rec.LedgerHash[0] = byte(ledgerSeq)
 	rec.LedgerHash[31] = nodeByte
@@ -36,7 +37,7 @@ func recordsEqual(a, b *relationaldb.ValidationRecord) bool {
 	if !a.SignTime.Equal(b.SignTime) || !a.SeenTime.Equal(b.SeenTime) {
 		return false
 	}
-	if !byteEq(a.NodePubKey, b.NodePubKey) || !byteEq(a.Signature, b.Signature) || !byteEq(a.Raw, b.Raw) {
+	if !byteEq(a.NodePubKey, b.NodePubKey) || !byteEq(a.Raw, b.Raw) {
 		return false
 	}
 	return true

@@ -36,15 +36,18 @@ type ValidationArchiveLookup interface {
 // ArchivedValidation is the RPC-shaped projection of a validation row.
 // Kept here (rather than re-exporting relationaldb.ValidationRecord) so
 // the RPC layer never depends on the storage package.
+//
+// The signature is part of Raw (sfSignature in the canonical XRPL wire
+// format) — handlers that need it parse Raw via the binary codec rather
+// than reading a separate column.
 type ArchivedValidation struct {
 	LedgerSeq  uint32
 	LedgerHash [32]byte
 	NodePubKey []byte
-	Signature  []byte
 	SignTimeS  int64 // unix seconds
 	SeenTimeS  int64
 	Flags      uint32
-	Raw        []byte
+	Raw        []byte // canonical STValidation wire bytes (includes signature)
 }
 
 // ManifestLookup is the read-only facet of the validator-manifest cache

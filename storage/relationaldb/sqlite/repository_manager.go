@@ -225,7 +225,6 @@ func (rm *RepositoryManager) initValidationSchema(ctx context.Context) error {
 			initial_seq  INTEGER NOT NULL,
 			ledger_hash  BLOB NOT NULL,
 			node_pubkey  BLOB NOT NULL,
-			signature    BLOB NOT NULL,
 			sign_time    INTEGER NOT NULL,
 			seen_time    INTEGER NOT NULL,
 			flags        INTEGER NOT NULL,

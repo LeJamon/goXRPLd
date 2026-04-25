@@ -188,7 +188,6 @@ func (rm *RepositoryManager) initSchema(ctx context.Context) error {
 			initial_seq  BIGINT NOT NULL,
 			ledger_hash  BYTEA NOT NULL,
 			node_pubkey  BYTEA NOT NULL,
-			signature    BYTEA NOT NULL,
 			sign_time    BIGINT NOT NULL,
 			seen_time    BIGINT NOT NULL,
 			flags        BIGINT NOT NULL,

@@ -9,16 +9,19 @@ import (
 // mirror rippled's historical Validations table (DBInit.h, pre-May-2019)
 // augmented with SeenTime and Flags so forensic tooling can replay the
 // receive-side perspective, not just the signed payload.
+//
+// The signature lives inside Raw (sfSignature is part of the canonical
+// STValidation wire format) — there is no separate Signature column.
+// Callers that need the signature parse Raw via the binary codec.
 type ValidationRecord struct {
 	LedgerSeq  LedgerIndex
 	InitialSeq LedgerIndex
 	LedgerHash Hash
 	NodePubKey []byte // 33-byte compressed pubkey
-	Signature  []byte
 	SignTime   time.Time
 	SeenTime   time.Time
 	Flags      uint32
-	Raw        []byte // canonical XRPL-binary STValidation blob
+	Raw        []byte // canonical XRPL-binary STValidation blob (includes signature)
 }
 
 // ValidationRepository persists stale validations and answers historical

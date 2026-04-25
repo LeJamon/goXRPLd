@@ -38,7 +38,7 @@ func (r *ValidationRepository) getExecutor() executor {
 }
 
 const validationSelectCols = `ledger_seq, initial_seq, ledger_hash, node_pubkey,
-	signature, sign_time, seen_time, flags, raw`
+	sign_time, seen_time, flags, raw`
 
 // xrplEpochOffset is the difference between Unix epoch (1970-01-01) and
 // the XRPL epoch (2000-01-01). Times stored in the archive are XRPL-epoch
@@ -66,12 +66,12 @@ func (r *ValidationRepository) Save(ctx context.Context, v *relationaldb.Validat
 	_, err := r.getExecutor().ExecContext(ctx, `
 		INSERT INTO validations (
 			ledger_seq, initial_seq, ledger_hash, node_pubkey,
-			signature, sign_time, seen_time, flags, raw
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			sign_time, seen_time, flags, raw
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(ledger_hash, node_pubkey) DO NOTHING
 	`,
 		int64(v.LedgerSeq), int64(v.InitialSeq), v.LedgerHash[:], v.NodePubKey,
-		v.Signature, toXRPLEpochSeconds(v.SignTime), toXRPLEpochSeconds(v.SeenTime),
+		toXRPLEpochSeconds(v.SignTime), toXRPLEpochSeconds(v.SeenTime),
 		int64(v.Flags), v.Raw,
 	)
 	if err != nil {
@@ -123,7 +123,7 @@ func (r *ValidationRepository) scanRow(row interface {
 
 	if err := row.Scan(
 		&ledgerSeq, &initialSeq, &ledgerHash, &rec.NodePubKey,
-		&rec.Signature, &signTime, &seenTime, &flags, &rec.Raw,
+		&signTime, &seenTime, &flags, &rec.Raw,
 	); err != nil {
 		return nil, err
 	}

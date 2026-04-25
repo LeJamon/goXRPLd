@@ -395,7 +395,6 @@ func toRecord(v *consensus.Validation, initialSeq uint32) *relationaldb.Validati
 		LedgerSeq:  relationaldb.LedgerIndex(v.LedgerSeq),
 		InitialSeq: relationaldb.LedgerIndex(initialSeq),
 		NodePubKey: append([]byte(nil), v.NodeID[:]...),
-		Signature:  append([]byte(nil), v.Signature...),
 		SignTime:   v.SignTime,
 		SeenTime:   v.SeenTime,
 		Flags:      flags,

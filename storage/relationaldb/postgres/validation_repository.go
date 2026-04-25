@@ -35,7 +35,7 @@ func (r *ValidationRepository) getExecutor() executor {
 }
 
 const validationSelectCols = `ledger_seq, initial_seq, ledger_hash, node_pubkey,
-	signature, sign_time, seen_time, flags, raw`
+	sign_time, seen_time, flags, raw`
 
 // xrplEpochOffset matches the SQLite backend so times round-trip across
 // backends without drift. See the SQLite impl for rationale.
@@ -62,12 +62,12 @@ func (r *ValidationRepository) Save(ctx context.Context, v *relationaldb.Validat
 	_, err := r.getExecutor().ExecContext(ctx, `
 		INSERT INTO validations (
 			ledger_seq, initial_seq, ledger_hash, node_pubkey,
-			signature, sign_time, seen_time, flags, raw
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			sign_time, seen_time, flags, raw
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (ledger_hash, node_pubkey) DO NOTHING
 	`,
 		int64(v.LedgerSeq), int64(v.InitialSeq), v.LedgerHash[:], v.NodePubKey,
-		v.Signature, toXRPLEpochSeconds(v.SignTime), toXRPLEpochSeconds(v.SeenTime),
+		toXRPLEpochSeconds(v.SignTime), toXRPLEpochSeconds(v.SeenTime),
 		int64(v.Flags), v.Raw,
 	)
 	if err != nil {
@@ -116,7 +116,7 @@ func (r *ValidationRepository) scanRow(row interface {
 
 	if err := row.Scan(
 		&ledgerSeq, &initialSeq, &ledgerHash, &rec.NodePubKey,
-		&rec.Signature, &signTime, &seenTime, &flags, &rec.Raw,
+		&signTime, &seenTime, &flags, &rec.Raw,
 	); err != nil {
 		return nil, err
 	}
