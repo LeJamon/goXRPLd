@@ -8,22 +8,17 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/rpc/types"
 )
 
-// ValidatorInfoMethod handles the `validator_info` RPC method.
-//
-// Rippled reference: src/xrpld/rpc/handlers/ValidatorInfo.cpp:30-62.
-// The notValidator gate maps to rippled's not_validator_error() —
-// make_param_error("not a validator") — i.e. rpcINVALID_PARAMS with
-// the literal "not a validator" message. SDK tooling (xrpl.js, xrpl-py)
-// pattern-matches on that exact wire shape.
+// ValidatorInfoMethod handles `validator_info`. Mirrors
+// rippled/src/xrpld/rpc/handlers/ValidatorInfo.cpp; SDK tooling
+// pattern-matches on the exact "not a validator" / rpcINVALID_PARAMS
+// wire shape, so the error contract is load-bearing.
 type ValidatorInfoMethod struct{ AdminHandler }
 
 type validatorInfoResponse struct {
 	MasterKey    string `json:"master_key,omitempty"`
 	EphemeralKey string `json:"ephemeral_key,omitempty"`
 	Manifest     string `json:"manifest,omitempty"`
-	// Pointer so a legitimate seq=0 still serialises (rippled emits
-	// `ret[jss::seq] = *seq` regardless of value); nil is dropped by
-	// omitempty when the manifest cache had no sequence to report.
+	// Pointer preserves seq=0 (rippled emits `ret[seq] = *seq` regardless of value).
 	Seq    *uint32 `json:"seq,omitempty"`
 	Domain string  `json:"domain,omitempty"`
 }
@@ -52,11 +47,7 @@ func (m *ValidatorInfoMethod) Handle(_ *types.RpcContext, _ json.RawMessage) (in
 	}
 	resp := validatorInfoResponse{MasterKey: masterB58}
 
-	// rippled: `if (mk == validationPK) return ret;` — only emit the
-	// ephemeral / manifest / seq / domain block when a manifest cache
-	// resolved the configured signing key to a different master.
-	// (masterKey != keyArr already implies Manifests != nil, since the
-	// nil branch above leaves masterKey == keyArr.)
+	// rippled: `if (mk == validationPK) return ret;`
 	if masterKey != keyArr {
 		ephB58, err := addresscodec.EncodeNodePublicKey(keyArr[:])
 		if err != nil {

@@ -13,10 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// fakeManifestLookup is a minimal ManifestLookup. We don't reach for
-// the real manifest.Cache here because that requires a fully-signed
-// ed25519 manifest blob; the handler under test only consumes the
-// lookup interface, so a stub is enough.
+// fakeManifestLookup avoids the real manifest.Cache, which needs a
+// fully-signed ed25519 blob to populate.
 type fakeManifestLookup struct {
 	masterFor   map[[33]byte][33]byte
 	manifestFor map[[33]byte][]byte
@@ -86,8 +84,7 @@ func decodeResponse(t *testing.T, result interface{}) map[string]interface{} {
 	return resp
 }
 
-// TestValidatorInfo_NotConfigured pins rippled's testErrors:
-// `error_message == "not a validator"` with rpcINVALID_PARAMS code.
+// TestValidatorInfo_NotConfigured pins rippled's testErrors wire shape.
 func TestValidatorInfo_NotConfigured(t *testing.T) {
 	cleanup := installServices(nil, nil)
 	defer cleanup()
@@ -102,10 +99,7 @@ func TestValidatorInfo_NotConfigured(t *testing.T) {
 	assert.Equal(t, "not a validator", rpcErr.Message)
 }
 
-// TestValidatorInfo_MasterOnly covers rippled's `if (mk == validationPK)
-// return ret;` early-return — when no manifest cache resolves the key,
-// only master_key is emitted and the ephemeral/manifest/seq/domain
-// block stays absent.
+// TestValidatorInfo_MasterOnly: nil Manifests → only master_key.
 func TestValidatorInfo_MasterOnly(t *testing.T) {
 	pk := makeValidatorPubKey(0x02)
 	expectedMaster, err := addresscodec.EncodeNodePublicKey(pk)
@@ -127,9 +121,6 @@ func TestValidatorInfo_MasterOnly(t *testing.T) {
 	assert.NotContains(t, resp, "domain")
 }
 
-// TestValidatorInfo_WithManifest covers the full rippled response when
-// the manifest cache resolves the configured signing key to a different
-// master — ephemeral_key, manifest, seq, domain are all emitted.
 func TestValidatorInfo_WithManifest(t *testing.T) {
 	signingKey := makeValidatorPubKey(0x02)
 	var signingArr [33]byte
@@ -169,10 +160,7 @@ func TestValidatorInfo_WithManifest(t *testing.T) {
 	assert.Equal(t, domain, resp["domain"])
 }
 
-// TestValidatorInfo_SeqZeroSerialises pins rippled parity for `seq`:
-// rippled emits ret[jss::seq] = *seq even when the value is 0, so we
-// use *uint32 to avoid omitempty dropping a legitimate zero-sequence
-// manifest.
+// TestValidatorInfo_SeqZeroSerialises: rippled emits seq=0; *uint32 + omitempty must too.
 func TestValidatorInfo_SeqZeroSerialises(t *testing.T) {
 	signingKey := makeValidatorPubKey(0x02)
 	var signingArr [33]byte
@@ -196,33 +184,24 @@ func TestValidatorInfo_SeqZeroSerialises(t *testing.T) {
 	require.Nil(t, rpcErr)
 
 	resp := decodeResponse(t, result)
-	assert.Contains(t, resp, "seq", "seq=0 must round-trip; pointer + omitempty preserves the zero value")
+	assert.Contains(t, resp, "seq")
 	assert.EqualValues(t, 0, resp["seq"])
 }
 
-// TestValidatorInfo_RequiredRoleAdmin pins rippled's testPrivileges
-// expectation: the dispatcher must reject non-admin callers (returns a
-// null result there). Here we only assert the handler advertises the
-// admin requirement; the dispatcher-level enforcement is covered by
-// admin_role_test.go.
+// Dispatcher-level enforcement is covered in admin_role_test.go;
+// here we only pin the role the handler advertises.
 func TestValidatorInfo_RequiredRoleAdmin(t *testing.T) {
 	method := &handlers.ValidatorInfoMethod{}
 	assert.Equal(t, types.RoleAdmin, method.RequiredRole())
 }
 
-// TestValidatorInfo_ManifestCachePresentNoMapping covers the branch
-// where Manifests is non-nil but has no entry for the configured
-// signing key — getMasterKey returns the input unchanged, so the
-// handler must take the same early-return as MasterOnly. This pins
-// rippled's `if (mk == validationPK) return ret;` even when a manifest
-// cache is wired.
+// Cache wired but with no mapping must still take the master-only
+// early-return — distinct from the nil-Manifests path in MasterOnly.
 func TestValidatorInfo_ManifestCachePresentNoMapping(t *testing.T) {
 	pk := makeValidatorPubKey(0x02)
 	expectedMaster, err := addresscodec.EncodeNodePublicKey(pk)
 	require.NoError(t, err)
 
-	// Empty fake — every Get* returns the not-found path, and
-	// GetMasterKey returns the input unchanged (matches rippled).
 	cleanup := installServices(pk, &fakeManifestLookup{})
 	defer cleanup()
 
@@ -239,12 +218,9 @@ func TestValidatorInfo_ManifestCachePresentNoMapping(t *testing.T) {
 	assert.NotContains(t, resp, "domain")
 }
 
-// TestValidatorInfo_InvalidPublicKeyLength pins the defensive guard
-// against a malformed ValidatorPublicKey. cli/server.go always copies
-// a 33-byte NodeID, but the field is a []byte so we still verify the
-// internal-error path rather than silently truncating or panicking.
+// Field is []byte so the 33-byte invariant lives in the handler, not the type.
 func TestValidatorInfo_InvalidPublicKeyLength(t *testing.T) {
-	cleanup := installServices(make([]byte, 32), nil) // wrong length
+	cleanup := installServices(make([]byte, 32), nil)
 	defer cleanup()
 
 	method := &handlers.ValidatorInfoMethod{}
