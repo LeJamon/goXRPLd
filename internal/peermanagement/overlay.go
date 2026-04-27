@@ -165,13 +165,13 @@ type Overlay struct {
 	cfg      Config
 	identity *Identity
 
-	// instanceCookie: rippled `1 + rand_int(prng, MAX-1)`.
+	// instanceCookie: immutable post-New, lock-free.
 	instanceCookie uint64
 
 	// ledgerHintProvider: wired by a higher layer (avoids importing
 	// internal/ledger). Guarded by hintMu.
 	hintMu             sync.RWMutex
-	ledgerHintProvider func() ([32]byte, [32]byte, bool)
+	ledgerHintProvider func() (LedgerHints, bool)
 
 	// Components
 	discovery  *Discovery
@@ -255,15 +255,14 @@ func (o *Overlay) PeersWithClosedLedger(target [32]byte) []PeerID {
 // lifetime of the Overlay.
 func (o *Overlay) InstanceCookie() uint64 { return o.instanceCookie }
 
-// SetLedgerHintProvider wires the Closed-Ledger / Previous-Ledger
-// hint source. Pass nil to suppress the headers.
-func (o *Overlay) SetLedgerHintProvider(fn func() ([32]byte, [32]byte, bool)) {
+// SetLedgerHintProvider wires the hint source; nil suppresses headers.
+func (o *Overlay) SetLedgerHintProvider(fn func() (LedgerHints, bool)) {
 	o.hintMu.Lock()
 	o.ledgerHintProvider = fn
 	o.hintMu.Unlock()
 }
 
-func (o *Overlay) ledgerHintProviderSnapshot() func() ([32]byte, [32]byte, bool) {
+func (o *Overlay) ledgerHintProviderSnapshot() func() (LedgerHints, bool) {
 	o.hintMu.RLock()
 	defer o.hintMu.RUnlock()
 	return o.ledgerHintProvider
@@ -1577,24 +1576,29 @@ func (o *Overlay) Peers() []PeerInfo {
 }
 
 // PeersJSON implements types.PeerSource for the `peers` RPC method.
+// Mirrors rippled PeerImp::json (PeerImp.cpp:388-503); the
+// previous_ledger / remote_ip / local_ip / server_domain /
+// instance_cookie fields are goXRPL extensions.
 func (o *Overlay) PeersJSON() []map[string]any {
 	list := o.Peers()
 	out := make([]map[string]any, 0, len(list))
 	for _, p := range list {
 		entry := map[string]any{
 			"address":    p.Endpoint.String(),
-			"inbound":    p.Inbound,
 			"public_key": p.PublicKey,
 			"uptime":     int64(time.Since(p.ConnectedAt).Seconds()),
+		}
+		if p.Inbound {
+			entry["inbound"] = true
+		}
+		if p.ClosedLedger != "" {
+			entry["ledger"] = p.ClosedLedger
 		}
 		if p.InstanceCookie != 0 {
 			entry["instance_cookie"] = p.InstanceCookie
 		}
 		if p.ServerDomain != "" {
 			entry["server_domain"] = p.ServerDomain
-		}
-		if p.ClosedLedger != "" {
-			entry["closed_ledger"] = p.ClosedLedger
 		}
 		if p.PreviousLedger != "" {
 			entry["previous_ledger"] = p.PreviousLedger

@@ -77,9 +77,15 @@ type HandshakeConfig struct {
 	// PublicIP is our observed public address; nil/unspecified suppresses
 	// Local-IP emission and disables the Remote-IP consistency check.
 	PublicIP net.IP
-	// LedgerHintProvider returns (closed, parent, ok). ok=false suppresses
-	// both Closed-Ledger and Previous-Ledger headers.
-	LedgerHintProvider func() (closed [32]byte, parent [32]byte, ok bool)
+	// LedgerHintProvider returns (hints, ok). ok=false suppresses both
+	// Closed-Ledger and Previous-Ledger headers.
+	LedgerHintProvider func() (hints LedgerHints, ok bool)
+}
+
+// LedgerHints is the (closed, parent) pair for the ledger hints.
+type LedgerHints struct {
+	Closed [32]byte
+	Parent [32]byte
 }
 
 // DefaultHandshakeConfig returns default handshake configuration.
@@ -276,9 +282,9 @@ func addHandshakeHeaders(h http.Header, id *Identity, sharedValue []byte, cfg Ha
 		h.Set(HeaderServerDomain, cfg.ServerDomain)
 	}
 	if cfg.LedgerHintProvider != nil {
-		if closed, parent, ok := cfg.LedgerHintProvider(); ok {
-			h.Set(HeaderClosedLedger, hex.EncodeToString(closed[:]))
-			h.Set(HeaderPreviousLedger, hex.EncodeToString(parent[:]))
+		if hints, ok := cfg.LedgerHintProvider(); ok {
+			h.Set(HeaderClosedLedger, hex.EncodeToString(hints.Closed[:]))
+			h.Set(HeaderPreviousLedger, hex.EncodeToString(hints.Parent[:]))
 		}
 	}
 }
@@ -322,20 +328,28 @@ func parseLedgerHashHeader(s string) ([32]byte, error) {
 	return out, fmt.Errorf("unrecognised ledger hash %q", s)
 }
 
-// isWellFormedDomain: subset of rippled's isProperlyFormedTomlDomain.
-// Length ≤253, label [A-Za-z0-9-]{1,63}, no leading/trailing hyphen.
+// isWellFormedDomain ports rippled's isProperlyFormedTomlDomain
+// (StringUtilities.cpp:131-156).
 func isWellFormedDomain(s string) bool {
-	if s == "" || len(s) > 253 {
+	if len(s) < 4 || len(s) > 128 {
 		return false
 	}
-	if strings.HasSuffix(s, ".") {
-		s = s[:len(s)-1]
-	}
-	if s == "" {
+	labels := strings.Split(s, ".")
+	if len(labels) < 2 {
 		return false
 	}
-	for _, label := range strings.Split(s, ".") {
-		if len(label) == 0 || len(label) > 63 {
+	tld := labels[len(labels)-1]
+	if len(tld) < 2 || len(tld) > 63 {
+		return false
+	}
+	for i := 0; i < len(tld); i++ {
+		c := tld[i]
+		if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+			return false
+		}
+	}
+	for _, label := range labels[:len(labels)-1] {
+		if len(label) < 1 || len(label) > 63 {
 			return false
 		}
 		if label[0] == '-' || label[len(label)-1] == '-' {

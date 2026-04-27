@@ -1253,8 +1253,8 @@ func TestHandshake_ClosedLedgerHint_ReadableAfterHandshake(t *testing.T) {
 	}
 
 	cfg := DefaultHandshakeConfig()
-	cfg.LedgerHintProvider = func() ([32]byte, [32]byte, bool) {
-		return closed, parent, true
+	cfg.LedgerHintProvider = func() (LedgerHints, bool) {
+		return LedgerHints{Closed: closed, Parent: parent}, true
 	}
 
 	headers := buildAllHeadersRequest(t, id, cfg, nil)
@@ -1350,8 +1350,8 @@ func TestHandshake_AllHeaders_RoundTrip(t *testing.T) {
 	senderCfg.InstanceCookie = 0x1234567890ABCDEF
 	senderCfg.ServerDomain = "validator.example.com"
 	senderCfg.PublicIP = pA
-	senderCfg.LedgerHintProvider = func() ([32]byte, [32]byte, bool) {
-		return closed, parent, true
+	senderCfg.LedgerHintProvider = func() (LedgerHints, bool) {
+		return LedgerHints{Closed: closed, Parent: parent}, true
 	}
 
 	t.Run("request_path", func(t *testing.T) {
@@ -1547,6 +1547,35 @@ func TestIsPublicIP_BeastParity(t *testing.T) {
 	}
 }
 
+// isWellFormedDomain matches rippled's isProperlyFormedTomlDomain
+// (StringUtilities.cpp:131-156).
+func TestIsWellFormedDomain_TomlParity(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"valid_two_label", "a.io", true},
+		{"valid_subdomain", "validator.example.com", true},
+		{"valid_with_digits", "node-1.example.org", true},
+		{"too_short", "a.b", false},
+		{"too_long", strings.Repeat("a", 120) + ".example.com", false},
+		{"single_label", "example", false},
+		{"numeric_tld", "x.123", false},
+		{"one_char_tld", "a.b.c", false},
+		{"trailing_dot", "example.com.", false},
+		{"leading_hyphen_label", "-bad.example.com", false},
+		{"trailing_hyphen_label", "bad-.example.com", false},
+		{"empty", "", false},
+		{"underscore", "bad_label.example.com", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isWellFormedDomain(tc.in))
+		})
+	}
+}
+
 // WriteRawHandshakeRequest must place every issue-#270 header on the
 // wire — the whitelist in the writer is otherwise uncovered.
 func TestWriteRawHandshakeRequest_EmitsAllNewHeaders(t *testing.T) {
@@ -1562,8 +1591,8 @@ func TestWriteRawHandshakeRequest_EmitsAllNewHeaders(t *testing.T) {
 	cfg.InstanceCookie = 0xCAFEBABE12345678
 	cfg.ServerDomain = "example.com"
 	cfg.PublicIP = net.ParseIP("198.51.100.10")
-	cfg.LedgerHintProvider = func() ([32]byte, [32]byte, bool) {
-		return closed, parent, true
+	cfg.LedgerHintProvider = func() (LedgerHints, bool) {
+		return LedgerHints{Closed: closed, Parent: parent}, true
 	}
 	req, err := BuildHandshakeRequest(id, make([]byte, 32), cfg)
 	require.NoError(t, err)
