@@ -222,6 +222,16 @@ func runServer(cmd *cobra.Command, args []string) {
 		// broadcast it to peers and add to the consensus pending pool.
 		overlay := consensusComponents.Overlay
 		consensusAdaptor := consensusComponents.Adaptor
+
+		// Closed-Ledger / Previous-Ledger handshake hints
+		// (Handshake.cpp:219-223).
+		overlay.SetLedgerHintProvider(func() ([32]byte, [32]byte, bool) {
+			cl := ledgerService.GetClosedLedger()
+			if cl == nil {
+				return [32]byte{}, [32]byte{}, false
+			}
+			return cl.Hash(), cl.ParentHash(), true
+		})
 		ledgerAdapter.SetTxBroadcaster(func(txBlob []byte) {
 			txMsg := &message.Transaction{
 				RawTransaction: txBlob,

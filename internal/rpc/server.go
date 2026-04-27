@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/LeJamon/goXRPLd/config"
@@ -22,10 +23,23 @@ func rpcLog() xrpllog.Logger { return xrpllog.Named(xrpllog.PartitionRPC) }
 type Server struct {
 	registry   *types.MethodRegistry
 	timeout    time.Duration
-	peerSource types.PeerSource
+	peerSource atomic.Pointer[types.PeerSource]
 }
 
-func (s *Server) SetPeerSource(src types.PeerSource) { s.peerSource = src }
+func (s *Server) SetPeerSource(src types.PeerSource) {
+	if src == nil {
+		s.peerSource.Store(nil)
+		return
+	}
+	s.peerSource.Store(&src)
+}
+
+func (s *Server) loadPeerSource() types.PeerSource {
+	if p := s.peerSource.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
 
 // NewServer creates a new RPC server with the given timeout
 func NewServer(timeout time.Duration) *Server {
@@ -104,7 +118,7 @@ func (s *Server) handleGetRequest(w http.ResponseWriter, r *http.Request) {
 		ApiVersion: types.DefaultApiVersion,
 		IsAdmin:    role == types.RoleAdmin,
 		ClientIP:   clientIP,
-		PeerSource: s.peerSource,
+		PeerSource: s.loadPeerSource(),
 	}
 
 	result, rpcErr := s.executeMethod(method, nil, ctx)
@@ -146,7 +160,7 @@ func (s *Server) handlePostRequest(w http.ResponseWriter, r *http.Request) {
 		ApiVersion: types.DefaultApiVersion,
 		IsAdmin:    role == types.RoleAdmin,
 		ClientIP:   clientIP,
-		PeerSource: s.peerSource,
+		PeerSource: s.loadPeerSource(),
 	}
 
 	// Parse API version from params if present
@@ -320,7 +334,7 @@ func (s *Server) ExecuteMethod(method string, params []byte) (interface{}, *type
 		Role:       types.RoleGuest,
 		ApiVersion: types.DefaultApiVersion,
 		IsAdmin:    false,
-		PeerSource: s.peerSource,
+		PeerSource: s.loadPeerSource(),
 	}
 	return s.executeMethod(method, json.RawMessage(params), ctx)
 }

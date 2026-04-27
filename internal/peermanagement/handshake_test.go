@@ -1,9 +1,11 @@
 package peermanagement
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"math"
 	"net"
 	"net/http"
 	"strconv"
@@ -1461,5 +1463,124 @@ func TestLedgerSync_PreferredPeersForLedger_ConsumesClosedLedgerHint(t *testing.
 	for _, id := range got {
 		_, ok := want[id]
 		assert.True(t, ok, "unexpected peer %d in result", id)
+	}
+}
+
+// Malformed Closed-Ledger / Previous-Ledger / Previous-without-Closed
+// must fail the handshake (PeerImp.cpp:175-194).
+func TestHandshake_MalformedLedgerHashRejected(t *testing.T) {
+	t.Run("malformed_closed_ledger", func(t *testing.T) {
+		h := http.Header{}
+		h.Set(HeaderClosedLedger, "not-hex-not-base64")
+		_, err := ParseHandshakeExtras(h, nil, nil)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidHandshake)
+		assert.Contains(t, err.Error(), "malformed Closed-Ledger")
+	})
+
+	t.Run("malformed_previous_ledger", func(t *testing.T) {
+		var closed [32]byte
+		closed[0] = 0xAA
+		h := http.Header{}
+		h.Set(HeaderClosedLedger, hex.EncodeToString(closed[:]))
+		h.Set(HeaderPreviousLedger, "garbage")
+		_, err := ParseHandshakeExtras(h, nil, nil)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidHandshake)
+		assert.Contains(t, err.Error(), "malformed Previous-Ledger")
+	})
+
+	t.Run("previous_without_closed", func(t *testing.T) {
+		var parent [32]byte
+		parent[0] = 0xBB
+		h := http.Header{}
+		h.Set(HeaderPreviousLedger, hex.EncodeToString(parent[:]))
+		_, err := ParseHandshakeExtras(h, nil, nil)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidHandshake)
+		assert.Contains(t, err.Error(), "Previous-Ledger without Closed-Ledger")
+	})
+}
+
+// generateInstanceCookie must produce values in [1, MAX] — including MAX
+// — to match rippled `1 + rand_int(prng, MAX-1)`.
+func TestInstanceCookie_RangeIncludesMax(t *testing.T) {
+	for i := 0; i < 10000; i++ {
+		v, err := generateInstanceCookie()
+		require.NoError(t, err)
+		assert.NotZero(t, v, "cookie must never be zero")
+	}
+	// Treat MAX as a valid cookie at the parser level.
+	h := http.Header{}
+	h.Set(HeaderInstanceCookie, strconv.FormatUint(math.MaxUint64, 10))
+	extras, err := ParseHandshakeExtras(h, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(math.MaxUint64), extras.InstanceCookie)
+}
+
+// isPublicIP must mirror beast::IP::is_public: link-local addresses are
+// public; loopback / RFC1918 / multicast are not.
+func TestIsPublicIP_BeastParity(t *testing.T) {
+	cases := []struct {
+		name string
+		ip   string
+		want bool
+	}{
+		{"public_v4", "8.8.8.8", true},
+		{"link_local_v4", "169.254.1.1", true},
+		{"loopback_v4", "127.0.0.1", false},
+		{"rfc1918_10", "10.0.0.1", false},
+		{"rfc1918_172_16", "172.16.5.4", false},
+		{"rfc1918_192_168", "192.168.1.1", false},
+		{"multicast_v4", "224.0.0.1", false},
+		{"unspecified_v4", "0.0.0.0", false},
+		{"public_v6", "2001:db8::1", true},
+		{"loopback_v6", "::1", false},
+		{"unspecified_v6", "::", false},
+		{"ula_v6", "fc00::1", false},
+		{"link_local_v6", "fe80::1", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isPublicIP(net.ParseIP(tc.ip)))
+		})
+	}
+}
+
+// WriteRawHandshakeRequest must place every issue-#270 header on the
+// wire — the whitelist in the writer is otherwise uncovered.
+func TestWriteRawHandshakeRequest_EmitsAllNewHeaders(t *testing.T) {
+	id, err := NewIdentity()
+	require.NoError(t, err)
+
+	var closed, parent [32]byte
+	for i := range closed {
+		closed[i] = byte(i)
+		parent[i] = byte(0x80 + i)
+	}
+	cfg := DefaultHandshakeConfig()
+	cfg.InstanceCookie = 0xCAFEBABE12345678
+	cfg.ServerDomain = "example.com"
+	cfg.PublicIP = net.ParseIP("198.51.100.10")
+	cfg.LedgerHintProvider = func() ([32]byte, [32]byte, bool) {
+		return closed, parent, true
+	}
+	req, err := BuildHandshakeRequest(id, make([]byte, 32), cfg)
+	require.NoError(t, err)
+	addAddressHeaders(req.Header, cfg, net.ParseIP("203.0.113.5"))
+
+	var buf bytes.Buffer
+	require.NoError(t, WriteRawHandshakeRequest(&buf, req))
+	wire := buf.String()
+
+	for _, h := range []string{
+		HeaderInstanceCookie + ": ",
+		HeaderServerDomain + ": example.com",
+		HeaderClosedLedger + ": " + hex.EncodeToString(closed[:]),
+		HeaderPreviousLedger + ": " + hex.EncodeToString(parent[:]),
+		HeaderRemoteIP + ": 203.0.113.5",
+		HeaderLocalIP + ": 198.51.100.10",
+	} {
+		assert.Contains(t, wire, h, "missing %s on the wire", h)
 	}
 }

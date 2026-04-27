@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"net"
 	"net/http"
 	"sync"
@@ -114,6 +113,7 @@ func BadDataWeight(reason string) int {
 		"validation-malformed-node-id-zero",
 		"handshake-malformed-networkid",
 		"handshake-malformed-networktime",
+		"handshake-malformed-extras",
 		"replay-delta-resp-decode",
 		"replay-delta-req-decode",
 		"replay-delta-req-bad",
@@ -165,13 +165,12 @@ type Overlay struct {
 	cfg      Config
 	identity *Identity
 
-	// instanceCookie is generated once in [1, MAX-1] (matches rippled
-	// Application.cpp `1 + rand_int(prng, MAX-1)`).
+	// instanceCookie: rippled `1 + rand_int(prng, MAX-1)`.
 	instanceCookie uint64
 
-	// ledgerHintProvider feeds the Closed-Ledger / Previous-Ledger
-	// handshake hints. Wired by a higher layer to avoid importing
-	// internal/ledger here.
+	// ledgerHintProvider: wired by a higher layer (avoids importing
+	// internal/ledger). Guarded by hintMu.
+	hintMu             sync.RWMutex
 	ledgerHintProvider func() ([32]byte, [32]byte, bool)
 
 	// Components
@@ -259,9 +258,19 @@ func (o *Overlay) InstanceCookie() uint64 { return o.instanceCookie }
 // SetLedgerHintProvider wires the Closed-Ledger / Previous-Ledger
 // hint source. Pass nil to suppress the headers.
 func (o *Overlay) SetLedgerHintProvider(fn func() ([32]byte, [32]byte, bool)) {
+	o.hintMu.Lock()
 	o.ledgerHintProvider = fn
+	o.hintMu.Unlock()
 }
 
+func (o *Overlay) ledgerHintProviderSnapshot() func() ([32]byte, [32]byte, bool) {
+	o.hintMu.RLock()
+	defer o.hintMu.RUnlock()
+	return o.ledgerHintProvider
+}
+
+// generateInstanceCookie returns a value in [1, MAX] (rippled
+// Application.cpp `1 + rand_int(prng, MAX-1)`).
 func generateInstanceCookie() (uint64, error) {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -270,9 +279,6 @@ func generateInstanceCookie() (uint64, error) {
 	v := binary.BigEndian.Uint64(b[:])
 	if v == 0 {
 		return 1, nil
-	}
-	if v == math.MaxUint64 {
-		return math.MaxUint64 - 1, nil
 	}
 	return v, nil
 }
@@ -670,7 +676,7 @@ func (o *Overlay) performInboundHandshake(ctx context.Context, peer *Peer, tlsCo
 		peerRemote,
 	)
 	if extraErr != nil {
-		o.IncPeerBadData(peer.ID(), "handshake-malformed-networkid")
+		o.IncPeerBadData(peer.ID(), "handshake-malformed-extras")
 		return NewHandshakeError(peer.Endpoint(), "verify_extras", extraErr)
 	}
 	peer.applyHandshakeExtras(extras)
@@ -710,7 +716,7 @@ func (o *Overlay) handshakeConfigFor() HandshakeConfig {
 		InstanceCookie:      o.instanceCookie,
 		ServerDomain:        o.cfg.ServerDomain,
 		PublicIP:            o.cfg.PublicIP,
-		LedgerHintProvider:  o.ledgerHintProvider,
+		LedgerHintProvider:  o.ledgerHintProviderSnapshot(),
 	}
 }
 

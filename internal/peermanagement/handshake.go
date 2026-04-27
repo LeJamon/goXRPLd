@@ -294,18 +294,13 @@ func addAddressHeaders(h http.Header, cfg HandshakeConfig, peerRemote net.IP) {
 	}
 }
 
-// isPublicIP is the Go equivalent of beast::IP::is_public.
+// isPublicIP mirrors beast::IP::is_public: !is_private && !is_multicast.
+// beast's is_private = RFC1918 + loopback. Link-local stays public.
 func isPublicIP(ip net.IP) bool {
 	if ip == nil || ip.IsUnspecified() {
 		return false
 	}
-	if ip.IsLoopback() || ip.IsPrivate() {
-		return false
-	}
-	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-		return false
-	}
-	if ip.IsMulticast() {
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsMulticast() {
 		return false
 	}
 	return true
@@ -793,14 +788,10 @@ type HandshakeExtras struct {
 	LocalIPSelf    string // peer's view of their own public IP
 }
 
-// ParseHandshakeExtras parses the issue-#270 headers and applies
-// rippled's verifyHandshake checks: Server-Domain validity
-// (Handshake.cpp:235-239), Local-IP / Remote-IP consistency
-// (Handshake.cpp:325-359). Instance-Cookie is stored only — rippled
-// never compares it; self-connection stays pubkey-only at line 322.
-// Closed-Ledger / Previous-Ledger parse failures are tolerated (matches
-// PeerImp::run returning nullopt without aborting).
-// peerRemote == nil short-circuits the IP comparisons.
+// ParseHandshakeExtras enforces verifyHandshake (Server-Domain at 235-239,
+// Local-IP/Remote-IP at 325-359) and PeerImp::run (ledger-hash malformed
+// at 175-191, Previous-without-Closed at 193-194). Instance-Cookie is
+// stored only. peerRemote == nil disables the IP comparisons.
 func ParseHandshakeExtras(
 	headers http.Header,
 	localPublicIP net.IP,
@@ -826,15 +817,27 @@ func ParseHandshakeExtras(
 	}
 
 	if v := headers.Get(HeaderClosedLedger); v != "" {
-		if h, err := parseLedgerHashHeader(v); err == nil {
-			out.ClosedLedger = h
-			out.HasLedgerHints = true
+		h, err := parseLedgerHashHeader(v)
+		if err != nil {
+			return out, fmt.Errorf("%w: malformed Closed-Ledger %q: %v",
+				ErrInvalidHandshake, v, err)
 		}
+		out.ClosedLedger = h
+		out.HasLedgerHints = true
 	}
+	var hasPrevious bool
 	if v := headers.Get(HeaderPreviousLedger); v != "" {
-		if h, err := parseLedgerHashHeader(v); err == nil {
-			out.PreviousLedger = h
+		h, err := parseLedgerHashHeader(v)
+		if err != nil {
+			return out, fmt.Errorf("%w: malformed Previous-Ledger %q: %v",
+				ErrInvalidHandshake, v, err)
 		}
+		out.PreviousLedger = h
+		hasPrevious = true
+	}
+	if hasPrevious && !out.HasLedgerHints {
+		return out, fmt.Errorf("%w: Previous-Ledger without Closed-Ledger",
+			ErrInvalidHandshake)
 	}
 
 	if v := headers.Get(HeaderLocalIP); v != "" {
