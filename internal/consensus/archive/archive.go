@@ -4,6 +4,32 @@
 // Matches rippled's onStale / doStaleWrite contract (RCLValidations.cpp)
 // in semantics: OnStale returns in O(1) — it only enqueues to a channel —
 // so the consensus receive path is never gated on DB I/O.
+//
+// # Eviction trigger: ledger-seq, not freshness (intentional divergence)
+//
+// Rippled (pre-2019) fired onStale from Validations<>::current() when
+// isCurrent() returned false — i.e. on time-window violations
+// (SignTime/SeenTime drifted outside the wall/local windows). goXRPL
+// fires onStale only from ExpireOld(seq - inMemoryLedgers), which is
+// driven by ledger-seq retention from the fully-validated callback.
+//
+// Practical consequence: time-stale validations that never reach a
+// fully-validated ledger (e.g. orphaned validations on losing forks)
+// are rejected at ValidationTracker.Add (isCurrent check at
+// validations.go:291) but are NOT archived. Rippled would have archived
+// them.
+//
+// Trade-off:
+//   - Forensic completeness for finalized network state: same as rippled.
+//   - Forensic completeness for "what did the network consider but
+//     discard": slightly lower — losing-fork validations are visible
+//     only in logs, not in the archive.
+//
+// Defensible because the dominant use case is replaying finalized state,
+// and the divergence avoids archiving orphans we'd just delete on the
+// next retention sweep. If "considered but discarded" forensics ever
+// becomes a requirement, hooking a second OnStale call from Add's
+// isCurrent reject path is straightforward.
 package archive
 
 import (
