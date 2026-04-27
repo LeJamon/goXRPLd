@@ -41,12 +41,15 @@ const recentValidationsMaxLimit = 1000
 type ValidatorInfoMethod struct{ AdminHandler }
 
 type validatorInfoResponse struct {
-	MasterKey          string                  `json:"master_key,omitempty"`
-	EphemeralKey       string                  `json:"ephemeral_key,omitempty"`
-	Manifest           string                  `json:"manifest,omitempty"`
-	Seq                uint32                  `json:"seq,omitempty"`
-	Domain             string                  `json:"domain,omitempty"`
-	RecentValidations  []recentValidationEntry `json:"recent_validations,omitempty"`
+	MasterKey    string `json:"master_key,omitempty"`
+	EphemeralKey string `json:"ephemeral_key,omitempty"`
+	Manifest     string `json:"manifest,omitempty"`
+	// Pointer so a legitimate seq=0 still serialises (rippled emits
+	// `ret[jss::seq] = *seq` regardless of value); nil is dropped by
+	// omitempty when the manifest cache had no sequence to report.
+	Seq               *uint32                 `json:"seq,omitempty"`
+	Domain            string                  `json:"domain,omitempty"`
+	RecentValidations []recentValidationEntry `json:"recent_validations,omitempty"`
 }
 
 type recentValidationEntry struct {
@@ -111,20 +114,27 @@ func (m *ValidatorInfoMethod) Handle(ctx *types.RpcContext, params json.RawMessa
 			resp.Manifest = base64.StdEncoding.EncodeToString(manifestBytes)
 		}
 		if seq, ok := types.Services.Manifests.GetSequence(masterKey); ok {
-			resp.Seq = seq
+			s := seq
+			resp.Seq = &s
 		}
-		if domain, ok := types.Services.Manifests.GetDomain(masterKey); ok && domain != "" {
+		if domain, ok := types.Services.Manifests.GetDomain(masterKey); ok {
 			resp.Domain = domain
 		}
+	}
+
+	// Parse `limit` unconditionally so request-shape validation is
+	// consistent regardless of whether the archive happens to be
+	// wired. A malformed `{"limit": "asdf"}` body must fail the same
+	// way on a small standalone deployment as on a fully-archived
+	// production node.
+	limit, rpcErr := parseRecentValidationsLimit(params)
+	if rpcErr != nil {
+		return nil, rpcErr
 	}
 
 	// Step 4: archive extension. Drop in silently when nothing is
 	// wired — the issue's third acceptance test pins this behaviour.
 	if types.Services.ValidationArchive != nil {
-		limit, rpcErr := parseRecentValidationsLimit(params)
-		if rpcErr != nil {
-			return nil, rpcErr
-		}
 		rows, err := types.Services.ValidationArchive.GetValidationsByValidator(validationPK, limit)
 		if err != nil {
 			return nil, types.RpcErrorInternal("validation archive lookup failed: " + err.Error())

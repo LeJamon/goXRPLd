@@ -22,12 +22,12 @@ import (
 // shape is preserved. The fake also lets us assert exactly what
 // (nodeKey, limit) the handler called us with.
 type fakeValidationArchive struct {
-	mu              sync.Mutex
-	byValidator     []types.ArchivedValidation
-	byValidatorErr  error
-	count           int64
-	lastNodeKeyHex  string
-	lastLimit       int
+	mu             sync.Mutex
+	byValidator    []types.ArchivedValidation
+	byValidatorErr error
+	count          int64
+	lastNodeKeyHex string
+	lastLimit      int
 }
 
 func (f *fakeValidationArchive) GetValidationsForLedger(ledgerSeq uint32) ([]types.ArchivedValidation, error) {
@@ -100,6 +100,42 @@ func installValidatorServices(validatorPK []byte, archive types.ValidationArchiv
 		ValidationArchive:  archive,
 	}
 	return func() { types.Services = old }
+}
+
+// fakeManifestLookup is a minimal ManifestLookup that returns
+// pre-seeded values. We don't reach for the real manifest.Cache here
+// because that requires a fully-signed ed25519 manifest blob; the
+// handler under test only consumes the lookup interface, so a stub is
+// enough.
+type fakeManifestLookup struct {
+	masterFor   map[[33]byte][33]byte
+	signingFor  map[[33]byte][33]byte
+	manifestFor map[[33]byte][]byte
+	seqFor      map[[33]byte]uint32
+	domainFor   map[[33]byte]string
+}
+
+func (f *fakeManifestLookup) GetMasterKey(signing [33]byte) [33]byte {
+	if v, ok := f.masterFor[signing]; ok {
+		return v
+	}
+	return signing
+}
+func (f *fakeManifestLookup) GetSigningKey(master [33]byte) ([33]byte, bool) {
+	v, ok := f.signingFor[master]
+	return v, ok
+}
+func (f *fakeManifestLookup) GetManifest(master [33]byte) ([]byte, bool) {
+	v, ok := f.manifestFor[master]
+	return v, ok
+}
+func (f *fakeManifestLookup) GetSequence(master [33]byte) (uint32, bool) {
+	v, ok := f.seqFor[master]
+	return v, ok
+}
+func (f *fakeManifestLookup) GetDomain(master [33]byte) (string, bool) {
+	v, ok := f.domainFor[master]
+	return v, ok
 }
 
 // adminCtx is a small ergonomic helper — every test uses the same
@@ -267,6 +303,63 @@ func TestValidatorInfo_LimitClamping(t *testing.T) {
 		require.Nil(t, rpcErr)
 		assert.Equal(t, 256, archive.lastLimit, "should use recentValidationsDefaultLimit")
 	})
+}
+
+// TestValidatorInfo_MalformedLimit_RejectedEvenWithoutArchive locks
+// in the review fix: request-shape validation must NOT depend on
+// whether the archive happens to be wired. Before the fix, an
+// archive-disabled validator would silently accept a malformed
+// `{"limit": "asdf"}` body while an archive-enabled one rejected it.
+func TestValidatorInfo_MalformedLimit_RejectedEvenWithoutArchive(t *testing.T) {
+	pk := makeValidatorPubKey()
+	cleanup := installValidatorServices(pk, nil) // archive intentionally nil
+	defer cleanup()
+
+	method := &handlers.ValidatorInfoMethod{}
+	params := json.RawMessage(`{"limit": "asdf"}`)
+	_, rpcErr := method.Handle(adminCtx(), params)
+
+	require.NotNil(t, rpcErr, "malformed limit must be rejected even when archive is nil")
+	assert.Equal(t, types.RpcINVALID_PARAMS, rpcErr.Code)
+}
+
+// TestValidatorInfo_SeqZeroSerialises locks in the review fix for
+// rippled parity on `seq`: rippled emits ret[jss::seq] = *seq even
+// when the value is 0, so we use *uint32 to avoid omitempty dropping
+// a legitimate zero-sequence manifest.
+func TestValidatorInfo_SeqZeroSerialises(t *testing.T) {
+	signingKey := makeValidatorPubKey()
+
+	// Master must differ from signing so the rippled ephemeral/manifest
+	// branch fires (where seq is set). Use the same byte pattern but
+	// with a different prefix byte.
+	var masterArr [33]byte
+	masterArr[0] = 0x03
+	for i := 1; i < 33; i++ {
+		masterArr[i] = byte(i)
+	}
+	var signingArr [33]byte
+	copy(signingArr[:], signingKey)
+
+	manifests := &fakeManifestLookup{
+		masterFor: map[[33]byte][33]byte{signingArr: masterArr},
+		seqFor:    map[[33]byte]uint32{masterArr: 0}, // legitimate seq=0
+	}
+
+	old := types.Services
+	types.Services = &types.ServiceContainer{
+		ValidatorPublicKey: signingKey,
+		Manifests:          manifests,
+	}
+	defer func() { types.Services = old }()
+
+	method := &handlers.ValidatorInfoMethod{}
+	result, rpcErr := method.Handle(adminCtx(), nil)
+	require.Nil(t, rpcErr, "%#v", rpcErr)
+
+	resp := decodeResponse(t, result)
+	assert.Contains(t, resp, "seq", "seq=0 must round-trip to JSON; pointer + omitempty preserves the zero value")
+	assert.EqualValues(t, 0, resp["seq"])
 }
 
 // decodeResponse round-trips the handler's `interface{}` result

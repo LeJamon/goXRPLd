@@ -72,9 +72,9 @@ func projectRows(rows []*relationaldb.ValidationRecord) []types.ArchivedValidati
 			continue
 		}
 		entry := types.ArchivedValidation{
-			LedgerSeq: uint32(r.LedgerSeq),
+			LedgerSeq:  uint32(r.LedgerSeq),
 			LedgerHash: r.LedgerHash,
-			Flags:     r.Flags,
+			Flags:      r.Flags,
 		}
 		if !r.SignTime.IsZero() {
 			entry.SignTimeS = r.SignTime.Unix()
