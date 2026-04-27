@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/LeJamon/goXRPLd/internal/consensus"
+	"github.com/LeJamon/goXRPLd/internal/consensus/ledgertrie"
 )
 
 // ValidationTracker tracks validations and determines ledger finality.
@@ -74,6 +75,24 @@ type ValidationTracker struct {
 	// writer's channel send) may do I/O without risking lock-order
 	// inversion. Nil means "no archive wired."
 	onStale func(*consensus.Validation)
+
+	// ancestry resolves a LedgerID to a ledger carrying its ancestor
+	// chain so the trie can walk from genesis → tip on insert. May be
+	// nil — when unset, the tracker falls back to the flat trusted
+	// hash-count for support queries. See SetLedgerAncestryProvider
+	// in validations_trie.go.
+	ancestry LedgerAncestryProvider
+
+	// trie maintains branchSupport for the latest trusted validation
+	// of every (trusted, not negUNL) validator. Populated on Add()
+	// only when ancestry is set. nil means "trie disabled".
+	trie *ledgertrie.Trie
+
+	// trieTips tracks which ledger each trusted validator currently
+	// holds in the trie, so a newer validation from the same node can
+	// remove the old tip before inserting the new one. Matches
+	// rippled's lastValidations map (Validations.h:366-371).
+	trieTips map[consensus.NodeID]ledgertrie.Ledger
 }
 
 // NewValidationTracker creates a new validation tracker.
@@ -127,6 +146,12 @@ func (vt *ValidationTracker) SetNow(fn func() time.Time) {
 }
 
 // SetTrusted updates the set of trusted validators.
+//
+// If the ancestry trie is wired, rebuilds trie membership from the
+// current byNode / negUNL state so newly-trusted validators contribute
+// their latest tip and de-trusted ones no longer count. Mirrors
+// rippled's Validations::trustChanged (Validations.h:472-499) which
+// calls updateTrie on every trust flip.
 func (vt *ValidationTracker) SetTrusted(nodes []consensus.NodeID) {
 	vt.mu.Lock()
 	defer vt.mu.Unlock()
@@ -135,6 +160,7 @@ func (vt *ValidationTracker) SetTrusted(nodes []consensus.NodeID) {
 	for _, node := range nodes {
 		vt.trusted[node] = true
 	}
+	vt.rebuildTrieLocked()
 }
 
 // SetQuorum updates the quorum requirement.
@@ -157,6 +183,7 @@ func (vt *ValidationTracker) SetNegativeUNL(nodes []consensus.NodeID) {
 	for _, n := range nodes {
 		vt.negUNL[n] = true
 	}
+	vt.rebuildTrieLocked()
 }
 
 // SetMinSeq advances the sequence floor below which incoming
@@ -343,6 +370,13 @@ func (vt *ValidationTracker) Add(validation *consensus.Validation) bool {
 	}
 	ledgerVals[resolvedID] = validation
 
+	// Maintain the ancestry trie: trusted-and-not-negUNL validators'
+	// latest tip feeds branchSupport. Only fires when a provider is
+	// wired — see SetLedgerAncestryProvider.
+	if vt.trusted[resolvedID] && !vt.negUNL[resolvedID] {
+		vt.updateTrieLocked(resolvedID, validation.LedgerID)
+	}
+
 	// Capture the fire-tuple under the lock; the deferred dispatcher
 	// invokes onFullyValidated after vt.mu.Unlock has run.
 	fireID, fireSeq, shouldFire = vt.checkFullValidationLocked(validation.LedgerID)
@@ -474,16 +508,54 @@ func (vt *ValidationTracker) countTrustedExcludingNegUNLLocked(
 	return count
 }
 
-// GetTrustedSupport is an alias for GetTrustedValidationCount named for
-// the LedgerTrie-style preference heuristic used in checkLedger. Rippled
-// picks a network ledger via vals.getPreferred() (RCLConsensus.cpp:301)
-// which returns the ledger with the most validation SUPPORT on its
-// ancestor chain — we approximate "support" with a flat trusted-count
-// at the exact ledger ID. Good enough when trusted validators broadly
-// agree; a full LedgerTrie port is a follow-up item. Inherits the
-// negUNL filter from GetTrustedValidationCount.
+// GetTrustedSupport returns the "support" for a ledger ID the way
+// rippled's vals.getPreferred() sees it — the count of trusted
+// validators whose latest validation commits to this ledger OR ANY
+// DESCENDANT of it on the ancestry trie. Mirrors LedgerTrie::
+// branchSupport (LedgerTrie.h:610-623).
+//
+// When a LedgerAncestryProvider is wired and resolves the ledger,
+// returns the trie's branchSupport. Otherwise falls back to the flat
+// trusted-count at the exact ID (via GetTrustedValidationCount) —
+// production nodes without an ancestry provider and tests that
+// construct bare ValidationTrackers keep their existing behaviour.
+//
+// Inherits the negUNL filter: validators on the negative-UNL never
+// enter the trie, so their validations don't contribute support.
 func (vt *ValidationTracker) GetTrustedSupport(ledgerID consensus.LedgerID) int {
+	vt.mu.RLock()
+	if vt.trie != nil && vt.ancestry != nil {
+		if lgr, ok := vt.ancestry.LedgerByID(ledgerID); ok {
+			n := vt.trie.BranchSupport(lgr)
+			vt.mu.RUnlock()
+			return int(n)
+		}
+	}
+	vt.mu.RUnlock()
 	return vt.GetTrustedValidationCount(ledgerID)
+}
+
+// GetPreferred returns the network-preferred ledger ID (and its
+// sequence) as decided by the ancestry trie. The second return is
+// true when a trie-based decision was made; false when the trie is
+// not wired, is empty, or lacks ancestry for the relevant ledgers.
+//
+// Port of rippled's Validations::getPreferred (Validations.h, called
+// at RCLConsensus.cpp:301). Mirrors the same largestIssued semantics:
+// pass the highest sequence number for which this node has already
+// issued a validation so the trie can seed uncommitted support from
+// earlier sequences.
+func (vt *ValidationTracker) GetPreferred(largestIssued uint32) (consensus.LedgerID, uint32, bool) {
+	vt.mu.RLock()
+	defer vt.mu.RUnlock()
+	if vt.trie == nil {
+		return consensus.LedgerID{}, 0, false
+	}
+	tip, ok := vt.trie.GetPreferred(largestIssued)
+	if !ok {
+		return consensus.LedgerID{}, 0, false
+	}
+	return tip.ID, tip.Seq, true
 }
 
 // IsFullyValidated returns true if the ledger has reached full
