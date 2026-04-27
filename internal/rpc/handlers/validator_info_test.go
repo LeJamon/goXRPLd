@@ -209,3 +209,50 @@ func TestValidatorInfo_RequiredRoleAdmin(t *testing.T) {
 	method := &handlers.ValidatorInfoMethod{}
 	assert.Equal(t, types.RoleAdmin, method.RequiredRole())
 }
+
+// TestValidatorInfo_ManifestCachePresentNoMapping covers the branch
+// where Manifests is non-nil but has no entry for the configured
+// signing key — getMasterKey returns the input unchanged, so the
+// handler must take the same early-return as MasterOnly. This pins
+// rippled's `if (mk == validationPK) return ret;` even when a manifest
+// cache is wired.
+func TestValidatorInfo_ManifestCachePresentNoMapping(t *testing.T) {
+	pk := makeValidatorPubKey(0x02)
+	expectedMaster, err := addresscodec.EncodeNodePublicKey(pk)
+	require.NoError(t, err)
+
+	// Empty fake — every Get* returns the not-found path, and
+	// GetMasterKey returns the input unchanged (matches rippled).
+	cleanup := installServices(pk, &fakeManifestLookup{})
+	defer cleanup()
+
+	method := &handlers.ValidatorInfoMethod{}
+	result, rpcErr := method.Handle(adminCtx(), nil)
+	require.Nil(t, rpcErr)
+	require.NotNil(t, result)
+
+	resp := decodeResponse(t, result)
+	assert.Equal(t, expectedMaster, resp["master_key"])
+	assert.NotContains(t, resp, "ephemeral_key")
+	assert.NotContains(t, resp, "manifest")
+	assert.NotContains(t, resp, "seq")
+	assert.NotContains(t, resp, "domain")
+}
+
+// TestValidatorInfo_InvalidPublicKeyLength pins the defensive guard
+// against a malformed ValidatorPublicKey. cli/server.go always copies
+// a 33-byte NodeID, but the field is a []byte so we still verify the
+// internal-error path rather than silently truncating or panicking.
+func TestValidatorInfo_InvalidPublicKeyLength(t *testing.T) {
+	cleanup := installServices(make([]byte, 32), nil) // wrong length
+	defer cleanup()
+
+	method := &handlers.ValidatorInfoMethod{}
+	result, rpcErr := method.Handle(adminCtx(), nil)
+
+	assert.Nil(t, result)
+	require.NotNil(t, rpcErr)
+	assert.Equal(t, types.RpcINTERNAL, rpcErr.Code)
+	assert.Equal(t, "internal", rpcErr.ErrorString)
+	assert.Contains(t, rpcErr.Message, "invalid length")
+}

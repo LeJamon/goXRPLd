@@ -55,7 +55,9 @@ func (m *ValidatorInfoMethod) Handle(_ *types.RpcContext, _ json.RawMessage) (in
 	// rippled: `if (mk == validationPK) return ret;` — only emit the
 	// ephemeral / manifest / seq / domain block when a manifest cache
 	// resolved the configured signing key to a different master.
-	if masterKey != keyArr && types.Services.Manifests != nil {
+	// (masterKey != keyArr already implies Manifests != nil, since the
+	// nil branch above leaves masterKey == keyArr.)
+	if masterKey != keyArr {
 		ephB58, err := addresscodec.EncodeNodePublicKey(keyArr[:])
 		if err != nil {
 			return nil, types.RpcErrorInternal("encode ephemeral key: " + err.Error())
