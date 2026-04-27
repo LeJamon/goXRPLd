@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/LeJamon/goXRPLd/internal/consensus"
+	"github.com/LeJamon/goXRPLd/internal/consensus/ledgertrie"
 )
 
 // ValidationTracker tracks validations and determines ledger finality.
@@ -74,6 +75,18 @@ type ValidationTracker struct {
 	// writer's channel send) may do I/O without risking lock-order
 	// inversion. Nil means "no archive wired."
 	onStale func(*consensus.Validation)
+
+	// ancestry resolves LedgerID → ancestry for the trie. nil disables
+	// the trie; the tracker then falls back to flat hash-count support.
+	ancestry LedgerAncestryProvider
+
+	// trie holds branchSupport for trusted-and-not-negUNL validators'
+	// latest tips. nil when ancestry is unset.
+	trie *ledgertrie.Trie
+
+	// trieTips records each validator's current trie tip so a newer
+	// validation can remove the old before inserting the new.
+	trieTips map[consensus.NodeID]ledgertrie.Ledger
 }
 
 // NewValidationTracker creates a new validation tracker.
@@ -126,7 +139,8 @@ func (vt *ValidationTracker) SetNow(fn func() time.Time) {
 	vt.now = fn
 }
 
-// SetTrusted updates the set of trusted validators.
+// SetTrusted updates the set of trusted validators and rebuilds the
+// trie if wired so de-trusted validators stop contributing support.
 func (vt *ValidationTracker) SetTrusted(nodes []consensus.NodeID) {
 	vt.mu.Lock()
 	defer vt.mu.Unlock()
@@ -135,6 +149,7 @@ func (vt *ValidationTracker) SetTrusted(nodes []consensus.NodeID) {
 	for _, node := range nodes {
 		vt.trusted[node] = true
 	}
+	vt.rebuildTrieLocked()
 }
 
 // SetQuorum updates the quorum requirement.
@@ -157,6 +172,7 @@ func (vt *ValidationTracker) SetNegativeUNL(nodes []consensus.NodeID) {
 	for _, n := range nodes {
 		vt.negUNL[n] = true
 	}
+	vt.rebuildTrieLocked()
 }
 
 // SetMinSeq advances the sequence floor below which incoming
@@ -288,6 +304,19 @@ func (vt *ValidationTracker) Add(validation *consensus.Validation) bool {
 		}
 	}()
 
+	// Pre-resolve ancestry outside vt.mu — cold-LRU walks would
+	// otherwise serialise concurrent Add()s behind us.
+	vt.mu.RLock()
+	ancestrySnap := vt.ancestry
+	trieEnabled := vt.trie != nil
+	vt.mu.RUnlock()
+	var preResolvedLedger ledgertrie.Ledger
+	if trieEnabled && ancestrySnap != nil {
+		if l, ok := ancestrySnap.LedgerByID(validation.LedgerID); ok {
+			preResolvedLedger = l
+		}
+	}
+
 	vt.mu.Lock()
 	defer vt.mu.Unlock()
 
@@ -342,6 +371,10 @@ func (vt *ValidationTracker) Add(validation *consensus.Validation) bool {
 		vt.validations[validation.LedgerID] = ledgerVals
 	}
 	ledgerVals[resolvedID] = validation
+
+	if vt.trusted[resolvedID] && !vt.negUNL[resolvedID] {
+		vt.updateTrieLocked(resolvedID, validation.LedgerID, preResolvedLedger)
+	}
 
 	// Capture the fire-tuple under the lock; the deferred dispatcher
 	// invokes onFullyValidated after vt.mu.Unlock has run.
@@ -474,16 +507,55 @@ func (vt *ValidationTracker) countTrustedExcludingNegUNLLocked(
 	return count
 }
 
-// GetTrustedSupport is an alias for GetTrustedValidationCount named for
-// the LedgerTrie-style preference heuristic used in checkLedger. Rippled
-// picks a network ledger via vals.getPreferred() (RCLConsensus.cpp:301)
-// which returns the ledger with the most validation SUPPORT on its
-// ancestor chain — we approximate "support" with a flat trusted-count
-// at the exact ledger ID. Good enough when trusted validators broadly
-// agree; a full LedgerTrie port is a follow-up item. Inherits the
-// negUNL filter from GetTrustedValidationCount.
+// GetTrustedSupport returns the trie's branchSupport for ledgerID —
+// the count of trusted-and-not-negUNL validators committing to this
+// ledger or any descendant. Falls back to the flat trusted count when
+// the trie or ancestry is unavailable.
 func (vt *ValidationTracker) GetTrustedSupport(ledgerID consensus.LedgerID) int {
-	return vt.GetTrustedValidationCount(ledgerID)
+	// Snapshot pointers, drop the lock for ancestry resolution, then
+	// re-acquire for the cheap trie query.
+	vt.mu.RLock()
+	trie := vt.trie
+	ancestry := vt.ancestry
+	vt.mu.RUnlock()
+
+	if trie == nil || ancestry == nil {
+		return vt.GetTrustedValidationCount(ledgerID)
+	}
+
+	lgr, ok := ancestry.LedgerByID(ledgerID)
+	if !ok {
+		return vt.GetTrustedValidationCount(ledgerID)
+	}
+
+	vt.mu.RLock()
+	defer vt.mu.RUnlock()
+	// Trie may have been swapped while we resolved ancestry.
+	if vt.trie != trie {
+		ledgerVals, exists := vt.validations[ledgerID]
+		if !exists {
+			return 0
+		}
+		return vt.countTrustedExcludingNegUNLLocked(ledgerVals)
+	}
+	return int(trie.BranchSupport(lgr))
+}
+
+// GetPreferred returns the network-preferred ledger ID and sequence
+// as decided by the ancestry trie. ok is false when the trie is not
+// wired or empty. largestIssued is the highest sequence this node has
+// already validated; it seeds uncommitted support from earlier seqs.
+func (vt *ValidationTracker) GetPreferred(largestIssued uint32) (consensus.LedgerID, uint32, bool) {
+	vt.mu.RLock()
+	defer vt.mu.RUnlock()
+	if vt.trie == nil {
+		return consensus.LedgerID{}, 0, false
+	}
+	tip, ok := vt.trie.GetPreferred(largestIssued)
+	if !ok {
+		return consensus.LedgerID{}, 0, false
+	}
+	return tip.ID, tip.Seq, true
 }
 
 // IsFullyValidated returns true if the ledger has reached full
@@ -552,14 +624,9 @@ func (vt *ValidationTracker) GetCurrentValidators() []consensus.NodeID {
 	return result
 }
 
-// ExpireOld drops validations whose LedgerSeq is below minSeq from every
-// internal index, then fires onStale (if set) for each dropped validation
-// outside the mutex. All validations for a given ledger share a LedgerSeq,
-// so the staleness decision is taken from any one sample per ledger.
-//
-// Fixes a prior bug where byNode entries survived deletion — the node's
-// latest-validation pointer was kept pointing at a Validation removed from
-// the per-ledger map.
+// ExpireOld drops validations below minSeq from every index and fires
+// onStale outside the mutex. Trie tips for dropped validators are also
+// removed so phantom branchSupport doesn't linger on stale ancestors.
 func (vt *ValidationTracker) ExpireOld(minSeq uint32) {
 	vt.mu.Lock()
 
@@ -579,6 +646,12 @@ func (vt *ValidationTracker) ExpireOld(minSeq uint32) {
 			stale = append(stale, v)
 			if latest, ok := vt.byNode[nodeID]; ok && latest == v {
 				delete(vt.byNode, nodeID)
+				if vt.trie != nil {
+					if prev, ok := vt.trieTips[nodeID]; ok {
+						vt.trie.Remove(prev, 1)
+						delete(vt.trieTips, nodeID)
+					}
+				}
 			}
 		}
 		delete(vt.validations, ledgerID)
@@ -603,6 +676,7 @@ func (vt *ValidationTracker) Clear() {
 	vt.validations = make(map[consensus.LedgerID]map[consensus.NodeID]*consensus.Validation)
 	vt.byNode = make(map[consensus.NodeID]*consensus.Validation)
 	vt.fired = make(map[consensus.LedgerID]struct{})
+	vt.rebuildTrieLocked()
 }
 
 // Stats returns statistics about tracked validations.

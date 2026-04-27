@@ -188,6 +188,9 @@ func NewFromConfig(
 		engine.SetInMemoryLedgers(archCfg.InMemoryLedgers)
 	}
 
+	engine.SetLedgerAncestryProvider(rcl.NewLedgerProvider(ledgerSvc))
+
+	// Create the router
 	router := NewRouter(engine, adaptor, modeManager, overlay.Messages())
 	router.SetManifestCache(manifestCache, overlay)
 
