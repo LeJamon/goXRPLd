@@ -8,6 +8,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -1281,7 +1282,9 @@ func TestHandshake_ClosedLedgerHint_ReadableAfterHandshake(t *testing.T) {
 	gotClosed, ok := peer.ClosedLedger()
 	require.True(t, ok)
 	assert.Equal(t, closed, gotClosed)
-	assert.Equal(t, parent, peer.PreviousLedger())
+	gotParent, hasParent := peer.PreviousLedger()
+	assert.True(t, hasParent)
+	assert.Equal(t, parent, gotParent)
 }
 
 // Remote-IP consistency check per Handshake.cpp:340-359.
@@ -1476,6 +1479,75 @@ func TestLedgerSync_PreferredPeersForLedger_ConsumesClosedLedgerHint(t *testing.
 	}
 }
 
+// applyStatusChange mirrors PeerImp.cpp:1812-1862.
+func TestApplyStatusChange_RippledSemantics(t *testing.T) {
+	id, err := NewIdentity()
+	require.NoError(t, err)
+
+	mk := func() *Peer {
+		p := NewPeer(1, Endpoint{Host: "127.0.0.1", Port: 1}, false, id, nil)
+		var initialClosed, initialParent [32]byte
+		for i := range initialClosed {
+			initialClosed[i] = byte(0x11)
+			initialParent[i] = byte(0x22)
+		}
+		p.applyHandshakeExtras(HandshakeExtras{
+			ClosedLedger:   initialClosed,
+			PreviousLedger: initialParent,
+			HasLedgerHints: true,
+		})
+		return p
+	}
+
+	t.Run("lost_sync_zeroes_both", func(t *testing.T) {
+		p := mk()
+		p.applyStatusChange(nil, nil, true)
+		_, hasC := p.ClosedLedger()
+		_, hasP := p.PreviousLedger()
+		assert.False(t, hasC)
+		assert.False(t, hasP)
+	})
+
+	t.Run("updates_to_new_pair", func(t *testing.T) {
+		p := mk()
+		var newClosed, newParent [32]byte
+		for i := range newClosed {
+			newClosed[i] = byte(0xAA)
+			newParent[i] = byte(0xBB)
+		}
+		p.applyStatusChange(newClosed[:], newParent[:], false)
+		gotC, hasC := p.ClosedLedger()
+		gotP, hasP := p.PreviousLedger()
+		assert.True(t, hasC)
+		assert.True(t, hasP)
+		assert.Equal(t, newClosed, gotC)
+		assert.Equal(t, newParent, gotP)
+	})
+
+	t.Run("missing_closed_zeroes_closed_only", func(t *testing.T) {
+		p := mk()
+		var newParent [32]byte
+		for i := range newParent {
+			newParent[i] = byte(0xCC)
+		}
+		p.applyStatusChange(nil, newParent[:], false)
+		_, hasC := p.ClosedLedger()
+		gotP, hasP := p.PreviousLedger()
+		assert.False(t, hasC)
+		assert.True(t, hasP)
+		assert.Equal(t, newParent, gotP)
+	})
+
+	t.Run("malformed_closed_zeroes_closed", func(t *testing.T) {
+		p := mk()
+		p.applyStatusChange([]byte{0x01, 0x02}, nil, false) // 2 bytes ≠ 32
+		_, hasC := p.ClosedLedger()
+		_, hasP := p.PreviousLedger()
+		assert.False(t, hasC)
+		assert.False(t, hasP)
+	})
+}
+
 // Malformed Closed-Ledger / Previous-Ledger / Previous-without-Closed
 // must fail the handshake (PeerImp.cpp:175-194).
 func TestHandshake_MalformedLedgerHashRejected(t *testing.T) {
@@ -1571,6 +1643,38 @@ func TestIpFamilyEqual_BoostParity(t *testing.T) {
 	assert.False(t, ipFamilyEqual(v4, v4mapped, false, true), "v4 vs v4-mapped-v6 must differ")
 	assert.False(t, ipFamilyEqual(v4mapped, v4, true, false), "v4-mapped-v6 vs v4 must differ")
 	assert.True(t, ipFamilyEqual(v4mapped, v4mapped, true, true), "same v4-mapped-v6 must be equal")
+}
+
+// isWellFormedDomain must agree with rippled's regex
+// (StringUtilities.cpp:142-153). Go regexp has no lookarounds, so the
+// no-leading/trailing-hyphen rule is encoded directly.
+func TestIsWellFormedDomain_RegexCrossCheck(t *testing.T) {
+	rippledLike := regexp.MustCompile(
+		`^([A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$`,
+	)
+	check := func(s string) bool {
+		if len(s) < 4 || len(s) > 128 {
+			return false
+		}
+		return rippledLike.MatchString(s)
+	}
+
+	inputs := []string{
+		"a.io", "example.com", "validator.example.com", "node-1.example.org",
+		"a.b.c.d.example.com", "X-1.X-2.example.io",
+		"localhost", "example", "a.b", "x.123", "a.b.c",
+		"-bad.example.com", "bad-.example.com", "_bad.example.com",
+		"example.com.", "example..com", ".example.com",
+		"", "a",
+		strings.Repeat("a", 64) + ".example.com",
+		strings.Repeat("a", 200) + ".com",
+		"foo.bar.MUSEUM",
+	}
+	for _, s := range inputs {
+		want := check(s)
+		got := isWellFormedDomain(s)
+		assert.Equal(t, want, got, "isWellFormedDomain(%q): want=%v got=%v", s, want, got)
+	}
 }
 
 // isWellFormedDomain matches rippled's isProperlyFormedTomlDomain

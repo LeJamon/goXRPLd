@@ -836,6 +836,13 @@ func (o *Overlay) onMessageReceived(evt Event) {
 		return
 	}
 
+	// mtSTATUS_CHANGE refreshes Closed-/Previous-Ledger hints
+	// (PeerImp.cpp:1812-1862).
+	if msgType == message.TypeStatusChange {
+		o.handleStatusChange(evt)
+		return
+	}
+
 	// Serve mtREPLAY_DELTA_REQ from the local ledger sync handler. Mirrors
 	// rippled's PeerImp::onMessage(TMReplayDeltaRequest) which delegates to
 	// LedgerReplayMsgHandler::processReplayDeltaRequest. Before dispatching
@@ -995,6 +1002,25 @@ func (o *Overlay) dispatchProofPathRequest(evt Event) {
 			o.IncPeerBadData(evt.PeerID, "proof-path-req-bad")
 		}
 	}
+}
+
+func (o *Overlay) handleStatusChange(evt Event) {
+	decoded, err := message.Decode(message.TypeStatusChange, evt.Payload)
+	if err != nil {
+		slog.Debug("StatusChange decode failed", "t", "Overlay", "peer", evt.PeerID, "err", err)
+		return
+	}
+	sc, ok := decoded.(*message.StatusChange)
+	if !ok {
+		return
+	}
+	o.peersMu.RLock()
+	peer, exists := o.peers[evt.PeerID]
+	o.peersMu.RUnlock()
+	if !exists {
+		return
+	}
+	peer.applyStatusChange(sc.LedgerHash, sc.LedgerHashPrevious, sc.NewEvent == message.NodeEventLostSync)
 }
 
 // handleSquelchMessage processes an inbound TMSquelch from a peer and

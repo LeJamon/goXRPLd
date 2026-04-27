@@ -87,12 +87,14 @@ type Peer struct {
 	// accommodate potential negative values from decay overshoot.
 	badDataBalance atomic.Int64
 
-	// Issue-#270 handshake fields; zero when the peer omitted the header.
+	// closedLedger / previousLedger are also refreshed by inbound
+	// mtSTATUS_CHANGE (PeerImp.cpp:1812-1862).
 	instanceCookie     uint64
 	serverDomain       string
 	closedLedger       [32]byte
 	previousLedger     [32]byte
-	hasLedgerHints     bool
+	hasClosedLedger    bool
+	hasPreviousLedger  bool
 	remoteIPSelfReport string
 	localIPSelfReport  string
 }
@@ -194,9 +196,37 @@ func (p *Peer) applyHandshakeExtras(x HandshakeExtras) {
 	p.serverDomain = x.ServerDomain
 	p.closedLedger = x.ClosedLedger
 	p.previousLedger = x.PreviousLedger
-	p.hasLedgerHints = x.HasLedgerHints
+	p.hasClosedLedger = x.HasLedgerHints
+	p.hasPreviousLedger = x.HasLedgerHints
 	p.remoteIPSelfReport = x.RemoteIPSelf
 	p.localIPSelfReport = x.LocalIPSelf
+}
+
+// applyStatusChange mirrors rippled PeerImp.cpp:1812-1862.
+func (p *Peer) applyStatusChange(closed, previous []byte, lostSync bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if lostSync {
+		p.hasClosedLedger = false
+		p.hasPreviousLedger = false
+		p.closedLedger = [32]byte{}
+		p.previousLedger = [32]byte{}
+		return
+	}
+	if len(closed) == 32 {
+		copy(p.closedLedger[:], closed)
+		p.hasClosedLedger = true
+	} else {
+		p.hasClosedLedger = false
+		p.closedLedger = [32]byte{}
+	}
+	if len(previous) == 32 {
+		copy(p.previousLedger[:], previous)
+		p.hasPreviousLedger = true
+	} else {
+		p.hasPreviousLedger = false
+		p.previousLedger = [32]byte{}
+	}
 }
 
 func (p *Peer) InstanceCookie() uint64 {
@@ -211,18 +241,18 @@ func (p *Peer) ServerDomain() string {
 	return p.serverDomain
 }
 
-// ClosedLedger returns (hash, ok). ok is false when the peer omitted
-// the header or sent it malformed.
+// ClosedLedger returns (hash, ok); ok is false when no valid hint.
 func (p *Peer) ClosedLedger() ([32]byte, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.closedLedger, p.hasLedgerHints
+	return p.closedLedger, p.hasClosedLedger
 }
 
-func (p *Peer) PreviousLedger() [32]byte {
+// PreviousLedger returns (hash, ok); ok is false when no valid hint.
+func (p *Peer) PreviousLedger() ([32]byte, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.previousLedger
+	return p.previousLedger, p.hasPreviousLedger
 }
 
 func (p *Peer) RemoteIPSelfReport() string {
@@ -736,8 +766,10 @@ func (p *Peer) Info() PeerInfo {
 	stats := p.traffic.GetTotalStats()
 
 	var closedLedger, previousLedger string
-	if p.hasLedgerHints {
+	if p.hasClosedLedger {
 		closedLedger = strings.ToUpper(hex.EncodeToString(p.closedLedger[:]))
+	}
+	if p.hasPreviousLedger {
 		previousLedger = strings.ToUpper(hex.EncodeToString(p.previousLedger[:]))
 	}
 
