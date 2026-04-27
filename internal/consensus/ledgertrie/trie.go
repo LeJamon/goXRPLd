@@ -153,9 +153,13 @@ func (t *Trie) seqSupportSub(seq uint32, delta uint32) {
 	t.seqSupport[seq] = cur
 }
 
-// Insert adds count support for l along its ancestry. count must be > 0
-// — 0 corrupts seqSupport and resets existing tipSupport on a split.
+// Insert adds count support for l along its ancestry. A zero count is a
+// no-op: a 0-count insert that takes the newSuffix branch would create a
+// 0-tip leaf and break the compressed-trie invariant.
 func (t *Trie) Insert(l Ledger, count uint32) {
+	if count == 0 {
+		return
+	}
 	loc, diffSeq := t.find(l)
 
 	incNode := loc

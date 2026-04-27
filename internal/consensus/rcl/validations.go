@@ -676,6 +676,7 @@ func (vt *ValidationTracker) Clear() {
 	vt.validations = make(map[consensus.LedgerID]map[consensus.NodeID]*consensus.Validation)
 	vt.byNode = make(map[consensus.NodeID]*consensus.Validation)
 	vt.fired = make(map[consensus.LedgerID]struct{})
+	vt.rebuildTrieLocked()
 }
 
 // Stats returns statistics about tracked validations.
