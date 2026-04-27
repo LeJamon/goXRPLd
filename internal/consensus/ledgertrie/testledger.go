@@ -4,31 +4,22 @@ import (
 	"github.com/LeJamon/goXRPLd/internal/consensus"
 )
 
-// TestLedger is a deterministic in-memory ledger useful for unit
-// tests of the trie and any future consensus components that need
-// ancestry. It stores its full ancestor chain so Ancestor(s) is O(1).
-//
-// Modeled on rippled's csf::Ledger (src/test/csf/ledgers.h) which
-// serves the same purpose for the C++ test harness.
+// TestLedger is a deterministic in-memory ledger for unit tests.
+// Modeled on rippled's csf::Ledger (src/test/csf/ledgers.h).
 type TestLedger struct {
 	id        consensus.LedgerID
 	seq       uint32
-	ancestors []consensus.LedgerID // ancestors[i] is the ID at seq i; ancestors[seq] == id
+	ancestors []consensus.LedgerID
 }
 
-// ID implements Ledger.
 func (l *TestLedger) ID() consensus.LedgerID { return l.id }
+func (l *TestLedger) Seq() uint32            { return l.seq }
 
-// Seq implements Ledger.
-func (l *TestLedger) Seq() uint32 { return l.seq }
-
-// MinSeq implements Ledger. TestLedger retains its full ancestry, so
-// it can answer Ancestor(s) for any s in [0, Seq()].
+// MinSeq is 0; TestLedger retains its full ancestry.
 func (l *TestLedger) MinSeq() uint32 { return 0 }
 
-// Ancestor implements Ledger. For s outside [MinSeq(), Seq()] returns
-// the zero LedgerID, mirroring rippled's RCLValidatedLedger::operator[]
-// out-of-range fallback (RCLValidations.cpp:79-95).
+// Ancestor returns the zero LedgerID for s outside [MinSeq, Seq],
+// mirroring RCLValidatedLedger::operator[] (RCLValidations.cpp:79-95).
 func (l *TestLedger) Ancestor(s uint32) consensus.LedgerID {
 	if s > l.seq {
 		return consensus.LedgerID{}
@@ -36,22 +27,16 @@ func (l *TestLedger) Ancestor(s uint32) consensus.LedgerID {
 	return l.ancestors[s]
 }
 
-// TestLedgerBuilder constructs TestLedger instances from short string
-// notation. Each call to Build("abc") returns a ledger with ancestors
-// genesis → 'a' → 'b' → 'c' (seq 3). Repeated characters in the same
-// position are supported — "ab" and "abc" share "ab" prefix. Mirrors
-// rippled's LedgerHistoryHelper (LedgerTrie_test.cpp:~96) which does
-// the same via `h["abc"]`.
+// TestLedgerBuilder constructs TestLedgers from path strings: Build("abc")
+// is genesis → 'a' → 'b' → 'c' (seq 3); "ab" and "abc" share the "ab"
+// prefix. Mirrors LedgerHistoryHelper (LedgerTrie_test.cpp).
 //
-// IDs are derived by zero-padding the path bytes themselves into the
-// 32-byte LedgerID, so lexicographic byte-order on IDs matches
-// lexicographic rune-order on paths. That preserves rippled tests'
-// implicit assumption that `h["abce"].id() > h["abcd"].id()`. Only
-// ASCII paths shorter than 32 bytes are supported — plenty for the
-// tests we port.
+// Each path rune is written into byte `depth` of the LedgerID, so
+// lexicographic byte-order on IDs agrees with rune-order on paths —
+// preserving the implicit ordering rippled tests rely on. Limited to
+// ASCII paths shorter than 32 bytes.
 type TestLedgerBuilder struct {
-	genesis *TestLedger
-	// children maps (parent.id, next-rune) -> child
+	genesis  *TestLedger
 	children map[childKey]*TestLedger
 }
 
@@ -60,12 +45,10 @@ type childKey struct {
 	r      rune
 }
 
-// NewTestLedgerBuilder returns a builder whose genesis ledger is the
-// all-zero-ID seq-0 ledger.
 func NewTestLedgerBuilder() *TestLedgerBuilder {
 	genesis := &TestLedger{
 		seq:       0,
-		ancestors: []consensus.LedgerID{{}}, // genesis ID is 32 zero bytes
+		ancestors: []consensus.LedgerID{{}},
 	}
 	return &TestLedgerBuilder{
 		genesis:  genesis,
@@ -73,12 +56,9 @@ func NewTestLedgerBuilder() *TestLedgerBuilder {
 	}
 }
 
-// Genesis returns the builder's genesis ledger (seq 0, zero ID).
 func (b *TestLedgerBuilder) Genesis() *TestLedger { return b.genesis }
 
-// Build returns the ledger identified by the given string. Each rune
-// selects the child of the previous ledger; identical strings always
-// return the same *TestLedger (memoized). Empty string returns genesis.
+// Build returns the (memoized) ledger for s. Empty s returns genesis.
 func (b *TestLedgerBuilder) Build(s string) *TestLedger {
 	if len(s) >= 32 {
 		panic("TestLedgerBuilder: path too long for 32-byte ID encoding")
@@ -96,11 +76,6 @@ func (b *TestLedgerBuilder) Build(s string) *TestLedger {
 	return curr
 }
 
-// extend produces a new ledger one step past `parent`. ID is the
-// parent ID with byte `depth` overwritten to r. Since genesis ID is
-// all zeros, the resulting IDs spell out the path in the high bytes,
-// making lexicographic comparison on IDs agree with lexicographic
-// comparison on paths.
 func (b *TestLedgerBuilder) extend(parent *TestLedger, r rune, depth int) *TestLedger {
 	var id consensus.LedgerID
 	copy(id[:], parent.id[:])

@@ -6,7 +6,8 @@
 package ledgertrie
 
 import (
-	"sort"
+	"bytes"
+	"slices"
 
 	"github.com/LeJamon/goXRPLd/internal/consensus"
 )
@@ -21,26 +22,18 @@ import (
 // real ID; below it Ancestor() returns the zero LedgerID to signal
 // "out of range". Test ledgers that cache the full chain return 0.
 type Ledger interface {
-	// ID returns the ledger's own identifier (== Ancestor(Seq())).
 	ID() consensus.LedgerID
-	// Seq returns this ledger's sequence number.
 	Seq() uint32
-	// MinSeq returns the lowest seq for which Ancestor returns a
-	// non-zero ID. 0 for ledgers that retain their full ancestry.
 	MinSeq() uint32
-	// Ancestor returns the ID of the ancestor at sequence s. For s
-	// outside [MinSeq(), Seq()] the implementation returns the zero
-	// LedgerID. Ancestor(0) is the genesis ID for unbounded ledgers.
 	Ancestor(s uint32) consensus.LedgerID
 }
 
-// Mismatch returns the first sequence number at which a and b's
-// ancestries differ, restricted to the overlap of their known ranges
-// [max(a.MinSeq, b.MinSeq), min(a.Seq, b.Seq)]. When the entire
-// overlap mismatches — or there is no overlap — returns 1, matching
-// rippled's RCLValidations.cpp:99-114 fallback ("assume divergence
-// post-genesis"). When ancestries agree throughout the overlap,
-// returns min(a.Seq, b.Seq)+1.
+// Mismatch returns the first sequence at which a and b diverge,
+// restricted to the overlap [max(MinSeq), min(Seq)]. Returns 1 when
+// the ranges don't overlap or the overlap mismatches at its floor —
+// the "assume post-genesis divergence" fallback from
+// RCLValidations.cpp:99-114. Returns min(Seq)+1 when the overlap
+// agrees throughout.
 func Mismatch(a, b Ledger) uint32 {
 	upper := a.Seq()
 	if b.Seq() < upper {
@@ -51,14 +44,11 @@ func Mismatch(a, b Ledger) uint32 {
 		lower = bm
 	}
 	if lower > upper {
-		// No overlap of known ranges; assume divergence is post-genesis.
 		return 1
 	}
 
-	// Binary search in [lower, upper] for the first seq where a[s]
-	// disagrees with b[s]. Unique-history makes the "match" predicate
-	// monotone within the overlap (matches above s implies matches at
-	// every p in [lower, s]).
+	// Unique-history makes the match predicate monotone within the
+	// overlap; binary search over [lower, upper].
 	low := lower
 	hi := upper + 1
 	for low < hi {
@@ -70,40 +60,35 @@ func Mismatch(a, b Ledger) uint32 {
 		}
 	}
 	if low == lower {
-		// Mismatch at the lowest known seq — divergence is below our
-		// visibility. Per the rippled fallback, return 1.
+		// Divergence is below our visibility — fall back to 1.
 		return 1
 	}
 	return low
 }
 
-// SpanTip is the public read-only view of the tip of a span. Port of
-// rippled's SpanTip<Ledger> (LedgerTrie.h:39-73).
+// SpanTip is the read-only view of a span's tip. Port of rippled's
+// SpanTip<Ledger> (LedgerTrie.h:39-73).
 type SpanTip struct {
 	Seq    uint32
 	ID     consensus.LedgerID
 	ledger Ledger
 }
 
-// Ancestor returns the ID of the ancestor at sequence s (s <= Seq).
+// Ancestor returns the ID at sequence s; s must be <= Seq.
 func (t SpanTip) Ancestor(s uint32) consensus.LedgerID { return t.ledger.Ancestor(s) }
 
 // Trie is the ancestry trie. The zero value is not usable — call New.
 type Trie struct {
-	root *node
-	// genesis is captured at construction so an empty root always has
-	// a concrete Ledger to resolve Ancestor(0) against.
+	root    *node
 	genesis Ledger
 
-	// seqSupport[seq] is the number of ledgers at sequence `seq` that
-	// currently hold tip support. Rippled uses std::map for ordered
-	// iteration; we mirror that with a side-sorted slice of keys.
+	// seqSupport[seq] is the count of ledgers at `seq` with tip support.
+	// seqKeys mirrors std::map's ordered iteration as a sorted key list.
 	seqSupport map[uint32]uint32
-	seqKeys    []uint32 // sorted ascending
+	seqKeys    []uint32
 }
 
-// New constructs an empty trie. genesis is used as the placeholder
-// ledger for the root node and must satisfy Seq() == 0.
+// New constructs an empty trie. genesis must satisfy Seq() == 0.
 func New(genesis Ledger) *Trie {
 	return &Trie{
 		root:       newEmptyNode(genesis),
@@ -112,13 +97,11 @@ func New(genesis Ledger) *Trie {
 	}
 }
 
-// Empty reports whether the trie has any support recorded.
+// Empty reports whether the trie holds any support.
 func (t *Trie) Empty() bool { return t.root == nil || t.root.branchSupport == 0 }
 
-// --- find ---
-
-// find locates the node with the longest common ancestry prefix of
-// `l` and returns (node, diffSeq). Port of LedgerTrie::find
+// find returns the node sharing the longest common ancestry prefix of
+// l and the sequence at which they diverge. Port of LedgerTrie::find
 // (LedgerTrie.h:371-401).
 func (t *Trie) find(l Ledger) (*node, uint32) {
 	curr := t.root
@@ -140,8 +123,8 @@ func (t *Trie) find(l Ledger) (*node, uint32) {
 	return curr, pos
 }
 
-// findByLedgerID does an O(n) walk looking for an exact ID match.
-// Port of LedgerTrie::findByLedgerID (LedgerTrie.h:409-423).
+// findByLedgerID is an O(n) walk for an exact ID match. Port of
+// LedgerTrie::findByLedgerID (LedgerTrie.h:409-423).
 func (t *Trie) findByLedgerID(l Ledger) *node {
 	return findByIDWalk(t.root, l.ID())
 }
@@ -161,46 +144,37 @@ func findByIDWalk(curr *node, id consensus.LedgerID) *node {
 	return nil
 }
 
-// --- seqSupport helpers ---
-
 func (t *Trie) seqSupportAdd(seq uint32, delta uint32) {
 	if _, ok := t.seqSupport[seq]; !ok {
-		// insert seq into sorted key list
-		idx := sort.Search(len(t.seqKeys), func(i int) bool { return t.seqKeys[i] >= seq })
-		t.seqKeys = append(t.seqKeys, 0)
-		copy(t.seqKeys[idx+1:], t.seqKeys[idx:])
-		t.seqKeys[idx] = seq
+		idx, _ := slices.BinarySearch(t.seqKeys, seq)
+		t.seqKeys = slices.Insert(t.seqKeys, idx, seq)
 	}
 	t.seqSupport[seq] += delta
 }
 
+// seqSupportSub panics on under-subtract, matching the XRPL_ASSERT at
+// LedgerTrie.h:553-555.
 func (t *Trie) seqSupportSub(seq uint32, delta uint32) {
 	cur, ok := t.seqSupport[seq]
 	if !ok || cur < delta {
-		return // caller validated; defensive no-op
+		panic("ledgertrie: seqSupport invariant violation")
 	}
 	cur -= delta
 	if cur == 0 {
 		delete(t.seqSupport, seq)
-		idx := sort.Search(len(t.seqKeys), func(i int) bool { return t.seqKeys[i] >= seq })
-		if idx < len(t.seqKeys) && t.seqKeys[idx] == seq {
-			t.seqKeys = append(t.seqKeys[:idx], t.seqKeys[idx+1:]...)
+		if idx, found := slices.BinarySearch(t.seqKeys, seq); found {
+			t.seqKeys = slices.Delete(t.seqKeys, idx, idx+1)
 		}
 		return
 	}
 	t.seqSupport[seq] = cur
 }
 
-// --- Insert ---
-
-// Insert adds `count` units of support for ledger l. The ledger's
-// ancestry is walked from genesis to l itself; branchSupport is
-// incremented along the spine and tipSupport is incremented on the
-// node that owns l. Port of LedgerTrie::insert (LedgerTrie.h:452-531).
+// Insert adds `count` support for l along its ancestry. count must be
+// > 0; rippled's contract is undefined for 0 (it would corrupt
+// seqSupport and reset existing tipSupport on a split). Port of
+// LedgerTrie::insert (LedgerTrie.h:452-531).
 func (t *Trie) Insert(l Ledger, count uint32) {
-	if count == 0 {
-		return
-	}
 	loc, diffSeq := t.find(l)
 
 	incNode := loc
@@ -210,10 +184,13 @@ func (t *Trie) Insert(l Ledger, count uint32) {
 	newSuffix, hasNewSuffix := newSpanFromLedger(l).from(diffSeq)
 
 	if hasOldSuffix {
-		// Split: loc keeps the prefix; a new node takes over loc's
-		// tip/branch support and its children (which are the suffix
-		// continuation). Then loc's tipSupport resets to zero.
-		_ = hasPrefix // prefix must be present whenever oldSuffix is (see LedgerTrie.h:500)
+		// Split: loc keeps prefix; a new node inherits loc's
+		// tip/branch support and children. Mirrors XRPL_ASSERT at
+		// LedgerTrie.h:500 — !hasPrefix means a corrupt input
+		// (e.g. genesis disagreement).
+		if !hasPrefix {
+			panic("ledgertrie: Insert: prefix missing despite oldSuffix")
+		}
 		sfx := newNodeFromSpan(oldSuffix)
 		sfx.tipSupport = loc.tipSupport
 		sfx.branchSupport = loc.branchSupport
@@ -244,12 +221,9 @@ func (t *Trie) Insert(l Ledger, count uint32) {
 	t.seqSupportAdd(l.Seq(), count)
 }
 
-// --- Remove ---
-
-// Remove decreases support for l by up to `count`, compacting the
-// trie when a node's tipSupport falls to zero. Returns true when a
-// matching node was found. Port of LedgerTrie::remove
-// (LedgerTrie.h:540-589).
+// Remove decreases l's tip support by up to `count`, compacting the
+// trie when tipSupport reaches zero. Returns true if l was in the
+// trie. Port of LedgerTrie::remove (LedgerTrie.h:540-589).
 func (t *Trie) Remove(l Ledger, count uint32) bool {
 	loc := t.findByLedgerID(l)
 	if loc == nil || loc.tipSupport == 0 {
@@ -257,9 +231,6 @@ func (t *Trie) Remove(l Ledger, count uint32) bool {
 	}
 	if count > loc.tipSupport {
 		count = loc.tipSupport
-	}
-	if count == 0 {
-		return false
 	}
 
 	loc.tipSupport -= count
@@ -281,8 +252,7 @@ func (t *Trie) Remove(l Ledger, count uint32) bool {
 			parent.children = append(parent.children, child)
 			parent.eraseChild(loc)
 		default:
-			// Can't compact further — 0-tip node with >1 children is
-			// a valid compressed-trie node.
+			// 0-tip node with >1 children is valid; can't compact.
 			return true
 		}
 		loc = parent
@@ -290,10 +260,7 @@ func (t *Trie) Remove(l Ledger, count uint32) bool {
 	return true
 }
 
-// --- Support queries ---
-
-// TipSupport returns the tip support for the exact ledger l (0 if
-// not in the trie).
+// TipSupport returns the exact tip support for l, or 0 if not present.
 func (t *Trie) TipSupport(l Ledger) uint32 {
 	if loc := t.findByLedgerID(l); loc != nil {
 		return loc.tipSupport
@@ -301,10 +268,10 @@ func (t *Trie) TipSupport(l Ledger) uint32 {
 	return 0
 }
 
-// BranchSupport returns the branch support rooted at l: tip of l
-// plus all descendants of l. If l is a proper prefix of a trie span,
-// returns the enclosing node's branchSupport. Port of
-// LedgerTrie::branchSupport (LedgerTrie.h:610-623).
+// BranchSupport returns tipSupport(l) plus the branchSupport of all
+// descendants. When l is a proper prefix of a trie span, returns the
+// enclosing node's branchSupport. Port of LedgerTrie::branchSupport
+// (LedgerTrie.h:610-623).
 func (t *Trie) BranchSupport(l Ledger) uint32 {
 	loc := t.findByLedgerID(l)
 	if loc == nil {
@@ -319,11 +286,11 @@ func (t *Trie) BranchSupport(l Ledger) uint32 {
 	return loc.branchSupport
 }
 
-// --- GetPreferred ---
-
-// GetPreferred returns the preferred ledger's SpanTip and true, or a
-// zero SpanTip and false when the trie is empty. Port of
-// LedgerTrie::getPreferred (LedgerTrie.h:684-778).
+// GetPreferred returns the preferred ledger's tip, or false when the
+// trie is empty. largestIssued is the highest sequence this node has
+// already validated; uncommitted support from earlier sequences is
+// seeded so ancient validations cannot retroactively swing preference.
+// Port of LedgerTrie::getPreferred (LedgerTrie.h:684-778).
 func (t *Trie) GetPreferred(largestIssued uint32) (SpanTip, bool) {
 	if t.Empty() {
 		return SpanTip{}, false
@@ -331,13 +298,10 @@ func (t *Trie) GetPreferred(largestIssued uint32) (SpanTip, bool) {
 
 	curr := t.root
 	uncommitted := uint32(0)
-	uncommittedIdx := 0 // index into t.seqKeys
+	uncommittedIdx := 0
 
 	for curr != nil {
-		// --- within-span advancement ---
-
-		// Absorb uncommitted support for sequences earlier than
-		// max(curr.start+1, largestIssued).
+		// Absorb uncommitted support for seqs < max(curr.start+1, largestIssued).
 		nextSeq := curr.s.start + 1
 		floor := nextSeq
 		if largestIssued > floor {
@@ -348,7 +312,6 @@ func (t *Trie) GetPreferred(largestIssued uint32) (SpanTip, bool) {
 			uncommittedIdx++
 		}
 
-		// Advance nextSeq along the span while branchSupport > uncommitted.
 		for nextSeq < curr.s.end && curr.branchSupport > uncommitted {
 			if uncommittedIdx < len(t.seqKeys) && t.seqKeys[uncommittedIdx] < curr.s.end {
 				nextSeq = t.seqKeys[uncommittedIdx] + 1
@@ -360,7 +323,6 @@ func (t *Trie) GetPreferred(largestIssued uint32) (SpanTip, bool) {
 		}
 
 		if nextSeq < curr.s.end {
-			// Preferred sits strictly inside the current span.
 			sub, ok := curr.s.before(nextSeq)
 			if !ok {
 				return curr.s.tip(), true
@@ -368,7 +330,6 @@ func (t *Trie) GetPreferred(largestIssued uint32) (SpanTip, bool) {
 			return sub.tip(), true
 		}
 
-		// --- between-spans: pick the best child ---
 		var best *node
 		var margin uint32
 		switch len(curr.children) {
@@ -378,25 +339,18 @@ func (t *Trie) GetPreferred(largestIssued uint32) (SpanTip, bool) {
 			best = curr.children[0]
 			margin = best.branchSupport
 		default:
-			// partial_sort top-2 by (branchSupport desc, startID desc).
-			// With small N a full sort is fine.
-			sorted := make([]*node, len(curr.children))
-			copy(sorted, curr.children)
-			sort.Slice(sorted, func(i, j int) bool {
-				if sorted[i].branchSupport != sorted[j].branchSupport {
-					return sorted[i].branchSupport > sorted[j].branchSupport
+			// Inline top-2 by (branchSupport, startID) desc — equivalent
+			// to rippled's partial_sort at LedgerTrie.h:746.
+			var second *node
+			for _, c := range curr.children {
+				if best == nil || nodeOutranks(c, best) {
+					second, best = best, c
+				} else if second == nil || nodeOutranks(c, second) {
+					second = c
 				}
-				return ledgerIDGreater(sorted[i].s.startID(), sorted[j].s.startID())
-			})
-			best = sorted[0]
-			second := sorted[1]
+			}
 			margin = best.branchSupport - second.branchSupport
-			// Tie-break bonus: if best's startID sorts first it needs
-			// one extra unit of ambiguity to lose. Matches the
-			// `if (best->span.startID() > curr->children[1]->span.startID())
-			//     margin++;`
-			// at LedgerTrie.h:766-767 — comparing against the ORIGINAL
-			// second child (index 1 after partial_sort), not the best.
+			// Tie-break bonus from LedgerTrie.h:766-767.
 			if ledgerIDGreater(best.s.startID(), second.s.startID()) {
 				margin++
 			}
@@ -411,20 +365,22 @@ func (t *Trie) GetPreferred(largestIssued uint32) (SpanTip, bool) {
 	return curr.s.tip(), true
 }
 
-// ledgerIDGreater returns a > b in lexicographic byte order.
+// ledgerIDGreater compares LedgerIDs as big-endian byte sequences,
+// matching rippled's base_uint::operator> (memcmp on the buffer).
 func ledgerIDGreater(a, b consensus.LedgerID) bool {
-	for i := 0; i < len(a); i++ {
-		if a[i] != b[i] {
-			return a[i] > b[i]
-		}
-	}
-	return false
+	return bytes.Compare(a[:], b[:]) > 0
 }
 
-// --- Invariants ---
+// nodeOutranks orders nodes by (branchSupport, startID) descending —
+// the order used at LedgerTrie.h:751-757.
+func nodeOutranks(a, b *node) bool {
+	if a.branchSupport != b.branchSupport {
+		return a.branchSupport > b.branchSupport
+	}
+	return ledgerIDGreater(a.s.startID(), b.s.startID())
+}
 
-// CheckInvariants returns true when the compressed-trie invariants
-// hold:
+// CheckInvariants returns true when:
 //   - every non-root 0-tip node has ≥2 children
 //   - branchSupport == tipSupport + sum(child.branchSupport)
 //   - parent pointers are consistent
