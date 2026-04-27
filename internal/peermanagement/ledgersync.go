@@ -172,6 +172,9 @@ type LedgerSyncHandler struct {
 	// because the events channel was full (slow consumer). Exposed via
 	// DroppedResponses so the overlay can aggregate into server_info.
 	droppedResponses atomic.Uint64
+
+	// peerHintLookup is wired by the Overlay (see SetPeerLedgerHintLookup).
+	peerHintLookup func(target [32]byte) []PeerID
 }
 
 // DroppedResponses returns the cumulative count of ledger-sync
@@ -201,6 +204,25 @@ func (h *LedgerSyncHandler) SetProvider(provider LedgerProvider) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.provider = provider
+}
+
+// PreferredPeersForLedger returns peer IDs whose Closed-Ledger
+// handshake hint matches target. Empty when no lookup is wired or no
+// peer matches.
+func (h *LedgerSyncHandler) PreferredPeersForLedger(target [32]byte) []PeerID {
+	h.mu.RLock()
+	lookup := h.peerHintLookup
+	h.mu.RUnlock()
+	if lookup == nil {
+		return nil
+	}
+	return lookup(target)
+}
+
+func (h *LedgerSyncHandler) SetPeerLedgerHintLookup(fn func(target [32]byte) []PeerID) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.peerHintLookup = fn
 }
 
 // HandleMessage handles a ledger sync message.

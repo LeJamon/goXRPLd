@@ -279,6 +279,9 @@ func runServer(cmd *cobra.Command, args []string) {
 
 	// Create HTTP JSON-RPC server with 30 second timeout
 	httpServer := rpc.NewServer(30 * time.Second)
+	if consensusComponents != nil && consensusComponents.Overlay != nil {
+		httpServer.SetPeerSource(consensusComponents.Overlay)
+	}
 
 	types.Services.SetDispatcher(httpServer)
 

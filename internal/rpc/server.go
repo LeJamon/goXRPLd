@@ -20,9 +20,12 @@ func rpcLog() xrpllog.Logger { return xrpllog.Named(xrpllog.PartitionRPC) }
 
 // Server handles HTTP JSON-RPC requests using XRPL format
 type Server struct {
-	registry *types.MethodRegistry
-	timeout  time.Duration
+	registry   *types.MethodRegistry
+	timeout    time.Duration
+	peerSource types.PeerSource
 }
+
+func (s *Server) SetPeerSource(src types.PeerSource) { s.peerSource = src }
 
 // NewServer creates a new RPC server with the given timeout
 func NewServer(timeout time.Duration) *Server {
@@ -101,6 +104,7 @@ func (s *Server) handleGetRequest(w http.ResponseWriter, r *http.Request) {
 		ApiVersion: types.DefaultApiVersion,
 		IsAdmin:    role == types.RoleAdmin,
 		ClientIP:   clientIP,
+		PeerSource: s.peerSource,
 	}
 
 	result, rpcErr := s.executeMethod(method, nil, ctx)
@@ -142,6 +146,7 @@ func (s *Server) handlePostRequest(w http.ResponseWriter, r *http.Request) {
 		ApiVersion: types.DefaultApiVersion,
 		IsAdmin:    role == types.RoleAdmin,
 		ClientIP:   clientIP,
+		PeerSource: s.peerSource,
 	}
 
 	// Parse API version from params if present
@@ -315,6 +320,7 @@ func (s *Server) ExecuteMethod(method string, params []byte) (interface{}, *type
 		Role:       types.RoleGuest,
 		ApiVersion: types.DefaultApiVersion,
 		IsAdmin:    false,
+		PeerSource: s.peerSource,
 	}
 	return s.executeMethod(method, json.RawMessage(params), ctx)
 }

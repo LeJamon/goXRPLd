@@ -2,6 +2,7 @@ package peermanagement
 
 import (
 	"errors"
+	"net"
 	"time"
 )
 
@@ -92,6 +93,12 @@ type Config struct {
 	// own proposals/validations on the RelayFromValidator path.
 	// Matches rippled PeerImp.cpp:2715-2721.
 	LocalValidatorPubKey []byte
+
+	// ServerDomain populates the Server-Domain header; "" suppresses it.
+	ServerDomain string
+	// PublicIP populates Local-IP and gates the Remote-IP consistency
+	// check; nil suppresses both.
+	PublicIP net.IP
 
 	// Clock function for testing
 	Clock func() time.Time
@@ -274,6 +281,18 @@ func WithLocalValidatorPubKey(key []byte) Option {
 		// Defensive copy so callers cannot mutate config state after
 		// construction.
 		c.LocalValidatorPubKey = append([]byte(nil), key...)
+	}
+}
+
+func WithServerDomain(domain string) Option {
+	return func(c *Config) {
+		c.ServerDomain = domain
+	}
+}
+
+func WithPublicIP(ip net.IP) Option {
+	return func(c *Config) {
+		c.PublicIP = ip
 	}
 }
 

@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -84,6 +86,15 @@ type Peer struct {
 	// a persistent offender eventually evicts. Stored as int64 to
 	// accommodate potential negative values from decay overshoot.
 	badDataBalance atomic.Int64
+
+	// Issue-#270 handshake fields; zero when the peer omitted the header.
+	instanceCookie     uint64
+	serverDomain       string
+	closedLedger       [32]byte
+	previousLedger     [32]byte
+	hasLedgerHints     bool
+	remoteIPSelfReport string
+	localIPSelfReport  string
 }
 
 // PeerConfig holds peer connection configuration.
@@ -176,6 +187,56 @@ func (p *Peer) Capabilities() *PeerCapabilities {
 	return p.capabilities
 }
 
+func (p *Peer) applyHandshakeExtras(x HandshakeExtras) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.instanceCookie = x.InstanceCookie
+	p.serverDomain = x.ServerDomain
+	p.closedLedger = x.ClosedLedger
+	p.previousLedger = x.PreviousLedger
+	p.hasLedgerHints = x.HasLedgerHints
+	p.remoteIPSelfReport = x.RemoteIPSelf
+	p.localIPSelfReport = x.LocalIPSelf
+}
+
+func (p *Peer) InstanceCookie() uint64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.instanceCookie
+}
+
+func (p *Peer) ServerDomain() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.serverDomain
+}
+
+// ClosedLedger returns (hash, ok). ok is false when the peer omitted
+// the header or sent it malformed.
+func (p *Peer) ClosedLedger() ([32]byte, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.closedLedger, p.hasLedgerHints
+}
+
+func (p *Peer) PreviousLedger() [32]byte {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.previousLedger
+}
+
+func (p *Peer) RemoteIPSelfReport() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.remoteIPSelfReport
+}
+
+func (p *Peer) LocalIPSelfReport() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.localIPSelfReport
+}
+
 // Connect establishes connection to the peer (outbound).
 func (p *Peer) Connect(ctx context.Context, cfg PeerConfig) error {
 	p.mu.Lock()
@@ -241,6 +302,10 @@ func (p *Peer) performHandshake(ctx context.Context, tlsConn *tls.Conn) error {
 		return NewHandshakeError(p.endpoint, "build_request", err)
 	}
 
+	if peerIP := tcpRemoteIP(tlsConn); peerIP != nil {
+		addAddressHeaders(req.Header, p.handshakeCfg, peerIP)
+	}
+
 	deadline, ok := ctx.Deadline()
 	if !ok {
 		deadline = time.Now().Add(DefaultHandshakeTimeout)
@@ -289,7 +354,29 @@ func (p *Peer) performHandshake(ctx context.Context, tlsConn *tls.Conn) error {
 	p.capabilities = caps
 	p.mu.Unlock()
 
+	extras, err := ParseHandshakeExtras(
+		resp.Header,
+		p.handshakeCfg.PublicIP,
+		tcpRemoteIP(tlsConn),
+	)
+	if err != nil {
+		return NewHandshakeError(p.endpoint, "verify_extras", err)
+	}
+	p.applyHandshakeExtras(extras)
+
 	return nil
+}
+
+func tcpRemoteIP(conn net.Conn) net.IP {
+	addr, ok := conn.RemoteAddr().(*net.TCPAddr)
+	if !ok {
+		host, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+		if err != nil {
+			return nil
+		}
+		return net.ParseIP(host)
+	}
+	return addr.IP
 }
 
 // Run starts the peer's read/write/ping loops.
@@ -622,6 +709,15 @@ type PeerInfo struct {
 	ConnectedAt time.Time
 	MessagesIn  uint64
 	MessagesOut uint64
+
+	// Issue-#270 handshake fields. ClosedLedger / PreviousLedger are
+	// upper-case hex (rippled `peers` convention), "" when absent.
+	InstanceCookie uint64
+	ServerDomain   string
+	ClosedLedger   string
+	PreviousLedger string
+	RemoteIP       string
+	LocalIP        string
 }
 
 // Info returns read-only information about the peer.
@@ -636,14 +732,26 @@ func (p *Peer) Info() PeerInfo {
 
 	stats := p.traffic.GetTotalStats()
 
+	var closedLedger, previousLedger string
+	if p.hasLedgerHints {
+		closedLedger = strings.ToUpper(hex.EncodeToString(p.closedLedger[:]))
+		previousLedger = strings.ToUpper(hex.EncodeToString(p.previousLedger[:]))
+	}
+
 	return PeerInfo{
-		ID:          p.id,
-		Endpoint:    p.endpoint,
-		Inbound:     p.inbound,
-		State:       p.state,
-		PublicKey:   pubKey,
-		ConnectedAt: p.createdAt,
-		MessagesIn:  stats.MessagesIn,
-		MessagesOut: stats.MessagesOut,
+		ID:             p.id,
+		Endpoint:       p.endpoint,
+		Inbound:        p.inbound,
+		State:          p.state,
+		PublicKey:      pubKey,
+		ConnectedAt:    p.createdAt,
+		MessagesIn:     stats.MessagesIn,
+		MessagesOut:    stats.MessagesOut,
+		InstanceCookie: p.instanceCookie,
+		ServerDomain:   p.serverDomain,
+		ClosedLedger:   closedLedger,
+		PreviousLedger: previousLedger,
+		RemoteIP:       p.remoteIPSelfReport,
+		LocalIP:        p.localIPSelfReport,
 	}
 }

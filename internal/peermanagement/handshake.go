@@ -5,8 +5,10 @@ import (
 	"crypto/sha512"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -36,6 +38,10 @@ const (
 	HeaderPreviousLedger   = "Previous-Ledger"
 	HeaderCrawl            = "Crawl"
 	HeaderUserAgent        = "User-Agent"
+	HeaderInstanceCookie   = "Instance-Cookie"
+	HeaderServerDomain     = "Server-Domain"
+	HeaderRemoteIP         = "Remote-IP"
+	HeaderLocalIP          = "Local-IP"
 )
 
 // Time constants.
@@ -63,6 +69,17 @@ type HandshakeConfig struct {
 	EnableCompression   bool
 	EnableVPReduceRelay bool
 	EnableTxReduceRelay bool
+
+	// InstanceCookie is emitted on every handshake; 0 suppresses it.
+	InstanceCookie uint64
+	// ServerDomain is the operator domain; empty suppresses the header.
+	ServerDomain string
+	// PublicIP is our observed public address; nil/unspecified suppresses
+	// Local-IP emission and disables the Remote-IP consistency check.
+	PublicIP net.IP
+	// LedgerHintProvider returns (closed, parent, ok). ok=false suppresses
+	// both Closed-Ledger and Previous-Ledger headers.
+	LedgerHintProvider func() (closed [32]byte, parent [32]byte, ok bool)
 }
 
 // DefaultHandshakeConfig returns default handshake configuration.
@@ -193,6 +210,12 @@ func WriteRawHandshakeRequest(w io.Writer, req *http.Request) error {
 	// like mtREPLAY_DELTA_REQ and mtPROOF_PATH_REQ. Mirrors rippled's
 	// makeHandshakeHeaders writing the same header on outbound.
 	writeHeader(HeaderProtocolCtl)
+	writeHeader(HeaderInstanceCookie)
+	writeHeader(HeaderServerDomain)
+	writeHeader(HeaderClosedLedger)
+	writeHeader(HeaderPreviousLedger)
+	writeHeader(HeaderRemoteIP)
+	writeHeader(HeaderLocalIP)
 	buf.WriteString("\r\n")
 	_, err := w.Write(buf.Bytes())
 	return err
@@ -245,6 +268,96 @@ func addHandshakeHeaders(h http.Header, id *Identity, sharedValue []byte, cfg Ha
 	); ctl != "" {
 		h.Set(HeaderProtocolCtl, ctl)
 	}
+
+	if cfg.InstanceCookie != 0 {
+		h.Set(HeaderInstanceCookie, strconv.FormatUint(cfg.InstanceCookie, 10))
+	}
+	if cfg.ServerDomain != "" {
+		h.Set(HeaderServerDomain, cfg.ServerDomain)
+	}
+	if cfg.LedgerHintProvider != nil {
+		if closed, parent, ok := cfg.LedgerHintProvider(); ok {
+			h.Set(HeaderClosedLedger, hex.EncodeToString(closed[:]))
+			h.Set(HeaderPreviousLedger, hex.EncodeToString(parent[:]))
+		}
+	}
+}
+
+// addAddressHeaders emits Remote-IP / Local-IP per Handshake.cpp:213-217.
+// Per-conn helper (peerRemote isn't available at HandshakeConfig time).
+func addAddressHeaders(h http.Header, cfg HandshakeConfig, peerRemote net.IP) {
+	if peerRemote != nil && isPublicIP(peerRemote) {
+		h.Set(HeaderRemoteIP, peerRemote.String())
+	}
+	if cfg.PublicIP != nil && !cfg.PublicIP.IsUnspecified() {
+		h.Set(HeaderLocalIP, cfg.PublicIP.String())
+	}
+}
+
+// isPublicIP is the Go equivalent of beast::IP::is_public.
+func isPublicIP(ip net.IP) bool {
+	if ip == nil || ip.IsUnspecified() {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsPrivate() {
+		return false
+	}
+	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return false
+	}
+	if ip.IsMulticast() {
+		return false
+	}
+	return true
+}
+
+// parseLedgerHashHeader: hex (rippled wire format) or 32-byte base64
+// fallback (PeerImp::run accepts both).
+func parseLedgerHashHeader(s string) ([32]byte, error) {
+	var out [32]byte
+	if len(s) == hex.EncodedLen(32) {
+		if _, err := hex.Decode(out[:], []byte(s)); err == nil {
+			return out, nil
+		}
+	}
+	if dec, err := base64.StdEncoding.DecodeString(s); err == nil && len(dec) == 32 {
+		copy(out[:], dec)
+		return out, nil
+	}
+	return out, fmt.Errorf("unrecognised ledger hash %q", s)
+}
+
+// isWellFormedDomain: subset of rippled's isProperlyFormedTomlDomain.
+// Length ≤253, label [A-Za-z0-9-]{1,63}, no leading/trailing hyphen.
+func isWellFormedDomain(s string) bool {
+	if s == "" || len(s) > 253 {
+		return false
+	}
+	if strings.HasSuffix(s, ".") {
+		s = s[:len(s)-1]
+	}
+	if s == "" {
+		return false
+	}
+	for _, label := range strings.Split(s, ".") {
+		if len(label) == 0 || len(label) > 63 {
+			return false
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			ok := (c >= 'A' && c <= 'Z') ||
+				(c >= 'a' && c <= 'z') ||
+				(c >= '0' && c <= '9') ||
+				c == '-'
+			if !ok {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // VerifyPeerHandshake validates the handshake headers and verifies the session signature.
@@ -667,6 +780,92 @@ func VerifyHandshakeHeadersNoSig(
 	}
 
 	return peerPubKey, nil
+}
+
+// HandshakeExtras carries the headers parsed by ParseHandshakeExtras.
+type HandshakeExtras struct {
+	InstanceCookie uint64
+	ServerDomain   string
+	ClosedLedger   [32]byte
+	PreviousLedger [32]byte
+	HasLedgerHints bool
+	RemoteIPSelf   string // peer's view of our public IP
+	LocalIPSelf    string // peer's view of their own public IP
+}
+
+// ParseHandshakeExtras parses the issue-#270 headers and applies
+// rippled's verifyHandshake checks: Server-Domain validity
+// (Handshake.cpp:235-239), Local-IP / Remote-IP consistency
+// (Handshake.cpp:325-359). Instance-Cookie is stored only — rippled
+// never compares it; self-connection stays pubkey-only at line 322.
+// Closed-Ledger / Previous-Ledger parse failures are tolerated (matches
+// PeerImp::run returning nullopt without aborting).
+// peerRemote == nil short-circuits the IP comparisons.
+func ParseHandshakeExtras(
+	headers http.Header,
+	localPublicIP net.IP,
+	peerRemote net.IP,
+) (HandshakeExtras, error) {
+	var out HandshakeExtras
+
+	if v := headers.Get(HeaderInstanceCookie); v != "" {
+		cookie, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			return out, fmt.Errorf("%w: malformed Instance-Cookie %q: %v",
+				ErrInvalidHandshake, v, err)
+		}
+		out.InstanceCookie = cookie
+	}
+
+	if v := headers.Get(HeaderServerDomain); v != "" {
+		if !isWellFormedDomain(v) {
+			return out, fmt.Errorf("%w: invalid Server-Domain %q",
+				ErrInvalidHandshake, v)
+		}
+		out.ServerDomain = v
+	}
+
+	if v := headers.Get(HeaderClosedLedger); v != "" {
+		if h, err := parseLedgerHashHeader(v); err == nil {
+			out.ClosedLedger = h
+			out.HasLedgerHints = true
+		}
+	}
+	if v := headers.Get(HeaderPreviousLedger); v != "" {
+		if h, err := parseLedgerHashHeader(v); err == nil {
+			out.PreviousLedger = h
+		}
+	}
+
+	if v := headers.Get(HeaderLocalIP); v != "" {
+		localReported := net.ParseIP(v)
+		if localReported == nil {
+			return out, fmt.Errorf("%w: invalid Local-IP %q",
+				ErrInvalidHandshake, v)
+		}
+		out.LocalIPSelf = localReported.String()
+		if peerRemote != nil && isPublicIP(peerRemote) && !peerRemote.Equal(localReported) {
+			return out, fmt.Errorf("%w: Incorrect Local-IP: %s instead of %s",
+				ErrInvalidHandshake, peerRemote.String(), localReported.String())
+		}
+	}
+
+	if v := headers.Get(HeaderRemoteIP); v != "" {
+		remoteReported := net.ParseIP(v)
+		if remoteReported == nil {
+			return out, fmt.Errorf("%w: invalid Remote-IP %q",
+				ErrInvalidHandshake, v)
+		}
+		out.RemoteIPSelf = remoteReported.String()
+		if peerRemote != nil && isPublicIP(peerRemote) &&
+			localPublicIP != nil && !localPublicIP.IsUnspecified() &&
+			!remoteReported.Equal(localPublicIP) {
+			return out, fmt.Errorf("%w: Incorrect Remote-IP: %s instead of %s",
+				ErrInvalidHandshake, localPublicIP.String(), remoteReported.String())
+		}
+	}
+
+	return out, nil
 }
 
 // MakeFeaturesRequestHeader creates the X-Protocol-Ctl header value for a request.
