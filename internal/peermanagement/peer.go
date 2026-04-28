@@ -194,8 +194,8 @@ func (p *Peer) applyHandshakeExtras(x HandshakeExtras) {
 	p.serverDomain = x.ServerDomain
 	p.closedLedger = x.ClosedLedger
 	p.previousLedger = x.PreviousLedger
-	p.hasClosedLedger = x.HasLedgerHints
-	p.hasPreviousLedger = x.HasLedgerHints
+	p.hasClosedLedger = x.HasClosedLedger
+	p.hasPreviousLedger = x.HasPreviousLedger
 	p.remoteIPSelfReport = x.RemoteIPSelf
 	p.localIPSelfReport = x.LocalIPSelf
 }

@@ -681,14 +681,20 @@ func PeerFeatureEnabled(headers http.Header, feature, value string, localEnabled
 }
 
 // HandshakeExtras carries the headers parsed by ParseHandshakeExtras.
+//
+// HasClosedLedger and HasPreviousLedger track presence of the
+// corresponding headers independently — rippled's PeerImp.cpp:198-201
+// keeps them as separate optionals because a peer may advertise a
+// closed ledger without a parent (cold-start, post-pruning).
 type HandshakeExtras struct {
-	InstanceCookie uint64
-	ServerDomain   string
-	ClosedLedger   [32]byte
-	PreviousLedger [32]byte
-	HasLedgerHints bool
-	RemoteIPSelf   string // peer's view of our public IP
-	LocalIPSelf    string // peer's view of their own public IP
+	InstanceCookie    uint64
+	ServerDomain      string
+	ClosedLedger      [32]byte
+	PreviousLedger    [32]byte
+	HasClosedLedger   bool
+	HasPreviousLedger bool
+	RemoteIPSelf      string // peer's view of our public IP
+	LocalIPSelf       string // peer's view of their own public IP
 }
 
 // ValidateServerDomain enforces verifyHandshake's Server-Domain check
@@ -742,9 +748,8 @@ func ParseHandshakeExtras(
 				ErrInvalidHandshake, v, err)
 		}
 		out.ClosedLedger = h
-		out.HasLedgerHints = true
+		out.HasClosedLedger = true
 	}
-	var hasPrevious bool
 	if v := headers.Get(HeaderPreviousLedger); v != "" {
 		h, err := parseLedgerHashHeader(v)
 		if err != nil {
@@ -752,9 +757,9 @@ func ParseHandshakeExtras(
 				ErrInvalidHandshake, v, err)
 		}
 		out.PreviousLedger = h
-		hasPrevious = true
+		out.HasPreviousLedger = true
 	}
-	if hasPrevious && !out.HasLedgerHints {
+	if out.HasPreviousLedger && !out.HasClosedLedger {
 		return out, fmt.Errorf("%w: Previous-Ledger without Closed-Ledger",
 			ErrInvalidHandshake)
 	}

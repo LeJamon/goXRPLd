@@ -1086,7 +1086,7 @@ func TestHandshake_ClosedLedgerHint_ReadableAfterHandshake(t *testing.T) {
 
 	extras, err := ParseHandshakeExtras(headers, nil, nil)
 	require.NoError(t, err)
-	assert.True(t, extras.HasLedgerHints, "ClosedLedger header must mark hints as present")
+	assert.True(t, extras.HasClosedLedger, "ClosedLedger header must mark hints as present")
 	assert.Equal(t, closed, extras.ClosedLedger)
 	assert.Equal(t, parent, extras.PreviousLedger)
 
@@ -1202,7 +1202,7 @@ func TestHandshake_AllHeaders_RoundTrip(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, senderCfg.InstanceCookie, extras.InstanceCookie)
 		assert.Equal(t, senderCfg.ServerDomain, extras.ServerDomain)
-		assert.True(t, extras.HasLedgerHints)
+		assert.True(t, extras.HasClosedLedger)
 		assert.Equal(t, closed, extras.ClosedLedger)
 		assert.Equal(t, parent, extras.PreviousLedger)
 		assert.Equal(t, pB.String(), extras.RemoteIPSelf)
@@ -1230,7 +1230,7 @@ func TestHandshake_AllHeaders_RoundTrip(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, senderCfg.InstanceCookie, extras.InstanceCookie)
 		assert.Equal(t, senderCfg.ServerDomain, extras.ServerDomain)
-		assert.True(t, extras.HasLedgerHints)
+		assert.True(t, extras.HasClosedLedger)
 	})
 
 	t.Run("malformed_server_domain_rejected", func(t *testing.T) {
@@ -1265,7 +1265,7 @@ func TestLedgerSync_PreferredPeersForLedger_ConsumesClosedLedgerHint(t *testing.
 			p.applyHandshakeExtras(HandshakeExtras{
 				ClosedLedger:   *hint,
 				PreviousLedger: parent,
-				HasLedgerHints: true,
+				HasClosedLedger: true,
 			})
 		}
 		return p
@@ -1279,7 +1279,7 @@ func TestLedgerSync_PreferredPeersForLedger_ConsumesClosedLedgerHint(t *testing.
 		// peer 5: disconnected with matching hint → filtered by state.
 		5: func() *Peer {
 			p := NewPeer(5, Endpoint{}, false, id, nil)
-			p.applyHandshakeExtras(HandshakeExtras{ClosedLedger: target, HasLedgerHints: true})
+			p.applyHandshakeExtras(HandshakeExtras{ClosedLedger: target, HasClosedLedger: true})
 			return p
 		}(),
 	})
@@ -1308,7 +1308,7 @@ func TestApplyStatusChange_RippledSemantics(t *testing.T) {
 		p.applyHandshakeExtras(HandshakeExtras{
 			ClosedLedger:   initialClosed,
 			PreviousLedger: initialParent,
-			HasLedgerHints: true,
+			HasClosedLedger: true,
 		})
 		return p
 	}
