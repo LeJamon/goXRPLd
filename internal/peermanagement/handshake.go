@@ -334,12 +334,19 @@ func isIPv6Text(s string) bool {
 }
 
 // isPublicIP mirrors beast::IP::is_public: !is_private && !is_multicast.
-// beast's is_private = RFC1918 + loopback. Link-local stays public.
+// IPv4 is_private = RFC1918 + loopback (link-local stays public, matching
+// IPAddressV4.cpp). IPv6 is_private also catches link-local (fe80::/10):
+// rippled IPAddressV6.cpp flags these via `(addr.to_bytes()[0] & 0xfd)`,
+// and Go's IsPrivate doesn't include link-local, so we add it explicitly
+// for v6 only.
 func isPublicIP(ip net.IP) bool {
 	if ip == nil || ip.IsUnspecified() {
 		return false
 	}
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsMulticast() {
+		return false
+	}
+	if ip.To4() == nil && ip.IsLinkLocalUnicast() {
 		return false
 	}
 	return true
@@ -766,10 +773,12 @@ func PeerFeatureEnabled(headers http.Header, feature, value string, localEnabled
 //   - Public-Key header present and base58-parseable as a secp256k1
 //     node key (0xED ed25519 prefixes are rejected at parse time).
 //   - Self-connection: peer's Public-Key must differ from localPubKey.
-//   - Network-ID: if the peer advertised it, must match localNetworkID
-//     exactly. A missing Network-ID is silently accepted regardless of
-//     localNetworkID, mirroring rippled (Handshake.cpp:241-250 only
-//     enters the comparison branch when the header is present).
+//   - Network-ID: if the peer advertised it AND we have a non-zero
+//     localNetworkID, the values must match exactly. localNetworkID==0
+//     means "unconfigured" (rippled's `networkID = std::nullopt`) and
+//     skips the comparison — Handshake.cpp:241-250 only throws inside
+//     `if (networkID && nid != *networkID)`. A missing Network-ID is
+//     also accepted regardless of local config.
 //   - Network-Time: if the peer advertised it, the skew must be
 //     within NetworkClockTolerance of local wall clock.
 //
@@ -798,7 +807,7 @@ func VerifyHandshakeHeadersNoSig(
 		if err != nil {
 			return nil, fmt.Errorf("malformed Network-ID %q: %w", netIDStr, err)
 		}
-		if uint32(netID) != localNetworkID {
+		if localNetworkID != 0 && uint32(netID) != localNetworkID {
 			return nil, fmt.Errorf("%w: peer=%d local=%d", ErrNetworkMismatch, netID, localNetworkID)
 		}
 	}
@@ -820,17 +829,18 @@ func VerifyHandshakeHeadersNoSig(
 }
 
 // HandshakeExtras carries the headers parsed by ParseHandshakeExtras.
+// Strict rippled parity: only the headers that rippled stores typed on
+// PeerImp survive here. Instance-Cookie is emitted on the wire but
+// never parsed/stored (rippled keeps it in its untyped headers_ map and
+// never reads it). Local-IP / Remote-IP are validated and discarded.
 // Closed-Ledger and Previous-Ledger track presence independently to
 // match rippled (PeerImp.cpp:198-201).
 type HandshakeExtras struct {
-	InstanceCookie    uint64
 	ServerDomain      string
 	ClosedLedger      [32]byte
 	PreviousLedger    [32]byte
 	HasClosedLedger   bool
 	HasPreviousLedger bool
-	RemoteIPSelf      string // peer's view of our public IP
-	LocalIPSelf       string // peer's view of their own public IP
 }
 
 // ValidateServerDomain enforces verifyHandshake's Server-Domain check
@@ -852,25 +862,17 @@ func ValidateServerDomain(headers http.Header) (string, error) {
 // ParseHandshakeExtras enforces the post-signature checks: ledger-hash
 // malformed (PeerImp.cpp:175-191), Previous-without-Closed
 // (PeerImp.cpp:193-194), Local-IP / Remote-IP consistency
-// (Handshake.cpp:325-359). Instance-Cookie is stored only.
-// Server-Domain is handled separately by ValidateServerDomain (which
-// must run first to match rippled's order). peerRemote == nil
-// disables the IP comparisons.
+// (Handshake.cpp:325-359). Server-Domain is validated separately by
+// ValidateServerDomain (which must run first to match rippled's order).
+// Instance-Cookie is emitted on the wire but never parsed (rippled's
+// verifyHandshake doesn't inspect it). peerRemote == nil disables the
+// IP comparisons.
 func ParseHandshakeExtras(
 	headers http.Header,
 	localPublicIP net.IP,
 	peerRemote net.IP,
 ) (HandshakeExtras, error) {
 	var out HandshakeExtras
-
-	if v := headers.Get(HeaderInstanceCookie); v != "" {
-		cookie, err := strconv.ParseUint(v, 10, 64)
-		if err != nil {
-			return out, fmt.Errorf("%w: malformed Instance-Cookie %q: %v",
-				ErrInvalidHandshake, v, err)
-		}
-		out.InstanceCookie = cookie
-	}
 
 	// Server-Domain is validated upstream by ValidateServerDomain
 	// (rippled order); we just surface the value here.
@@ -901,13 +903,14 @@ func ParseHandshakeExtras(
 			ErrInvalidHandshake)
 	}
 
+	// Local-IP / Remote-IP: validate per Handshake.cpp:325-359 and
+	// discard. Rippled doesn't store the parsed values on PeerImp.
 	if v := headers.Get(HeaderLocalIP); v != "" {
 		localReported := net.ParseIP(v)
 		if localReported == nil {
 			return out, fmt.Errorf("%w: invalid Local-IP %q",
 				ErrInvalidHandshake, v)
 		}
-		out.LocalIPSelf = localReported.String()
 		if peerRemote != nil && isPublicIP(peerRemote) &&
 			!ipFamilyEqual(peerRemote, localReported, false, isIPv6Text(v)) {
 			return out, fmt.Errorf("%w: Incorrect Local-IP: %s instead of %s",
@@ -921,7 +924,6 @@ func ParseHandshakeExtras(
 			return out, fmt.Errorf("%w: invalid Remote-IP %q",
 				ErrInvalidHandshake, v)
 		}
-		out.RemoteIPSelf = remoteReported.String()
 		if peerRemote != nil && isPublicIP(peerRemote) &&
 			localPublicIP != nil && !localPublicIP.IsUnspecified() &&
 			!ipFamilyEqual(remoteReported, localPublicIP, isIPv6Text(v), false) {

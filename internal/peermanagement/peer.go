@@ -88,15 +88,15 @@ type Peer struct {
 	badDataBalance atomic.Int64
 
 	// closedLedger / previousLedger are also refreshed by inbound
-	// mtSTATUS_CHANGE (PeerImp.cpp:1812-1862).
-	instanceCookie     uint64
-	serverDomain       string
-	closedLedger       [32]byte
-	previousLedger     [32]byte
-	hasClosedLedger    bool
-	hasPreviousLedger  bool
-	remoteIPSelfReport string
-	localIPSelfReport  string
+	// mtSTATUS_CHANGE (PeerImp.cpp:1812-1862). Rippled stores both as
+	// typed `closedLedgerHash_` / `previousLedgerHash_` on PeerImp.
+	// serverDomain mirrors rippled's `domain()` accessor reading from
+	// its `headers_["Server-Domain"]` map.
+	serverDomain      string
+	closedLedger      [32]byte
+	previousLedger    [32]byte
+	hasClosedLedger   bool
+	hasPreviousLedger bool
 }
 
 // PeerConfig holds peer connection configuration.
@@ -192,7 +192,6 @@ func (p *Peer) Capabilities() *PeerCapabilities {
 func (p *Peer) applyHandshakeExtras(x HandshakeExtras) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.instanceCookie = x.InstanceCookie
 	p.serverDomain = x.ServerDomain
 	if x.HasClosedLedger {
 		p.closedLedger = x.ClosedLedger
@@ -208,8 +207,6 @@ func (p *Peer) applyHandshakeExtras(x HandshakeExtras) {
 		p.previousLedger = [32]byte{}
 		p.hasPreviousLedger = false
 	}
-	p.remoteIPSelfReport = x.RemoteIPSelf
-	p.localIPSelfReport = x.LocalIPSelf
 }
 
 // applyStatusChange mirrors rippled PeerImp.cpp:1812-1862.
@@ -239,12 +236,7 @@ func (p *Peer) applyStatusChange(closed, previous []byte, lostSync bool) {
 	}
 }
 
-func (p *Peer) InstanceCookie() uint64 {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.instanceCookie
-}
-
+// ServerDomain mirrors rippled's `PeerImp::domain()` (PeerImp.cpp:842).
 func (p *Peer) ServerDomain() string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -263,18 +255,6 @@ func (p *Peer) PreviousLedger() ([32]byte, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.previousLedger, p.hasPreviousLedger
-}
-
-func (p *Peer) RemoteIPSelfReport() string {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.remoteIPSelfReport
-}
-
-func (p *Peer) LocalIPSelfReport() string {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.localIPSelfReport
 }
 
 // Connect establishes connection to the peer (outbound).
@@ -753,14 +733,11 @@ type PeerInfo struct {
 	MessagesIn  uint64
 	MessagesOut uint64
 
-	// Issue-#270 handshake fields. ClosedLedger / PreviousLedger are
-	// upper-case hex (rippled `peers` convention), "" when absent.
-	InstanceCookie uint64
-	ServerDomain   string
-	ClosedLedger   string
-	PreviousLedger string
-	RemoteIP       string
-	LocalIP        string
+	// Handshake-derived state mirroring what rippled stores typed on
+	// PeerImp. ClosedLedger is upper-case hex (rippled `peers`
+	// convention via `to_string(closedLedgerHash)`), "" when absent.
+	ServerDomain string
+	ClosedLedger string
 }
 
 // Info returns read-only information about the peer.
@@ -775,28 +752,21 @@ func (p *Peer) Info() PeerInfo {
 
 	stats := p.traffic.GetTotalStats()
 
-	var closedLedger, previousLedger string
+	var closedLedger string
 	if p.hasClosedLedger {
 		closedLedger = strings.ToUpper(hex.EncodeToString(p.closedLedger[:]))
 	}
-	if p.hasPreviousLedger {
-		previousLedger = strings.ToUpper(hex.EncodeToString(p.previousLedger[:]))
-	}
 
 	return PeerInfo{
-		ID:             p.id,
-		Endpoint:       p.endpoint,
-		Inbound:        p.inbound,
-		State:          p.state,
-		PublicKey:      pubKey,
-		ConnectedAt:    p.createdAt,
-		MessagesIn:     stats.MessagesIn,
-		MessagesOut:    stats.MessagesOut,
-		InstanceCookie: p.instanceCookie,
-		ServerDomain:   p.serverDomain,
-		ClosedLedger:   closedLedger,
-		PreviousLedger: previousLedger,
-		RemoteIP:       p.remoteIPSelfReport,
-		LocalIP:        p.localIPSelfReport,
+		ID:           p.id,
+		Endpoint:     p.endpoint,
+		Inbound:      p.inbound,
+		State:        p.state,
+		PublicKey:    pubKey,
+		ConnectedAt:  p.createdAt,
+		MessagesIn:   stats.MessagesIn,
+		MessagesOut:  stats.MessagesOut,
+		ServerDomain: p.serverDomain,
+		ClosedLedger: closedLedger,
 	}
 }

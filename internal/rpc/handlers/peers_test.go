@@ -32,13 +32,10 @@ func TestPeersMethod_NilSourceReturnsEmptyList(t *testing.T) {
 func TestPeersMethod_PassesThroughSource(t *testing.T) {
 	src := &fakePeerSource{peers: []map[string]any{
 		{
-			"address":         "192.0.2.1:51235",
-			"public_key":      "nHB1...",
-			"server_domain":   "validator.example.com",
-			"ledger":          "ABCD",
-			"previous_ledger": "0123",
-			"remote_ip":       "203.0.113.7",
-			"local_ip":        "198.51.100.42",
+			"address":       "192.0.2.1:51235",
+			"public_key":    "nHB1...",
+			"server_domain": "validator.example.com",
+			"ledger":        "ABCD",
 		},
 	}}
 	m := &handlers.PeersMethod{}
@@ -61,5 +58,4 @@ func TestPeersMethod_PassesThroughSource(t *testing.T) {
 	assert.Equal(t, "ABCD", peers[0]["ledger"])
 	assert.NotContains(t, peers[0], "closed_ledger", "rippled uses 'ledger' for the closed-ledger hash")
 	assert.NotContains(t, peers[0], "inbound", "inbound is only emitted when true")
-	assert.Equal(t, "203.0.113.7", peers[0]["remote_ip"])
 }

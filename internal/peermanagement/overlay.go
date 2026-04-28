@@ -252,10 +252,6 @@ func (o *Overlay) PeersWithClosedLedger(target [32]byte) []PeerID {
 	return matches
 }
 
-// InstanceCookie returns the per-process nonce. Stable for the
-// lifetime of the Overlay.
-func (o *Overlay) InstanceCookie() uint64 { return o.instanceCookie }
-
 // SetLedgerHintProvider wires the hint source; nil suppresses headers.
 func (o *Overlay) SetLedgerHintProvider(fn func() (LedgerHints, bool)) {
 	o.hintMu.Lock()
@@ -269,18 +265,23 @@ func (o *Overlay) ledgerHintProviderSnapshot() func() (LedgerHints, bool) {
 	return o.ledgerHintProvider
 }
 
-// generateInstanceCookie returns a value in [1, MAX] (rippled
-// Application.cpp `1 + rand_int(prng, MAX-1)`).
+// generateInstanceCookie returns a value in [1, MAX-1] to match rippled
+// `1 + rand_int(prng, MAX-1)` from Application.cpp — both 0 and MAX are
+// excluded. Rejection sampling on the two boundary values keeps the
+// distribution uniform; the rejection probability is 2/2^64.
 func generateInstanceCookie() (uint64, error) {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return 0, err
+	const maxU64 = ^uint64(0)
+	for {
+		var b [8]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return 0, err
+		}
+		v := binary.BigEndian.Uint64(b[:])
+		if v == 0 || v == maxU64 {
+			continue
+		}
+		return v, nil
 	}
-	v := binary.BigEndian.Uint64(b[:])
-	if v == 0 {
-		return 1, nil
-	}
-	return v, nil
 }
 
 // localValidatorPubKey returns the compressed secp256k1 public key of
@@ -1610,9 +1611,11 @@ func (o *Overlay) Peers() []PeerInfo {
 }
 
 // PeersJSON implements types.PeerSource for the `peers` RPC method.
-// Mirrors rippled PeerImp::json (PeerImp.cpp:388-503); the
-// previous_ledger / remote_ip / local_ip / server_domain /
-// instance_cookie fields are goXRPL extensions.
+// Strict subset of rippled PeerImp::json (PeerImp.cpp:388-503): only
+// fields that rippled actually emits AND for which goXRPL has the data.
+// Missing rippled fields (network_id, version, protocol, latency,
+// complete_ledgers, track, status, load, metrics, cluster/name) are
+// tracked as separate follow-ups.
 func (o *Overlay) PeersJSON() []map[string]any {
 	list := o.Peers()
 	out := make([]map[string]any, 0, len(list))
@@ -1625,23 +1628,11 @@ func (o *Overlay) PeersJSON() []map[string]any {
 		if p.Inbound {
 			entry["inbound"] = true
 		}
-		if p.ClosedLedger != "" {
-			entry["ledger"] = p.ClosedLedger
-		}
-		if p.InstanceCookie != 0 {
-			entry["instance_cookie"] = p.InstanceCookie
-		}
 		if p.ServerDomain != "" {
 			entry["server_domain"] = p.ServerDomain
 		}
-		if p.PreviousLedger != "" {
-			entry["previous_ledger"] = p.PreviousLedger
-		}
-		if p.RemoteIP != "" {
-			entry["remote_ip"] = p.RemoteIP
-		}
-		if p.LocalIP != "" {
-			entry["local_ip"] = p.LocalIP
+		if p.ClosedLedger != "" {
+			entry["ledger"] = p.ClosedLedger
 		}
 		out = append(out, entry)
 	}
