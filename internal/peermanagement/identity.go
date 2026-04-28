@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -48,6 +49,14 @@ const (
 type Identity struct {
 	privateKey *btcec.PrivateKey
 	publicKey  *btcec.PublicKey
+
+	// tlsOnce guards lazy generation of the anonymous TLS keypair so we
+	// only pay the RSA-2048 keygen cost once per process — matching
+	// rippled's `static defaultCert` in make_SSLContext.cpp:146.
+	tlsOnce    sync.Once
+	tlsCertPEM []byte
+	tlsKeyPEM  []byte
+	tlsErr     error
 }
 
 // NewIdentity creates a new random identity.
@@ -222,28 +231,42 @@ func (i *Identity) Save(dataDir string) error {
 }
 
 // TLSCertificatePEM returns a PEM-encoded self-signed TLS certificate
-// and private key for this identity. The TLS keypair is fresh RSA-2048
+// and private key for this identity. The TLS keypair is RSA-2048
 // (separate from the secp256k1 node identity), matching rippled's
-// make_SSLContext.cpp:66 anonymous server cert. Both the stdlib
-// crypto/tls call sites (TLSCertificate) and the OpenSSL-backed
-// peertls package (which consumes PEM directly) build off this.
+// make_SSLContext.cpp:66 anonymous server cert. The keypair is
+// generated once per Identity and cached: every subsequent call
+// returns the same PEM bytes, mirroring rippled's `static defaultCert`
+// at make_SSLContext.cpp:146 — RSA-2048 keygen is 50–200 ms and the
+// outbound peer-dial path would otherwise pay it on every Connect.
 func (i *Identity) TLSCertificatePEM() (certPEM, keyPEM []byte, err error) {
+	i.tlsOnce.Do(i.generateTLSCert)
+	if i.tlsErr != nil {
+		return nil, nil, i.tlsErr
+	}
+	return i.tlsCertPEM, i.tlsKeyPEM, nil
+}
+
+func (i *Identity) generateTLSCert() {
 	tlsKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		return nil, nil, fmt.Errorf("identity: generate TLS key: %w", err)
+		i.tlsErr = fmt.Errorf("identity: generate TLS key: %w", err)
+		return
 	}
 
+	// Back-date NotBefore by 25 hours to avoid leaking the precise
+	// startup time of the node, matching rippled's make_SSLContext.cpp:161.
 	now := time.Now()
+	notBefore := now.Add(-25 * time.Hour)
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject: pkix.Name{
 			CommonName: i.EncodedPublicKey(),
 		},
-		NotBefore: now,
-		NotAfter:  now.Add(365 * 24 * time.Hour),
+		NotBefore: notBefore,
+		NotAfter:  now.Add(2 * 365 * 24 * time.Hour),
 		// digitalSignature is the only usage rippled sets and the only
 		// one meaningful for an anonymous TLS server cert with
-		// SSL_VERIFY_NONE.
+		// SSL_VERIFY_NONE (make_SSLContext.cpp:215-217).
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
@@ -251,17 +274,19 @@ func (i *Identity) TLSCertificatePEM() (certPEM, keyPEM []byte, err error) {
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &tlsKey.PublicKey, tlsKey)
 	if err != nil {
-		return nil, nil, fmt.Errorf("identity: create TLS certificate: %w", err)
+		i.tlsErr = fmt.Errorf("identity: create TLS certificate: %w", err)
+		return
 	}
-	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	i.tlsCertPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 
 	keyDER := x509.MarshalPKCS1PrivateKey(tlsKey)
-	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: keyDER})
-	return certPEM, keyPEM, nil
+	i.tlsKeyPEM = pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: keyDER})
 }
 
 // TLSCertificate is the stdlib crypto/tls form of TLSCertificatePEM,
 // kept for any remaining stdlib call sites (RPC HTTPS, WebSocket).
+// Reuses the cached PEM, so the parsed *tls.Certificate is also
+// effectively cached after the first call.
 func (i *Identity) TLSCertificate() tls.Certificate {
 	certPEM, keyPEM, err := i.TLSCertificatePEM()
 	if err != nil {
