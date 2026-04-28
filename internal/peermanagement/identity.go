@@ -1,9 +1,8 @@
 package peermanagement
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/tls"
@@ -222,51 +221,14 @@ func (i *Identity) Save(dataDir string) error {
 	return os.WriteFile(keyPath, []byte(i.PrivateKeyHex()), 0600)
 }
 
-// TLSCertificate generates a self-signed TLS certificate for this identity.
-// Uses a fresh P256 key for TLS (separate from the secp256k1 node identity)
-// since Go's TLS stack doesn't support secp256k1 certificates.
-func (i *Identity) TLSCertificate() tls.Certificate {
-	// Generate a fresh P256 key for TLS (not derived from the node identity).
-	tlsKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return tls.Certificate{}
-	}
-
-	now := time.Now()
-	template := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject: pkix.Name{
-			CommonName: i.EncodedPublicKey(),
-		},
-		NotBefore:             now,
-		NotAfter:              now.Add(365 * 24 * time.Hour),
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-		BasicConstraintsValid: true,
-	}
-
-	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &tlsKey.PublicKey, tlsKey)
-	if err != nil {
-		return tls.Certificate{}
-	}
-
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	keyDER, err := x509.MarshalECPrivateKey(tlsKey)
-	if err != nil {
-		return tls.Certificate{}
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-
-	cert, _ := tls.X509KeyPair(certPEM, keyPEM)
-	return cert
-}
-
-// TLSCertificatePEM returns the PEM-encoded self-signed TLS certificate and
-// private key for this identity. Uses a fresh P256 key (separate from the
-// secp256k1 node identity) so the peertls package can construct an
-// OpenSSL-backed connection without going through stdlib crypto/tls.
+// TLSCertificatePEM returns a PEM-encoded self-signed TLS certificate
+// and private key for this identity. The TLS keypair is fresh RSA-2048
+// (separate from the secp256k1 node identity), matching rippled's
+// make_SSLContext.cpp:66 anonymous server cert. Both the stdlib
+// crypto/tls call sites (TLSCertificate) and the OpenSSL-backed
+// peertls package (which consumes PEM directly) build off this.
 func (i *Identity) TLSCertificatePEM() (certPEM, keyPEM []byte, err error) {
-	tlsKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tlsKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, nil, fmt.Errorf("identity: generate TLS key: %w", err)
 	}
@@ -277,9 +239,12 @@ func (i *Identity) TLSCertificatePEM() (certPEM, keyPEM []byte, err error) {
 		Subject: pkix.Name{
 			CommonName: i.EncodedPublicKey(),
 		},
-		NotBefore:             now,
-		NotAfter:              now.Add(365 * 24 * time.Hour),
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		NotBefore: now,
+		NotAfter:  now.Add(365 * 24 * time.Hour),
+		// digitalSignature is the only usage rippled sets and the only
+		// one meaningful for an anonymous TLS server cert with
+		// SSL_VERIFY_NONE.
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
 	}
@@ -288,14 +253,22 @@ func (i *Identity) TLSCertificatePEM() (certPEM, keyPEM []byte, err error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("identity: create TLS certificate: %w", err)
 	}
-
 	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	keyDER, err := x509.MarshalECPrivateKey(tlsKey)
-	if err != nil {
-		return nil, nil, fmt.Errorf("identity: marshal TLS key: %w", err)
-	}
-	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	keyDER := x509.MarshalPKCS1PrivateKey(tlsKey)
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: keyDER})
 	return certPEM, keyPEM, nil
+}
+
+// TLSCertificate is the stdlib crypto/tls form of TLSCertificatePEM,
+// kept for any remaining stdlib call sites (RPC HTTPS, WebSocket).
+func (i *Identity) TLSCertificate() tls.Certificate {
+	certPEM, keyPEM, err := i.TLSCertificatePEM()
+	if err != nil {
+		return tls.Certificate{}
+	}
+	cert, _ := tls.X509KeyPair(certPEM, keyPEM)
+	return cert
 }
 
 // PublicKeyToken represents an XRPL node public key (from peer handshake).
