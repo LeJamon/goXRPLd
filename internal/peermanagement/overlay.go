@@ -231,10 +231,15 @@ type Overlay struct {
 // imports internal/ledger packages — which this layer cannot.
 func (o *Overlay) LedgerSync() *LedgerSyncHandler { return o.ledgerSync }
 
-// PeersWithClosedLedger returns peers whose Closed-Ledger handshake
-// hint matches target. goXRPL-side optimization for the catchup peer
-// picker — rippled's NetworkOPs uses closedLedgerHash_ for consensus
-// LCL voting (getPreferredLCL), not for routing fetch requests.
+// PeersWithClosedLedger returns peers whose last-known Closed-Ledger
+// hash equals target. The hash is seeded from the handshake hint and
+// refreshed by inbound mtSTATUS_CHANGE messages, mirroring the
+// PeerImp::closedLedgerHash_ field in rippled. This is a primitive for
+// callers that want a coarse "who advertised this LCL" filter; it is
+// NOT an analogue of rippled's catchup peer selection, which goes
+// through PeerImp::hasLedger(hash, seq) over [minLedger_, maxLedger_]
+// and the recentLedgers_ ring — state goXRPL does not yet track per
+// peer.
 func (o *Overlay) PeersWithClosedLedger(target [32]byte) []PeerID {
 	o.peersMu.RLock()
 	defer o.peersMu.RUnlock()

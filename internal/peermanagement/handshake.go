@@ -410,21 +410,9 @@ func isWellFormedDomain(s string) bool {
 }
 
 // VerifyPeerHandshake validates the handshake headers and verifies the session signature.
+// Check order mirrors rippled's verifyHandshake (Handshake.cpp:227-362):
+// Network-ID → Network-Time → Public-Key → Session-Signature → self-connection.
 func VerifyPeerHandshake(headers http.Header, sharedValue []byte, localPubKey string, cfg HandshakeConfig) (*PublicKeyToken, error) {
-	pubKeyStr := headers.Get(HeaderPublicKey)
-	if pubKeyStr == "" {
-		return nil, fmt.Errorf("%w: missing %s", ErrInvalidHandshake, HeaderPublicKey)
-	}
-
-	pubKey, err := ParsePublicKeyToken(pubKeyStr)
-	if err != nil {
-		return nil, fmt.Errorf("invalid public key: %w", err)
-	}
-
-	if pubKeyStr == localPubKey {
-		return nil, ErrSelfConnection
-	}
-
 	if netIDStr := headers.Get(HeaderNetworkID); netIDStr != "" {
 		netID, err := strconv.ParseUint(netIDStr, 10, 32)
 		if err != nil {
@@ -451,6 +439,16 @@ func VerifyPeerHandshake(headers http.Header, sharedValue []byte, localPubKey st
 		}
 	}
 
+	pubKeyStr := headers.Get(HeaderPublicKey)
+	if pubKeyStr == "" {
+		return nil, fmt.Errorf("%w: missing %s", ErrInvalidHandshake, HeaderPublicKey)
+	}
+
+	pubKey, err := ParsePublicKeyToken(pubKeyStr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid public key: %w", err)
+	}
+
 	sigStr := headers.Get(HeaderSessionSignature)
 	if sigStr == "" {
 		return nil, fmt.Errorf("%w: missing %s", ErrInvalidHandshake, HeaderSessionSignature)
@@ -463,6 +461,10 @@ func VerifyPeerHandshake(headers http.Header, sharedValue []byte, localPubKey st
 
 	if err := verifySessionSignature(pubKey, sharedValue, sigBytes); err != nil {
 		return nil, err
+	}
+
+	if pubKeyStr == localPubKey {
+		return nil, ErrSelfConnection
 	}
 
 	return pubKey, nil
