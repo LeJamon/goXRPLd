@@ -38,12 +38,30 @@ peertls_ctx* peertls_ctx_new(int is_server) {
     SSL_CTX* ctx = SSL_CTX_new(m);
     if (!ctx) return NULL;
 
-    /* Force TLS 1.2 only — matches rippled. */
+    /* Force TLS 1.2 only — matches rippled make_SSLContext.cpp. */
     SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
     SSL_CTX_set_max_proto_version(ctx, TLS1_2_VERSION);
 
+    /* Cipher list pinned to rippled's
+     * (make_SSLContext.cpp: "TLSv1.2:!CBC:!DSS:!PSK:!eNULL:!aNULL").
+     * Excludes CBC (Lucky13), anonymous + null suites, and deprecated
+     * key-exchange families. */
+    SSL_CTX_set_cipher_list(ctx, "TLSv1.2:!CBC:!DSS:!PSK:!eNULL:!aNULL");
+
+    /* Hardening flags matching rippled (make_SSLContext.cpp:104, 352-376):
+     *   - SSL_OP_SINGLE_DH_USE: per-session DH parameters.
+     *   - SSL_OP_NO_COMPRESSION: defeats CRIME (RFC 7457).
+     *   - SSL_OP_NO_RENEGOTIATION: blocks client renegotiation
+     *     (CVE-2021-3499 mitigation; also lets us treat WANT_READ from
+     *     SSL_write as a protocol error in the Go pump). */
+    long opts = SSL_OP_SINGLE_DH_USE | SSL_OP_NO_COMPRESSION;
+#ifdef SSL_OP_NO_RENEGOTIATION
+    opts |= SSL_OP_NO_RENEGOTIATION;
+#endif
+    SSL_CTX_set_options(ctx, opts);
+
     /* Rippled peers don't validate certs (Public-Key header is the trust
-     * anchor). Match the existing InsecureSkipVerify behavior. */
+     * anchor). Matches make_SSLContext.cpp:391 verify_none. */
     SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
 
     peertls_ctx* out = calloc(1, sizeof(*out));
@@ -161,18 +179,22 @@ int peertls_write(peertls_ssl* s, const void* buf, int len) {
 
 int peertls_bio_read(peertls_ssl* s, void* buf, int len) {
     if (!s || !s->network_bio) return PEERTLS_ERR_OTHER;
-    int pending = BIO_ctrl_pending(s->network_bio);
-    if (pending == 0) return 0;
+    if (BIO_ctrl_pending(s->network_bio) == 0) return 0;
     int rc = BIO_read(s->network_bio, buf, len);
-    if (rc <= 0) return 0;
-    return rc;
+    if (rc > 0) return rc;
+    /* BIO_read failed: distinguish "retry" (no data right now) from
+     * a real BIO error using BIO_should_retry. The retry case is the
+     * same as 0 pending; an unrecoverable error surfaces as SSL. */
+    if (BIO_should_retry(s->network_bio)) return 0;
+    return PEERTLS_ERR_SSL;
 }
 
 int peertls_bio_write(peertls_ssl* s, const void* buf, int len) {
     if (!s || !s->network_bio) return PEERTLS_ERR_OTHER;
     int rc = BIO_write(s->network_bio, buf, len);
-    if (rc <= 0) return 0;
-    return rc;
+    if (rc > 0) return rc;
+    if (BIO_should_retry(s->network_bio)) return 0;
+    return PEERTLS_ERR_SSL;
 }
 
 int peertls_get_finished(peertls_ssl* s, void* buf, int len) {
