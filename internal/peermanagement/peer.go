@@ -44,6 +44,21 @@ func (s PeerState) String() string {
 	}
 }
 
+// PeerTracking mirrors rippled PeerImp::Tracking (PeerImp.h:58).
+type PeerTracking int32
+
+const (
+	PeerTrackingUnknown PeerTracking = iota
+	PeerTrackingConverged
+	PeerTrackingDiverged
+)
+
+// rippled Tuning.h.
+const (
+	convergedLedgerLimit uint32 = 24
+	divergedLedgerLimit  uint32 = 128
+)
+
 // Peer represents a connection to an XRPL peer node.
 type Peer struct {
 	mu sync.RWMutex
@@ -80,6 +95,8 @@ type Peer struct {
 	// cadence by the overlay so transient errors decay. int64 because
 	// decay can overshoot zero.
 	badDataBalance atomic.Int64
+
+	tracking atomic.Int32
 
 	serverDomain      string
 	closedLedger      [32]byte
@@ -228,6 +245,44 @@ func (p *Peer) applyStatusChange(closed, previous []byte, lostSync bool, firstSe
 	} else {
 		p.firstLedgerSeq = *firstSeq
 		p.lastLedgerSeq = *lastSeq
+	}
+}
+
+func (p *Peer) Tracking() PeerTracking {
+	return PeerTracking(p.tracking.Load())
+}
+
+func (p *Peer) setTracking(t PeerTracking) {
+	p.tracking.Store(int32(t))
+}
+
+// CheckTracking mirrors rippled PeerImp::checkTracking (PeerImp.cpp:1986-2005).
+// CAS on the diverged branch keeps a concurrent Converged write from
+// being clobbered (rippled holds recentLock_; CAS is the lock-free equivalent).
+func (p *Peer) CheckTracking(peerSeq, validSeq uint32) {
+	if peerSeq == 0 || validSeq == 0 {
+		return
+	}
+	var diff uint32
+	if peerSeq > validSeq {
+		diff = peerSeq - validSeq
+	} else {
+		diff = validSeq - peerSeq
+	}
+	if diff < convergedLedgerLimit {
+		p.tracking.Store(int32(PeerTrackingConverged))
+		return
+	}
+	if diff > divergedLedgerLimit {
+		for {
+			cur := p.tracking.Load()
+			if PeerTracking(cur) == PeerTrackingDiverged {
+				return
+			}
+			if p.tracking.CompareAndSwap(cur, int32(PeerTrackingDiverged)) {
+				return
+			}
+		}
 	}
 }
 
@@ -712,6 +767,7 @@ type PeerInfo struct {
 	ServerDomain    string
 	ClosedLedger    string
 	CompleteLedgers string
+	Tracking        PeerTracking
 }
 
 func (p *Peer) Info() PeerInfo {
@@ -752,5 +808,6 @@ func (p *Peer) Info() PeerInfo {
 		ServerDomain:    p.serverDomain,
 		ClosedLedger:    closedLedger,
 		CompleteLedgers: completeLedgers,
+		Tracking:        PeerTracking(p.tracking.Load()),
 	}
 }

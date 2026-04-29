@@ -177,10 +177,10 @@ type Overlay struct {
 	// instanceCookie: immutable post-New, lock-free.
 	instanceCookie uint64
 
-	// ledgerHintProvider: wired by a higher layer (avoids importing
-	// internal/ledger). Guarded by hintMu.
-	hintMu             sync.RWMutex
-	ledgerHintProvider func() (LedgerHints, bool)
+	// Higher-layer callbacks (avoid importing internal/ledger here).
+	providersMu         sync.RWMutex
+	ledgerHintProvider  func() (LedgerHints, bool)
+	validLedgerProvider func() (seq uint32, age time.Duration, ok bool)
 
 	// Components
 	discovery  *Discovery
@@ -268,15 +268,30 @@ func (o *Overlay) PeersWithClosedLedger(target [32]byte) []PeerID {
 
 // SetLedgerHintProvider wires the hint source; nil suppresses headers.
 func (o *Overlay) SetLedgerHintProvider(fn func() (LedgerHints, bool)) {
-	o.hintMu.Lock()
+	o.providersMu.Lock()
 	o.ledgerHintProvider = fn
-	o.hintMu.Unlock()
+	o.providersMu.Unlock()
 }
 
 func (o *Overlay) ledgerHintProviderSnapshot() func() (LedgerHints, bool) {
-	o.hintMu.RLock()
-	defer o.hintMu.RUnlock()
+	o.providersMu.RLock()
+	defer o.providersMu.RUnlock()
 	return o.ledgerHintProvider
+}
+
+// SetValidLedgerProvider wires the validated-ledger source used by
+// handleStatusChange (PeerImp.cpp:1885-1890). ok=false suppresses
+// tracking updates.
+func (o *Overlay) SetValidLedgerProvider(fn func() (seq uint32, age time.Duration, ok bool)) {
+	o.providersMu.Lock()
+	o.validLedgerProvider = fn
+	o.providersMu.Unlock()
+}
+
+func (o *Overlay) validLedgerProviderSnapshot() func() (seq uint32, age time.Duration, ok bool) {
+	o.providersMu.RLock()
+	defer o.providersMu.RUnlock()
+	return o.validLedgerProvider
 }
 
 // generateInstanceCookie matches rippled Application.cpp:
@@ -1034,6 +1049,20 @@ func (o *Overlay) handleStatusChange(evt Event) {
 		sc.FirstSeq,
 		sc.LastSeq,
 	)
+
+	// PeerImp.cpp:1885-1890: gate on a fresh (<2 min) validated ledger.
+	if sc.LedgerSeq == 0 {
+		return
+	}
+	provider := o.validLedgerProviderSnapshot()
+	if provider == nil {
+		return
+	}
+	validSeq, age, ok := provider()
+	if !ok || validSeq == 0 || age >= 2*time.Minute {
+		return
+	}
+	peer.CheckTracking(sc.LedgerSeq, validSeq)
 }
 
 // handleSquelchMessage processes an inbound TMSquelch from a peer and
@@ -1658,6 +1687,13 @@ func (o *Overlay) PeersJSON() []map[string]any {
 					entry["name"] = member.Name
 				}
 			}
+		}
+		// PeerImp.cpp:437-450: omit when converged.
+		switch p.Tracking {
+		case PeerTrackingDiverged:
+			entry["track"] = "diverged"
+		case PeerTrackingUnknown:
+			entry["track"] = "unknown"
 		}
 		out = append(out, entry)
 	}
