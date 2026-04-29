@@ -44,6 +44,21 @@ func (s PeerState) String() string {
 	}
 }
 
+// PeerTracking mirrors rippled PeerImp::Tracking (PeerImp.h:58).
+type PeerTracking int32
+
+const (
+	PeerTrackingUnknown PeerTracking = iota
+	PeerTrackingConverged
+	PeerTrackingDiverged
+)
+
+// rippled Tuning.h.
+const (
+	convergedLedgerLimit uint32 = 24
+	divergedLedgerLimit  uint32 = 128
+)
+
 // Peer represents a connection to an XRPL peer node.
 type Peer struct {
 	mu sync.RWMutex
@@ -81,13 +96,16 @@ type Peer struct {
 	// decay can overshoot zero.
 	badDataBalance atomic.Int64
 
-	// closedLedger / previousLedger refresh on the inbound
-	// mtSTATUS_CHANGE handler too.
+	tracking atomic.Int32
+
 	serverDomain      string
 	closedLedger      [32]byte
 	previousLedger    [32]byte
 	hasClosedLedger   bool
 	hasPreviousLedger bool
+
+	firstLedgerSeq uint32
+	lastLedgerSeq  uint32
 
 	latencyMu     sync.RWMutex
 	pingsInFlight map[uint32]time.Time
@@ -197,7 +215,10 @@ func (p *Peer) applyHandshakeExtras(x HandshakeExtras) {
 }
 
 // applyStatusChange handles inbound mtSTATUS_CHANGE updates.
-func (p *Peer) applyStatusChange(closed, previous []byte, lostSync bool) {
+// Mirrors rippled PeerImp.cpp:1812-1883: lostSync clears closed/previous
+// ledger only; the (firstSeq, lastSeq) range is updated only when both
+// fields are present, then clamped to (0,0) if either is zero or inverted.
+func (p *Peer) applyStatusChange(closed, previous []byte, lostSync bool, firstSeq, lastSeq *uint32) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if lostSync {
@@ -221,6 +242,54 @@ func (p *Peer) applyStatusChange(closed, previous []byte, lostSync bool) {
 		p.hasPreviousLedger = false
 		p.previousLedger = [32]byte{}
 	}
+	if firstSeq == nil || lastSeq == nil {
+		return
+	}
+	if *firstSeq == 0 || *lastSeq == 0 || *lastSeq < *firstSeq {
+		p.firstLedgerSeq = 0
+		p.lastLedgerSeq = 0
+	} else {
+		p.firstLedgerSeq = *firstSeq
+		p.lastLedgerSeq = *lastSeq
+	}
+}
+
+func (p *Peer) Tracking() PeerTracking {
+	return PeerTracking(p.tracking.Load())
+}
+
+func (p *Peer) setTracking(t PeerTracking) {
+	p.tracking.Store(int32(t))
+}
+
+// CheckTracking mirrors rippled PeerImp::checkTracking (PeerImp.cpp:1986-2005).
+// CAS on the diverged branch keeps a concurrent Converged write from
+// being clobbered (rippled holds recentLock_; CAS is the lock-free equivalent).
+func (p *Peer) CheckTracking(peerSeq, validSeq uint32) {
+	if peerSeq == 0 || validSeq == 0 {
+		return
+	}
+	var diff uint32
+	if peerSeq > validSeq {
+		diff = peerSeq - validSeq
+	} else {
+		diff = validSeq - peerSeq
+	}
+	if diff < convergedLedgerLimit {
+		p.tracking.Store(int32(PeerTrackingConverged))
+		return
+	}
+	if diff > divergedLedgerLimit {
+		for {
+			cur := p.tracking.Load()
+			if PeerTracking(cur) == PeerTrackingDiverged {
+				return
+			}
+			if p.tracking.CompareAndSwap(cur, int32(PeerTrackingDiverged)) {
+				return
+			}
+		}
+	}
 }
 
 func (p *Peer) ServerDomain() string {
@@ -241,6 +310,14 @@ func (p *Peer) PreviousLedger() ([32]byte, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.previousLedger, p.hasPreviousLedger
+}
+
+// LedgerRange returns the peer's advertised (min, max) ledger sequence,
+// or (0, 0) when no range has been advertised.
+func (p *Peer) LedgerRange() (uint32, uint32) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.firstLedgerSeq, p.lastLedgerSeq
 }
 
 func (p *Peer) Connect(ctx context.Context, cfg PeerConfig) error {
@@ -762,20 +839,22 @@ func (p *Peer) setState(state PeerState) {
 	p.mu.Unlock()
 }
 
-// PeerInfo is a read-only snapshot of peer state. ClosedLedger is
-// upper-case hex (rippled convention) or "" when absent.
+// PeerInfo is a read-only snapshot of peer state.
 type PeerInfo struct {
-	ID          PeerID
-	Endpoint    Endpoint
-	Inbound     bool
-	State       PeerState
-	PublicKey   string
-	ConnectedAt time.Time
-	MessagesIn  uint64
-	MessagesOut uint64
+	ID             PeerID
+	Endpoint       Endpoint
+	Inbound        bool
+	State          PeerState
+	PublicKey      string
+	PublicKeyBytes []byte
+	ConnectedAt    time.Time
+	MessagesIn     uint64
+	MessagesOut    uint64
 
-	ServerDomain string
-	ClosedLedger string
+	ServerDomain    string
+	ClosedLedger    string
+	CompleteLedgers string
+	Tracking        PeerTracking
 
 	Latency    time.Duration
 	HasLatency bool
@@ -785,9 +864,13 @@ func (p *Peer) Info() PeerInfo {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	var pubKey string
+	var (
+		pubKey      string
+		pubKeyBytes []byte
+	)
 	if p.remotePubKey != nil {
 		pubKey = p.remotePubKey.Encode()
+		pubKeyBytes = p.remotePubKey.Bytes()
 	}
 
 	stats := p.traffic.GetTotalStats()
@@ -797,20 +880,28 @@ func (p *Peer) Info() PeerInfo {
 		closedLedger = strings.ToUpper(hex.EncodeToString(p.closedLedger[:]))
 	}
 
+	var completeLedgers string
+	if p.firstLedgerSeq != 0 || p.lastLedgerSeq != 0 {
+		completeLedgers = fmt.Sprintf("%d - %d", p.firstLedgerSeq, p.lastLedgerSeq)
+	}
+
 	latency, hasLatency := p.Latency()
 
 	return PeerInfo{
-		ID:           p.id,
-		Endpoint:     p.endpoint,
-		Inbound:      p.inbound,
-		State:        p.state,
-		PublicKey:    pubKey,
-		ConnectedAt:  p.createdAt,
-		MessagesIn:   stats.MessagesIn,
-		MessagesOut:  stats.MessagesOut,
-		ServerDomain: p.serverDomain,
-		ClosedLedger: closedLedger,
-		Latency:      latency,
-		HasLatency:   hasLatency,
+		ID:              p.id,
+		Endpoint:        p.endpoint,
+		Inbound:         p.inbound,
+		State:           p.state,
+		PublicKey:       pubKey,
+		PublicKeyBytes:  pubKeyBytes,
+		ConnectedAt:     p.createdAt,
+		MessagesIn:      stats.MessagesIn,
+		MessagesOut:     stats.MessagesOut,
+		ServerDomain:    p.serverDomain,
+		ClosedLedger:    closedLedger,
+		CompleteLedgers: completeLedgers,
+		Tracking:        PeerTracking(p.tracking.Load()),
+		Latency:         latency,
+		HasLatency:      hasLatency,
 	}
 }
