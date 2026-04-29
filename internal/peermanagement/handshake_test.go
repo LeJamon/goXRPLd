@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
-	"math"
 	"net"
 	"net/http"
 	"regexp"
@@ -1545,15 +1544,14 @@ func TestHandshake_MalformedLedgerHashRejected(t *testing.T) {
 	})
 }
 
-// generateInstanceCookie must produce values in [1, MAX-1] (both 0 and
-// MAX excluded) to match rippled `1 + rand_int(prng, MAX-1)`.
+// generateInstanceCookie must produce values in [1, MAX_UINT64] to
+// match rippled `1 + rand_int(prng, MAX_UINT64 - 1)`, which uses a
+// closed interval and so includes MAX_UINT64. Only 0 is excluded.
 func TestInstanceCookie_GeneratorRange(t *testing.T) {
 	for i := 0; i < 10000; i++ {
 		v, err := generateInstanceCookie()
 		require.NoError(t, err)
 		assert.NotZero(t, v, "cookie must never be zero")
-		assert.NotEqual(t, uint64(math.MaxUint64), v,
-			"cookie must never be MAX (rippled excludes both 0 and MAX)")
 	}
 }
 
