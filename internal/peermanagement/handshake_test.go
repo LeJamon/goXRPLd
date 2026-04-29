@@ -1135,6 +1135,41 @@ func buildAllHeadersRequest(t *testing.T, id *Identity, cfg HandshakeConfig, pee
 	return req.Header
 }
 
+// Strict rippled parity: Instance-Cookie round-trips but is NEVER
+// compared (Handshake.cpp:226-362). Self-connection stays pubkey-only
+// at line 322. This test verifies both halves.
+func TestHandshake_InstanceCookie_DetectsSelfConnection(t *testing.T) {
+	id, err := NewIdentity()
+	require.NoError(t, err)
+
+	const cookie uint64 = 0xDEADBEEFCAFEBABE
+	cfg := DefaultHandshakeConfig()
+	cfg.InstanceCookie = cookie
+
+	headers := buildAllHeadersRequest(t, id, cfg, nil)
+	require.Equal(t, strconv.FormatUint(cookie, 10), headers.Get(HeaderInstanceCookie))
+
+	// Strict rippled parity: the cookie is on the wire (Handshake.cpp:208)
+	// but verifyHandshake never inspects it. ParseHandshakeExtras must
+	// not fail on it and must not surface a typed value.
+	_, err = ParseHandshakeExtras(headers, nil, nil)
+	require.NoError(t, err)
+
+	// The rippled-canonical self-connection signal is pubkey identity
+	// (Handshake.cpp:322 publicKey == app.nodeIdentity().first). Build a
+	// fully-signed handshake from `id` and verify against the same id's
+	// pubkey — VerifyPeerHandshake must reach the self-connection branch
+	// (after Session-Signature passes) and surface ErrSelfConnection.
+	// sharedValue must match the one buildAllHeadersRequest signs over.
+	sharedValue := make([]byte, 32)
+	for i := range sharedValue {
+		sharedValue[i] = byte(i + 7)
+	}
+	_, err = VerifyPeerHandshake(headers, sharedValue, id.EncodedPublicKey(), cfg)
+	assert.ErrorIs(t, err, ErrSelfConnection,
+		"matching Public-Key triggers self-connection — the only signal rippled uses")
+}
+
 // Closed-Ledger / Previous-Ledger hints round-trip and end up readable
 // on Peer accessors (mirrors PeerImp storing closedLedgerHash_).
 func TestHandshake_ClosedLedgerHint_ReadableAfterHandshake(t *testing.T) {
@@ -1158,7 +1193,8 @@ func TestHandshake_ClosedLedgerHint_ReadableAfterHandshake(t *testing.T) {
 
 	extras, err := ParseHandshakeExtras(headers, nil, nil)
 	require.NoError(t, err)
-	assert.True(t, extras.HasClosedLedger, "ClosedLedger header must mark hints as present")
+	assert.True(t, extras.HasClosedLedger, "Closed-Ledger header must mark closed hint as present")
+	assert.True(t, extras.HasPreviousLedger, "Previous-Ledger header must mark previous hint as present")
 	assert.Equal(t, closed, extras.ClosedLedger)
 	assert.Equal(t, parent, extras.PreviousLedger)
 
@@ -1171,6 +1207,40 @@ func TestHandshake_ClosedLedgerHint_ReadableAfterHandshake(t *testing.T) {
 	gotParent, hasParent := peer.PreviousLedger()
 	assert.True(t, hasParent)
 	assert.Equal(t, parent, gotParent)
+}
+
+// Rippled accepts Closed-Ledger without Previous-Ledger
+// (PeerImp.cpp:198-201 — each is set independently). The peer must
+// surface only the closed hint, with PreviousLedger() reporting
+// "absent" rather than the zero hash.
+func TestHandshake_ClosedLedgerWithoutPrevious(t *testing.T) {
+	id, err := NewIdentity()
+	require.NoError(t, err)
+
+	var closed [32]byte
+	for i := range closed {
+		closed[i] = byte(i + 1)
+	}
+
+	headers := http.Header{}
+	headers.Set(HeaderClosedLedger, strings.ToUpper(hex.EncodeToString(closed[:])))
+
+	extras, err := ParseHandshakeExtras(headers, nil, nil)
+	require.NoError(t, err)
+	assert.True(t, extras.HasClosedLedger)
+	assert.False(t, extras.HasPreviousLedger,
+		"missing Previous-Ledger must not be inferred from Closed-Ledger presence")
+	assert.Equal(t, closed, extras.ClosedLedger)
+	assert.Equal(t, [32]byte{}, extras.PreviousLedger)
+
+	peer := NewPeer(1, Endpoint{Host: "127.0.0.1", Port: 1234}, true, id, nil)
+	peer.applyHandshakeExtras(extras)
+	gotClosed, hasClosed := peer.ClosedLedger()
+	require.True(t, hasClosed)
+	assert.Equal(t, closed, gotClosed)
+	_, hasPrev := peer.PreviousLedger()
+	assert.False(t, hasPrev,
+		"PreviousLedger() must report absent when peer omitted the header")
 }
 
 // Remote-IP consistency check per Handshake.cpp:340-359.
@@ -1188,9 +1258,8 @@ func TestHandshake_RemoteIPSelfReported_MatchesTcpConn(t *testing.T) {
 		headers := buildAllHeadersRequest(t, id, cfg, socketIP)
 		require.Equal(t, "198.51.100.1", headers.Get(HeaderRemoteIP))
 
-		extras, err := ParseHandshakeExtras(headers, publicIP, socketIP)
+		_, err := ParseHandshakeExtras(headers, publicIP, socketIP)
 		require.NoError(t, err)
-		assert.Equal(t, "198.51.100.1", extras.RemoteIPSelf)
 	})
 
 	t.Run("mismatched_public_ip_rejected", func(t *testing.T) {
@@ -1211,9 +1280,8 @@ func TestHandshake_RemoteIPSelfReported_MatchesTcpConn(t *testing.T) {
 		headers := buildAllHeadersRequest(t, id, cfg, socketIP)
 		headers.Set(HeaderRemoteIP, "203.0.113.5")
 
-		extras, err := ParseHandshakeExtras(headers, publicIP, asSocketIP(t, net.ParseIP("127.0.0.1")))
+		_, err := ParseHandshakeExtras(headers, publicIP, asSocketIP(t, net.ParseIP("127.0.0.1")))
 		require.NoError(t, err)
-		assert.Equal(t, "203.0.113.5", extras.RemoteIPSelf)
 	})
 
 	t.Run("malformed_remote_ip_rejected", func(t *testing.T) {
@@ -1273,16 +1341,17 @@ func TestHandshake_AllHeaders_RoundTrip(t *testing.T) {
 		assert.NotEmpty(t, headers.Get(HeaderNetworkTime))
 
 		// Parse from the receiver (B)'s vantage: peerRemote=pA,
-		// localPublicIP=pB.
+		// localPublicIP=pB. Strict rippled parity: only the headers
+		// rippled stores typed (Server-Domain, Closed/Previous-Ledger)
+		// surface on extras. Instance-Cookie and IP self-reports are
+		// validated and discarded.
 		extras, err := ParseHandshakeExtras(headers, pB, pASock)
 		require.NoError(t, err)
-		assert.Equal(t, senderCfg.InstanceCookie, extras.InstanceCookie)
 		assert.Equal(t, senderCfg.ServerDomain, extras.ServerDomain)
 		assert.True(t, extras.HasClosedLedger)
+		assert.True(t, extras.HasPreviousLedger)
 		assert.Equal(t, closed, extras.ClosedLedger)
 		assert.Equal(t, parent, extras.PreviousLedger)
-		assert.Equal(t, pB.String(), extras.RemoteIPSelf)
-		assert.Equal(t, pA.String(), extras.LocalIPSelf)
 	})
 
 	t.Run("response_path", func(t *testing.T) {
@@ -1304,9 +1373,9 @@ func TestHandshake_AllHeaders_RoundTrip(t *testing.T) {
 
 		extras, err := ParseHandshakeExtras(resp.Header, pB, pASock)
 		require.NoError(t, err)
-		assert.Equal(t, senderCfg.InstanceCookie, extras.InstanceCookie)
 		assert.Equal(t, senderCfg.ServerDomain, extras.ServerDomain)
 		assert.True(t, extras.HasClosedLedger)
+		assert.True(t, extras.HasPreviousLedger)
 	})
 
 	t.Run("malformed_server_domain_rejected", func(t *testing.T) {
@@ -1339,9 +1408,10 @@ func TestLedgerSync_PreferredPeersForLedger_ConsumesClosedLedgerHint(t *testing.
 		p.setState(PeerStateConnected)
 		if hint != nil {
 			p.applyHandshakeExtras(HandshakeExtras{
-				ClosedLedger:    *hint,
-				PreviousLedger:  parent,
-				HasClosedLedger: true,
+				ClosedLedger:      *hint,
+				PreviousLedger:    parent,
+				HasClosedLedger:   true,
+				HasPreviousLedger: true,
 			})
 		}
 		return p
@@ -1382,9 +1452,10 @@ func TestApplyStatusChange_RippledSemantics(t *testing.T) {
 			initialParent[i] = byte(0x22)
 		}
 		p.applyHandshakeExtras(HandshakeExtras{
-			ClosedLedger:    initialClosed,
-			PreviousLedger:  initialParent,
-			HasClosedLedger: true,
+			ClosedLedger:      initialClosed,
+			PreviousLedger:    initialParent,
+			HasClosedLedger:   true,
+			HasPreviousLedger: true,
 		})
 		return p
 	}
@@ -1474,24 +1545,23 @@ func TestHandshake_MalformedLedgerHashRejected(t *testing.T) {
 	})
 }
 
-// generateInstanceCookie must produce values in [1, MAX] — including MAX
-// — to match rippled `1 + rand_int(prng, MAX-1)`.
-func TestInstanceCookie_RangeIncludesMax(t *testing.T) {
+// generateInstanceCookie must produce values in [1, MAX-1] (both 0 and
+// MAX excluded) to match rippled `1 + rand_int(prng, MAX-1)`.
+func TestInstanceCookie_GeneratorRange(t *testing.T) {
 	for i := 0; i < 10000; i++ {
 		v, err := generateInstanceCookie()
 		require.NoError(t, err)
 		assert.NotZero(t, v, "cookie must never be zero")
+		assert.NotEqual(t, uint64(math.MaxUint64), v,
+			"cookie must never be MAX (rippled excludes both 0 and MAX)")
 	}
-	// Treat MAX as a valid cookie at the parser level.
-	h := http.Header{}
-	h.Set(HeaderInstanceCookie, strconv.FormatUint(math.MaxUint64, 10))
-	extras, err := ParseHandshakeExtras(h, nil, nil)
-	require.NoError(t, err)
-	assert.Equal(t, uint64(math.MaxUint64), extras.InstanceCookie)
 }
 
-// isPublicIP must mirror beast::IP::is_public: link-local addresses are
-// public; loopback / RFC1918 / multicast are not.
+// isPublicIP must mirror beast::IP::is_public: IPv4 link-local stays
+// public (rippled IPAddressV4.cpp only flags RFC1918+loopback); IPv6
+// link-local is private to match rippled IPAddressV6.cpp's `(byte0 &
+// 0xfd)` catching fe80::/10. Loopback / RFC1918 / multicast are private
+// in both families.
 func TestIsPublicIP_BeastParity(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1510,7 +1580,7 @@ func TestIsPublicIP_BeastParity(t *testing.T) {
 		{"loopback_v6", "::1", false},
 		{"unspecified_v6", "::", false},
 		{"ula_v6", "fc00::1", false},
-		{"link_local_v6", "fe80::1", true},
+		{"link_local_v6", "fe80::1", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

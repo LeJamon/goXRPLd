@@ -275,12 +275,19 @@ func configIPIsV6(ip net.IP) bool {
 }
 
 // isPublicIP mirrors beast::IP::is_public: !is_private && !is_multicast.
-// beast's is_private = RFC1918 + loopback. Link-local stays public.
+// IPv4 is_private = RFC1918 + loopback (link-local stays public, matching
+// IPAddressV4.cpp). IPv6 is_private also catches link-local (fe80::/10):
+// rippled IPAddressV6.cpp flags these via `(addr.to_bytes()[0] & 0xfd)`,
+// and Go's IsPrivate doesn't include link-local, so we add it explicitly
+// for v6 only.
 func isPublicIP(ip net.IP) bool {
 	if ip == nil || ip.IsUnspecified() {
 		return false
 	}
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsMulticast() {
+		return false
+	}
+	if ip.To4() == nil && ip.IsLinkLocalUnicast() {
 		return false
 	}
 	return true
@@ -712,20 +719,18 @@ func PeerFeatureEnabled(headers http.Header, feature, value string, localEnabled
 }
 
 // HandshakeExtras carries the headers parsed by ParseHandshakeExtras.
-//
-// HasClosedLedger and HasPreviousLedger track presence of the
-// corresponding headers independently — rippled's PeerImp.cpp:198-201
-// keeps them as separate optionals because a peer may advertise a
-// closed ledger without a parent (cold-start, post-pruning).
+// Strict rippled parity: only the headers that rippled stores typed on
+// PeerImp survive here. Instance-Cookie is emitted on the wire but
+// never parsed/stored (rippled keeps it in its untyped headers_ map and
+// never reads it). Local-IP / Remote-IP are validated and discarded.
+// Closed-Ledger and Previous-Ledger track presence independently to
+// match rippled (PeerImp.cpp:198-201).
 type HandshakeExtras struct {
-	InstanceCookie    uint64
 	ServerDomain      string
 	ClosedLedger      [32]byte
 	PreviousLedger    [32]byte
 	HasClosedLedger   bool
 	HasPreviousLedger bool
-	RemoteIPSelf      string // peer's view of our public IP
-	LocalIPSelf       string // peer's view of their own public IP
 }
 
 // ValidateServerDomain enforces verifyHandshake's Server-Domain check
@@ -746,25 +751,17 @@ func ValidateServerDomain(headers http.Header) (string, error) {
 // ParseHandshakeExtras enforces the post-signature checks: ledger-hash
 // malformed (PeerImp.cpp:175-191), Previous-without-Closed
 // (PeerImp.cpp:193-194), Local-IP / Remote-IP consistency
-// (Handshake.cpp:325-359). Instance-Cookie is stored only.
-// Server-Domain is handled separately by ValidateServerDomain (which
-// must run first to match rippled's order). peerRemote == nil
-// disables the IP comparisons.
+// (Handshake.cpp:325-359). Server-Domain is validated separately by
+// ValidateServerDomain (which must run first to match rippled's order).
+// Instance-Cookie is emitted on the wire but never parsed (rippled's
+// verifyHandshake doesn't inspect it). peerRemote == nil disables the
+// IP comparisons.
 func ParseHandshakeExtras(
 	headers http.Header,
 	localPublicIP net.IP,
 	peerRemote net.IP,
 ) (HandshakeExtras, error) {
 	var out HandshakeExtras
-
-	if v := headers.Get(HeaderInstanceCookie); v != "" {
-		cookie, err := strconv.ParseUint(v, 10, 64)
-		if err != nil {
-			return out, fmt.Errorf("%w: malformed Instance-Cookie %q: %v",
-				ErrInvalidHandshake, v, err)
-		}
-		out.InstanceCookie = cookie
-	}
 
 	// Server-Domain is validated upstream by ValidateServerDomain
 	// (rippled order); we just surface the value here.
@@ -795,13 +792,14 @@ func ParseHandshakeExtras(
 			ErrInvalidHandshake)
 	}
 
+	// Local-IP / Remote-IP: validate per Handshake.cpp:325-359 and
+	// discard. Rippled doesn't store the parsed values on PeerImp.
 	if v := headers.Get(HeaderLocalIP); v != "" {
 		localReported := net.ParseIP(v)
 		if localReported == nil {
 			return out, fmt.Errorf("%w: invalid Local-IP %q",
 				ErrInvalidHandshake, v)
 		}
-		out.LocalIPSelf = localReported.String()
 		if peerRemote != nil && isPublicIP(peerRemote) &&
 			!ipFamilyEqual(peerRemote, localReported,
 				socketIPIsV6(peerRemote), headerIPIsV6(v)) {
@@ -816,7 +814,6 @@ func ParseHandshakeExtras(
 			return out, fmt.Errorf("%w: invalid Remote-IP %q",
 				ErrInvalidHandshake, v)
 		}
-		out.RemoteIPSelf = remoteReported.String()
 		if peerRemote != nil && isPublicIP(peerRemote) &&
 			localPublicIP != nil && !localPublicIP.IsUnspecified() &&
 			!ipFamilyEqual(remoteReported, localPublicIP,
