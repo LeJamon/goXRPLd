@@ -715,7 +715,13 @@ func (o *Overlay) performInboundHandshake(ctx context.Context, peer *Peer, tlsCo
 
 	caps := NewPeerCapabilities()
 	caps.Features = ParseProtocolCtlFeatures(req.Header)
-	protocol := ParseHandshakeProtocolVersion(req.Header.Get(HeaderUpgrade))
+	protocol := NegotiateProtocolVersion(req.Header.Get(HeaderUpgrade))
+	if protocol == "" {
+		o.IncPeerBadData(peer.ID(), "handshake-protocol-negotiation")
+		return NewHandshakeError(peer.Endpoint(), "verify",
+			fmt.Errorf("%w: unable to agree on a protocol version (peer offered %q)",
+				ErrInvalidHandshake, req.Header.Get(HeaderUpgrade)))
+	}
 
 	peer.mu.Lock()
 	peer.bufReader = bufReader
@@ -723,7 +729,7 @@ func (o *Overlay) performInboundHandshake(ctx context.Context, peer *Peer, tlsCo
 	peer.protocolVersion = protocol
 	peer.mu.Unlock()
 
-	resp := BuildHandshakeResponse(o.identity, sharedValue, hsCfg)
+	resp := BuildHandshakeResponse(o.identity, sharedValue, hsCfg, protocol)
 	addAddressHeaders(resp.Header, hsCfg, peerRemote)
 	if err := resp.Write(tlsConn); err != nil {
 		return NewHandshakeError(peer.Endpoint(), "send_response", err)

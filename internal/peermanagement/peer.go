@@ -106,7 +106,14 @@ type Peer struct {
 
 	// protocolVersion: negotiated peer-protocol token (e.g. "XRPL/2.2").
 	// Mirrors rippled PeerImp::protocol_, surfaced via `protocol` in the
-	// peers RPC (PeerImp.cpp:419).
+	// peers RPC (PeerImp.cpp:419). Rippled constructs PeerImp only after
+	// successful negotiation, so its field is never empty; in goXRPL the
+	// Peer struct outlives the handshake, and the field stays "" if no
+	// supported XRPL/X.Y survived NegotiateProtocolVersion /
+	// VerifyOutboundProtocolVersion. Production peers reach PeersJSON
+	// only after addPeer (post-handshake), so the empty case is
+	// test-only — but we still emit it unconditionally to match
+	// rippled's wire shape.
 	protocolVersion string
 
 	firstLedgerSeq uint32
@@ -468,7 +475,12 @@ func (p *Peer) performHandshake(ctx context.Context, tlsConn peertls.PeerConn) e
 
 	caps := NewPeerCapabilities()
 	caps.Features = ParseProtocolCtlFeatures(resp.Header)
-	protocol := ParseHandshakeProtocolVersion(resp.Header.Get(HeaderUpgrade))
+	protocol := VerifyOutboundProtocolVersion(resp.Header.Get(HeaderUpgrade))
+	if protocol == "" {
+		return NewHandshakeError(p.endpoint, "verify",
+			fmt.Errorf("%w: unable to negotiate protocol version (server replied %q)",
+				ErrInvalidHandshake, resp.Header.Get(HeaderUpgrade)))
+	}
 	p.mu.Lock()
 	p.capabilities = caps
 	p.protocolVersion = protocol
