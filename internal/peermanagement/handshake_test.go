@@ -115,6 +115,10 @@ func TestBuildHandshakeResponse(t *testing.T) {
 	// Public key and signature
 	assert.True(t, strings.HasPrefix(resp.Header.Get(HeaderPublicKey), "n"))
 	assert.NotEmpty(t, resp.Header.Get(HeaderSessionSignature))
+
+	// Server header — rippled's makeResponse (Handshake.cpp:408) sets
+	// it to BuildInfo::getFullVersionString(); we emit cfg.UserAgent.
+	assert.Equal(t, cfg.UserAgent, resp.Header.Get(HeaderServer))
 }
 
 // TestVerifyPeerHandshake tests handshake verification
@@ -1099,6 +1103,22 @@ func newTestOverlayWithPeers(peers map[PeerID]*Peer) *Overlay {
 	return &Overlay{peers: peers}
 }
 
+// asSocketIP normalises an IP to the byte length a real *net.TCPAddr
+// would carry — 4 bytes for an AF_INET socket, 16 bytes for AF_INET6.
+// Tests that simulate peerRemote must use this; net.ParseIP returns
+// v4-in-v6 16-byte form, which the production family detector reads
+// as v6 and would mismatch a v4 textual header.
+func asSocketIP(t *testing.T, ip net.IP) net.IP {
+	t.Helper()
+	if ip == nil {
+		return nil
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4
+	}
+	return ip
+}
+
 // buildAllHeadersRequest builds a handshake request with every issue-#270
 // header set. peerRemote drives Remote-IP / Local-IP emission.
 func buildAllHeadersRequest(t *testing.T, id *Identity, cfg HandshakeConfig, peerRemote net.IP) http.Header {
@@ -1162,22 +1182,24 @@ func TestHandshake_RemoteIPSelfReported_MatchesTcpConn(t *testing.T) {
 	cfg := DefaultHandshakeConfig()
 	cfg.PublicIP = publicIP
 
+	socketIP := asSocketIP(t, publicIP)
+
 	t.Run("matching_public_ip_passes", func(t *testing.T) {
-		headers := buildAllHeadersRequest(t, id, cfg, publicIP)
+		headers := buildAllHeadersRequest(t, id, cfg, socketIP)
 		require.Equal(t, "198.51.100.1", headers.Get(HeaderRemoteIP))
 
-		extras, err := ParseHandshakeExtras(headers, publicIP, publicIP)
+		extras, err := ParseHandshakeExtras(headers, publicIP, socketIP)
 		require.NoError(t, err)
 		assert.Equal(t, "198.51.100.1", extras.RemoteIPSelf)
 	})
 
 	t.Run("mismatched_public_ip_rejected", func(t *testing.T) {
-		headers := buildAllHeadersRequest(t, id, cfg, publicIP)
+		headers := buildAllHeadersRequest(t, id, cfg, socketIP)
 		// Peer claims our IP is 203.0.113.5 — but our config says
 		// otherwise and they connected from a public address. Reject.
 		headers.Set(HeaderRemoteIP, "203.0.113.5")
 
-		_, err := ParseHandshakeExtras(headers, publicIP, publicIP)
+		_, err := ParseHandshakeExtras(headers, publicIP, socketIP)
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, ErrInvalidHandshake))
 		assert.Contains(t, err.Error(), "Incorrect Remote-IP")
@@ -1186,19 +1208,19 @@ func TestHandshake_RemoteIPSelfReported_MatchesTcpConn(t *testing.T) {
 	t.Run("loopback_peer_skips_check", func(t *testing.T) {
 		// Same mismatched header, but the peer connected from
 		// loopback — rippled and we both skip the comparison.
-		headers := buildAllHeadersRequest(t, id, cfg, publicIP)
+		headers := buildAllHeadersRequest(t, id, cfg, socketIP)
 		headers.Set(HeaderRemoteIP, "203.0.113.5")
 
-		extras, err := ParseHandshakeExtras(headers, publicIP, net.ParseIP("127.0.0.1"))
+		extras, err := ParseHandshakeExtras(headers, publicIP, asSocketIP(t, net.ParseIP("127.0.0.1")))
 		require.NoError(t, err)
 		assert.Equal(t, "203.0.113.5", extras.RemoteIPSelf)
 	})
 
 	t.Run("malformed_remote_ip_rejected", func(t *testing.T) {
-		headers := buildAllHeadersRequest(t, id, cfg, publicIP)
+		headers := buildAllHeadersRequest(t, id, cfg, socketIP)
 		headers.Set(HeaderRemoteIP, "not-an-ip")
 
-		_, err := ParseHandshakeExtras(headers, publicIP, publicIP)
+		_, err := ParseHandshakeExtras(headers, publicIP, socketIP)
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, ErrInvalidHandshake))
 		assert.Contains(t, err.Error(), "invalid Remote-IP")
@@ -1231,9 +1253,11 @@ func TestHandshake_AllHeaders_RoundTrip(t *testing.T) {
 		return LedgerHints{Closed: closed, Parent: parent}, true
 	}
 
+	pASock, pBSock := asSocketIP(t, pA), asSocketIP(t, pB)
+
 	t.Run("request_path", func(t *testing.T) {
 		// Build with sender's view: peer (B) is at pB.
-		headers := buildAllHeadersRequest(t, id, senderCfg, pB)
+		headers := buildAllHeadersRequest(t, id, senderCfg, pBSock)
 
 		// Wire-level checks: each header is present in the right form.
 		assert.Equal(t, strconv.FormatUint(senderCfg.InstanceCookie, 10), headers.Get(HeaderInstanceCookie))
@@ -1250,7 +1274,7 @@ func TestHandshake_AllHeaders_RoundTrip(t *testing.T) {
 
 		// Parse from the receiver (B)'s vantage: peerRemote=pA,
 		// localPublicIP=pB.
-		extras, err := ParseHandshakeExtras(headers, pB, pA)
+		extras, err := ParseHandshakeExtras(headers, pB, pASock)
 		require.NoError(t, err)
 		assert.Equal(t, senderCfg.InstanceCookie, extras.InstanceCookie)
 		assert.Equal(t, senderCfg.ServerDomain, extras.ServerDomain)
@@ -1266,7 +1290,7 @@ func TestHandshake_AllHeaders_RoundTrip(t *testing.T) {
 		resp := BuildHandshakeResponse(id, sharedValue, senderCfg)
 		// Sender (now the responder) sees peer (now the requester) at
 		// pB and emits its own Local-IP = pA.
-		addAddressHeaders(resp.Header, senderCfg, pB)
+		addAddressHeaders(resp.Header, senderCfg, pBSock)
 
 		// Symmetric checks. The response must carry the same six
 		// headers — without them the inbound peer can't enforce the
@@ -1278,7 +1302,7 @@ func TestHandshake_AllHeaders_RoundTrip(t *testing.T) {
 		assert.Equal(t, pB.String(), resp.Header.Get(HeaderRemoteIP))
 		assert.Equal(t, pA.String(), resp.Header.Get(HeaderLocalIP))
 
-		extras, err := ParseHandshakeExtras(resp.Header, pB, pA)
+		extras, err := ParseHandshakeExtras(resp.Header, pB, pASock)
 		require.NoError(t, err)
 		assert.Equal(t, senderCfg.InstanceCookie, extras.InstanceCookie)
 		assert.Equal(t, senderCfg.ServerDomain, extras.ServerDomain)
@@ -1289,7 +1313,7 @@ func TestHandshake_AllHeaders_RoundTrip(t *testing.T) {
 		// Server-Domain is the first thing rippled validates
 		// (Handshake.cpp:235-239), so the dedicated validator runs
 		// upstream of ParseHandshakeExtras.
-		headers := buildAllHeadersRequest(t, id, senderCfg, pB)
+		headers := buildAllHeadersRequest(t, id, senderCfg, pBSock)
 		headers.Set(HeaderServerDomain, "-bad.example.com") // leading hyphen
 
 		_, err := ValidateServerDomain(headers)
@@ -1509,6 +1533,29 @@ func TestIpFamilyEqual_BoostParity(t *testing.T) {
 	assert.False(t, ipFamilyEqual(v4, v4mapped, false, true), "v4 vs v4-mapped-v6 must differ")
 	assert.False(t, ipFamilyEqual(v4mapped, v4, true, false), "v4-mapped-v6 vs v4 must differ")
 	assert.True(t, ipFamilyEqual(v4mapped, v4mapped, true, true), "same v4-mapped-v6 must be equal")
+}
+
+// socketIPIsV6 must classify by underlying socket family, not by
+// To4(). A v4-mapped-v6 socket address (16-byte slice that To4()
+// reports as v4) must report as v6 to match what boost::asio surfaces
+// as address_v6, otherwise a peer announcing "::ffff:x.x.x.x" while
+// connecting via AF_INET6 is incorrectly rejected as family-mismatched.
+func TestSocketIPIsV6_FamilyFromByteLength(t *testing.T) {
+	v4Socket := net.IP{1, 2, 3, 4}                                         // AF_INET socket
+	v6Socket := net.ParseIP("2001:db8::1")                                 // AF_INET6 socket
+	v4MappedSocket := net.IP{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1, 2, 3, 4} // AF_INET6 receiving v4
+
+	assert.False(t, socketIPIsV6(v4Socket), "4-byte socket IP is AF_INET")
+	assert.True(t, socketIPIsV6(v6Socket), "16-byte non-mapped socket IP is AF_INET6")
+	assert.True(t, socketIPIsV6(v4MappedSocket), "16-byte v4-mapped is AF_INET6 (boost address_v6)")
+}
+
+// headerIPIsV6 keys off textual form because net.ParseIP normalises v4
+// to 16-byte v4-in-v6 bytes. The colon is the only signal of intent.
+func TestHeaderIPIsV6_FamilyFromTextForm(t *testing.T) {
+	assert.False(t, headerIPIsV6("1.2.3.4"))
+	assert.True(t, headerIPIsV6("2001:db8::1"))
+	assert.True(t, headerIPIsV6("::ffff:1.2.3.4"))
 }
 
 // isWellFormedDomain must agree with rippled's regex

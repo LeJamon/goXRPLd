@@ -39,6 +39,7 @@ const (
 	HeaderServerDomain     = "Server-Domain"
 	HeaderRemoteIP         = "Remote-IP"
 	HeaderLocalIP          = "Local-IP"
+	HeaderServer           = "Server"
 )
 
 // Time constants.
@@ -169,6 +170,12 @@ func BuildHandshakeResponse(id *Identity, sharedValue []byte, cfg HandshakeConfi
 	resp.Header.Set(HeaderUpgrade, ProtocolVersion)
 	resp.Header.Set(HeaderConnectAs, "Peer")
 	resp.Header.Set(HeaderCrawl, crawlValue(cfg.CrawlPublic))
+	// Mirrors rippled's makeResponse (Handshake.cpp:408) which inserts
+	// `Server: <BuildInfo::getFullVersionString>` on every handshake
+	// response. PeerImp::getVersion() reads it on the inbound side.
+	if cfg.UserAgent != "" {
+		resp.Header.Set(HeaderServer, cfg.UserAgent)
+	}
 
 	addHandshakeHeaders(resp.Header, id, sharedValue, cfg)
 
@@ -227,35 +234,44 @@ func addAddressHeaders(h http.Header, cfg HandshakeConfig, peerRemote net.IP) {
 	}
 }
 
-// ipFamilyEqual compares two IPs taking address family into account
-// (v4 vs v6) to mirror boost::asio::ip::address::operator==, which
-// treats ::ffff:1.2.3.4 and 1.2.3.4 as distinct because their family
-// differs. Go's net.IP.Equal is family-agnostic and would equate them.
-//
-// Heuristic: a 4-byte slice or a v4-mapped 16-byte slice is "v4". Any
-// other 16-byte slice is "v6". headerIPv6Form lets the caller pass the
-// original textual form so a header value like "::ffff:1.2.3.4" stays
-// classified as v6 even after net.ParseIP normalises it to the same
-// bytes as "1.2.3.4".
-func ipFamilyEqual(a, b net.IP, aIsV6Text, bIsV6Text bool) bool {
-	if ipFamilyV4(a, aIsV6Text) != ipFamilyV4(b, bIsV6Text) {
+// ipFamilyEqual mirrors boost::asio::ip::address::operator==: two
+// addresses are equal only when their family agrees AND their bytes
+// match. Go's net.IP.Equal is family-agnostic and would equate
+// ::ffff:1.2.3.4 with 1.2.3.4, so the caller declares each side's
+// family explicitly via aIsV6 / bIsV6.
+func ipFamilyEqual(a, b net.IP, aIsV6, bIsV6 bool) bool {
+	if aIsV6 != bIsV6 {
 		return false
 	}
 	return a.Equal(b)
 }
 
-func ipFamilyV4(ip net.IP, isV6Text bool) bool {
-	if isV6Text {
-		return false
-	}
-	return ip.To4() != nil
+// socketIPIsV6 reports whether ip was returned from an AF_INET6 socket.
+// Go's net package surfaces *net.TCPAddr.IP with byte length matching
+// the underlying socket family (4 = AF_INET, 16 = AF_INET6 including
+// v4-mapped-v6), the same distinction boost::asio makes between
+// address_v4 and address_v6. Using To4() here would mis-classify
+// v4-mapped-v6 sockets as v4 and produce false-positive Local-IP /
+// Remote-IP rejections when a peer announces "::ffff:x.x.x.x".
+func socketIPIsV6(ip net.IP) bool {
+	return len(ip) == net.IPv6len
 }
 
-// isIPv6Text returns true when s is written in IPv6 textual form
-// (contains a colon). Used to distinguish "::ffff:1.2.3.4" from
-// "1.2.3.4" since net.ParseIP normalises both to the same bytes.
-func isIPv6Text(s string) bool {
+// headerIPIsV6 returns true when s is written in IPv6 textual form
+// (contains a colon). Since net.ParseIP normalises any v4 input to
+// 16-byte v4-in-v6 bytes, the textual form is the only signal of the
+// peer's declared family.
+func headerIPIsV6(s string) bool {
 	return strings.Contains(s, ":")
+}
+
+// configIPIsV6 reports the family of a net.IP whose original textual
+// form is not available (operator config parsed via net.ParseIP).
+// Pure v6 has To4() == nil; v4 and v4-mapped-v6 both have To4() != nil
+// and are treated as v4, matching the common operator case where
+// PublicIP is written as "1.2.3.4" rather than "::ffff:1.2.3.4".
+func configIPIsV6(ip net.IP) bool {
+	return ip.To4() == nil
 }
 
 // isPublicIP mirrors beast::IP::is_public: !is_private && !is_multicast.
@@ -787,7 +803,8 @@ func ParseHandshakeExtras(
 		}
 		out.LocalIPSelf = localReported.String()
 		if peerRemote != nil && isPublicIP(peerRemote) &&
-			!ipFamilyEqual(peerRemote, localReported, false, isIPv6Text(v)) {
+			!ipFamilyEqual(peerRemote, localReported,
+				socketIPIsV6(peerRemote), headerIPIsV6(v)) {
 			return out, fmt.Errorf("%w: Incorrect Local-IP: %s instead of %s",
 				ErrInvalidHandshake, peerRemote.String(), localReported.String())
 		}
@@ -802,7 +819,8 @@ func ParseHandshakeExtras(
 		out.RemoteIPSelf = remoteReported.String()
 		if peerRemote != nil && isPublicIP(peerRemote) &&
 			localPublicIP != nil && !localPublicIP.IsUnspecified() &&
-			!ipFamilyEqual(remoteReported, localPublicIP, isIPv6Text(v), false) {
+			!ipFamilyEqual(remoteReported, localPublicIP,
+				headerIPIsV6(v), configIPIsV6(localPublicIP)) {
 			return out, fmt.Errorf("%w: Incorrect Remote-IP: %s instead of %s",
 				ErrInvalidHandshake, localPublicIP.String(), remoteReported.String())
 		}

@@ -27,6 +27,8 @@ func TestPeersMethod_NilSourceReturnsEmptyList(t *testing.T) {
 	resp, ok := result.(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, []map[string]any{}, resp["peers"])
+	assert.Equal(t, map[string]any{}, resp["cluster"],
+		"rippled doPeers (Peers.cpp:59) always emits a cluster object")
 }
 
 func TestPeersMethod_PassesThroughSource(t *testing.T) {
@@ -62,4 +64,6 @@ func TestPeersMethod_PassesThroughSource(t *testing.T) {
 	assert.NotContains(t, peers[0], "closed_ledger", "rippled uses 'ledger' for the closed-ledger hash")
 	assert.NotContains(t, peers[0], "inbound", "inbound is only emitted when true")
 	assert.Equal(t, "203.0.113.7", peers[0]["remote_ip"])
+	assert.Equal(t, map[string]any{}, resp["cluster"],
+		"rippled doPeers (Peers.cpp:59) always emits a cluster object")
 }

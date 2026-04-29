@@ -274,18 +274,20 @@ func (o *Overlay) ledgerHintProviderSnapshot() func() (LedgerHints, bool) {
 	return o.ledgerHintProvider
 }
 
-// generateInstanceCookie returns a value in [1, MAX] (rippled
-// Application.cpp `1 + rand_int(prng, MAX-1)`).
+// generateInstanceCookie returns a value in [1, MAX] uniformly,
+// matching rippled's `1 + rand_int(prng, MAX-1)` (Application.cpp).
+// Rejection sampling on 0 keeps the distribution uniform; folding
+// 0→1 would double the probability mass on 1.
 func generateInstanceCookie() (uint64, error) {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return 0, err
+	for {
+		var b [8]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return 0, err
+		}
+		if v := binary.BigEndian.Uint64(b[:]); v != 0 {
+			return v, nil
+		}
 	}
-	v := binary.BigEndian.Uint64(b[:])
-	if v == 0 {
-		return 1, nil
-	}
-	return v, nil
 }
 
 // localValidatorPubKey returns the compressed secp256k1 public key of
