@@ -89,10 +89,6 @@ type Peer struct {
 	hasClosedLedger   bool
 	hasPreviousLedger bool
 
-	// latency: EWMA-smoothed round-trip time from ping/pong correlation.
-	// Mirrors rippled PeerImp's recentLock_/latency_/lastPingSeq_ pair —
-	// hasLatency distinguishes "never measured" from a measured zero,
-	// matching std::optional<milliseconds>.
 	latencyMu     sync.RWMutex
 	pingsInFlight map[uint32]time.Time
 	latency       time.Duration
@@ -520,7 +516,7 @@ func (p *Peer) pingLoop(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			now := time.Now()
-			seq := uint32(now.UnixMilli() & 0xFFFFFFFF)
+			seq := uint32(now.UnixMilli())
 			ping := &message.Ping{
 				PType: message.PingTypePing,
 				Seq:   seq,
@@ -541,16 +537,11 @@ func (p *Peer) pingLoop(ctx context.Context) error {
 	}
 }
 
-// pingInFlightTTL bounds memory when a peer never replies. Pongs that
-// arrive past the TTL are treated as missing and don't update latency.
-const pingInFlightTTL = 30 * time.Second
+const (
+	pingInFlightTTL  = 30 * time.Second
+	pingsInFlightCap = 16
+)
 
-// pingsInFlightCap caps the in-flight map under adversarial conditions
-// (e.g. peer never pongs and our ping cadence keeps firing).
-const pingsInFlightCap = 16
-
-// recordPingSent stamps the send time for `seq` and trims any stale
-// entries past pingInFlightTTL. Caller must not hold latencyMu.
 func (p *Peer) recordPingSent(seq uint32, sentAt time.Time) {
 	p.latencyMu.Lock()
 	defer p.latencyMu.Unlock()
@@ -561,7 +552,6 @@ func (p *Peer) recordPingSent(seq uint32, sentAt time.Time) {
 		}
 	}
 	if len(p.pingsInFlight) >= pingsInFlightCap {
-		// Evict the oldest entry to bound memory.
 		var (
 			oldestKey  uint32
 			oldestTime time.Time
@@ -581,13 +571,25 @@ func (p *Peer) recordPingSent(seq uint32, sentAt time.Time) {
 	p.pingsInFlight[seq] = sentAt
 }
 
-// OnPong correlates an incoming Pong with a previously-sent Ping by
-// `seq` and updates the smoothed latency. Pongs whose seq is unknown
-// (already trimmed, never sent, or wrong cookie) are ignored — matching
-// rippled PeerImp::onMessage(TMPing) which only updates on a seq match.
-//
-// Smoothing matches rippled: latency_ = (latency_ * 7 + rtt) / 8.
-// First measurement seeds latency_ directly without smoothing.
+// roundMillisHalfEven rounds d to the nearest millisecond, breaking
+// ties toward the even multiple — mirrors C++ std::chrono::round.
+func roundMillisHalfEven(d time.Duration) time.Duration {
+	if d < 0 {
+		return 0
+	}
+	const ms = int64(time.Millisecond)
+	n := int64(d)
+	q, r := n/ms, n%ms
+	if r > ms/2 || (r == ms/2 && q%2 != 0) {
+		q++
+	}
+	return time.Duration(q) * time.Millisecond
+}
+
+// OnPong correlates a Pong with the matching Ping by seq and updates
+// the EWMA-smoothed latency. Mirrors PeerImp::onMessage(TMPing)
+// (PeerImp.cpp:1099-1118): rtt is rounded to ms, then smoothed at ms
+// granularity via latency = (latency*7 + rtt) / 8.
 func (p *Peer) OnPong(seq uint32, receivedAt time.Time) {
 	p.latencyMu.Lock()
 	defer p.latencyMu.Unlock()
@@ -596,21 +598,17 @@ func (p *Peer) OnPong(seq uint32, receivedAt time.Time) {
 		return
 	}
 	delete(p.pingsInFlight, seq)
-	rtt := receivedAt.Sub(sentAt)
-	if rtt < 0 {
-		rtt = 0
-	}
+	rtt := roundMillisHalfEven(receivedAt.Sub(sentAt))
 	if !p.hasLatency {
 		p.latency = rtt
 		p.hasLatency = true
 		return
 	}
-	p.latency = (p.latency*7 + rtt) / 8
+	prev := int64(p.latency / time.Millisecond)
+	sample := int64(rtt / time.Millisecond)
+	p.latency = time.Duration((prev*7+sample)/8) * time.Millisecond
 }
 
-// Latency returns the EWMA-smoothed round-trip time and whether any
-// measurement has been recorded (the second return mirrors rippled's
-// std::optional<milliseconds> latency_).
 func (p *Peer) Latency() (time.Duration, bool) {
 	p.latencyMu.RLock()
 	defer p.latencyMu.RUnlock()
@@ -765,9 +763,7 @@ func (p *Peer) setState(state PeerState) {
 }
 
 // PeerInfo is a read-only snapshot of peer state. ClosedLedger is
-// upper-case hex (rippled convention) or "" when absent. HasLatency
-// distinguishes "not yet measured" from a measured zero, matching
-// rippled's std::optional<milliseconds> latency_.
+// upper-case hex (rippled convention) or "" when absent.
 type PeerInfo struct {
 	ID          PeerID
 	Endpoint    Endpoint

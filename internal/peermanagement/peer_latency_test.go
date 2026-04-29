@@ -38,8 +38,9 @@ func TestPeer_OnPong_FirstMeasurementSeedsLatency(t *testing.T) {
 }
 
 func TestPeer_OnPong_EWMASmoothingMatchesRippled(t *testing.T) {
-	// Rippled formula (PeerImp.cpp:1115):
+	// Rippled formula (PeerImp.cpp:1115), evaluated in integer ms:
 	//   latency_ = (latency_ * 7 + rtt) / 8
+	// (100*7 + 200) / 8 = 112 (truncated, NOT 112.5).
 	p := newLatencyTestPeer(t)
 	base := time.Now()
 
@@ -49,10 +50,23 @@ func TestPeer_OnPong_EWMASmoothingMatchesRippled(t *testing.T) {
 	p.recordPingSent(2, base.Add(time.Second))
 	p.OnPong(2, base.Add(time.Second+200*time.Millisecond))
 
-	want := (100*time.Millisecond*7 + 200*time.Millisecond) / 8
 	got, ok := p.Latency()
 	require.True(t, ok)
-	assert.Equal(t, want, got)
+	assert.Equal(t, 112*time.Millisecond, got)
+}
+
+func TestPeer_OnPong_RTTRoundsHalfToEven(t *testing.T) {
+	// std::chrono::round breaks ties toward the even ms; Go's
+	// time.Duration.Round breaks ties away from zero. The seeded
+	// sample must follow rippled's rule: 2.5ms → 2ms (even).
+	p := newLatencyTestPeer(t)
+	now := time.Now()
+	p.recordPingSent(1, now)
+	p.OnPong(1, now.Add(2500*time.Microsecond))
+
+	d, ok := p.Latency()
+	require.True(t, ok)
+	assert.Equal(t, 2*time.Millisecond, d)
 }
 
 func TestPeer_OnPong_UnknownSeqIgnored(t *testing.T) {
@@ -84,7 +98,6 @@ func TestPeer_OnPong_ConsumedSeqDoesNotReapply(t *testing.T) {
 	p.recordPingSent(7, now)
 	p.OnPong(7, now.Add(40*time.Millisecond))
 
-	// Second OnPong with same seq must be a no-op (the entry was deleted).
 	p.OnPong(7, now.Add(400*time.Millisecond))
 
 	d, _ := p.Latency()
@@ -123,9 +136,6 @@ func TestPeer_RecordPingSent_CapsMapSize(t *testing.T) {
 	p := newLatencyTestPeer(t)
 	base := time.Now()
 
-	// Insert pingsInFlightCap+1 entries, all within TTL so trimming
-	// alone wouldn't bound the map. Each subsequent send must evict
-	// the oldest entry to keep the cap.
 	for i := 0; i < pingsInFlightCap+1; i++ {
 		p.recordPingSent(uint32(100+i), base.Add(time.Duration(i)*time.Millisecond))
 	}
@@ -177,12 +187,10 @@ func TestOverlay_PeersJSON_EmitsLatencyMillisWhenMeasured(t *testing.T) {
 }
 
 func TestOverlay_PeersJSON_LatencyRoundedToMillis(t *testing.T) {
-	// rippled uses std::chrono::round<milliseconds> on the rtt sample
-	// (PeerImp.cpp:1109). Sub-ms residuals must round, not truncate.
 	p := newLatencyTestPeer(t)
 	now := time.Now()
 	p.recordPingSent(1, now)
-	p.OnPong(1, now.Add(1500*time.Microsecond)) // 1.5ms → rounds to 2
+	p.OnPong(1, now.Add(1500*time.Microsecond)) // 1.5ms → 2 (half-to-even, q=1 odd)
 
 	o := newTestOverlayWithPeers(map[PeerID]*Peer{p.ID(): p})
 	out := o.PeersJSON()

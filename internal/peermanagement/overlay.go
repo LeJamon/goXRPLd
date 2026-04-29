@@ -1634,11 +1634,8 @@ func (o *Overlay) PeersJSON() []map[string]any {
 		if p.ClosedLedger != "" {
 			entry["ledger"] = p.ClosedLedger
 		}
-		// Match rippled PeerImp::json (PeerImp.cpp:421-425): emit
-		// latency only when measured. Round to milliseconds — rippled
-		// uses std::chrono::round<milliseconds> on the rtt sample.
 		if p.HasLatency {
-			entry["latency"] = uint32(p.Latency.Round(time.Millisecond) / time.Millisecond)
+			entry["latency"] = uint32(p.Latency / time.Millisecond)
 		}
 		out = append(out, entry)
 	}
