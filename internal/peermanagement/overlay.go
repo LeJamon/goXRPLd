@@ -271,7 +271,9 @@ func (o *Overlay) ledgerHintProviderSnapshot() func() (LedgerHints, bool) {
 }
 
 // generateInstanceCookie matches rippled Application.cpp:
-//   1 + rand_int(crypto_prng(), MAX_UINT64 - 1)
+//
+//	1 + rand_int(crypto_prng(), MAX_UINT64 - 1)
+//
 // where rand_int returns a closed interval, so the result is uniform
 // in [1, MAX_UINT64]. Only 0 is rejected.
 func generateInstanceCookie() (uint64, error) {

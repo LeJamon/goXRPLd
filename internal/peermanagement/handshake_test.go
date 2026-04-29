@@ -1609,8 +1609,8 @@ func TestIpFamilyEqual_BoostParity(t *testing.T) {
 // as address_v6, otherwise a peer announcing "::ffff:x.x.x.x" while
 // connecting via AF_INET6 is incorrectly rejected as family-mismatched.
 func TestSocketIPIsV6_FamilyFromByteLength(t *testing.T) {
-	v4Socket := net.IP{1, 2, 3, 4}                                         // AF_INET socket
-	v6Socket := net.ParseIP("2001:db8::1")                                 // AF_INET6 socket
+	v4Socket := net.IP{1, 2, 3, 4}                                                 // AF_INET socket
+	v6Socket := net.ParseIP("2001:db8::1")                                         // AF_INET6 socket
 	v4MappedSocket := net.IP{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1, 2, 3, 4} // AF_INET6 receiving v4
 
 	assert.False(t, socketIPIsV6(v4Socket), "4-byte socket IP is AF_INET")
