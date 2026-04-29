@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	addresscodec "github.com/LeJamon/goXRPLd/codec/addresscodec"
+	"github.com/LeJamon/goXRPLd/internal/peermanagement/cluster"
 	"github.com/LeJamon/goXRPLd/internal/peermanagement/message"
 	"github.com/LeJamon/goXRPLd/internal/peermanagement/peertls"
 	"golang.org/x/sync/errgroup"
@@ -164,6 +166,13 @@ type relayedEntry struct {
 type Overlay struct {
 	cfg      Config
 	identity *Identity
+
+	// cluster is the registry of nodes loaded from [cluster_nodes].
+	// Always non-nil post-construction (an empty registry stands in
+	// when no entries are configured) so call sites can dereference
+	// without nil checks. Mirrors rippled's app_.cluster() which is
+	// always present even when the section is empty.
+	cluster *cluster.Registry
 
 	// instanceCookie: immutable post-New, lock-free.
 	instanceCookie uint64
@@ -383,11 +392,17 @@ func New(opts ...Option) (*Overlay, error) {
 		return nil, fmt.Errorf("instance cookie: %w", err)
 	}
 
+	clusterReg := cluster.New()
+	if err := clusterReg.Load(cfg.ClusterNodes); err != nil {
+		return nil, fmt.Errorf("invalid cluster_nodes: %w", err)
+	}
+
 	events := make(chan Event, 256)
 
 	o := &Overlay{
 		cfg:            cfg,
 		identity:       identity,
+		cluster:        clusterReg,
 		instanceCookie: cookie,
 		discovery:      NewDiscovery(&cfg, events),
 		ledgerSync:     NewLedgerSyncHandler(events),
@@ -1607,6 +1622,10 @@ func (o *Overlay) Peers() []PeerInfo {
 	return result
 }
 
+// Cluster returns the registry of cluster-trusted node identities
+// loaded from [cluster_nodes]. Always non-nil post-construction.
+func (o *Overlay) Cluster() *cluster.Registry { return o.cluster }
+
 // PeersJSON implements types.PeerSource for the `peers` RPC method,
 // emitting the subset of rippled PeerImp::json (PeerImp.cpp:388-503)
 // fields for which goXRPL has data.
@@ -1631,8 +1650,63 @@ func (o *Overlay) PeersJSON() []map[string]any {
 		if p.CompleteLedgers != "" {
 			entry["complete_ledgers"] = p.CompleteLedgers
 		}
+		// cluster + name: PeerImp.cpp:399-406.
+		if len(p.PublicKeyBytes) > 0 {
+			if member, ok := o.cluster.Member(p.PublicKeyBytes); ok {
+				entry["cluster"] = true
+				if member.Name != "" {
+					entry["name"] = member.Name
+				}
+			}
+		}
 		out = append(out, entry)
 	}
+	return out
+}
+
+// clusterFeeRef mirrors rippled's LoadFeeTrack::getLoadBase() default.
+// Replace with a live reference once goXRPL grows a load-fee tracker.
+const clusterFeeRef uint32 = 256
+
+// ClusterJSON returns the top-level cluster object for the `peers`
+// RPC response, mirroring rippled doPeers (Peers.cpp:59-80).
+func (o *Overlay) ClusterJSON() map[string]any {
+	out := map[string]any{}
+	if o == nil || o.cluster == nil {
+		return out
+	}
+
+	var selfKey []byte
+	if o.identity != nil {
+		selfKey = o.identity.PublicKey()
+	}
+
+	now := o.cfg.Clock()
+
+	o.cluster.ForEach(func(m cluster.Member) {
+		if len(selfKey) > 0 && bytes.Equal(selfKey, m.Identity) {
+			return
+		}
+		encoded, err := addresscodec.EncodeNodePublicKey(m.Identity)
+		if err != nil || encoded == "" {
+			return
+		}
+		entry := map[string]any{}
+		if m.Name != "" {
+			entry["tag"] = m.Name
+		}
+		if m.LoadFee != clusterFeeRef && m.LoadFee != 0 {
+			entry["fee"] = float64(m.LoadFee) / float64(clusterFeeRef)
+		}
+		if !m.ReportTime.IsZero() {
+			age := int64(now.Sub(m.ReportTime).Seconds())
+			if age < 0 {
+				age = 0
+			}
+			entry["age"] = age
+		}
+		out[encoded] = entry
+	})
 	return out
 }
 
