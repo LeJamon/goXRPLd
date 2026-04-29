@@ -1439,10 +1439,12 @@ func TestLedgerSync_PreferredPeersForLedger_ConsumesClosedLedgerHint(t *testing.
 	}
 }
 
-// applyStatusChange mirrors PeerImp.cpp:1812-1862.
+// applyStatusChange mirrors PeerImp.cpp:1812-1883.
 func TestApplyStatusChange_RippledSemantics(t *testing.T) {
 	id, err := NewIdentity()
 	require.NoError(t, err)
+
+	u32 := func(v uint32) *uint32 { return &v }
 
 	mk := func() *Peer {
 		p := NewPeer(1, Endpoint{Host: "127.0.0.1", Port: 1}, false, id, nil)
@@ -1462,7 +1464,7 @@ func TestApplyStatusChange_RippledSemantics(t *testing.T) {
 
 	t.Run("lost_sync_zeroes_both", func(t *testing.T) {
 		p := mk()
-		p.applyStatusChange(nil, nil, true, 0, 0)
+		p.applyStatusChange(nil, nil, true, nil, nil)
 		_, hasC := p.ClosedLedger()
 		_, hasP := p.PreviousLedger()
 		assert.False(t, hasC)
@@ -1476,7 +1478,7 @@ func TestApplyStatusChange_RippledSemantics(t *testing.T) {
 			newClosed[i] = byte(0xAA)
 			newParent[i] = byte(0xBB)
 		}
-		p.applyStatusChange(newClosed[:], newParent[:], false, 0, 0)
+		p.applyStatusChange(newClosed[:], newParent[:], false, nil, nil)
 		gotC, hasC := p.ClosedLedger()
 		gotP, hasP := p.PreviousLedger()
 		assert.True(t, hasC)
@@ -1491,7 +1493,7 @@ func TestApplyStatusChange_RippledSemantics(t *testing.T) {
 		for i := range newParent {
 			newParent[i] = byte(0xCC)
 		}
-		p.applyStatusChange(nil, newParent[:], false, 0, 0)
+		p.applyStatusChange(nil, newParent[:], false, nil, nil)
 		_, hasC := p.ClosedLedger()
 		gotP, hasP := p.PreviousLedger()
 		assert.False(t, hasC)
@@ -1501,7 +1503,7 @@ func TestApplyStatusChange_RippledSemantics(t *testing.T) {
 
 	t.Run("malformed_closed_zeroes_closed", func(t *testing.T) {
 		p := mk()
-		p.applyStatusChange([]byte{0x01, 0x02}, nil, false, 0, 0) // 2 bytes ≠ 32
+		p.applyStatusChange([]byte{0x01, 0x02}, nil, false, nil, nil) // 2 bytes ≠ 32
 		_, hasC := p.ClosedLedger()
 		_, hasP := p.PreviousLedger()
 		assert.False(t, hasC)
@@ -1511,7 +1513,7 @@ func TestApplyStatusChange_RippledSemantics(t *testing.T) {
 	// PeerImp.cpp:1874-1883 — ledger range update + clamp.
 	t.Run("ledger_range_valid_pair_stored", func(t *testing.T) {
 		p := mk()
-		p.applyStatusChange(nil, nil, false, 100, 200)
+		p.applyStatusChange(nil, nil, false, u32(100), u32(200))
 		minSeq, maxSeq := p.LedgerRange()
 		assert.Equal(t, uint32(100), minSeq)
 		assert.Equal(t, uint32(200), maxSeq)
@@ -1519,7 +1521,7 @@ func TestApplyStatusChange_RippledSemantics(t *testing.T) {
 
 	t.Run("ledger_range_first_zero_clamped", func(t *testing.T) {
 		p := mk()
-		p.applyStatusChange(nil, nil, false, 0, 200)
+		p.applyStatusChange(nil, nil, false, u32(0), u32(200))
 		minSeq, maxSeq := p.LedgerRange()
 		assert.Equal(t, uint32(0), minSeq)
 		assert.Equal(t, uint32(0), maxSeq)
@@ -1527,7 +1529,7 @@ func TestApplyStatusChange_RippledSemantics(t *testing.T) {
 
 	t.Run("ledger_range_last_zero_clamped", func(t *testing.T) {
 		p := mk()
-		p.applyStatusChange(nil, nil, false, 100, 0)
+		p.applyStatusChange(nil, nil, false, u32(100), u32(0))
 		minSeq, maxSeq := p.LedgerRange()
 		assert.Equal(t, uint32(0), minSeq)
 		assert.Equal(t, uint32(0), maxSeq)
@@ -1535,24 +1537,38 @@ func TestApplyStatusChange_RippledSemantics(t *testing.T) {
 
 	t.Run("ledger_range_inverted_clamped", func(t *testing.T) {
 		p := mk()
-		p.applyStatusChange(nil, nil, false, 200, 100)
+		p.applyStatusChange(nil, nil, false, u32(200), u32(100))
 		minSeq, maxSeq := p.LedgerRange()
 		assert.Equal(t, uint32(0), minSeq)
 		assert.Equal(t, uint32(0), maxSeq)
 	})
 
-	t.Run("ledger_range_lost_sync_clears", func(t *testing.T) {
+	// PeerImp.cpp:1812-1832 — lostSync returns before the range
+	// block, so the previously-advertised range must persist.
+	t.Run("ledger_range_lost_sync_preserves_range", func(t *testing.T) {
 		p := mk()
-		p.applyStatusChange(nil, nil, false, 100, 200)
-		p.applyStatusChange(nil, nil, true, 0, 0)
+		p.applyStatusChange(nil, nil, false, u32(100), u32(200))
+		p.applyStatusChange(nil, nil, true, nil, nil)
 		minSeq, maxSeq := p.LedgerRange()
-		assert.Equal(t, uint32(0), minSeq)
-		assert.Equal(t, uint32(0), maxSeq)
+		assert.Equal(t, uint32(100), minSeq)
+		assert.Equal(t, uint32(200), maxSeq)
+	})
+
+	// PeerImp.cpp:1874 — gate on has_firstseq() && has_lastseq().
+	// A status change without the range fields must not touch the
+	// previously-stored range.
+	t.Run("ledger_range_absent_preserves_existing", func(t *testing.T) {
+		p := mk()
+		p.applyStatusChange(nil, nil, false, u32(100), u32(200))
+		p.applyStatusChange(nil, nil, false, nil, nil)
+		minSeq, maxSeq := p.LedgerRange()
+		assert.Equal(t, uint32(100), minSeq)
+		assert.Equal(t, uint32(200), maxSeq)
 	})
 
 	t.Run("info_complete_ledgers_formatted", func(t *testing.T) {
 		p := mk()
-		p.applyStatusChange(nil, nil, false, 100, 200)
+		p.applyStatusChange(nil, nil, false, u32(100), u32(200))
 		assert.Equal(t, "100 - 200", p.Info().CompleteLedgers,
 			"matches rippled PeerImp.cpp:434-435 format with surrounding spaces")
 	})
@@ -1665,8 +1681,8 @@ func TestIpFamilyEqual_BoostParity(t *testing.T) {
 // as address_v6, otherwise a peer announcing "::ffff:x.x.x.x" while
 // connecting via AF_INET6 is incorrectly rejected as family-mismatched.
 func TestSocketIPIsV6_FamilyFromByteLength(t *testing.T) {
-	v4Socket := net.IP{1, 2, 3, 4}                                         // AF_INET socket
-	v6Socket := net.ParseIP("2001:db8::1")                                 // AF_INET6 socket
+	v4Socket := net.IP{1, 2, 3, 4}                                                 // AF_INET socket
+	v6Socket := net.ParseIP("2001:db8::1")                                         // AF_INET6 socket
 	v4MappedSocket := net.IP{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 1, 2, 3, 4} // AF_INET6 receiving v4
 
 	assert.False(t, socketIPIsV6(v4Socket), "4-byte socket IP is AF_INET")
@@ -1788,9 +1804,11 @@ func TestPeersJSON_CompleteLedgers(t *testing.T) {
 	id, err := NewIdentity()
 	require.NoError(t, err)
 
+	u32 := func(v uint32) *uint32 { return &v }
+
 	t.Run("emits_when_range_advertised", func(t *testing.T) {
 		p := NewPeer(1, Endpoint{Host: "192.0.2.1", Port: 51235}, false, id, nil)
-		p.applyStatusChange(nil, nil, false, 100, 200)
+		p.applyStatusChange(nil, nil, false, u32(100), u32(200))
 
 		o := newTestOverlayWithPeers(map[PeerID]*Peer{1: p})
 		entries := o.PeersJSON()
@@ -1809,7 +1827,7 @@ func TestPeersJSON_CompleteLedgers(t *testing.T) {
 
 	t.Run("absent_after_clamp_on_invalid_range", func(t *testing.T) {
 		p := NewPeer(1, Endpoint{Host: "192.0.2.1", Port: 51235}, false, id, nil)
-		p.applyStatusChange(nil, nil, false, 0, 200) // first=0 → clamped to (0,0)
+		p.applyStatusChange(nil, nil, false, u32(0), u32(200)) // first=0 → clamped to (0,0)
 
 		o := newTestOverlayWithPeers(map[PeerID]*Peer{1: p})
 		entries := o.PeersJSON()

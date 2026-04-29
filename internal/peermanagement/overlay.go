@@ -1608,12 +1608,9 @@ func (o *Overlay) Peers() []PeerInfo {
 	return result
 }
 
-// PeersJSON implements types.PeerSource for the `peers` RPC method.
-// Strict subset of rippled PeerImp::json (PeerImp.cpp:388-503): only
-// fields that rippled actually emits AND for which goXRPL has the data.
-// Missing rippled fields (network_id, version, protocol, latency,
-// track, status, load, metrics, cluster/name) are tracked as separate
-// follow-ups.
+// PeersJSON implements types.PeerSource for the `peers` RPC method,
+// emitting the subset of rippled PeerImp::json (PeerImp.cpp:388-503)
+// fields for which goXRPL has data.
 func (o *Overlay) PeersJSON() []map[string]any {
 	list := o.Peers()
 	out := make([]map[string]any, 0, len(list))

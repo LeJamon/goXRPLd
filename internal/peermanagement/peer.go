@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -82,17 +81,12 @@ type Peer struct {
 	// decay can overshoot zero.
 	badDataBalance atomic.Int64
 
-	// closedLedger / previousLedger refresh on the inbound
-	// mtSTATUS_CHANGE handler too.
 	serverDomain      string
 	closedLedger      [32]byte
 	previousLedger    [32]byte
 	hasClosedLedger   bool
 	hasPreviousLedger bool
 
-	// firstLedgerSeq / lastLedgerSeq mirror rippled's minLedger_ /
-	// maxLedger_ — refreshed from TMStatusChange.first_seq/last_seq.
-	// Both zero means "no range advertised".
 	firstLedgerSeq uint32
 	lastLedgerSeq  uint32
 }
@@ -198,12 +192,10 @@ func (p *Peer) applyHandshakeExtras(x HandshakeExtras) {
 }
 
 // applyStatusChange handles inbound mtSTATUS_CHANGE updates.
-//
-// firstSeq / lastSeq mirror rippled's PeerImp.cpp:1874-1883 update of
-// minLedger_/maxLedger_ from m->firstseq()/lastseq(): if either is zero
-// or the range is inverted, the pair is clamped to (0, 0). lostSync
-// also clears the range.
-func (p *Peer) applyStatusChange(closed, previous []byte, lostSync bool, firstSeq, lastSeq uint32) {
+// Mirrors rippled PeerImp.cpp:1812-1883: lostSync clears closed/previous
+// ledger only; the (firstSeq, lastSeq) range is updated only when both
+// fields are present, then clamped to (0,0) if either is zero or inverted.
+func (p *Peer) applyStatusChange(closed, previous []byte, lostSync bool, firstSeq, lastSeq *uint32) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if lostSync {
@@ -211,8 +203,6 @@ func (p *Peer) applyStatusChange(closed, previous []byte, lostSync bool, firstSe
 		p.hasPreviousLedger = false
 		p.closedLedger = [32]byte{}
 		p.previousLedger = [32]byte{}
-		p.firstLedgerSeq = 0
-		p.lastLedgerSeq = 0
 		return
 	}
 	if len(closed) == 32 {
@@ -229,12 +219,15 @@ func (p *Peer) applyStatusChange(closed, previous []byte, lostSync bool, firstSe
 		p.hasPreviousLedger = false
 		p.previousLedger = [32]byte{}
 	}
-	if firstSeq == 0 || lastSeq == 0 || lastSeq < firstSeq {
+	if firstSeq == nil || lastSeq == nil {
+		return
+	}
+	if *firstSeq == 0 || *lastSeq == 0 || *lastSeq < *firstSeq {
 		p.firstLedgerSeq = 0
 		p.lastLedgerSeq = 0
 	} else {
-		p.firstLedgerSeq = firstSeq
-		p.lastLedgerSeq = lastSeq
+		p.firstLedgerSeq = *firstSeq
+		p.lastLedgerSeq = *lastSeq
 	}
 }
 
@@ -258,9 +251,8 @@ func (p *Peer) PreviousLedger() ([32]byte, bool) {
 	return p.previousLedger, p.hasPreviousLedger
 }
 
-// LedgerRange returns the peer's advertised (min, max) ledger sequence.
-// Both zero means "no range advertised" (rippled gate at
-// PeerImp.cpp:433).
+// LedgerRange returns the peer's advertised (min, max) ledger sequence,
+// or (0, 0) when no range has been advertised.
 func (p *Peer) LedgerRange() (uint32, uint32) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -705,11 +697,7 @@ func (p *Peer) setState(state PeerState) {
 	p.mu.Unlock()
 }
 
-// PeerInfo is a read-only snapshot of peer state. ClosedLedger is
-// upper-case hex (rippled convention) or "" when absent.
-// CompleteLedgers is the peer's advertised ledger range formatted as
-// "<min> - <max>" (matching rippled PeerImp.cpp:434-435), or "" when
-// no range has been advertised.
+// PeerInfo is a read-only snapshot of peer state.
 type PeerInfo struct {
 	ID          PeerID
 	Endpoint    Endpoint
@@ -743,8 +731,7 @@ func (p *Peer) Info() PeerInfo {
 
 	var completeLedgers string
 	if p.firstLedgerSeq != 0 || p.lastLedgerSeq != 0 {
-		completeLedgers = strconv.FormatUint(uint64(p.firstLedgerSeq), 10) +
-			" - " + strconv.FormatUint(uint64(p.lastLedgerSeq), 10)
+		completeLedgers = fmt.Sprintf("%d - %d", p.firstLedgerSeq, p.lastLedgerSeq)
 	}
 
 	return PeerInfo{
