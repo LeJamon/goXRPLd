@@ -745,6 +745,10 @@ func (p *Peer) BadDataCount() uint32 {
 	return uint32(n)
 }
 
+func (p *Peer) Load() int64 {
+	return p.badDataBalance.Load()
+}
+
 // DecayBadData halves the balance. Called periodically by the overlay
 // so transient errors don't accumulate to eviction.
 func (p *Peer) DecayBadData() {
@@ -855,6 +859,7 @@ type PeerInfo struct {
 	ClosedLedger    string
 	CompleteLedgers string
 	Tracking        PeerTracking
+	Load            int64
 
 	Latency    time.Duration
 	HasLatency bool
@@ -901,6 +906,7 @@ func (p *Peer) Info() PeerInfo {
 		ClosedLedger:    closedLedger,
 		CompleteLedgers: completeLedgers,
 		Tracking:        PeerTracking(p.tracking.Load()),
+		Load:            p.Load(),
 		Latency:         latency,
 		HasLatency:      hasLatency,
 	}

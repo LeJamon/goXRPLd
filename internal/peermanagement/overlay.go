@@ -1674,6 +1674,7 @@ func (o *Overlay) PeersJSON() []map[string]any {
 			"address":    p.Endpoint.String(),
 			"public_key": p.PublicKey,
 			"uptime":     int64(time.Since(p.ConnectedAt).Seconds()),
+			"load":       p.Load,
 		}
 		if p.Inbound {
 			entry["inbound"] = true
