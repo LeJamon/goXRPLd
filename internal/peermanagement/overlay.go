@@ -1013,7 +1013,13 @@ func (o *Overlay) handleStatusChange(evt Event) {
 	if !exists {
 		return
 	}
-	peer.applyStatusChange(sc.LedgerHash, sc.LedgerHashPrevious, sc.NewEvent == message.NodeEventLostSync)
+	peer.applyStatusChange(
+		sc.LedgerHash,
+		sc.LedgerHashPrevious,
+		sc.NewEvent == message.NodeEventLostSync,
+		sc.FirstSeq,
+		sc.LastSeq,
+	)
 }
 
 // handleSquelchMessage processes an inbound TMSquelch from a peer and
@@ -1606,8 +1612,8 @@ func (o *Overlay) Peers() []PeerInfo {
 // Strict subset of rippled PeerImp::json (PeerImp.cpp:388-503): only
 // fields that rippled actually emits AND for which goXRPL has the data.
 // Missing rippled fields (network_id, version, protocol, latency,
-// complete_ledgers, track, status, load, metrics, cluster/name) are
-// tracked as separate follow-ups.
+// track, status, load, metrics, cluster/name) are tracked as separate
+// follow-ups.
 func (o *Overlay) PeersJSON() []map[string]any {
 	list := o.Peers()
 	out := make([]map[string]any, 0, len(list))
@@ -1625,6 +1631,9 @@ func (o *Overlay) PeersJSON() []map[string]any {
 		}
 		if p.ClosedLedger != "" {
 			entry["ledger"] = p.ClosedLedger
+		}
+		if p.CompleteLedgers != "" {
+			entry["complete_ledgers"] = p.CompleteLedgers
 		}
 		out = append(out, entry)
 	}
