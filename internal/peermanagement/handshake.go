@@ -8,6 +8,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,10 +19,25 @@ import (
 	"github.com/LeJamon/goXRPLd/crypto/secp256k1"
 )
 
-const (
-	ProtocolVersion       = "XRPL/2.2"
-	LegacyProtocolVersion = "RTXP/1.2"
-)
+// protocolVersion is a (major, minor) peer-protocol pair. Mirrors
+// rippled ProtocolVersion (rippled/src/xrpld/overlay/detail/ProtocolVersion.h:38).
+type protocolVersion struct{ major, minor uint16 }
+
+func (v protocolVersion) String() string {
+	return fmt.Sprintf("XRPL/%d.%d", v.major, v.minor)
+}
+
+func (v protocolVersion) less(o protocolVersion) bool {
+	if v.major != o.major {
+		return v.major < o.major
+	}
+	return v.minor < o.minor
+}
+
+// supportedProtocols mirrors rippled supportedProtocolList
+// (ProtocolVersion.cpp:40-44). Must stay strictly ascending — duplicates
+// are forbidden.
+var supportedProtocols = []protocolVersion{{2, 1}, {2, 2}}
 
 const (
 	HeaderUpgrade          = "Upgrade"
@@ -85,7 +102,7 @@ func BuildHandshakeRequest(id *Identity, sharedValue []byte, cfg HandshakeConfig
 	}
 
 	req.Header.Set(HeaderUserAgent, cfg.UserAgent)
-	req.Header.Set(HeaderUpgrade, ProtocolVersion+", "+LegacyProtocolVersion)
+	req.Header.Set(HeaderUpgrade, SupportedProtocolVersions())
 	req.Header.Set(HeaderConnection, "Upgrade")
 	req.Header.Set(HeaderConnectAs, "Peer")
 	req.Header.Set(HeaderCrawl, crawlValue(cfg.CrawlPublic))
@@ -127,7 +144,14 @@ func WriteRawHandshakeRequest(w io.Writer, req *http.Request) error {
 	return err
 }
 
-func BuildHandshakeResponse(id *Identity, sharedValue []byte, cfg HandshakeConfig) *http.Response {
+// BuildHandshakeResponse mirrors rippled makeResponse
+// (Handshake.cpp:391-422). `negotiated` is the version returned by
+// NegotiateProtocolVersion against the inbound request; an empty value
+// falls back to the highest supported version (test convenience).
+func BuildHandshakeResponse(id *Identity, sharedValue []byte, cfg HandshakeConfig, negotiated string) *http.Response {
+	if negotiated == "" {
+		negotiated = supportedProtocols[len(supportedProtocols)-1].String()
+	}
 	resp := &http.Response{
 		StatusCode: http.StatusSwitchingProtocols,
 		Status:     "101 Switching Protocols",
@@ -138,7 +162,7 @@ func BuildHandshakeResponse(id *Identity, sharedValue []byte, cfg HandshakeConfi
 	}
 
 	resp.Header.Set(HeaderConnection, "Upgrade")
-	resp.Header.Set(HeaderUpgrade, ProtocolVersion)
+	resp.Header.Set(HeaderUpgrade, negotiated)
 	resp.Header.Set(HeaderConnectAs, "Peer")
 	resp.Header.Set(HeaderCrawl, crawlValue(cfg.CrawlPublic))
 	// rippled reads the Server header via PeerImp::getVersion.
@@ -377,13 +401,104 @@ func crawlValue(public bool) string {
 	return "private"
 }
 
-func ParseHandshakeProtocolVersion(upgradeHeader string) string {
-	versions := strings.Split(upgradeHeader, ",")
-	for _, v := range versions {
-		v = strings.TrimSpace(v)
-		if strings.HasPrefix(v, "XRPL/") || strings.HasPrefix(v, "RTXP/") {
-			return v
+// SupportedProtocolVersions returns the comma-joined Upgrade header
+// value goXRPL advertises. Mirrors rippled supportedProtocolVersions()
+// (ProtocolVersion.cpp:158-174).
+func SupportedProtocolVersions() string {
+	parts := make([]string, len(supportedProtocols))
+	for i, v := range supportedProtocols {
+		parts[i] = v.String()
+	}
+	return strings.Join(parts, ", ")
+}
+
+// protocolTokenRe matches a single XRPL/X.Y token: anchored, major ≥ 2,
+// no leading zeros. Mirrors rippled's regex in parseProtocolVersions
+// (ProtocolVersion.cpp:83-93).
+var protocolTokenRe = regexp.MustCompile(`^XRPL/([2-9]|[1-9][0-9]+)\.(0|[1-9][0-9]*)$`)
+
+// parseProtocolVersions returns the sorted, deduplicated list of valid
+// XRPL versions in a comma-separated header value. Mirrors rippled
+// parseProtocolVersions (ProtocolVersion.cpp:80-125).
+func parseProtocolVersions(s string) []protocolVersion {
+	var out []protocolVersion
+	for _, tok := range strings.Split(s, ",") {
+		tok = strings.TrimSpace(tok)
+		m := protocolTokenRe.FindStringSubmatch(tok)
+		if m == nil {
+			continue
 		}
+		maj, errMaj := strconv.ParseUint(m[1], 10, 16)
+		min, errMin := strconv.ParseUint(m[2], 10, 16)
+		if errMaj != nil || errMin != nil {
+			continue
+		}
+		v := protocolVersion{uint16(maj), uint16(min)}
+		// Round-trip sanity (rippled ProtocolVersion.cpp:115).
+		if v.String() != tok {
+			continue
+		}
+		out = append(out, v)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].less(out[j]) })
+	n := 0
+	for i := 0; i < len(out); i++ {
+		if i == 0 || out[i] != out[i-1] {
+			out[n] = out[i]
+			n++
+		}
+	}
+	return out[:n]
+}
+
+func isProtocolSupported(v protocolVersion) bool {
+	for _, sv := range supportedProtocols {
+		if sv == v {
+			return true
+		}
+	}
+	return false
+}
+
+// NegotiateProtocolVersion picks the largest version in the
+// intersection of the peer's offered Upgrade list and supportedProtocols,
+// or "" if no shared version exists. Use on the INBOUND path where the
+// request advertises a list. Mirrors rippled negotiateProtocolVersion
+// (ProtocolVersion.cpp:127-156).
+func NegotiateProtocolVersion(upgradeHeader string) string {
+	theirs := parseProtocolVersions(upgradeHeader)
+	var (
+		best  protocolVersion
+		found bool
+	)
+	i, j := 0, 0
+	for i < len(theirs) && j < len(supportedProtocols) {
+		switch {
+		case theirs[i].less(supportedProtocols[j]):
+			i++
+		case supportedProtocols[j].less(theirs[i]):
+			j++
+		default:
+			best = theirs[i]
+			found = true
+			i++
+			j++
+		}
+	}
+	if !found {
+		return ""
+	}
+	return best.String()
+}
+
+// VerifyOutboundProtocolVersion accepts the server's Upgrade response
+// only if it contains exactly one supported version, returning that
+// version's token. Returns "" otherwise (zero, multiple, or
+// unsupported). Mirrors rippled ConnectAttempt.cpp:340-351.
+func VerifyOutboundProtocolVersion(upgradeHeader string) string {
+	pvs := parseProtocolVersions(upgradeHeader)
+	if len(pvs) == 1 && isProtocolSupported(pvs[0]) {
+		return pvs[0].String()
 	}
 	return ""
 }
