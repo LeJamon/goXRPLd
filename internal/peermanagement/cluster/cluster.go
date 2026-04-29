@@ -120,20 +120,17 @@ func (r *Registry) Update(identity []byte, name string, loadFee uint32, reportTi
 	return true
 }
 
-// entryRE matches one [cluster_nodes] line: an optional leading
-// whitespace block, a base58-shaped node identity token, then an
-// optional comment. Mirrors the boost::regex in rippled
-// Cluster.cpp:93-103. The comment captures up to the last non-space
-// rune so trailing whitespace is trimmed inside the regex itself, the
-// way rippled does it.
-var entryRE = regexp.MustCompile(`^\s*([A-Za-z0-9]+)(?:\s+(.*[^\s]+)\s*)?\s*$`)
+// entryRE structurally mirrors the boost::regex in rippled
+// Cluster.cpp:93-103. The POSIX [[:space:]] / [[:alnum:]] classes are
+// load-bearing: Go's \s drops \v and other characters [[:space:]]
+// matches.
+var entryRE = regexp.MustCompile(`^[[:space:]]*([[:alnum:]]+)(?:[[:space:]]+(?:(.*[^[:space:]]+)[[:space:]]*)?)?$`)
 
-// Load parses [cluster_nodes] entries. Each entry is a base58 node
-// public key, optionally followed by a comment (the human-readable
-// name). Mirrors rippled Cluster::load (Cluster.cpp:90-134):
-//   - empty / whitespace-only entries are skipped;
-//   - a malformed entry or invalid pubkey returns an error;
-//   - a duplicate pubkey is silently skipped (rippled logs a warning).
+// Load parses [cluster_nodes] entries; mirrors rippled Cluster::load
+// (Cluster.cpp:90-134). Blank entries are skipped because rippled's
+// upstream Section::values strips them before they reach Cluster::load
+// — goXRPL's TOML []string can legally contain them, so we filter
+// here to preserve the composition.
 func (r *Registry) Load(entries []string) error {
 	if r == nil {
 		return errors.New("cluster: nil registry")

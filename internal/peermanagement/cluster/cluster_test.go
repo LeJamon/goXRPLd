@@ -172,3 +172,118 @@ func TestRegistry_ForEachIteratesAll(t *testing.T) {
 		t.Fatalf("missing names: %v", names)
 	}
 }
+
+func makeNodePub(t *testing.T, salt byte) string {
+	t.Helper()
+	raw := make([]byte, 33)
+	for i := range raw {
+		raw[i] = salt
+	}
+	enc, err := addresscodec.EncodeNodePublicKey(raw)
+	if err != nil {
+		t.Fatalf("EncodeNodePublicKey: %v", err)
+	}
+	return enc
+}
+
+// TestRegistry_LoadConfigParity mirrors rippled's
+// cluster_test.cpp::testConfigLoad (lines 191-258).
+func TestRegistry_LoadConfigParity(t *testing.T) {
+	pubs := make([]string, 8)
+	for i := range pubs {
+		pubs[i] = makeNodePub(t, byte(0x10+i))
+	}
+
+	t.Run("empty config", func(t *testing.T) {
+		r := cluster.New()
+		if err := r.Load(nil); err != nil {
+			t.Fatalf("Load(nil): %v", err)
+		}
+		if r.Size() != 0 {
+			t.Fatalf("Size = %d; want 0", r.Size())
+		}
+	})
+
+	t.Run("valid table", func(t *testing.T) {
+		r := cluster.New()
+		entries := []string{
+			pubs[0],                                       // (a) no comment
+			pubs[1] + "    ",                              // (b) trailing whitespace only
+			pubs[2] + " Comment",                          // (c) basic comment
+			pubs[3] + " Multi Word Comment",               // (d) multi-word
+			pubs[4] + "  Leading Whitespace",              // (e) extra leading ws
+			pubs[5] + " Trailing Whitespace  ",            // (f) trailing ws after comment
+			pubs[6] + "  Leading & Trailing Whitespace  ", // (g) both
+			pubs[7] + "  Leading,  Trailing  &  Internal  Whitespace  ", // (h) plus internal
+		}
+		if err := r.Load(entries); err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		for i, p := range pubs {
+			id, err := addresscodec.DecodeNodePublicKey(p)
+			if err != nil {
+				t.Fatalf("DecodeNodePublicKey[%d]: %v", i, err)
+			}
+			if _, ok := r.Member(id); !ok {
+				t.Fatalf("entry %d not present in registry", i)
+			}
+		}
+	})
+
+	t.Run("invalid pubkey rejected", func(t *testing.T) {
+		r := cluster.New()
+		if err := r.Load([]string{"NotAPublicKey"}); err == nil {
+			t.Fatal("expected error for invalid base58 pubkey")
+		}
+	})
+
+	t.Run("trailing bang without whitespace rejected", func(t *testing.T) {
+		r := cluster.New()
+		if err := r.Load([]string{pubs[0] + "!"}); err == nil {
+			t.Fatal("expected error: '!' immediately after pubkey is not a valid comment separator")
+		}
+	})
+
+	t.Run("trailing bang with comment rejected", func(t *testing.T) {
+		r := cluster.New()
+		if err := r.Load([]string{pubs[0] + "!  Comment"}); err == nil {
+			t.Fatal("expected error: '!' immediately after pubkey is not a valid comment separator")
+		}
+	})
+
+	t.Run("malformed entry aborts load and rejects subsequent entries", func(t *testing.T) {
+		// cluster_test.cpp:248-258 — a bad entry must prevent every
+		// other entry, including subsequent ones, from being inserted.
+		r := cluster.New()
+		err := r.Load([]string{
+			pubs[0] + "XXX",
+			pubs[1],
+		})
+		if err == nil {
+			t.Fatal("expected error from malformed first entry")
+		}
+		for i, p := range pubs[:2] {
+			id, _ := addresscodec.DecodeNodePublicKey(p)
+			if _, ok := r.Member(id); ok {
+				t.Fatalf("entry %d unexpectedly present after Load failed", i)
+			}
+		}
+	})
+}
+
+// TestRegistry_LoadAcceptsVerticalTabWhitespace pins the POSIX-class
+// regex: \v is whitespace under [[:space:]] but not under Go's \s.
+func TestRegistry_LoadAcceptsVerticalTabWhitespace(t *testing.T) {
+	r := cluster.New()
+	if err := r.Load([]string{pubA + "\v" + "name-after-vtab"}); err != nil {
+		t.Fatalf("Load: %v (regex must accept \\v as whitespace, matching rippled [[:space:]])", err)
+	}
+	id, _ := addresscodec.DecodeNodePublicKey(pubA)
+	m, ok := r.Member(id)
+	if !ok {
+		t.Fatal("expected pubA in registry")
+	}
+	if m.Name != "name-after-vtab" {
+		t.Fatalf("name = %q; want %q", m.Name, "name-after-vtab")
+	}
+}

@@ -4,8 +4,6 @@ import (
 	"errors"
 	"net"
 	"time"
-
-	"github.com/LeJamon/goXRPLd/internal/peermanagement/cluster"
 )
 
 // Default configuration values.
@@ -306,12 +304,6 @@ func WithClusterNodes(entries ...string) Option {
 		c.ClusterNodes = append([]string(nil), entries...)
 	}
 }
-
-// Cluster type alias re-exports the registry pointer so that
-// downstream callers (e.g. RPC wiring) don't need to import the
-// cluster sub-package directly when they already depend on
-// peermanagement.
-type Cluster = cluster.Registry
 
 // WithServerDomain sets the operator domain emitted in the
 // `Server-Domain` handshake header. An empty value suppresses the

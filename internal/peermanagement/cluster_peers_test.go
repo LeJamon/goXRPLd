@@ -187,3 +187,88 @@ func TestClusterJSON_AgeFromReportTime(t *testing.T) {
 	require.True(t, ok)
 	assert.EqualValues(t, 30, entry["age"], "age = now - reportTime, in seconds")
 }
+
+// TestClusterJSON_FeeFromLoadFee — rippled Peers.cpp:73-74 predicate:
+// emit fee = LoadFee/ref iff LoadFee != 0 && LoadFee != ref.
+func TestClusterJSON_FeeFromLoadFee(t *testing.T) {
+	idVar, err := NewIdentity()
+	require.NoError(t, err)
+	idBase, err := NewIdentity()
+	require.NoError(t, err)
+	idZero, err := NewIdentity()
+	require.NoError(t, err)
+
+	pubVar, err := addresscodec.EncodeNodePublicKey(idVar.PublicKey())
+	require.NoError(t, err)
+	pubBase, err := addresscodec.EncodeNodePublicKey(idBase.PublicKey())
+	require.NoError(t, err)
+	pubZero, err := addresscodec.EncodeNodePublicKey(idZero.PublicKey())
+	require.NoError(t, err)
+
+	now := time.Date(2025, 1, 1, 12, 0, 0, 0, time.UTC)
+	cfg := DefaultConfig()
+	cfg.Clock = func() time.Time { return now }
+
+	reg := cluster.New()
+	// LoadFee=512 (≠ 256 base, ≠ 0) → emit fee = 2.0
+	require.True(t, reg.Update(idVar.PublicKey(), "var", 512, now))
+	// LoadFee=256 (== base) → suppress
+	require.True(t, reg.Update(idBase.PublicKey(), "base", 256, now))
+	// LoadFee=0 → suppress (default state today, before TMClusterReport lands)
+	require.True(t, reg.Update(idZero.PublicKey(), "zero", 0, now))
+
+	o := &Overlay{cfg: cfg, cluster: reg}
+	out := o.ClusterJSON()
+
+	varEntry, ok := out[pubVar].(map[string]any)
+	require.True(t, ok)
+	assert.InDelta(t, 2.0, varEntry["fee"], 1e-9, "fee = 512/256 = 2.0")
+
+	baseEntry, ok := out[pubBase].(map[string]any)
+	require.True(t, ok)
+	assert.NotContains(t, baseEntry, "fee", "fee == ref must suppress emit")
+
+	zeroEntry, ok := out[pubZero].(map[string]any)
+	require.True(t, ok)
+	assert.NotContains(t, zeroEntry, "fee", "fee == 0 must suppress emit")
+}
+
+// TestNew_LoadsClusterNodesFromOption pins the constructor path used
+// by the production wiring in internal/consensus/adaptor/startup.go.
+func TestNew_LoadsClusterNodesFromOption(t *testing.T) {
+	id, err := NewIdentity()
+	require.NoError(t, err)
+	pub, err := addresscodec.EncodeNodePublicKey(id.PublicKey())
+	require.NoError(t, err)
+
+	o, err := New(
+		WithListenAddr("127.0.0.1:0"),
+		WithMaxPeers(4),
+		WithMaxInbound(2),
+		WithMaxOutbound(2),
+		WithClusterNodes(pub+" e2e-validator"),
+	)
+	require.NoError(t, err)
+
+	require.Equal(t, 1, o.Cluster().Size())
+	m, ok := o.Cluster().Member(id.PublicKey())
+	require.True(t, ok)
+	assert.Equal(t, "e2e-validator", m.Name)
+
+	entry, ok := o.ClusterJSON()[pub].(map[string]any)
+	require.True(t, ok, "non-self member must surface in ClusterJSON")
+	assert.Equal(t, "e2e-validator", entry["tag"])
+}
+
+// TestNew_RejectsMalformedClusterNodes — rippled aborts when
+// Cluster::load returns false; New must too.
+func TestNew_RejectsMalformedClusterNodes(t *testing.T) {
+	_, err := New(
+		WithListenAddr("127.0.0.1:0"),
+		WithMaxPeers(4),
+		WithMaxInbound(2),
+		WithMaxOutbound(2),
+		WithClusterNodes("definitely-not-a-pubkey"),
+	)
+	require.Error(t, err, "malformed cluster_nodes must fail New")
+}

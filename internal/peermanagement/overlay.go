@@ -1664,14 +1664,12 @@ func (o *Overlay) PeersJSON() []map[string]any {
 	return out
 }
 
+// clusterFeeRef mirrors rippled's LoadFeeTrack::getLoadBase() default.
+// Replace with a live reference once goXRPL grows a load-fee tracker.
+const clusterFeeRef uint32 = 256
+
 // ClusterJSON returns the top-level cluster object for the `peers`
-// RPC response, keyed by base58 NodePublic and mirroring rippled
-// doPeers (Peers.cpp:59-80). The local node's own identity is
-// excluded. A member emits `tag` only when its name is non-empty;
-// `fee` is reserved for future load-fee gossip (presently 0 → never
-// emitted, matching rippled's `fee != ref && fee != 0` predicate);
-// `age` is the elapsed seconds since the last cluster-report
-// (omitted when no report has been received).
+// RPC response, mirroring rippled doPeers (Peers.cpp:59-80).
 func (o *Overlay) ClusterJSON() map[string]any {
 	out := map[string]any{}
 	if o == nil || o.cluster == nil {
@@ -1683,10 +1681,7 @@ func (o *Overlay) ClusterJSON() map[string]any {
 		selfKey = o.identity.PublicKey()
 	}
 
-	now := time.Now()
-	if o.cfg.Clock != nil {
-		now = o.cfg.Clock()
-	}
+	now := o.cfg.Clock()
 
 	o.cluster.ForEach(func(m cluster.Member) {
 		if len(selfKey) > 0 && bytes.Equal(selfKey, m.Identity) {
@@ -1699,6 +1694,9 @@ func (o *Overlay) ClusterJSON() map[string]any {
 		entry := map[string]any{}
 		if m.Name != "" {
 			entry["tag"] = m.Name
+		}
+		if m.LoadFee != clusterFeeRef && m.LoadFee != 0 {
+			entry["fee"] = float64(m.LoadFee) / float64(clusterFeeRef)
 		}
 		if !m.ReportTime.IsZero() {
 			age := int64(now.Sub(m.ReportTime).Seconds())
