@@ -3,8 +3,8 @@ package peermanagement
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/LeJamon/goXRPLd/internal/peermanagement/message"
+	"github.com/LeJamon/goXRPLd/internal/peermanagement/peertls"
 )
 
 // PeerState represents the peer connection state.
@@ -66,11 +67,8 @@ type Peer struct {
 	score   *PeerScore
 	traffic *TrafficCounter
 
-	// squelchMap tracks per-validator squelch expiry deadlines. Outgoing
-	// validation/proposal messages originating from a squelched validator
-	// must not be relayed to this peer until the deadline passes.
-	// Mirrors rippled's `Squelch` (see overlay/Squelch.h). The key is the
-	// validator's public key bytes as a string for use as a map key.
+	// squelchMap: per-validator squelch deadlines. Messages from a
+	// squelched validator are not relayed to this peer until expiry.
 	squelchMu  sync.RWMutex
 	squelchMap map[string]time.Time
 
@@ -78,20 +76,13 @@ type Peer struct {
 	closeCh   chan struct{}
 	closed    atomic.Bool
 
-	// badDataBalance tracks the weighted invalid-data "fee" this peer
-	// owes, modeled on rippled's Resource::Consumer balance. Each bad-
-	// data event adds a weight from BadDataWeight(reason); a background
-	// decay in the overlay halves the balance every
-	// badDataDecayInterval so a chatty-but-honest peer can recover while
-	// a persistent offender eventually evicts. Stored as int64 to
-	// accommodate potential negative values from decay overshoot.
+	// badDataBalance: weighted invalid-data fee, halved on a fixed
+	// cadence by the overlay so transient errors decay. int64 because
+	// decay can overshoot zero.
 	badDataBalance atomic.Int64
 
-	// closedLedger / previousLedger are also refreshed by inbound
-	// mtSTATUS_CHANGE (PeerImp.cpp:1812-1862). Rippled stores both as
-	// typed `closedLedgerHash_` / `previousLedgerHash_` on PeerImp.
-	// serverDomain mirrors rippled's `domain()` accessor reading from
-	// its `headers_["Server-Domain"]` map.
+	// closedLedger / previousLedger refresh on the inbound
+	// mtSTATUS_CHANGE handler too.
 	serverDomain      string
 	closedLedger      [32]byte
 	previousLedger    [32]byte
@@ -99,25 +90,19 @@ type Peer struct {
 	hasPreviousLedger bool
 }
 
-// PeerConfig holds peer connection configuration.
 type PeerConfig struct {
 	SendBufferSize int
-	TLSConfig      *tls.Config
+	PeerTLSConfig  *peertls.Config
 }
 
-// DefaultPeerConfig returns the default peer configuration.
+// DefaultPeerConfig returns defaults; callers must set PeerTLSConfig
+// before Connect.
 func DefaultPeerConfig() PeerConfig {
 	return PeerConfig{
 		SendBufferSize: DefaultSendBufferSize,
-		TLSConfig: &tls.Config{
-			InsecureSkipVerify: true,
-			MinVersion:         tls.VersionTLS12,
-			MaxVersion:         tls.VersionTLS12,
-		},
 	}
 }
 
-// NewPeer creates a new peer.
 func NewPeer(id PeerID, endpoint Endpoint, inbound bool, identity *Identity, events chan<- Event) *Peer {
 	return &Peer{
 		id:         id,
@@ -135,19 +120,17 @@ func NewPeer(id PeerID, endpoint Endpoint, inbound bool, identity *Identity, eve
 	}
 }
 
-// ID returns the peer's unique identifier.
 func (p *Peer) ID() PeerID {
 	return p.id
 }
 
-// Endpoint returns the peer's endpoint.
 func (p *Peer) Endpoint() Endpoint {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.endpoint
 }
 
-// RemoteIP returns the resolved remote IP from the actual TCP connection.
+// RemoteIP is the IP from the actual TCP connection (not the self-reported header).
 func (p *Peer) RemoteIP() string {
 	p.mu.RLock()
 	conn := p.conn
@@ -175,14 +158,12 @@ func (p *Peer) State() PeerState {
 	return p.state
 }
 
-// RemotePublicKey returns the peer's public key after handshake.
 func (p *Peer) RemotePublicKey() *PublicKeyToken {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.remotePubKey
 }
 
-// Capabilities returns the peer's negotiated capabilities.
 func (p *Peer) Capabilities() *PeerCapabilities {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -209,7 +190,7 @@ func (p *Peer) applyHandshakeExtras(x HandshakeExtras) {
 	}
 }
 
-// applyStatusChange mirrors rippled PeerImp.cpp:1812-1862.
+// applyStatusChange handles inbound mtSTATUS_CHANGE updates.
 func (p *Peer) applyStatusChange(closed, previous []byte, lostSync bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -236,28 +217,26 @@ func (p *Peer) applyStatusChange(closed, previous []byte, lostSync bool) {
 	}
 }
 
-// ServerDomain mirrors rippled's `PeerImp::domain()` (PeerImp.cpp:842).
 func (p *Peer) ServerDomain() string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.serverDomain
 }
 
-// ClosedLedger returns (hash, ok); ok is false when no valid hint.
+// ClosedLedger reports the peer's last closed-ledger hint, or ok=false.
 func (p *Peer) ClosedLedger() ([32]byte, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.closedLedger, p.hasClosedLedger
 }
 
-// PreviousLedger returns (hash, ok); ok is false when no valid hint.
+// PreviousLedger reports the peer's previous-ledger hint, or ok=false.
 func (p *Peer) PreviousLedger() ([32]byte, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.previousLedger, p.hasPreviousLedger
 }
 
-// Connect establishes connection to the peer (outbound).
 func (p *Peer) Connect(ctx context.Context, cfg PeerConfig) error {
 	p.mu.Lock()
 	if p.state != PeerStateDisconnected {
@@ -266,6 +245,11 @@ func (p *Peer) Connect(ctx context.Context, cfg PeerConfig) error {
 	}
 	p.state = PeerStateConnecting
 	p.mu.Unlock()
+
+	if cfg.PeerTLSConfig == nil {
+		p.setState(PeerStateDisconnected)
+		return errors.New("peer.Connect: PeerTLSConfig required")
+	}
 
 	addr := p.endpoint.String()
 
@@ -276,14 +260,14 @@ func (p *Peer) Connect(ctx context.Context, cfg PeerConfig) error {
 		return NewEndpointError(p.endpoint, "connect", err)
 	}
 
-	tlsConfig := cfg.TLSConfig
-	if tlsConfig == nil {
-		tlsConfig = DefaultPeerConfig().TLSConfig
-	}
-
-	tlsConn := tls.Client(tcpConn, tlsConfig)
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
+	tlsConn, err := peertls.Client(tcpConn, cfg.PeerTLSConfig)
+	if err != nil {
 		tcpConn.Close()
+		p.setState(PeerStateDisconnected)
+		return NewHandshakeError(p.endpoint, "tls_setup", err)
+	}
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		tlsConn.Close()
 		p.setState(PeerStateDisconnected)
 		return NewHandshakeError(p.endpoint, "tls", err)
 	}
@@ -302,17 +286,21 @@ func (p *Peer) Connect(ctx context.Context, cfg PeerConfig) error {
 	return nil
 }
 
-// AcceptConnection sets the connection for an inbound peer.
-func (p *Peer) AcceptConnection(conn net.Conn) {
+// AcceptConnection assigns conn to an inbound peer. Returns
+// ErrAlreadyConnected if a Connect or earlier Accept is in flight.
+func (p *Peer) AcceptConnection(conn net.Conn) error {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.state != PeerStateDisconnected {
+		return ErrAlreadyConnected
+	}
 	p.conn = conn
 	p.state = PeerStateConnecting
-	p.mu.Unlock()
+	return nil
 }
 
-// performHandshake performs the XRPL HTTP upgrade handshake.
-func (p *Peer) performHandshake(ctx context.Context, tlsConn *tls.Conn) error {
-	sharedValue, err := MakeSharedValue(tlsConn)
+func (p *Peer) performHandshake(ctx context.Context, tlsConn peertls.PeerConn) error {
+	sharedValue, err := tlsConn.SharedValue()
 	if err != nil {
 		return NewHandshakeError(p.endpoint, "shared_value", err)
 	}
@@ -330,17 +318,15 @@ func (p *Peer) performHandshake(ctx context.Context, tlsConn *tls.Conn) error {
 	if !ok {
 		deadline = time.Now().Add(DefaultHandshakeTimeout)
 	}
-	tlsConn.SetDeadline(deadline)
-	defer tlsConn.SetDeadline(time.Time{})
+	if err := tlsConn.SetDeadline(deadline); err != nil {
+		return NewHandshakeError(p.endpoint, "set_deadline", err)
+	}
+	defer func() { _ = tlsConn.SetDeadline(time.Time{}) }()
 
-	// Write the request as raw bytes (rippled's HTTP parser is strict
-	// and rejects the extra headers that Go's http.Request.Write adds).
 	if err := WriteRawHandshakeRequest(tlsConn, req); err != nil {
 		return NewHandshakeError(p.endpoint, "send_request", err)
 	}
 
-	// Use a buffered reader to parse the HTTP response precisely
-	// without consuming binary protocol data that follows it.
 	p.mu.Lock()
 	p.bufReader = bufio.NewReader(tlsConn)
 	p.mu.Unlock()
@@ -355,28 +341,35 @@ func (p *Peer) performHandshake(ctx context.Context, tlsConn *tls.Conn) error {
 		n, _ := resp.Body.Read(body)
 		resp.Body.Close()
 		return NewHandshakeError(p.endpoint, "verify",
-			fmt.Errorf("%w: got status %d, headers: %v, body: %s", ErrInvalidHandshake, resp.StatusCode, resp.Header, string(body[:n])))
+			fmt.Errorf("%w: got status %d, headers: %v, body: %s",
+				ErrInvalidHandshake, resp.StatusCode, resp.Header, string(body[:n])))
 	}
 	resp.Body.Close()
 
-	// R5.2 NOTE: outbound handshake verification is disabled for the
-	// same reason as the inbound side — MakeSharedValue produces
-	// asymmetric values on Go TLS 1.2 client vs server, so
-	// signature verification would reject every honest peer today.
-	// See the long comment in overlay.go:performInboundHandshake.
+	// Server-Domain check runs first (rippled verify order).
+	if _, err := ValidateServerDomain(resp.Header); err != nil {
+		return NewHandshakeError(p.endpoint, "verify_extras", err)
+	}
 
-	// Capture the peer's advertised protocol features from the handshake
-	// response headers so downstream code can query e.g. whether this peer
-	// supports ledger-replay before issuing a replay-delta request.
+	peerPubKey, err := VerifyPeerHandshake(
+		resp.Header,
+		sharedValue,
+		p.identity.EncodedPublicKey(),
+		p.handshakeCfg,
+	)
+	if err != nil {
+		return NewHandshakeError(p.endpoint, "verify", err)
+	}
+	p.mu.Lock()
+	p.remotePubKey = peerPubKey
+	p.mu.Unlock()
+
 	caps := NewPeerCapabilities()
 	caps.Features = ParseProtocolCtlFeatures(resp.Header)
 	p.mu.Lock()
 	p.capabilities = caps
 	p.mu.Unlock()
 
-	if _, err := ValidateServerDomain(resp.Header); err != nil {
-		return NewHandshakeError(p.endpoint, "verify_extras", err)
-	}
 	extras, err := ParseHandshakeExtras(
 		resp.Header,
 		p.handshakeCfg.PublicIP,
@@ -402,7 +395,7 @@ func tcpRemoteIP(conn net.Conn) net.IP {
 	return addr.IP
 }
 
-// Run starts the peer's read/write/ping loops.
+// Run starts read/write/ping loops; returns when any of them errors.
 func (p *Peer) Run(ctx context.Context) error {
 	p.mu.RLock()
 	if p.state != PeerStateConnected {
@@ -535,30 +528,13 @@ func (p *Peer) pingLoop(ctx context.Context) error {
 	}
 }
 
-// maxSquelchesPerPeer caps the per-peer squelch map to bound memory
-// under adversarial input. A peer cannot squelch more than this many
-// distinct validators at a time; once the cap is reached further
-// AddSquelch calls for NEW validators are refused (existing entries
-// may still be refreshed). Rippled doesn't document a fixed cap but
-// its per-peer Slot has the same intent; 128 comfortably covers a
-// UNL of realistic size while preventing unbounded growth.
+// maxSquelchesPerPeer bounds memory under adversarial input. Existing
+// entries can still be refreshed once the cap is hit.
 const maxSquelchesPerPeer = 128
 
-// AddSquelch records a squelch instruction received from this peer for the
-// given validator. Mirrors rippled's `Squelch::addSquelch`: returns false
-// (and removes any prior squelch) when duration is outside the allowed
-// [MinUnsquelchExpire, MaxUnsquelchExpirePeers] range.
-//
-// An out-of-range duration is treated as a bad-data event attributed to
-// the peer — rippled's equivalent path charges feeInvalidData. We keep
-// the increment here (the only place the duration is checked) so callers
-// in the overlay message layer don't need a separate "did we reject it"
-// branch and so the counter can never miss a rejection.
-//
-// Returns false when the per-peer squelch map is full AND the validator
-// is not already present — prevents a peer from spamming squelches for
-// random validator keys to grow our memory footprint. An existing entry
-// is still refreshable regardless of cap.
+// AddSquelch records a squelch from this peer. Returns false (and
+// removes any prior entry) on out-of-range duration or when the cap is
+// hit by a NEW validator key. Both rejections charge bad-data fee.
 func (p *Peer) AddSquelch(validator []byte, duration time.Duration) bool {
 	if duration < MinUnsquelchExpire || duration > MaxUnsquelchExpirePeers {
 		p.RemoveSquelch(validator)
@@ -574,22 +550,14 @@ func (p *Peer) AddSquelch(validator []byte, duration time.Duration) bool {
 	}
 	p.squelchMu.Unlock()
 	if full {
-		// Cap hit with a fresh key — refuse the insert and charge
-		// the peer for overflowing our buffer. IncBadData only
-		// touches an atomic counter so it's safe outside squelchMu.
 		p.IncBadData("squelch-map-full")
 		return false
 	}
 	return true
 }
 
-// IncBadData records an invalid-data event attributed to this peer and
-// returns the new cumulative balance. `reason` is a short stable label
-// used both for diagnostic logging AND to look up a per-reason weight
-// via BadDataWeight — mirrors rippled's Resource::Consumer which
-// charges different fee amounts (feeInvalidData=400,
-// feeMalformedRequest=200, feeRequestNoReply=10) depending on the
-// severity of the offense.
+// IncBadData adds BadDataWeight(reason) to the running balance and
+// returns the new total (clamped to non-negative).
 func (p *Peer) IncBadData(reason string) uint32 {
 	w := BadDataWeight(reason)
 	n := p.badDataBalance.Add(int64(w))
@@ -604,10 +572,7 @@ func (p *Peer) IncBadData(reason string) uint32 {
 	return uint32(n)
 }
 
-// BadDataCount returns the cumulative invalid-data balance for this
-// peer (clamped to non-negative). Thread-safe. The return type stays
-// uint32 for compatibility with callers that treat this as a count;
-// the underlying storage is int64 to handle decay overshoot.
+// BadDataCount returns the running balance, clamped to non-negative.
 func (p *Peer) BadDataCount() uint32 {
 	n := p.badDataBalance.Load()
 	if n < 0 {
@@ -616,12 +581,8 @@ func (p *Peer) BadDataCount() uint32 {
 	return uint32(n)
 }
 
-// DecayBadData halves the bad-data balance. Called by the overlay's
-// maintenance loop on a fixed cadence so transient protocol hiccups
-// (a flaky peer throwing a few malformed compression frames) don't
-// accumulate to eviction over a long session. Rippled's Resource::
-// Fees.cpp:26-43 uses a similar exponential decay. The floor at 0
-// prevents the balance from going meaningfully negative.
+// DecayBadData halves the balance. Called periodically by the overlay
+// so transient errors don't accumulate to eviction.
 func (p *Peer) DecayBadData() {
 	for {
 		cur := p.badDataBalance.Load()
@@ -635,19 +596,14 @@ func (p *Peer) DecayBadData() {
 	}
 }
 
-// RemoveSquelch deletes any squelch entry for the given validator.
-// Mirrors rippled's `Squelch::removeSquelch`.
 func (p *Peer) RemoveSquelch(validator []byte) {
 	p.squelchMu.Lock()
 	delete(p.squelchMap, string(validator))
 	p.squelchMu.Unlock()
 }
 
-// ExpireSquelch reports whether a message originating from `validator`
-// may be relayed to this peer. Returns true when there is no squelch or
-// the existing squelch has expired (and clears the expired entry); false
-// when an active squelch is in effect. Mirrors rippled's
-// `Squelch::expireSquelch`.
+// ExpireSquelch reports whether a message from validator may be relayed
+// to this peer. Clears the entry if an existing squelch has expired.
 func (p *Peer) ExpireSquelch(validator []byte) bool {
 	key := string(validator)
 
@@ -662,7 +618,6 @@ func (p *Peer) ExpireSquelch(validator []byte) bool {
 		return false
 	}
 
-	// Squelch expired — remove and allow.
 	p.squelchMu.Lock()
 	if d, stillThere := p.squelchMap[key]; stillThere && !d.After(time.Now()) {
 		delete(p.squelchMap, key)
@@ -671,7 +626,6 @@ func (p *Peer) ExpireSquelch(validator []byte) bool {
 	return true
 }
 
-// Send queues data to be sent to the peer.
 func (p *Peer) Send(data []byte) error {
 	if p.closed.Load() {
 		return ErrConnectionClosed
@@ -685,7 +639,6 @@ func (p *Peer) Send(data []byte) error {
 	}
 }
 
-// Close closes the peer connection.
 func (p *Peer) Close() error {
 	if p.closed.Swap(true) {
 		return nil
@@ -722,7 +675,8 @@ func (p *Peer) setState(state PeerState) {
 	p.mu.Unlock()
 }
 
-// PeerInfo provides read-only information about a peer.
+// PeerInfo is a read-only snapshot of peer state. ClosedLedger is
+// upper-case hex (rippled convention) or "" when absent.
 type PeerInfo struct {
 	ID          PeerID
 	Endpoint    Endpoint
@@ -733,14 +687,10 @@ type PeerInfo struct {
 	MessagesIn  uint64
 	MessagesOut uint64
 
-	// Handshake-derived state mirroring what rippled stores typed on
-	// PeerImp. ClosedLedger is upper-case hex (rippled `peers`
-	// convention via `to_string(closedLedgerHash)`), "" when absent.
 	ServerDomain string
 	ClosedLedger string
 }
 
-// Info returns read-only information about the peer.
 func (p *Peer) Info() PeerInfo {
 	p.mu.RLock()
 	defer p.mu.RUnlock()

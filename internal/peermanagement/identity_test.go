@@ -407,3 +407,33 @@ func TestChecksumValidation(t *testing.T) {
 	_, err := ParsePublicKeyToken(corrupted)
 	assert.Error(t, err)
 }
+
+// TestTLSCertificatePEM_Cached pins the rippled-style `static
+// defaultCert` behavior: the anonymous TLS keypair must be generated
+// once per Identity and reused. RSA-2048 keygen is 50–200 ms; the
+// outbound peer-dial path called this on every Connect before the
+// caching change.
+func TestTLSCertificatePEM_Cached(t *testing.T) {
+	id, err := NewIdentity()
+	require.NoError(t, err)
+
+	cert1, key1, err := id.TLSCertificatePEM()
+	require.NoError(t, err)
+	require.NotEmpty(t, cert1)
+	require.NotEmpty(t, key1)
+
+	cert2, key2, err := id.TLSCertificatePEM()
+	require.NoError(t, err)
+	assert.True(t, bytes.Equal(cert1, cert2),
+		"second call must return the same cert PEM (cached)")
+	assert.True(t, bytes.Equal(key1, key2),
+		"second call must return the same key PEM (cached)")
+
+	// Different identities must produce different certs.
+	id2, err := NewIdentity()
+	require.NoError(t, err)
+	cert3, _, err := id2.TLSCertificatePEM()
+	require.NoError(t, err)
+	assert.False(t, bytes.Equal(cert1, cert3),
+		"distinct identities must produce distinct certificates")
+}

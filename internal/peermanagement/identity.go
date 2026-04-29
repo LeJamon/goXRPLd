@@ -1,9 +1,8 @@
 package peermanagement
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/tls"
@@ -16,6 +15,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -24,34 +24,31 @@ import (
 	addresscodec "github.com/LeJamon/goXRPLd/codec/addresscodec"
 )
 
-// Identity-related errors.
 var (
 	ErrInvalidPrivateKey = errors.New("invalid private key")
 	ErrSignatureFailed   = errors.New("failed to sign message")
 )
 
-// Key encoding constants.
 const (
-	// NodePublicKeyPrefix is the prefix byte for XRPL node public keys (results in 'n' prefix).
-	NodePublicKeyPrefix = 0x1C // 28 decimal
-
-	// AccountPublicKeyPrefix is for account public keys (results in 'a' prefix).
-	AccountPublicKeyPrefix = 0x23 // 35 decimal
-
-	// CompressedPubKeyLen is the length of a compressed secp256k1 public key.
-	CompressedPubKeyLen = 33
-
-	// ChecksumLen is the length of the Base58Check checksum.
-	ChecksumLen = 4
+	NodePublicKeyPrefix    = 0x1C // base58 'n' prefix
+	AccountPublicKeyPrefix = 0x23 // base58 'a' prefix
+	CompressedPubKeyLen    = 33
+	ChecksumLen            = 4
 )
 
-// Identity represents a node's cryptographic identity for peer authentication.
+// Identity is the node's cryptographic identity used for peer
+// authentication. The TLS keypair is generated lazily and cached —
+// RSA-2048 keygen is 50–200 ms and we'd otherwise pay it on every dial.
 type Identity struct {
 	privateKey *btcec.PrivateKey
 	publicKey  *btcec.PublicKey
+
+	tlsOnce    sync.Once
+	tlsCertPEM []byte
+	tlsKeyPEM  []byte
+	tlsErr     error
 }
 
-// NewIdentity creates a new random identity.
 func NewIdentity() (*Identity, error) {
 	privateKey, err := btcec.NewPrivateKey()
 	if err != nil {
@@ -64,13 +61,11 @@ func NewIdentity() (*Identity, error) {
 	}, nil
 }
 
-// NewIdentityFromSeed creates an identity from a 16-byte seed.
 func NewIdentityFromSeed(seed []byte) (*Identity, error) {
 	if len(seed) < 16 {
 		return nil, errors.New("seed must be at least 16 bytes")
 	}
 
-	// Derive private key from seed using SHA-512
 	h := sha512.New()
 	h.Write(seed)
 	hash := h.Sum(nil)
@@ -83,7 +78,6 @@ func NewIdentityFromSeed(seed []byte) (*Identity, error) {
 	}, nil
 }
 
-// NewIdentityFromPrivateKey creates an identity from a hex-encoded private key.
 func NewIdentityFromPrivateKey(privKeyHex string) (*Identity, error) {
 	if len(privKeyHex) == 0 {
 		return nil, ErrInvalidPrivateKey
@@ -114,7 +108,6 @@ func NewIdentityFromPrivateKey(privKeyHex string) (*Identity, error) {
 	}, nil
 }
 
-// GenerateSeed generates a random 16-byte seed for identity creation.
 func GenerateSeed() ([]byte, error) {
 	seed := make([]byte, 16)
 	_, err := rand.Read(seed)
@@ -124,14 +117,12 @@ func GenerateSeed() ([]byte, error) {
 	return seed, nil
 }
 
-// Sign signs a message with the identity's private key.
-// The signature is in DER format suitable for XRPL peer authentication.
+// Sign hashes message with sha512Half then signs (DER ECDSA).
 func (i *Identity) Sign(message []byte) ([]byte, error) {
 	if i.privateKey == nil {
 		return nil, ErrInvalidPrivateKey
 	}
 
-	// Hash the message with SHA-512 and take first 32 bytes (SHA-512 Half)
 	h := sha512.New()
 	h.Write(message)
 	hash := h.Sum(nil)[:32]
@@ -144,8 +135,7 @@ func (i *Identity) Sign(message []byte) ([]byte, error) {
 	return sig.Serialize(), nil
 }
 
-// SignDigest signs a pre-hashed 32-byte digest directly (no additional hashing).
-// Used for session signatures where the shared value is already a SHA-512 Half.
+// SignDigest signs a pre-hashed 32-byte digest (used for session sigs).
 func (i *Identity) SignDigest(digest []byte) ([]byte, error) {
 	if i.privateKey == nil {
 		return nil, ErrInvalidPrivateKey
@@ -164,13 +154,11 @@ func (i *Identity) PublicKey() []byte {
 	return i.publicKey.SerializeCompressed()
 }
 
-// PublicKeyHex returns the public key as a hex string.
 func (i *Identity) PublicKeyHex() string {
 	return hex.EncodeToString(i.publicKey.SerializeCompressed())
 }
 
-// EncodedPublicKey returns the base58-encoded public key with the node public prefix.
-// This is the format used in XRPL peer handshakes (e.g., "n9K1Z...").
+// EncodedPublicKey returns the base58 'n...' form used in XRPL handshakes.
 func (i *Identity) EncodedPublicKey() string {
 	pubKeyBytes := i.publicKey.SerializeCompressed()
 
@@ -184,23 +172,20 @@ func (i *Identity) EncodedPublicKey() string {
 	return addresscodec.EncodeBase58(full)
 }
 
-// PrivateKeyHex returns the private key as a hex string (with 00 prefix).
+// PrivateKeyHex returns the private key as hex with the "00" prefix.
 func (i *Identity) PrivateKeyHex() string {
 	return "00" + hex.EncodeToString(i.privateKey.Serialize())
 }
 
-// BtcecPublicKey returns the underlying btcec public key.
 func (i *Identity) BtcecPublicKey() *btcec.PublicKey {
 	return i.publicKey
 }
 
-// GenerateIdentity creates a new random identity.
-// This is an alias for NewIdentity for clarity.
+// GenerateIdentity is an alias for NewIdentity.
 func GenerateIdentity() (*Identity, error) {
 	return NewIdentity()
 }
 
-// LoadIdentity loads an identity from disk.
 func LoadIdentity(dataDir string) (*Identity, error) {
 	keyPath := filepath.Join(dataDir, "node_identity.key")
 
@@ -212,7 +197,6 @@ func LoadIdentity(dataDir string) (*Identity, error) {
 	return NewIdentityFromPrivateKey(string(data))
 }
 
-// Save saves the identity to disk.
 func (i *Identity) Save(dataDir string) error {
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		return fmt.Errorf("failed to create data directory: %w", err)
@@ -222,51 +206,64 @@ func (i *Identity) Save(dataDir string) error {
 	return os.WriteFile(keyPath, []byte(i.PrivateKeyHex()), 0600)
 }
 
-// TLSCertificate generates a self-signed TLS certificate for this identity.
-// Uses a fresh P256 key for TLS (separate from the secp256k1 node identity)
-// since Go's TLS stack doesn't support secp256k1 certificates.
-func (i *Identity) TLSCertificate() tls.Certificate {
-	// Generate a fresh P256 key for TLS (not derived from the node identity).
-	tlsKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+// TLSCertificatePEM returns a self-signed RSA-2048 TLS keypair (cached
+// per Identity). The cert is unrelated to the secp256k1 node identity;
+// peer trust comes from the Public-Key handshake header.
+func (i *Identity) TLSCertificatePEM() (certPEM, keyPEM []byte, err error) {
+	i.tlsOnce.Do(i.generateTLSCert)
+	if i.tlsErr != nil {
+		return nil, nil, i.tlsErr
+	}
+	return i.tlsCertPEM, i.tlsKeyPEM, nil
+}
+
+func (i *Identity) generateTLSCert() {
+	tlsKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		return tls.Certificate{}
+		i.tlsErr = fmt.Errorf("identity: generate TLS key: %w", err)
+		return
 	}
 
+	// Back-date NotBefore so the cert doesn't leak the node's startup time.
 	now := time.Now()
+	notBefore := now.Add(-25 * time.Hour)
 	template := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject: pkix.Name{
-			CommonName: i.EncodedPublicKey(),
-		},
-		NotBefore:             now,
-		NotAfter:              now.Add(365 * 24 * time.Hour),
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: i.EncodedPublicKey()},
+		NotBefore:             notBefore,
+		NotAfter:              now.Add(2 * 365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
 	}
 
 	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &tlsKey.PublicKey, tlsKey)
 	if err != nil {
-		return tls.Certificate{}
+		i.tlsErr = fmt.Errorf("identity: create TLS certificate: %w", err)
+		return
 	}
+	i.tlsCertPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
 
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	keyDER, err := x509.MarshalECPrivateKey(tlsKey)
+	keyDER := x509.MarshalPKCS1PrivateKey(tlsKey)
+	i.tlsKeyPEM = pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: keyDER})
+}
+
+// TLSCertificate is the crypto/tls form of TLSCertificatePEM, used by
+// stdlib call sites (RPC HTTPS, WebSocket).
+func (i *Identity) TLSCertificate() tls.Certificate {
+	certPEM, keyPEM, err := i.TLSCertificatePEM()
 	if err != nil {
 		return tls.Certificate{}
 	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
-
 	cert, _ := tls.X509KeyPair(certPEM, keyPEM)
 	return cert
 }
 
-// PublicKeyToken represents an XRPL node public key (from peer handshake).
+// PublicKeyToken is a peer's secp256k1 node public key.
 type PublicKeyToken struct {
 	key *btcec.PublicKey
 }
 
-// NewPublicKeyToken creates a PublicKeyToken from raw compressed bytes.
 func NewPublicKeyToken(data []byte) (*PublicKeyToken, error) {
 	if len(data) != CompressedPubKeyLen {
 		return nil, ErrInvalidPublicKey
@@ -280,12 +277,11 @@ func NewPublicKeyToken(data []byte) (*PublicKeyToken, error) {
 	return &PublicKeyToken{key: key}, nil
 }
 
-// NewPublicKeyTokenFromBtcec creates a PublicKeyToken from a btcec.PublicKey.
 func NewPublicKeyTokenFromBtcec(key *btcec.PublicKey) *PublicKeyToken {
 	return &PublicKeyToken{key: key}
 }
 
-// ParsePublicKeyToken decodes a Base58Check encoded node public key (e.g., "n9K1Z...").
+// ParsePublicKeyToken decodes a base58 'n...' node public key.
 func ParsePublicKeyToken(encoded string) (*PublicKeyToken, error) {
 	data := addresscodec.DecodeBase58(encoded)
 	if len(data) == 0 {
@@ -311,11 +307,8 @@ func ParsePublicKeyToken(encoded string) (*PublicKeyToken, error) {
 
 	keyBytes := payload[1:]
 
-	// Reject ed25519-tagged keys (0xED prefix). Rippled's handshake
-	// explicitly rejects non-secp256k1 node public keys at
-	// Handshake.cpp:294-295; we mirror that with an explicit check so
-	// the failure mode is a clear "unsupported key type" rather than a
-	// generic btcec parse error buried in the handshake log.
+	// Reject ed25519 keys explicitly so the error is clear instead of
+	// an opaque btcec parse failure.
 	if len(keyBytes) > 0 && keyBytes[0] == 0xED {
 		return nil, errors.New("unsupported node public key type: ed25519 (rippled requires secp256k1)")
 	}
@@ -323,12 +316,10 @@ func ParsePublicKeyToken(encoded string) (*PublicKeyToken, error) {
 	return NewPublicKeyToken(keyBytes)
 }
 
-// Bytes returns the raw compressed public key bytes.
 func (p *PublicKeyToken) Bytes() []byte {
 	return p.key.SerializeCompressed()
 }
 
-// Encode returns the Base58Check encoded public key with node prefix.
 func (p *PublicKeyToken) Encode() string {
 	keyBytes := p.key.SerializeCompressed()
 
@@ -342,12 +333,10 @@ func (p *PublicKeyToken) Encode() string {
 	return addresscodec.EncodeBase58(full)
 }
 
-// BtcecKey returns the underlying btcec public key.
 func (p *PublicKeyToken) BtcecKey() *btcec.PublicKey {
 	return p.key
 }
 
-// Equal returns true if two public keys are equal.
 func (p *PublicKeyToken) Equal(other *PublicKeyToken) bool {
 	if p == nil || other == nil {
 		return p == other
@@ -355,7 +344,6 @@ func (p *PublicKeyToken) Equal(other *PublicKeyToken) bool {
 	return p.key.IsEqual(other.key)
 }
 
-// doubleSHA256Identity computes SHA256(SHA256(data)).
 func doubleSHA256Identity(data []byte) []byte {
 	h := sha256.New()
 	h.Write(data)
@@ -366,7 +354,6 @@ func doubleSHA256Identity(data []byte) []byte {
 	return h.Sum(nil)
 }
 
-// equalBytesIdentity returns true if two byte slices are equal.
 func equalBytesIdentity(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false

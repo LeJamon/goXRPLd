@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/tls"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/LeJamon/goXRPLd/internal/peermanagement/message"
+	"github.com/LeJamon/goXRPLd/internal/peermanagement/peertls"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -519,15 +519,16 @@ func (o *Overlay) startListener() error {
 		return err
 	}
 
-	tlsConfig := &tls.Config{
-		Certificates:       []tls.Certificate{o.identity.TLSCertificate()},
-		InsecureSkipVerify: true,
-		MinVersion:         tls.VersionTLS12,
-		MaxVersion:         tls.VersionTLS12,
-		ClientAuth:         tls.RequestClientCert,
+	certPEM, keyPEM, err := o.identity.TLSCertificatePEM()
+	if err != nil {
+		tcpListener.Close()
+		return fmt.Errorf("overlay: build TLS cert: %w", err)
 	}
 
-	o.listener = tls.NewListener(tcpListener, tlsConfig)
+	o.listener = peertls.NewListener(tcpListener, &peertls.Config{
+		CertPEM: certPEM,
+		KeyPEM:  keyPEM,
+	})
 	return nil
 }
 
@@ -552,7 +553,6 @@ func (o *Overlay) acceptLoop(ctx context.Context) error {
 	}
 }
 
-// handleInbound handles an incoming peer connection.
 func (o *Overlay) handleInbound(ctx context.Context, conn net.Conn) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -561,7 +561,6 @@ func (o *Overlay) handleInbound(ctx context.Context, conn net.Conn) {
 		}
 	}()
 
-	// Check if we can accept more inbound connections
 	if !o.canAcceptInbound() {
 		slog.Info("Inbound rejected: no slots", "t", "Overlay", "remote", conn.RemoteAddr())
 		conn.Close()
@@ -573,16 +572,20 @@ func (o *Overlay) handleInbound(ctx context.Context, conn net.Conn) {
 
 	peerID := PeerID(o.nextID.Add(1))
 	peer := NewPeer(peerID, endpoint, true, o.identity, o.events)
-	peer.AcceptConnection(conn)
-
-	tlsConn, ok := conn.(*tls.Conn)
-	if !ok {
-		slog.Error("Inbound connection is not TLS", "t", "Overlay", "remote", remoteAddr)
+	if err := peer.AcceptConnection(conn); err != nil {
+		slog.Warn("Inbound rejected: peer not in disconnected state",
+			"t", "Overlay", "remote", remoteAddr, "err", err)
 		conn.Close()
 		return
 	}
 
-	// Perform handshake
+	tlsConn, ok := conn.(peertls.PeerConn)
+	if !ok {
+		slog.Error("Inbound connection is not peertls", "t", "Overlay", "remote", remoteAddr)
+		conn.Close()
+		return
+	}
+
 	if err := o.performInboundHandshake(ctx, peer, tlsConn); err != nil {
 		slog.Info("Inbound handshake failed", "t", "Overlay", "remote", remoteAddr, "err", err)
 		conn.Close()
@@ -596,7 +599,6 @@ func (o *Overlay) handleInbound(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	// Reject duplicate: if we already have a connection to this IP.
 	if o.isConnectedTo(endpoint) {
 		conn.Close()
 		return
@@ -607,7 +609,6 @@ func (o *Overlay) handleInbound(ctx context.Context, conn net.Conn) {
 
 	o.addPeer(peer)
 
-	// Run peer read/write loops
 	go func() {
 		err := peer.Run(ctx)
 		if err != nil {
@@ -617,23 +618,20 @@ func (o *Overlay) handleInbound(ctx context.Context, conn net.Conn) {
 	}()
 }
 
-// performInboundHandshake handles the inbound handshake.
-func (o *Overlay) performInboundHandshake(ctx context.Context, peer *Peer, tlsConn *tls.Conn) error {
-	// The TLS handshake is lazy after Accept(); we must complete it
-	// before accessing the finished messages via reflection.
+func (o *Overlay) performInboundHandshake(ctx context.Context, peer *Peer, tlsConn peertls.PeerConn) error {
+	// Accept() does not drive the handshake; complete it before reading
+	// the Finished bytes for SharedValue.
 	handshakeCtx, cancel := context.WithTimeout(ctx, o.cfg.HandshakeTimeout)
 	defer cancel()
 	if err := tlsConn.HandshakeContext(handshakeCtx); err != nil {
 		return NewHandshakeError(peer.Endpoint(), "tls", err)
 	}
 
-	sharedValue, err := MakeSharedValue(tlsConn)
+	sharedValue, err := tlsConn.SharedValue()
 	if err != nil {
 		return NewHandshakeError(peer.Endpoint(), "shared_value", err)
 	}
 
-	// Use a buffered reader to parse the HTTP request precisely
-	// without consuming binary protocol data that follows.
 	deadline := time.Now().Add(o.cfg.HandshakeTimeout)
 	tlsConn.SetDeadline(deadline)
 	defer tlsConn.SetDeadline(time.Time{})
@@ -652,35 +650,27 @@ func (o *Overlay) performInboundHandshake(ctx context.Context, peer *Peer, tlsCo
 		return NewHandshakeError(peer.Endpoint(), "verify_extras", err)
 	}
 
-	// R5.2 PARTIAL + R6.1 + R6.2: verify everything the handshake
-	// can enforce without the TLS shared-value signature (which is
-	// blocked by Go's c.serverFinished asymmetry — see
-	// handshake.go:MakeSharedValue KNOWN ISSUE). Covers:
-	//   - Public-Key presence + parseability + self-connection
-	//   - Network-ID exact match (incl. mainnet rejecting testnet)
-	//   - Network-Time ±20s skew tolerance
-	// Full signature verification tracked in
-	// tasks/pr264-round5-fixes.md.
-	peerPubKey, verifyErr := VerifyHandshakeHeadersNoSig(
+	// Build the handshake config once and share it with both
+	// VerifyPeerHandshake and BuildHandshakeResponse so the inbound
+	// and outbound paths cannot diverge.
+	hsCfg := o.handshakeConfigFor()
+
+	// Full session-signature verification — the whole point of #269.
+	peerPubKey, verifyErr := VerifyPeerHandshake(
 		req.Header,
+		sharedValue,
 		o.identity.EncodedPublicKey(),
-		o.cfg.NetworkID,
+		hsCfg,
 	)
 	if verifyErr != nil {
-		// Charge malformed-field cases (ParseUint failures on
-		// Network-ID/Network-Time, unparseable Public-Key).
-		// Self-connection and network-mismatch aren't the peer's
-		// fault per se, so don't charge those.
 		if !errors.Is(verifyErr, ErrSelfConnection) && !errors.Is(verifyErr, ErrNetworkMismatch) {
-			o.IncPeerBadData(peer.ID(), "handshake-malformed-networkid")
+			o.IncPeerBadData(peer.ID(), "handshake-verify")
 		}
 		return NewHandshakeError(peer.Endpoint(), "verify", verifyErr)
 	}
 	peer.mu.Lock()
 	peer.remotePubKey = peerPubKey
 	peer.mu.Unlock()
-
-	hsCfg := o.handshakeConfigFor()
 
 	peerRemote := tcpRemoteIP(tlsConn)
 	extras, extraErr := ParseHandshakeExtras(
@@ -694,13 +684,9 @@ func (o *Overlay) performInboundHandshake(ctx context.Context, peer *Peer, tlsCo
 	}
 	peer.applyHandshakeExtras(extras)
 
-	// Capture the peer's advertised protocol features from the handshake
-	// request headers so downstream code can query e.g. whether this peer
-	// supports ledger-replay before issuing a replay-delta request.
 	caps := NewPeerCapabilities()
 	caps.Features = ParseProtocolCtlFeatures(req.Header)
 
-	// Store the buffered reader + capabilities on the peer for the readLoop.
 	peer.mu.Lock()
 	peer.bufReader = bufReader
 	peer.capabilities = caps
@@ -1346,13 +1332,15 @@ func (o *Overlay) Connect(addr string) error {
 	ctx, cancel := context.WithTimeout(o.ctx, o.cfg.ConnectTimeout)
 	defer cancel()
 
+	certPEM, keyPEM, err := o.identity.TLSCertificatePEM()
+	if err != nil {
+		return fmt.Errorf("overlay: build TLS cert: %w", err)
+	}
 	cfg := PeerConfig{
 		SendBufferSize: DefaultSendBufferSize,
-		TLSConfig: &tls.Config{
-			Certificates:       []tls.Certificate{o.identity.TLSCertificate()},
-			InsecureSkipVerify: true,
-			MinVersion:         tls.VersionTLS12,
-			MaxVersion:         tls.VersionTLS12,
+		PeerTLSConfig: &peertls.Config{
+			CertPEM: certPEM,
+			KeyPEM:  keyPEM,
 		},
 	}
 
@@ -1376,7 +1364,6 @@ func (o *Overlay) Connect(addr string) error {
 
 	o.addPeer(peer)
 
-	// Run peer read/write loops
 	go func() {
 		err := peer.Run(o.ctx)
 		if err != nil {

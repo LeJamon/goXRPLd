@@ -7,7 +7,10 @@ import (
 )
 
 // PeersMethod returns peers from ctx.PeerSource (rippled Peers.cpp).
-// Empty list when no source is wired (standalone mode).
+// Empty list when no source is wired (standalone mode). The "cluster"
+// field mirrors rippled's doPeers (Peers.cpp:59) which always emits an
+// object — empty when no cluster nodes are configured, which is the
+// standard case for non-validator nodes.
 type PeersMethod struct{ AdminHandler }
 
 func (m *PeersMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (interface{}, *types.RpcError) {
@@ -18,7 +21,10 @@ func (m *PeersMethod) Handle(ctx *types.RpcContext, params json.RawMessage) (int
 	if peers == nil {
 		peers = []map[string]any{}
 	}
-	return map[string]any{"peers": peers}, nil
+	return map[string]any{
+		"peers":   peers,
+		"cluster": map[string]any{},
+	}, nil
 }
 
 // PeerReservationsAddMethod handles the peer_reservations_add RPC method.

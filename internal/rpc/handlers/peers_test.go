@@ -27,6 +27,8 @@ func TestPeersMethod_NilSourceReturnsEmptyList(t *testing.T) {
 	resp, ok := result.(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, []map[string]any{}, resp["peers"])
+	assert.Equal(t, map[string]any{}, resp["cluster"],
+		"rippled doPeers (Peers.cpp:59) always emits a cluster object")
 }
 
 func TestPeersMethod_PassesThroughSource(t *testing.T) {
