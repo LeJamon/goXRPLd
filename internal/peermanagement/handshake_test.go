@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/LeJamon/goXRPLd/codec/addresscodec"
 	"github.com/stretchr/testify/assert"
@@ -175,37 +174,6 @@ func TestVerifyPeerHandshake_MissingSignature(t *testing.T) {
 	_, err := VerifyPeerHandshake(headers, make([]byte, 32), "nLocalKey", DefaultHandshakeConfig())
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "Session-Signature")
-}
-
-// strconvUnixXRPL formats a time as XRPL epoch seconds (like rippled's
-// Network-Time header builder). Test helper.
-func strconvUnixXRPL(t time.Time) string {
-	xrplSec := t.Unix() - XRPLEpochOffset
-	return fmtInt(xrplSec)
-}
-
-func fmtInt(n int64) string {
-	// Simple base-10 stringification without importing another package.
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	buf := make([]byte, 0, 20)
-	for n > 0 {
-		buf = append(buf, byte('0'+n%10))
-		n /= 10
-	}
-	if neg {
-		buf = append(buf, '-')
-	}
-	// reverse
-	for i, j := 0, len(buf)-1; i < j; i, j = i+1, j-1 {
-		buf[i], buf[j] = buf[j], buf[i]
-	}
-	return string(buf)
 }
 
 // TestParsePublicKeyToken_RejectsEd25519Prefix pins R5.13: the 0xED
