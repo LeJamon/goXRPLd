@@ -11,6 +11,7 @@ import (
 
 	"github.com/LeJamon/go-xrpl/internal/consensus"
 	"github.com/LeJamon/go-xrpl/internal/ledger/header"
+	"github.com/LeJamon/go-xrpl/internal/ledger/inbound"
 	"github.com/LeJamon/go-xrpl/internal/peermanagement/message"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -188,7 +189,7 @@ func TestFrozenPivotRecoveryFailureReleasesPivotGeneration(t *testing.T) {
 	released := 0
 	r.standardReplay.baseRelease = func() { released++ }
 
-	require.True(t, r.failFrozenPivotRecovery(pivotHash))
+	r.discardFailedInboundAcquisition(r.fetchTracker.Find(pivotHash))
 	assert.False(t, r.standardReplay.active)
 	assert.Greater(t, r.standardReplay.generation, generation)
 	assert.Nil(t, r.fetchTracker.Find(pivotHash))
@@ -658,23 +659,17 @@ func TestFrozenPivotRecoveryKeepsAdvancingReplayAtMovingTipRate(t *testing.T) {
 
 func TestFrozenPivotRecoveryDoesNotTimeoutPivotDownload(t *testing.T) {
 	r, _, _, _ := makeRouter(t)
-	started := time.Unix(300, 0)
-	r.standardReplay = standardReplayPipeline{
-		generation:       8,
-		active:           true,
-		pivotReady:       false,
-		pivotSeq:         100,
-		anchorSeq:        100,
-		targetSeq:        300,
-		targetHash:       [32]byte{0xf1},
-		entries:          make(map[uint32]*standardReplayEntry),
-		progressSampleAt: started,
-		sampleAnchorSeq:  100,
-	}
+	pivotHash := [32]byte{0xf1}
+	trackCatchupPeer(r, 7, 100, pivotHash)
+	require.True(t, r.beginFrozenPivotRecovery(100, pivotHash, 7))
+	generation := r.standardReplay.generation
+	pivot := r.fetchTracker.Find(pivotHash)
+	require.NotNil(t, pivot)
 
-	assert.False(t, r.rebootstrapFrozenPivotIfStalled(started.Add(24*time.Hour)))
+	assert.False(t, r.rebootstrapFrozenPivotIfStalled(time.Now().Add(24*time.Hour)))
 	assert.True(t, r.standardReplay.active)
-	assert.Equal(t, uint64(8), r.standardReplay.generation)
+	assert.Equal(t, generation, r.standardReplay.generation)
+	assert.Same(t, pivot, r.fetchTracker.Find(pivotHash))
 }
 
 func TestFrozenPivotBootstrapFailureRearmsTrustedTarget(t *testing.T) {
@@ -775,4 +770,18 @@ func TestFrozenPivotHandoffKeepsSessionWhenTargetAdvances(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("pivot did not leave the handoff barrier")
 	}
+}
+
+func (r *Router) completeFrozenPivotAcquisition(h *header.LedgerHeader, initialCandidate bool) bool {
+	if h == nil {
+		return false
+	}
+	r.acquisitionMu.Lock()
+	acquisition := r.fetchTracker.Find(h.Hash)
+	if acquisition == nil {
+		acquisition = inbound.New(h.Hash, h.LedgerIndex, 0, r.logger)
+	}
+	handoff, claimed := r.claimStandardReplayPivotHandoffLocked(acquisition)
+	r.acquisitionMu.Unlock()
+	return claimed && r.completeFrozenPivotAcquisitionOwned(h, initialCandidate, handoff)
 }
