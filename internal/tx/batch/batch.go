@@ -507,7 +507,7 @@ func (b *Batch) Flatten() (map[string]any, error) {
 	m["RawTransactions"] = rawTxns
 
 	// Build BatchSigners if present
-	if len(b.BatchSigners) > 0 {
+	if b.BatchSigners != nil || b.GetCommon().HasField("BatchSigners") {
 		signers := make([]map[string]any, len(b.BatchSigners))
 		for i, s := range b.BatchSigners {
 			signerMap := map[string]any{

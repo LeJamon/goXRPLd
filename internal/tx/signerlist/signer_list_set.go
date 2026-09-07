@@ -57,7 +57,7 @@ func (s *SignerListSet) Validate() error {
 	// malformed. The signer-entry validation (counts, weights, duplicates,
 	// quorum) runs in PreflightRules via validateQuorumAndSignerEntries.
 	// Reference: rippled SetSignerList.cpp determineOperation()
-	hasEntries := len(s.SignerEntries) > 0
+	hasEntries := s.FieldPresent("SignerEntries", s.SignerEntries != nil)
 	switch {
 	case s.SignerQuorum != 0 && hasEntries:
 		return nil

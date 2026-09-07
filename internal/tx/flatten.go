@@ -196,7 +196,7 @@ func ReflectFlatten(tx Transaction) (map[string]any, error) {
 			}
 
 			// Handle struct slices (like AuthAccounts) - convert to []map[string]any for STArray
-			if val.Kind() == reflect.Slice && val.Len() > 0 {
+			if val.Kind() == reflect.Slice {
 				elemKind := val.Type().Elem().Kind()
 				if elemKind == reflect.Struct || (elemKind == reflect.Pointer && val.Type().Elem().Elem().Kind() == reflect.Struct) {
 					m[f.name] = flattenStructSlice(val)
