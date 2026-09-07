@@ -17,6 +17,7 @@ import (
 	"github.com/LeJamon/go-xrpl/internal/tx"
 	"github.com/LeJamon/go-xrpl/shamap"
 	"github.com/LeJamon/go-xrpl/shamap/backend"
+	"github.com/LeJamon/go-xrpl/storage/kvstore"
 	"github.com/LeJamon/go-xrpl/storage/nodestore"
 	"github.com/LeJamon/go-xrpl/storage/relationaldb"
 )
@@ -376,8 +377,49 @@ func (s *Service) persistLedgerJob(
 	return s.persistToNodeStore(ctx, l, l.Sequence())
 }
 
+func (p *persistenceWorker) beginNodePersist() {
+	p.promotionMu.Lock()
+	if p.nodePersists == 0 {
+		p.nodePersistIdle = make(chan struct{})
+	}
+	p.nodePersists++
+	p.promotionMu.Unlock()
+}
+
+func (p *persistenceWorker) endNodePersist() {
+	p.promotionMu.Lock()
+	p.nodePersists--
+	if p.nodePersists == 0 {
+		close(p.nodePersistIdle)
+	}
+	p.promotionMu.Unlock()
+}
+
+// Admission waits are cancelable and never hold a NodeStore lock. Already
+// admitted batches can finish; active ledger persists prevent further batches.
+func (p *persistenceWorker) waitForNodePersists(ctx context.Context) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		p.promotionMu.Lock()
+		active, idle := p.nodePersists, p.nodePersistIdle
+		p.promotionMu.Unlock()
+		if active == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-idle:
+		}
+	}
+}
+
 // persistToNodeStore writes state and transaction deltas before the header.
 func (s *Service) persistToNodeStore(ctx context.Context, l *ledger.Ledger, seq uint32) error {
+	s.beginNodePersist()
+	defer s.endNodePersist()
 	store := func(nodeType nodestore.NodeType) func([]shamap.FlushEntry) error {
 		return func(entries []shamap.FlushEntry) error {
 			if family, ok := s.shamapFamily.(*backend.NodeStore); ok {
@@ -534,6 +576,28 @@ func (s *Service) refreshGenerationState(
 	sequence uint32,
 	generations nodestore.GenerationDatabase,
 	checkpoint func(context.Context, time.Duration) error,
+) error {
+	return s.refreshGenerationStateWithBatch(
+		ctx,
+		root,
+		sequence,
+		generations,
+		checkpoint,
+		resolveOnlineDeleteRefreshWorkers(),
+		storedSHAMapPromotionBatchNodes,
+		storedSHAMapPromotionBatchBytes,
+	)
+}
+
+func (s *Service) refreshGenerationStateWithBatch(
+	ctx context.Context,
+	root [32]byte,
+	sequence uint32,
+	generations nodestore.GenerationDatabase,
+	checkpoint func(context.Context, time.Duration) error,
+	workers int,
+	batchNodes int,
+	batchBytes int,
 ) (err error) {
 	startedAt := time.Now()
 	progress := newOnlineDeleteRefreshProgress(
@@ -556,19 +620,32 @@ func (s *Service) refreshGenerationState(
 		defer checkpointTicker.Stop()
 	}
 
+	control := storedSHAMapWalkControl{
+		progress:        progress,
+		progressTicks:   progressTicker.C,
+		checkpoint:      checkpoint,
+		checkpointTicks: checkpointTicks,
+		now:             time.Now,
+	}
+	if batchNodes > 0 {
+		if batches, ok := generations.(nodestore.BatchGenerationDatabase); ok {
+			control.batchFetch = func(ctx context.Context, hashes []nodestore.Hash256, maxBytes int) ([]*nodestore.Node, kvstore.PromotionStats, error) {
+				if err := s.waitForNodePersists(ctx); err != nil {
+					return nil, kvstore.PromotionStats{}, err
+				}
+				return batches.FetchBatchForPromotion(ctx, hashes, maxBytes)
+			}
+			control.batchNodes = batchNodes
+			control.batchBytes = batchBytes
+		}
+	}
 	err = s.walkStoredSHAMapConcurrentWithFetch(
 		ctx,
 		root,
 		shamap.TypeState,
 		generations.FetchForPromotion,
-		resolveOnlineDeleteRefreshWorkers(),
-		storedSHAMapWalkControl{
-			progress:        progress,
-			progressTicks:   progressTicker.C,
-			checkpoint:      checkpoint,
-			checkpointTicks: checkpointTicks,
-			now:             time.Now,
-		},
+		workers,
+		control,
 		nil,
 	)
 	if err != nil {
