@@ -35,7 +35,7 @@ func benchmarkRefreshWithPersistence(b *testing.B, workers, batchNodes int) {
 	for range b.N {
 		b.StopTimer()
 		ledgers := benchmarkPersistenceLedgers(b, 32)
-		writer := &Service{nodeStore: fixture.base}
+		writer := fixture.svc
 		fixture.db.promotionStart = make(chan struct{})
 		done := make(chan error, 1)
 		var completed atomic.Bool

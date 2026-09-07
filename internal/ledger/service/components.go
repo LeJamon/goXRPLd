@@ -20,6 +20,9 @@ type persistenceWorker struct {
 	persistStopping      bool
 	persistWG            sync.WaitGroup
 	canonicalPersistMu   sync.Mutex
+	promotionMu          sync.Mutex
+	nodePersists         int
+	nodePersistIdle      chan struct{}
 }
 
 type eventPublisher struct {
