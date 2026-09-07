@@ -607,10 +607,20 @@ func TestFrozenPivotRecoveryReplaysToMovingTrustedHead(t *testing.T) {
 	pivotHeader := pivot.Header()
 	require.True(t, r.completeFrozenPivotAcquisition(&pivotHeader, false))
 
+	wantApplied := uint64(len(links) + len(movingLinks))
+	for r.FastSyncMetrics().ReplayPipelineApplied < wantApplied {
+		select {
+		case <-r.standardReplayDrainWake:
+			r.drainStandardReplayPipeline()
+		default:
+			require.FailNow(t, "replay apply batch did not reschedule through the router loop")
+		}
+	}
+
 	assert.False(t, r.standardReplay.active)
 	assert.Equal(t, 1, released)
 	assert.False(t, r.standardReplay.backpressured)
-	assert.Equal(t, uint64(len(links)+len(movingLinks)), r.FastSyncMetrics().ReplayPipelineApplied)
+	assert.Equal(t, wantApplied, r.FastSyncMetrics().ReplayPipelineApplied)
 	storedHead, err := svc.GetLedgerByHash(trustedHead.hash)
 	require.NoError(t, err)
 	require.NotNil(t, storedHead)
