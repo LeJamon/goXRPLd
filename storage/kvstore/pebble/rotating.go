@@ -130,10 +130,11 @@ func validateGenerationBoundaries(lastRotated, minimumOnline uint32) error {
 type RotatingStore struct {
 	// Lock order is mu, archiveMu when needed, then mutation stripes in
 	// ascending order. Put-only operations skip archiveMu.
-	mu        sync.RWMutex
-	archiveMu sync.RWMutex
-	rotateMu  sync.Mutex
-	mutations [rotatingStoreMutationStripes]sync.Mutex
+	mu               sync.RWMutex
+	archiveMu        sync.RWMutex
+	rotateMu         sync.Mutex
+	mutations        [rotatingStoreMutationStripes]sync.Mutex
+	mutationVersions [rotatingStoreMutationStripes]uint64 // guarded by the corresponding stripe
 
 	basePath              string
 	statePath             string
@@ -544,7 +545,7 @@ func (r *RotatingStore) Promote(key []byte) ([]byte, error) {
 	}
 	mutation := &r.mutations[mutationStripe(key)]
 	mutation.Lock()
-	defer mutation.Unlock()
+	defer func() { r.mutationVersions[mutationStripe(key)]++; mutation.Unlock() }()
 	return r.getLocked(key, true)
 }
 
@@ -581,6 +582,13 @@ func (r *RotatingStore) PromoteBatch(
 		return nil, stats, err
 	}
 	sorted = sorted[:len(prefetched)]
+	// Read cold writable blocks without excluding foreground writes. Version
+	// checks below retain writable precedence if a stripe changed meanwhile.
+	warmed, versions, err := r.prefetchWritablePromotion(sorted, maxBytes)
+	if err != nil {
+		return nil, stats, err
+	}
+	sorted = sorted[:len(warmed)]
 	lockedMutations := r.lockMutations(sorted)
 	defer r.unlockMutations(&lockedMutations)
 
@@ -599,7 +607,12 @@ func (r *RotatingStore) PromoteBatch(
 	promotions = make([]kvstore.Promotion, 0, len(sorted))
 	for index, key := range sorted {
 		remaining := maxBytes - stats.BufferedBytes
-		value, found, tooLarge, err := writable.get(key, remaining, len(promotions) == 0)
+		candidateWritable := warmed[index]
+		value, found, err := candidateWritable.value, candidateWritable.found, candidateWritable.err
+		tooLarge := found && len(value) > remaining && len(promotions) > 0
+		if stripe := mutationStripe(key); r.mutationVersions[stripe] != versions[stripe] {
+			value, found, tooLarge, err = writable.get(key, remaining, len(promotions) == 0)
+		}
 		if err != nil {
 			return nil, stats, err
 		}
@@ -656,6 +669,40 @@ type promotionPrefetch struct {
 	value []byte
 	found bool
 	err   error
+}
+
+func (r *RotatingStore) prefetchWritablePromotion(keys [][]byte, maxBytes int) ([]promotionPrefetch, [rotatingStoreMutationStripes]uint64, error) {
+	var versions [rotatingStoreMutationStripes]uint64
+	selected := r.lockMutations(keys)
+	for index, locked := range selected {
+		if locked {
+			versions[index] = r.mutationVersions[index]
+		}
+	}
+	// This is an observation, not a mutation; do not advance the versions.
+	for index := len(selected) - 1; index >= 0; index-- {
+		if selected[index] {
+			r.mutations[index].Unlock()
+		}
+	}
+	iter, err := r.writable.newPointIterator()
+	if err != nil {
+		return nil, versions, err
+	}
+	records := make([]promotionPrefetch, 0, len(keys))
+	buffered := 0
+	for _, key := range keys {
+		value, found, tooLarge, readErr := iter.get(key, maxBytes-buffered, len(records) == 0)
+		if tooLarge {
+			break
+		}
+		records = append(records, promotionPrefetch{value: value, found: found, err: readErr})
+		if readErr != nil {
+			return nil, versions, errors.Join(readErr, iter.Close())
+		}
+		buffered += len(value)
+	}
+	return records, versions, iter.Close()
 }
 
 // The prefetched payload and the final results each have their own byte budget.
@@ -739,6 +786,7 @@ func (r *RotatingStore) lockMutations(keys [][]byte) [rotatingStoreMutationStrip
 func (r *RotatingStore) unlockMutations(selected *[rotatingStoreMutationStripes]bool) {
 	for index := len(selected) - 1; index >= 0; index-- {
 		if selected[index] {
+			r.mutationVersions[index]++
 			r.mutations[index].Unlock()
 		}
 	}
@@ -786,7 +834,7 @@ func (r *RotatingStore) Put(key []byte, value []byte) error {
 	}
 	mutation := &r.mutations[mutationStripe(key)]
 	mutation.Lock()
-	defer mutation.Unlock()
+	defer func() { r.mutationVersions[mutationStripe(key)]++; mutation.Unlock() }()
 	return r.writable.Put(key, value)
 }
 

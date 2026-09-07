@@ -23,8 +23,10 @@ func (l *Ledger) TxMapSnapshot() (*shamap.SHAMap, error) {
 }
 
 func (l *Ledger) StoreStateDirty(store func([]shamap.FlushEntry) error) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	// The SHAMap owns its persistence lock. Keep the map reference stable
+	// without blocking immutable header reads behind storage I/O.
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	if l.stateMap == nil {
 		return nil
 	}
@@ -32,8 +34,8 @@ func (l *Ledger) StoreStateDirty(store func([]shamap.FlushEntry) error) error {
 }
 
 func (l *Ledger) StoreTransactionDirty(store func([]shamap.FlushEntry) error) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	if l.txMap == nil {
 		return nil
 	}
