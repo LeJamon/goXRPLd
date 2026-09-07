@@ -538,11 +538,22 @@ func (r *Router) catchupInFlight() int {
 }
 
 func (r *Router) protectedCatchupInFlight() int {
+	r.acquisitionMu.Lock()
+	defer r.acquisitionMu.Unlock()
+	return r.protectedCatchupInFlightLocked()
+}
+
+// Caller holds acquisitionMu.
+func (r *Router) protectedCatchupInFlightLocked() int {
 	active := r.replayer.Count()
 	for _, candidate := range r.fetchTracker.Active() {
 		if candidate.Reason() == inbound.ReasonConsensus && !candidate.TransactionOnly() {
 			active++
 		}
+	}
+	if r.standardReplay.pivotHandoff != nil &&
+		r.fetchTracker.Find(r.standardReplay.pivotHandoff.acquisition.Hash()) != r.standardReplay.pivotHandoff.acquisition {
+		active++
 	}
 	return active
 }
@@ -717,11 +728,11 @@ func (r *Router) armPendingConsensusLedger() bool {
 	for {
 		r.acquisitionMu.Lock()
 		recovery := r.consensusRecovery
-		if recovery.stepHash != ([32]byte{}) && r.isAcquiring(recovery.stepHash) {
+		if recovery.stepHash != ([32]byte{}) && r.isAcquiringLocked(recovery.stepHash) {
 			r.acquisitionMu.Unlock()
 			return true
 		}
-		if recovery.targetHash != ([32]byte{}) && r.isAcquiring(recovery.targetHash) {
+		if recovery.targetHash != ([32]byte{}) && r.isAcquiringLocked(recovery.targetHash) {
 			r.consensusRecovery.stepHash = recovery.targetHash
 			r.acquisitionMu.Unlock()
 			return true
@@ -786,11 +797,11 @@ func (r *Router) armPendingConsensusLedger() bool {
 			r.acquisitionMu.Unlock()
 			continue
 		}
-		if r.consensusRecovery.stepHash != ([32]byte{}) && r.isAcquiring(r.consensusRecovery.stepHash) {
+		if r.consensusRecovery.stepHash != ([32]byte{}) && r.isAcquiringLocked(r.consensusRecovery.stepHash) {
 			r.acquisitionMu.Unlock()
 			return true
 		}
-		if r.isAcquiring(hash) {
+		if r.isAcquiringLocked(hash) {
 			r.consensusRecovery.stepHash = hash
 			r.acquisitionMu.Unlock()
 			return true
@@ -801,7 +812,7 @@ func (r *Router) armPendingConsensusLedger() bool {
 			acquisitionSeq = nextSeq
 			acquisitionHash = nextHash
 		}
-		if r.isAcquiring(acquisitionHash) {
+		if r.isAcquiringLocked(acquisitionHash) {
 			r.consensusRecovery.stepHash = acquisitionHash
 			r.acquisitionMu.Unlock()
 			return true
@@ -1143,24 +1154,24 @@ func (r *Router) startLedgerAcquisition(seq uint32, hash [32]byte, peerID uint64
 	}
 	r.acquisitionMu.Lock()
 	defer r.acquisitionMu.Unlock()
-	if step := r.consensusRecovery.stepHash; step != ([32]byte{}) && step != hash && r.isAcquiring(step) {
+	if step := r.consensusRecovery.stepHash; step != ([32]byte{}) && step != hash && r.isAcquiringLocked(step) {
 		return false
 	}
 	if !r.canAdmitCatchupLocked(hash, maxConcurrentSpeculativeCatchup) {
 		return false
 	}
 	r.startLedgerAcquisitionLocked(seq, hash, peerID)
-	return r.isAcquiring(hash)
+	return r.isAcquiringLocked(hash)
 }
 
 // canAdmitCatchupLocked atomically combines hash deduplication with capacity
 // admission. Gossip and validation paths use the speculative limit so the exact
 // WrongLedger target can always claim the final slot.
 func (r *Router) canAdmitCatchupLocked(hash [32]byte, limit int) bool {
-	if r.isAcquiring(hash) {
+	if r.isAcquiringLocked(hash) {
 		return true
 	}
-	return r.protectedCatchupInFlight() < limit
+	return r.protectedCatchupInFlightLocked() < limit
 }
 
 func (r *Router) startLedgerAcquisitionLocked(seq uint32, hash [32]byte, peerID uint64) {
@@ -1174,7 +1185,7 @@ func (r *Router) startLedgerAcquisitionLocked(seq uint32, hash [32]byte, peerID 
 	// simultaneously, with adoption order then deciding which won. The
 	// single-point-of-truth check is a deliberate narrowing: a tighter
 	// guarantee that the same hash can't acquire through both paths.
-	if r.isAcquiring(hash) {
+	if r.isAcquiringLocked(hash) {
 		return
 	}
 
@@ -1205,6 +1216,17 @@ func (r *Router) startLedgerAcquisitionLocked(seq uint32, hash [32]byte, peerID 
 // single dedup entry point so a race between a replay-delta and a
 // legacy acquisition for the same hash is impossible.
 func (r *Router) isAcquiring(hash [32]byte) bool {
+	r.acquisitionMu.Lock()
+	defer r.acquisitionMu.Unlock()
+	return r.isAcquiringLocked(hash)
+}
+
+// Caller holds acquisitionMu.
+func (r *Router) isAcquiringLocked(hash [32]byte) bool {
+	if r.standardReplay.pivotHandoff != nil &&
+		r.standardReplay.pivotHandoff.acquisition.Hash() == hash {
+		return true
+	}
 	if r.replayer.Has(hash) {
 		return true
 	}
@@ -1262,6 +1284,10 @@ func (r *Router) startLedgerReplayAcquisitionLegacyLocked(seq uint32, hash [32]b
 	if seq != 0 && r.belowFloor(seq) {
 		return nil, false
 	}
+	if r.standardReplay.pivotHandoff != nil &&
+		r.standardReplay.pivotHandoff.acquisition.Hash() == hash {
+		return nil, false
+	}
 	if r.replayer.Has(hash) {
 		return nil, false
 	}
@@ -1303,6 +1329,10 @@ func (r *Router) startLedgerAcquisitionLegacyLocked(seq uint32, hash [32]byte, p
 		return
 	}
 	if seq != 0 && r.belowFloor(seq) {
+		return
+	}
+	if r.standardReplay.pivotHandoff != nil &&
+		r.standardReplay.pivotHandoff.acquisition.Hash() == hash {
 		return
 	}
 	if svc := r.adaptor.LedgerService(); svc != nil {
@@ -1355,11 +1385,19 @@ func (r *Router) canAdmitProvisionalFullStateLocked(hash [32]byte) bool {
 	if existing := r.fetchTracker.Find(hash); existing != nil {
 		return true
 	}
+	if r.standardReplay.pivotHandoff != nil &&
+		r.standardReplay.pivotHandoff.acquisition.Hash() == hash {
+		return true
+	}
 	active := 0
 	for _, candidate := range r.fetchTracker.Active() {
 		if candidate.Reason() == inbound.ReasonConsensus && !candidate.TransactionOnly() {
 			active++
 		}
+	}
+	if r.standardReplay.pivotHandoff != nil &&
+		r.fetchTracker.Find(r.standardReplay.pivotHandoff.acquisition.Hash()) != r.standardReplay.pivotHandoff.acquisition {
+		active++
 	}
 	return active < maxConcurrentProvisionalFullStateCatchup
 }
@@ -1449,12 +1487,12 @@ func (r *Router) requestConsensusLedger(id consensus.LedgerID) error {
 	recovery := r.consensusRecovery
 	step := r.consensusRecovery.stepHash
 	pipelineStep := r.standardReplayOwnsLocked(step)
-	if step != ([32]byte{}) && r.isAcquiring(step) && !pipelineStep {
+	if step != ([32]byte{}) && r.isAcquiringLocked(step) && !pipelineStep {
 		r.acquisitionMu.Unlock()
 		return nil
 	}
 	pipelineTarget := r.standardReplayOwnsLocked(hash)
-	if r.isAcquiring(hash) && !pipelineTarget {
+	if r.isAcquiringLocked(hash) && !pipelineTarget {
 		r.consensusRecovery.stepHash = hash
 		r.acquisitionMu.Unlock()
 		return nil
@@ -1641,7 +1679,7 @@ func (r *Router) onLedgerFullyValidated(seq uint32, hash [32]byte) {
 }
 
 func (r *Router) obsoleteCatchupVictimLocked(targetSeq uint32) *inbound.Ledger {
-	if r.protectedCatchupInFlight() < maxConcurrentSpeculativeCatchup {
+	if r.protectedCatchupInFlightLocked() < maxConcurrentSpeculativeCatchup {
 		return nil
 	}
 	var victim *inbound.Ledger
@@ -1649,7 +1687,9 @@ func (r *Router) obsoleteCatchupVictimLocked(targetSeq uint32) *inbound.Ledger {
 		seq := candidate.Seq()
 		if candidate.Reason() != inbound.ReasonConsensus || candidate.TransactionOnly() ||
 			seq == 0 || seq >= targetSeq || candidate.Hash() == r.consensusRecovery.targetHash ||
-			candidate.Hash() == r.consensusRecovery.stepHash {
+			candidate.Hash() == r.consensusRecovery.stepHash ||
+			(r.standardReplay.active && !r.standardReplay.pivotReady &&
+				candidate.Hash() == r.standardReplay.pivotHash) {
 			continue
 		}
 		consecutive := candidate.ConsecutiveTimeouts()
@@ -2949,8 +2989,9 @@ func (r *Router) handleInboundLedgerDataOwned(
 	case message.LedgerInfoBase:
 		if len(ld.Nodes) < 2 {
 			r.logger.Debug("inbound ledger: response has < 2 nodes", "nodes", len(ld.Nodes))
-			if r.fetchTracker.RemoveExpectedWithSnapshot(il, il.Snapshot(), false) {
-				r.retireAcquisitionStore(r.lifecycleContext(), il)
+			retirement, pivotRetired, removed := r.removeInboundAcquisitionWithSession(il, il.Snapshot(), false)
+			if removed {
+				r.finishDiscardedInboundAcquisitionOwned(il, retirement, pivotRetired)
 			}
 			return true, false
 		}
@@ -2960,8 +3001,9 @@ func (r *Router) handleInboundLedgerDataOwned(
 				r.failInboundAcquisition(il)
 			} else {
 				r.acquisition.IncPeerBadData(peerID, "ledger-data-base")
-				if r.fetchTracker.RemoveExpectedWithSnapshot(il, il.Snapshot(), false) {
-					r.retireAcquisitionStore(r.lifecycleContext(), il)
+				retirement, pivotRetired, removed := r.removeInboundAcquisitionWithSession(il, il.Snapshot(), false)
+				if removed {
+					r.finishDiscardedInboundAcquisitionOwned(il, retirement, pivotRetired)
 				}
 			}
 			return true, false
@@ -3246,12 +3288,43 @@ func (r *Router) failInboundAcquisition(il *inbound.Ledger) {
 	r.failInboundAcquisitionWithSnapshot(il, il.Snapshot())
 }
 
+func (r *Router) removeInboundAcquisitionWithSession(
+	il *inbound.Ledger,
+	snapshot inbound.Snapshot,
+	discard bool,
+) (standardReplayRetirement, bool, bool) {
+	if il == nil {
+		return standardReplayRetirement{}, false, false
+	}
+	r.replayCommitMu.Lock()
+	r.acquisitionMu.Lock()
+	owned := r.ownsFrozenPivotAcquisitionLocked(il)
+	removed := false
+	if discard {
+		removed = r.fetchTracker.DiscardExpected(il)
+	} else {
+		removed = r.fetchTracker.RemoveExpectedWithSnapshot(il, snapshot, false)
+	}
+	retirement := standardReplayRetirement{}
+	if removed && owned {
+		retirement = r.cancelStandardReplayPipelineLocked()
+		if r.consensusRecovery.stepHash == il.Hash() {
+			r.consensusRecovery.stepHash = [32]byte{}
+		}
+	}
+	r.acquisitionMu.Unlock()
+	r.replayCommitMu.Unlock()
+	return retirement, owned, removed
+}
+
 func (r *Router) failInboundAcquisitionWithSnapshot(il *inbound.Ledger, snapshot inbound.Snapshot) {
 	hash := il.Hash()
 	reason := il.Reason()
-	if !r.fetchTracker.RemoveExpectedWithSnapshot(il, snapshot, false) {
+	retirement, _, removed := r.removeInboundAcquisitionWithSession(il, snapshot, false)
+	if !removed {
 		return
 	}
+	r.retireStandardReplay(retirement)
 	r.retireAcquisitionStore(r.lifecycleContext(), il)
 	r.logger.Warn("inbound ledger acquisition failed",
 		"seq", il.Seq(),
@@ -3263,7 +3336,6 @@ func (r *Router) failInboundAcquisitionWithSnapshot(il *inbound.Ledger, snapshot
 	}
 	if reason == inbound.ReasonConsensus {
 		r.markFailedCatchupAcquisition(hash)
-		r.failFrozenPivotRecovery(hash)
 		r.failConsensusRecoveryStep(hash)
 	}
 	if reason == inbound.ReasonConsensus && r.engine != nil {
@@ -3275,20 +3347,27 @@ func (r *Router) failInboundAcquisitionWithSnapshot(il *inbound.Ledger, snapshot
 }
 
 func (r *Router) discardFailedInboundAcquisition(il *inbound.Ledger) {
-	if !r.fetchTracker.DiscardExpected(il) {
+	retirement, pivotRetired, removed := r.removeInboundAcquisitionWithSession(il, inbound.Snapshot{}, true)
+	if !removed {
 		return
 	}
-	r.finishDiscardedInboundAcquisition(il)
+	r.finishDiscardedInboundAcquisitionOwned(il, retirement, pivotRetired)
 }
 
 func (r *Router) discardFailedInboundAcquisitionWithSnapshot(il *inbound.Ledger, snapshot inbound.Snapshot) {
-	if !r.fetchTracker.RemoveExpectedWithSnapshot(il, snapshot, false) {
+	retirement, pivotRetired, removed := r.removeInboundAcquisitionWithSession(il, snapshot, false)
+	if !removed {
 		return
 	}
-	r.finishDiscardedInboundAcquisition(il)
+	r.finishDiscardedInboundAcquisitionOwned(il, retirement, pivotRetired)
 }
 
-func (r *Router) finishDiscardedInboundAcquisition(il *inbound.Ledger) {
+func (r *Router) finishDiscardedInboundAcquisitionOwned(
+	il *inbound.Ledger,
+	retirement standardReplayRetirement,
+	pivotRetired bool,
+) {
+	r.retireStandardReplay(retirement)
 	r.retireAcquisitionStore(r.lifecycleContext(), il)
 	if il.Reason() != inbound.ReasonConsensus {
 		return
@@ -3297,7 +3376,7 @@ func (r *Router) finishDiscardedInboundAcquisition(il *inbound.Ledger) {
 		r.failStandardReplayPipelineEntry(il)
 		return
 	}
-	if r.failFrozenPivotRecovery(il.Hash()) {
+	if pivotRetired {
 		r.failConsensusRecoveryStep(il.Hash())
 		r.armConsensusCatchup()
 	}
@@ -3423,18 +3502,30 @@ func (r *Router) completeInboundLedgerReady(il *inbound.Ledger) {
 		r.completeStandardTransactionReplay(h, txMap, peerID)
 		return
 	}
-	if !r.fetchTracker.RemoveExpectedWithSnapshot(il, il.Snapshot(), true) {
+	var handoff standardReplayPivotHandoff
+	pivotHandoff := false
+	r.replayCommitMu.Lock()
+	r.acquisitionMu.Lock()
+	if il.Reason() == inbound.ReasonConsensus {
+		handoff, pivotHandoff = r.claimStandardReplayPivotHandoffLocked(il)
+	}
+	removed := r.fetchTracker.RemoveExpectedWithSnapshot(il, il.Snapshot(), true)
+	if !removed && pivotHandoff {
+		r.clearStandardReplayPivotHandoffLocked(handoff)
+	}
+	recoveryTarget := r.consensusRecovery.targetHash == h.Hash
+	r.acquisitionMu.Unlock()
+	if !removed {
+		r.replayCommitMu.Unlock()
 		r.retireAcquisitionStore(r.lifecycleContext(), il)
 		return
 	}
-	r.acquisitionMu.Lock()
-	recoveryTarget := r.consensusRecovery.targetHash == h.Hash
-	r.acquisitionMu.Unlock()
 
 	// A history backfill installs validated sequence history below the closed tip,
 	// then advances the backward walk to its parent. It never touches operating
 	// mode or the consensus engine.
 	if il.Reason() == inbound.ReasonHistory {
+		r.replayCommitMu.Unlock()
 		if err = svc.IngestHistoricalLedgerWithState(r.lifecycleContext(), h, stateMap, txMap); err != nil {
 			r.logger.Warn("inbound ledger: history backfill ingest failed",
 				"error", err, "seq", h.LedgerIndex)
@@ -3455,6 +3546,7 @@ func (r *Router) completeInboundLedgerReady(il *inbound.Ledger) {
 	// Generic acquisitions are queryable by hash but never mutate the service's
 	// canonical frontier or feed consensus.
 	if il.Reason() == inbound.ReasonGeneric {
+		r.replayCommitMu.Unlock()
 		if err = svc.StoreLedgerWithState(r.lifecycleContext(), h, stateMap, txMap); err != nil {
 			r.logger.Warn("inbound ledger: generic store failed", "error", err, "seq", h.LedgerIndex)
 			return
@@ -3470,9 +3562,10 @@ func (r *Router) completeInboundLedgerReady(il *inbound.Ledger) {
 	}
 
 	initialCandidate, err := svc.BootstrapLedgerWithState(r.lifecycleContext(), h, stateMap, txMap)
+	r.replayCommitMu.Unlock()
 	if err != nil {
 		r.logger.Warn("inbound ledger: failed to store consensus ledger", "error", err, "seq", h.LedgerIndex)
-		frozenPivot := r.failFrozenPivotRecovery(h.Hash)
+		frozenPivot := r.failFrozenPivotHandoff(handoff)
 		r.retireAcquisitionStore(r.lifecycleContext(), il)
 		if frozenPivot {
 			r.armConsensusCatchup()
@@ -3486,7 +3579,8 @@ func (r *Router) completeInboundLedgerReady(il *inbound.Ledger) {
 		"account_hash", fmt.Sprintf("%x", h.AccountHash[:8]),
 		"initial_candidate", initialCandidate,
 	)
-	if r.completeFrozenPivotAcquisition(h, initialCandidate) {
+	if pivotHandoff {
+		r.completeFrozenPivotAcquisitionOwned(h, initialCandidate, handoff)
 		return
 	}
 	r.completeStoredConsensusRecovery(h.LedgerIndex, h.Hash, h.ParentHash, initialCandidate)

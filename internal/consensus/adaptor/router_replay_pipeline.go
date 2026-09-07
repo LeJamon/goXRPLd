@@ -46,6 +46,8 @@ type standardReplayPipeline struct {
 	backpressured     bool
 	baseLedger        *inbound.Ledger
 	baseRelease       func()
+	// acquisitionMu protects the owner retained between tracker removal and installation.
+	pivotHandoff *standardReplayPivotHandoff
 }
 
 type standardReplayIdentity struct {
@@ -61,6 +63,14 @@ type standardReplayIdentity struct {
 	collectHash      [32]byte
 	targetSeq        uint32
 	targetHash       [32]byte
+	pivotHandoff     *standardReplayPivotHandoff
+}
+
+type standardReplayPivotHandoff struct {
+	generation  uint64
+	seq         uint32
+	hash        [32]byte
+	acquisition *inbound.Ledger
 }
 
 type standardReplayTarget struct {
@@ -411,11 +421,50 @@ func (r *Router) standardReplayIdentityLocked() standardReplayIdentity {
 		collectHash:      r.standardReplay.collectHash,
 		targetSeq:        r.standardReplay.targetSeq,
 		targetHash:       r.standardReplay.targetHash,
+		pivotHandoff:     r.standardReplay.pivotHandoff,
 	}
 }
 
 func (r *Router) standardReplayIdentityMatchesLocked(identity standardReplayIdentity) bool {
 	return r.standardReplayIdentityLocked() == identity
+}
+
+func (r *Router) ownsFrozenPivotAcquisitionLocked(il *inbound.Ledger) bool {
+	return il != nil && !il.TransactionOnly() && r.standardReplay.active &&
+		!r.standardReplay.pivotReady && r.standardReplay.pivotHandoff == nil &&
+		r.standardReplay.pivotHash == il.Hash() && r.standardReplay.pivotSeq == il.Seq()
+}
+
+func (r *Router) claimStandardReplayPivotHandoffLocked(il *inbound.Ledger) (standardReplayPivotHandoff, bool) {
+	if !r.ownsFrozenPivotAcquisitionLocked(il) {
+		return standardReplayPivotHandoff{}, false
+	}
+	handoff := standardReplayPivotHandoff{
+		generation:  r.standardReplay.generation,
+		seq:         r.standardReplay.pivotSeq,
+		hash:        r.standardReplay.pivotHash,
+		acquisition: il,
+	}
+	r.standardReplay.pivotHandoff = &handoff
+	return handoff, true
+}
+
+func (r *Router) standardReplayPivotHandoffMatchesLocked(handoff standardReplayPivotHandoff) bool {
+	return handoff.acquisition != nil && r.standardReplay.active &&
+		r.standardReplay.pivotHandoff != nil &&
+		r.standardReplay.pivotHandoff.generation == handoff.generation &&
+		r.standardReplay.pivotHandoff.acquisition == handoff.acquisition &&
+		r.standardReplay.generation == handoff.generation &&
+		r.standardReplay.pivotSeq == handoff.seq &&
+		r.standardReplay.pivotHash == handoff.hash
+}
+
+func (r *Router) clearStandardReplayPivotHandoffLocked(handoff standardReplayPivotHandoff) bool {
+	if !r.standardReplayPivotHandoffMatchesLocked(handoff) {
+		return false
+	}
+	r.standardReplay.pivotHandoff = nil
+	return true
 }
 
 func (r *Router) cancelStandardReplayPipelineIdentity(identity standardReplayIdentity) (standardReplayIdentity, bool) {
@@ -461,6 +510,9 @@ func (r *Router) cancelStandardReplayPipelineLocked() standardReplayRetirement {
 		}
 		r.replayPipelineDiscarded.Add(1)
 	}
+	if r.consensusRecovery.stepHash == r.standardReplay.pivotHash {
+		r.consensusRecovery.stepHash = [32]byte{}
+	}
 	r.standardReplay.generation++
 	r.standardReplay.active = false
 	r.standardReplay.pivotReady = false
@@ -481,6 +533,7 @@ func (r *Router) cancelStandardReplayPipelineLocked() standardReplayRetirement {
 	r.standardReplay.stalledSamples = 0
 	r.standardReplay.retargetAttemptAt = time.Time{}
 	r.standardReplay.backpressured = false
+	r.standardReplay.pivotHandoff = nil
 	baseLedger := r.standardReplay.baseLedger
 	r.standardReplay.baseLedger = nil
 	release := r.standardReplay.baseRelease
