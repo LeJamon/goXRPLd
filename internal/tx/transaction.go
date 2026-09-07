@@ -426,6 +426,8 @@ type Common struct {
 	LastLedgerSequence *uint32         `json:"LastLedgerSequence,omitempty"`
 	Memos              []MemoWrapper   `json:"Memos,omitempty"`
 	NetworkID          *uint32         `json:"NetworkID,omitempty"`
+	OperationLimit     *uint32         `json:"OperationLimit,omitempty"`
+	PreviousTxnID      string          `json:"PreviousTxnID,omitempty"`
 	Signers            []SignerWrapper `json:"Signers,omitempty"`
 	SourceTag          *uint32         `json:"SourceTag,omitempty"`
 	SigningPubKey      string          `json:"SigningPubKey,omitempty"`
@@ -666,6 +668,12 @@ func (c *Common) ToMap() map[string]any {
 	}
 	if c.NetworkID != nil {
 		m["NetworkID"] = *c.NetworkID
+	}
+	if c.OperationLimit != nil {
+		m["OperationLimit"] = *c.OperationLimit
+	}
+	if c.PreviousTxnID != "" || c.HasField("PreviousTxnID") {
+		m["PreviousTxnID"] = c.PreviousTxnID
 	}
 	if len(c.Signers) > 0 || c.HasField("Signers") {
 		signers := make([]map[string]any, len(c.Signers))
