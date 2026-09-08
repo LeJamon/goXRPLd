@@ -258,7 +258,13 @@ func classifyHeartbeatDispatch(
 	if interval > 0 && !previousScheduledAt.IsZero() {
 		scheduledGap := scheduledAt.Sub(previousScheduledAt)
 		if scheduledGap > interval {
-			missed = int64(scheduledGap/interval) - 1
+			// Ticker timestamps can differ from an exact interval by a few
+			// nanoseconds. Round to the nearest interval so a 2× gap just
+			// below the boundary still represents one dropped tick.
+			ticks := int64((scheduledGap + interval/2) / interval)
+			if ticks > 1 {
+				missed = ticks - 1
+			}
 		}
 	}
 

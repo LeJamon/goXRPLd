@@ -360,6 +360,36 @@ func TestClassifyHeartbeatDispatch(t *testing.T) {
 	}
 }
 
+func TestClassifyHeartbeatDispatchRoundsTickerJitter(t *testing.T) {
+	base := time.Unix(100, 0)
+	interval := time.Second
+	tests := []struct {
+		name string
+		gap  time.Duration
+		want int64
+	}{
+		{name: "one interval plus jitter", gap: interval + time.Nanosecond, want: 0},
+		{name: "two intervals minus jitter", gap: 2*interval - time.Nanosecond, want: 1},
+		{name: "two intervals plus jitter", gap: 2*interval + time.Nanosecond, want: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyHeartbeatDispatch(
+				base.Add(tt.gap),
+				base.Add(tt.gap),
+				base,
+				base,
+				0,
+				interval,
+			)
+			if got.missed != tt.want {
+				t.Fatalf("missed = %d, want %d for gap %v", got.missed, tt.want, tt.gap)
+			}
+		})
+	}
+}
+
 func TestHeartbeatContextAcceptedUsesNextRound(t *testing.T) {
 	adaptor := newMockAdaptor()
 	engine := NewEngine(adaptor, DefaultConfig())
