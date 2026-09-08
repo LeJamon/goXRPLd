@@ -2,6 +2,7 @@ package pebble
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -513,6 +514,58 @@ func (r *RotatingStore) Get(key []byte) ([]byte, error) {
 		return nil, kvstore.ErrClosed
 	}
 	return r.getLocked(key, false)
+}
+
+// GetBatch reads an explicit set of keys in sorted order, preferring the
+// writable generation for keys present in both generations. It never promotes
+// archive records.
+func (r *RotatingStore) GetBatch(
+	ctx context.Context,
+	keys [][]byte,
+	maxNodes, maxBytes int,
+) ([]kvstore.ReadResult, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.closed {
+		return nil, kvstore.ErrClosed
+	}
+	if len(keys) == 0 {
+		return readBatch(ctx, keys, maxNodes, maxBytes, nil)
+	}
+	if err := validateBatchReadLimits(keys, maxNodes, maxBytes); err != nil {
+		return nil, err
+	}
+	if ctx == nil {
+		return nil, errors.New("kvstore/pebble: nil batch read context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	r.archiveMu.RLock()
+	defer r.archiveMu.RUnlock()
+	writable, err := r.writable.newPointIterator()
+	if err != nil {
+		return nil, err
+	}
+	archive, err := r.archive.newPointIterator()
+	if err != nil {
+		return nil, errors.Join(err, writable.Close())
+	}
+
+	read := func(key []byte, remaining int, allowOversized bool) ([]byte, bool, bool, error) {
+		value, found, tooLarge, err := writable.get(key, remaining, allowOversized)
+		if err != nil || found || tooLarge {
+			return value, found, tooLarge, err
+		}
+		return archive.get(key, remaining, allowOversized)
+	}
+	results, readErr := readBatch(ctx, keys, maxNodes, maxBytes, read)
+	archiveCloseErr := archive.Close()
+	writableCloseErr := writable.Close()
+	if readErr != nil || archiveCloseErr != nil || writableCloseErr != nil {
+		return nil, errors.Join(readErr, archiveCloseErr, writableCloseErr)
+	}
+	return results, nil
 }
 
 // CanRotateWithoutRefresh reports whether the archive is empty.
@@ -1681,3 +1734,4 @@ func (i *rotatingIterator) Close() error {
 }
 
 var _ kvstore.RotatingStore = (*RotatingStore)(nil)
+var _ kvstore.BatchReadingStore = (*RotatingStore)(nil)

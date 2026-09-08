@@ -114,6 +114,13 @@ func TestPromoteBatchPropagatesLazyValueReadError(t *testing.T) {
 	}
 
 	fault.Arm()
+	batchResults, batchErr := store.GetBatch(t.Context(), [][]byte{[]byte(archiveKey)}, 1, 1<<20)
+	if !errors.Is(batchErr, errorfs.ErrInjected) {
+		t.Fatalf("GetBatch error = %v, want injected lazy read error", batchErr)
+	}
+	if len(batchResults) != 0 {
+		t.Fatalf("GetBatch returned %d results after read failure", len(batchResults))
+	}
 	promotions, stats, err := store.PromoteBatch([][]byte{[]byte(archiveKey)}, 1<<20)
 	if !errors.Is(err, errorfs.ErrInjected) {
 		t.Fatalf("PromoteBatch error = %v, want injected lazy read error", err)
