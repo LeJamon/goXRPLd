@@ -629,7 +629,7 @@ func (s *Service) refreshGenerationStateWithBatch(
 	}
 	if batchNodes > 0 {
 		if batches, ok := generations.(nodestore.BatchGenerationDatabase); ok {
-			promotionMetrics := newOnlineDeleteRefreshPromotionMetrics()
+			promotionMetrics := &onlineDeleteRefreshPromotionMetrics{}
 			progress.promotionMetrics = promotionMetrics
 			control.batchFetch = func(ctx context.Context, hashes []nodestore.Hash256, maxBytes int) ([]*nodestore.Node, kvstore.PromotionStats, error) {
 				waitStartedAt := time.Now()

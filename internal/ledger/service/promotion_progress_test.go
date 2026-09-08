@@ -7,33 +7,52 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/LeJamon/go-xrpl/shamap"
 	"github.com/LeJamon/go-xrpl/storage/kvstore"
+	"github.com/LeJamon/go-xrpl/storage/nodestore"
 	"github.com/stretchr/testify/require"
 )
 
+type promotionBatchProbe struct {
+	nodestore.BatchGenerationDatabase
+	batchRequests atomic.Int64
+	batchCalls    atomic.Int64
+}
+
+func (p *promotionBatchProbe) FetchBatchForPromotion(
+	ctx context.Context,
+	hashes []nodestore.Hash256,
+	maxBytes int,
+) ([]*nodestore.Node, kvstore.PromotionStats, error) {
+	p.batchRequests.Add(int64(len(hashes)))
+	p.batchCalls.Add(1)
+	return p.BatchGenerationDatabase.FetchBatchForPromotion(ctx, hashes, maxBytes)
+}
+
 type promotionProgressLogRecord struct {
 	Message               string `json:"msg"`
-	Requested             int    `json:"promotion_requested"`
-	Consumed              int    `json:"promotion_consumed"`
-	WritableHits          int    `json:"promotion_writable_hits"`
-	WritableMisses        int    `json:"promotion_writable_misses"`
-	ArchiveHits           int    `json:"promotion_archive_hits"`
-	ArchiveMisses         int    `json:"promotion_archive_misses"`
-	ArchiveLookups        int    `json:"promotion_archive_lookups"`
-	ArchiveLookupsAvoided int    `json:"promotion_archive_lookups_avoided"`
-	Promoted              int    `json:"promotion_promoted"`
-	PromotedBytes         int    `json:"promotion_promoted_bytes"`
-	BufferedBytes         int    `json:"promotion_buffered_bytes"`
-	BatchWrites           int    `json:"promotion_batch_writes"`
+	Requested             uint64 `json:"promotion_requested"`
+	Consumed              uint64 `json:"promotion_consumed"`
+	WritableHits          uint64 `json:"promotion_writable_hits"`
+	WritableMisses        uint64 `json:"promotion_writable_misses"`
+	ArchiveHits           uint64 `json:"promotion_archive_hits"`
+	ArchiveMisses         uint64 `json:"promotion_archive_misses"`
+	ArchiveLookups        uint64 `json:"promotion_archive_lookups"`
+	ArchiveLookupsAvoided uint64 `json:"promotion_archive_lookups_avoided"`
+	Promoted              uint64 `json:"promotion_promoted"`
+	PromotedBytes         uint64 `json:"promotion_promoted_bytes"`
+	BufferedBytes         uint64 `json:"promotion_buffered_bytes"`
+	BatchWrites           uint64 `json:"promotion_batch_writes"`
 	BatchCalls            uint64 `json:"promotion_batch_calls"`
 	BatchErrors           uint64 `json:"promotion_batch_errors"`
 	PartialPrefixes       uint64 `json:"promotion_partial_prefixes"`
 	FetchElapsed          string `json:"promotion_fetch_elapsed"`
 	WaitElapsed           string `json:"promotion_wait_elapsed"`
+	NodeStoreReadsBefore  uint64 `json:"node_store_reads_before"`
+	NodeStoreReadsAfter   uint64 `json:"node_store_reads_after"`
 }
 
 func decodePromotionProgressLogs(t *testing.T, capture *synchronizedLogBuffer) []promotionProgressLogRecord {
@@ -53,7 +72,7 @@ func decodePromotionProgressLogs(t *testing.T, capture *synchronizedLogBuffer) [
 
 func TestOnlineDeleteRefreshPromotionMetricsAggregatesParallelBatches(t *testing.T) {
 	const batches = 32
-	metrics := newOnlineDeleteRefreshPromotionMetrics()
+	metrics := &onlineDeleteRefreshPromotionMetrics{}
 	var group sync.WaitGroup
 	for index := range batches {
 		group.Add(1)
@@ -87,52 +106,40 @@ func TestOnlineDeleteRefreshPromotionMetricsAggregatesParallelBatches(t *testing
 	group.Wait()
 
 	snapshot := metrics.snapshot()
-	require.Equal(t, batches, int(snapshot.batchCalls))
-	require.Equal(t, batches/3+1, int(snapshot.batchErrors))
-	require.Equal(t, batches, int(snapshot.partialPrefixes))
+	require.Equal(t, uint64(batches), snapshot.batchCalls)
+	require.Equal(t, uint64(batches/3+1), snapshot.batchErrors)
+	require.Equal(t, uint64(batches), snapshot.partialPrefixes)
 	require.Equal(t, batches*2*time.Millisecond, snapshot.waitElapsed)
 	require.Equal(t, batches*3*time.Millisecond, snapshot.fetchElapsed)
-	require.Equal(t, kvstore.PromotionStats{
-		Requested:             batches * 5,
-		Consumed:              batches * 3,
-		WritableHits:          batches,
-		WritableMisses:        batches * 2,
-		ArchiveHits:           batches * 3,
-		ArchiveMisses:         batches * 4,
-		ArchiveLookups:        batches * 5,
-		ArchiveLookupsAvoided: batches * 6,
-		Promoted:              batches * 7,
-		PromotedBytes:         batches * 8,
-		BufferedBytes:         batches * 9,
-		Batches:               batches,
-	}, snapshot.stats)
+	require.Equal(t, uint64(batches*5), snapshot.requested)
+	require.Equal(t, uint64(batches*3), snapshot.consumed)
+	require.Equal(t, uint64(batches), snapshot.writableHits)
+	require.Equal(t, uint64(batches*2), snapshot.writableMisses)
+	require.Equal(t, uint64(batches*3), snapshot.archiveHits)
+	require.Equal(t, uint64(batches*4), snapshot.archiveMisses)
+	require.Equal(t, uint64(batches*5), snapshot.archiveLookups)
+	require.Equal(t, uint64(batches*6), snapshot.archiveLookupsAvoided)
+	require.Equal(t, uint64(batches*7), snapshot.promoted)
+	require.Equal(t, uint64(batches*8), snapshot.promotedBytes)
+	require.Equal(t, uint64(batches*9), snapshot.bufferedBytes)
+	require.Equal(t, uint64(batches), snapshot.batchWrites)
 }
 
-func TestOnlineDeleteRefreshPromotionMetricsOnlyAttachToNativeBatchRefresh(t *testing.T) {
-	progress := newStoredSHAMapVerificationProgress(
-		nil,
-		nil,
-		[32]byte{1},
-		shamap.TypeState,
-		time.Unix(0, 0),
-	)
-	fields := progress.fields(time.Unix(0, 1))
-	for index := 0; index+1 < len(fields); index += 2 {
-		require.NotEqual(t, "promotion_batch_calls", fields[index])
+func TestOnlineDeleteRefreshPromotionMetricsUseUint64ByteTotals(t *testing.T) {
+	const perBatch = 1 << 30
+	metrics := &onlineDeleteRefreshPromotionMetrics{}
+	for range 3 {
+		metrics.record(0, 0, kvstore.PromotionStats{
+			PromotedBytes: perBatch,
+			BufferedBytes: perBatch,
+		}, nil)
 	}
 
-	metrics := newOnlineDeleteRefreshPromotionMetrics()
-	metrics.record(0, 0, kvstore.PromotionStats{Requested: 1, Consumed: 1}, nil)
-	progress.promotionMetrics = metrics
-	fields = progress.fields(time.Unix(0, 1))
-	var found bool
-	for index := 0; index+1 < len(fields); index += 2 {
-		if fields[index] == "promotion_batch_calls" {
-			found = true
-			require.EqualValues(t, 1, fields[index+1])
-		}
-	}
-	require.True(t, found)
+	snapshot := metrics.snapshot()
+	want := uint64(3 * perBatch)
+	require.Greater(t, want, uint64(1<<31-1))
+	require.Equal(t, want, snapshot.promotedBytes)
+	require.Equal(t, want, snapshot.bufferedBytes)
 }
 
 func TestOnlineDeleteRefreshPromotionMetricsResetBetweenRefreshes(t *testing.T) {
@@ -171,6 +178,114 @@ func TestOnlineDeleteRefreshPromotionMetricsResetBetweenRefreshes(t *testing.T) 
 	require.Positive(t, records[1].BatchCalls)
 	require.Positive(t, records[3].BatchCalls)
 	require.NotEqual(t, uint64(firstBatches+secondBatches), records[3].BatchCalls)
+}
+
+func TestOnlineDeleteRefreshPromotionMetricsReportPartialPrefixAndSources(t *testing.T) {
+	svc, db, seq := newRotatingRefreshFixture(t, 128)
+	capture, logger := newVerificationLogCapture()
+	root, err := svc.GetValidatedLedger().StateMapHash()
+	require.NoError(t, err)
+	probe := &promotionBatchProbe{BatchGenerationDatabase: db}
+	refresh := &Service{nodeStore: probe, logger: logger}
+
+	require.NoError(t, refresh.refreshGenerationStateWithBatch(
+		t.Context(), root, seq, probe, nil, 1, 64, 1,
+	))
+	firstRequests := probe.batchRequests.Load()
+	firstBatches := probe.batchCalls.Load()
+
+	require.NoError(t, refresh.refreshGenerationStateWithBatch(
+		t.Context(), root, seq, probe, nil, 1, 64, storedSHAMapPromotionBatchBytes,
+	))
+	secondRequests := probe.batchRequests.Load() - firstRequests
+	secondBatches := probe.batchCalls.Load() - firstBatches
+
+	records := decodePromotionProgressLogs(t, capture)
+	require.Len(t, records, 4)
+	first := records[1]
+	second := records[3]
+	require.Equal(t, "online delete: live-state refresh complete", first.Message)
+	require.Equal(t, "online delete: live-state refresh complete", second.Message)
+	require.Positive(t, first.BatchCalls)
+	require.Positive(t, first.PartialPrefixes)
+	require.Greater(t, first.Requested, first.Consumed)
+	require.Positive(t, first.ArchiveLookups)
+	require.Positive(t, first.ArchiveHits)
+	require.Positive(t, first.Promoted)
+	require.Positive(t, first.PromotedBytes)
+	require.Positive(t, first.BufferedBytes)
+	require.Positive(t, first.BatchWrites)
+	require.Greater(t, first.NodeStoreReadsAfter, first.NodeStoreReadsBefore)
+	require.Positive(t, second.BatchCalls)
+	require.Zero(t, second.PartialPrefixes)
+	require.Equal(t, second.Requested, second.Consumed)
+	require.Positive(t, second.WritableHits)
+	require.Positive(t, second.ArchiveLookupsAvoided)
+	require.Zero(t, second.ArchiveLookups)
+	require.Zero(t, second.ArchiveHits)
+	require.Zero(t, second.BatchWrites)
+
+	// The scalar root/frontier walk is outside this probe; promotion totals come
+	// only from native batch responses and therefore exclude those reads.
+	require.EqualValues(t, firstRequests, first.Requested)
+	require.EqualValues(t, firstBatches, first.BatchCalls)
+	require.EqualValues(t, secondRequests, second.Requested)
+	require.EqualValues(t, secondBatches, second.BatchCalls)
+}
+
+func TestOnlineDeleteRefreshPromotionMetricsReportCanceledPersistenceWait(t *testing.T) {
+	svc, db, seq := newRotatingRefreshFixture(t, 256)
+	root, err := svc.GetValidatedLedger().StateMapHash()
+	require.NoError(t, err)
+	db.storeBatchStart = make(chan struct{})
+	db.storeBatchResume = make(chan struct{})
+	db.promotionStart = make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(db.storeBatchResume) }) }
+	t.Cleanup(release)
+
+	next := buildLedgerWithState(t, seq+1)
+	persistDone := make(chan error, 1)
+	go func() {
+		persistDone <- svc.persistToNodeStore(t.Context(), next, next.Sequence())
+	}()
+	<-db.storeBatchStart
+
+	capture, logger := newVerificationLogCapture()
+	svc.logger = logger
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	refreshDone := make(chan error, 1)
+	go func() {
+		refreshDone <- svc.refreshGenerationStateWithBatch(ctx, root, seq, db, nil, 4, 64, 4<<20)
+	}()
+	<-db.promotionStart
+	select {
+	case err := <-refreshDone:
+		t.Fatalf("refresh bypassed pending persistence: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	require.Zero(t, db.promotionBatches.Load())
+
+	cancel()
+	select {
+	case err := <-refreshDone:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("refresh cancellation waited for ledger persistence")
+	}
+	release()
+	require.NoError(t, <-persistDone)
+
+	records := decodePromotionProgressLogs(t, capture)
+	require.Len(t, records, 2)
+	require.Equal(t, "online delete: live-state refresh started", records[0].Message)
+	require.Equal(t, "online delete: live-state refresh canceled", records[1].Message)
+	require.Zero(t, records[1].BatchCalls)
+	waitElapsed, err := time.ParseDuration(records[1].WaitElapsed)
+	require.NoError(t, err)
+	require.Positive(t, waitElapsed)
+	require.Equal(t, "0s", records[1].FetchElapsed)
 }
 
 func TestOnlineDeleteRefreshPromotionMetricsRetainBackendErrorAndFailureLog(t *testing.T) {

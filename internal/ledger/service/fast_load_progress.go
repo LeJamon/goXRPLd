@@ -29,25 +29,27 @@ const (
 type onlineDeleteRefreshPromotionMetrics struct {
 	mu sync.Mutex
 
-	stats           kvstore.PromotionStats
-	batchCalls      uint64
-	batchErrors     uint64
-	partialPrefixes uint64
-	fetchElapsed    time.Duration
-	waitElapsed     time.Duration
+	totals onlineDeleteRefreshPromotionTotals
 }
 
-type onlineDeleteRefreshPromotionSnapshot struct {
-	stats           kvstore.PromotionStats
-	batchCalls      uint64
-	batchErrors     uint64
-	partialPrefixes uint64
-	fetchElapsed    time.Duration
-	waitElapsed     time.Duration
-}
-
-func newOnlineDeleteRefreshPromotionMetrics() *onlineDeleteRefreshPromotionMetrics {
-	return &onlineDeleteRefreshPromotionMetrics{}
+type onlineDeleteRefreshPromotionTotals struct {
+	requested             uint64
+	consumed              uint64
+	writableHits          uint64
+	writableMisses        uint64
+	archiveHits           uint64
+	archiveMisses         uint64
+	archiveLookups        uint64
+	archiveLookupsAvoided uint64
+	promoted              uint64
+	promotedBytes         uint64
+	bufferedBytes         uint64
+	batchWrites           uint64
+	batchCalls            uint64
+	batchErrors           uint64
+	partialPrefixes       uint64
+	fetchElapsed          time.Duration
+	waitElapsed           time.Duration
 }
 
 func (m *onlineDeleteRefreshPromotionMetrics) record(
@@ -64,16 +66,27 @@ func (m *onlineDeleteRefreshPromotionMetrics) record(
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	addPromotionStats(&m.stats, stats)
-	m.batchCalls++
+	m.totals.requested += uint64(stats.Requested)
+	m.totals.consumed += uint64(stats.Consumed)
+	m.totals.writableHits += uint64(stats.WritableHits)
+	m.totals.writableMisses += uint64(stats.WritableMisses)
+	m.totals.archiveHits += uint64(stats.ArchiveHits)
+	m.totals.archiveMisses += uint64(stats.ArchiveMisses)
+	m.totals.archiveLookups += uint64(stats.ArchiveLookups)
+	m.totals.archiveLookupsAvoided += uint64(stats.ArchiveLookupsAvoided)
+	m.totals.promoted += uint64(stats.Promoted)
+	m.totals.promotedBytes += uint64(stats.PromotedBytes)
+	m.totals.bufferedBytes += uint64(stats.BufferedBytes)
+	m.totals.batchWrites += uint64(stats.Batches)
+	m.totals.batchCalls++
 	if err != nil {
-		m.batchErrors++
+		m.totals.batchErrors++
 	}
 	if stats.Consumed < stats.Requested {
-		m.partialPrefixes++
+		m.totals.partialPrefixes++
 	}
-	m.fetchElapsed += fetchElapsed
-	m.waitElapsed += waitElapsed
+	m.totals.fetchElapsed += fetchElapsed
+	m.totals.waitElapsed += waitElapsed
 }
 
 func (m *onlineDeleteRefreshPromotionMetrics) recordWait(waitElapsed time.Duration) {
@@ -81,54 +94,31 @@ func (m *onlineDeleteRefreshPromotionMetrics) recordWait(waitElapsed time.Durati
 		waitElapsed = 0
 	}
 	m.mu.Lock()
-	m.waitElapsed += waitElapsed
+	m.totals.waitElapsed += waitElapsed
 	m.mu.Unlock()
 }
 
-func (m *onlineDeleteRefreshPromotionMetrics) snapshot() onlineDeleteRefreshPromotionSnapshot {
+func (m *onlineDeleteRefreshPromotionMetrics) snapshot() onlineDeleteRefreshPromotionTotals {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return onlineDeleteRefreshPromotionSnapshot{
-		stats:           m.stats,
-		batchCalls:      m.batchCalls,
-		batchErrors:     m.batchErrors,
-		partialPrefixes: m.partialPrefixes,
-		fetchElapsed:    m.fetchElapsed,
-		waitElapsed:     m.waitElapsed,
-	}
-}
-
-func addPromotionStats(total *kvstore.PromotionStats, delta kvstore.PromotionStats) {
-	total.Requested += delta.Requested
-	total.Consumed += delta.Consumed
-	total.WritableHits += delta.WritableHits
-	total.WritableMisses += delta.WritableMisses
-	total.ArchiveHits += delta.ArchiveHits
-	total.ArchiveMisses += delta.ArchiveMisses
-	total.ArchiveLookups += delta.ArchiveLookups
-	total.ArchiveLookupsAvoided += delta.ArchiveLookupsAvoided
-	total.Promoted += delta.Promoted
-	total.PromotedBytes += delta.PromotedBytes
-	total.BufferedBytes += delta.BufferedBytes
-	total.Batches += delta.Batches
+	return m.totals
 }
 
 func (m *onlineDeleteRefreshPromotionMetrics) fields() []any {
 	snapshot := m.snapshot()
-	stats := snapshot.stats
 	return []any{
-		"promotion_requested", stats.Requested,
-		"promotion_consumed", stats.Consumed,
-		"promotion_writable_hits", stats.WritableHits,
-		"promotion_writable_misses", stats.WritableMisses,
-		"promotion_archive_hits", stats.ArchiveHits,
-		"promotion_archive_misses", stats.ArchiveMisses,
-		"promotion_archive_lookups", stats.ArchiveLookups,
-		"promotion_archive_lookups_avoided", stats.ArchiveLookupsAvoided,
-		"promotion_promoted", stats.Promoted,
-		"promotion_promoted_bytes", stats.PromotedBytes,
-		"promotion_buffered_bytes", stats.BufferedBytes,
-		"promotion_batch_writes", stats.Batches,
+		"promotion_requested", snapshot.requested,
+		"promotion_consumed", snapshot.consumed,
+		"promotion_writable_hits", snapshot.writableHits,
+		"promotion_writable_misses", snapshot.writableMisses,
+		"promotion_archive_hits", snapshot.archiveHits,
+		"promotion_archive_misses", snapshot.archiveMisses,
+		"promotion_archive_lookups", snapshot.archiveLookups,
+		"promotion_archive_lookups_avoided", snapshot.archiveLookupsAvoided,
+		"promotion_promoted", snapshot.promoted,
+		"promotion_promoted_bytes", snapshot.promotedBytes,
+		"promotion_buffered_bytes", snapshot.bufferedBytes,
+		"promotion_batch_writes", snapshot.batchWrites,
 		"promotion_batch_calls", snapshot.batchCalls,
 		"promotion_batch_errors", snapshot.batchErrors,
 		"promotion_partial_prefixes", snapshot.partialPrefixes,
