@@ -334,3 +334,60 @@ func TestEngineStopJoinsAcceptanceDeferrerBeforeEventBusClose(t *testing.T) {
 		t.Fatal("Engine.Stop did not return after acceptance drain")
 	}
 }
+
+func TestDeferredLedgerAcceptIgnoresLateTxSetDuringBuild(t *testing.T) {
+	for _, failBuild := range []bool{false, true} {
+		name := "success"
+		if failBuild {
+			name = "failed build retry"
+		}
+		t.Run(name, func(t *testing.T) {
+			base := newMockAdaptor()
+			base.standalone = true
+			if failBuild {
+				base.buildLedgerErr = errors.New("build failed")
+			}
+			adaptor := &deferredAcceptAdaptor{mockAdaptor: base}
+			engine := startDeferredAccept(t, adaptor)
+			lateID := consensus.TxSetID{1}
+			lateTx := make([]byte, 32)
+			lateTx[0] = 0x42
+			base.buildLedgerHook = func() {
+				if err := engine.OnTxSet(lateID, [][]byte{lateTx}); err != nil {
+					t.Fatalf("late OnTxSet: %v", err)
+				}
+				engine.mu.RLock()
+				_, acquired := engine.acquiredTxSets[lateID]
+				_, compared := engine.comparesTxSets[lateID]
+				disputed := engine.disputeTracker.disputedNoTxs()
+				engine.mu.RUnlock()
+				if acquired || compared || len(disputed) != 0 {
+					t.Fatalf("late set changed accepted round: acquired=%t compared=%t disputed=%d", acquired, compared, len(disputed))
+				}
+			}
+			adaptor.completion(t)()
+
+			if failBuild {
+				engine.mu.RLock()
+				phase := engine.phase
+				building := engine.buildInProgress
+				disputed := engine.disputeTracker.disputedNoTxs()
+				engine.mu.RUnlock()
+				if phase != consensus.PhaseEstablish || building || len(disputed) != 0 {
+					t.Fatalf("failed build state: phase=%v building=%t disputed=%d", phase, building, len(disputed))
+				}
+				base.buildLedgerErr = nil
+				engine.mu.Lock()
+				engine.acceptLedger(consensus.ResultSuccess)
+				engine.mu.Unlock()
+				adaptor.completion(t)()
+			}
+			if got := base.lastLCL.Seq(); got != 101 {
+				t.Fatalf("accepted ledger seq = %d, want 101", got)
+			}
+			if got := len(base.lastLCL.(*mockLedger).txs); got != 0 {
+				t.Fatalf("accepted ledger contains %d transactions, want 0", got)
+			}
+		})
+	}
+}

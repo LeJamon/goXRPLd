@@ -262,6 +262,9 @@ func validationDispositionStatus(status valStatus) consensus.ValidationStatus {
 func (e *Engine) OnTxSet(id consensus.TxSetID, txs [][]byte) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.phase == consensus.PhaseAccepted {
+		return nil
+	}
 	e.purgePendingTrustLocked()
 
 	txSet, err := e.adaptor.BuildTxSet(txs)
