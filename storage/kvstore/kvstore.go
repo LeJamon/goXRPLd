@@ -86,6 +86,11 @@ type PromotionStats struct {
 	PromotedBytes  int
 	BufferedBytes  int
 	Batches        int
+	// VersionMismatches includes repeated invalidated observations of a key.
+	VersionMismatches int
+	Retries           int
+	// Fallbacks counts single-stripe rereads after the retry budget is exhausted.
+	Fallbacks int
 }
 
 // CacheMetrics is a point-in-time snapshot of shared block-cache activity.

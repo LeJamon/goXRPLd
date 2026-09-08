@@ -130,10 +130,11 @@ func validateGenerationBoundaries(lastRotated, minimumOnline uint32) error {
 type RotatingStore struct {
 	// Lock order is mu, archiveMu when needed, then mutation stripes in
 	// ascending order. Put-only operations skip archiveMu.
-	mu        sync.RWMutex
-	archiveMu sync.RWMutex
-	rotateMu  sync.Mutex
-	mutations [rotatingStoreMutationStripes]sync.Mutex
+	mu               sync.RWMutex
+	archiveMu        sync.RWMutex
+	rotateMu         sync.Mutex
+	mutations        [rotatingStoreMutationStripes]sync.Mutex
+	mutationVersions [rotatingStoreMutationStripes]uint64 // guarded by the corresponding stripe
 
 	basePath              string
 	statePath             string
@@ -581,27 +582,99 @@ func (r *RotatingStore) PromoteBatch(
 		return nil, stats, err
 	}
 	sorted = sorted[:len(prefetched)]
-	lockedMutations := r.lockMutations(sorted)
-	defer r.unlockMutations(&lockedMutations)
-
-	writable, err := r.writable.newPointIterator()
-	if err != nil {
-		return nil, stats, err
-	}
-	defer func() { resultErr = errors.Join(resultErr, writable.Close()) }()
-
-	batch, err := r.writable.NewBatch()
-	if err != nil {
-		return nil, stats, err
-	}
-	defer func() { resultErr = errors.Join(resultErr, batch.Close()) }()
-
-	promotions = make([]kvstore.Promotion, 0, len(sorted))
-	for index, key := range sorted {
-		remaining := maxBytes - stats.BufferedBytes
-		value, found, tooLarge, err := writable.get(key, remaining, len(promotions) == 0)
+	var warmed []promotionPrefetch
+	var versions [rotatingStoreMutationStripes]uint64
+	for attempt := 0; attempt <= promotionRetryLimit; attempt++ {
+		warmed, versions, err = r.prefetchWritablePromotion(sorted, maxBytes, warmed, versions)
 		if err != nil {
 			return nil, stats, err
+		}
+		selectedKeys := sorted[:len(warmed)]
+		locked := r.lockMutations(selectedKeys)
+		mismatches := 0
+		for _, key := range selectedKeys {
+			if r.mutationVersions[mutationStripe(key)] != versions[mutationStripe(key)] {
+				mismatches++
+			}
+		}
+		stats.VersionMismatches += mismatches
+		if mismatches == 0 {
+			defer r.unlockMutations(&locked)
+			promotions, resultErr = r.commitPromotions(selectedKeys, warmed, prefetched, maxBytes, make([]kvstore.Promotion, 0, len(selectedKeys)), &stats)
+			return promotions, stats, resultErr
+		}
+		r.unlockMutations(&locked)
+		if attempt < promotionRetryLimit {
+			stats.Retries++
+		}
+	}
+
+	// Continuous mutation cannot starve the batch. Resolve one key at a time
+	// after the retry budget, so a cold lookup holds only its own stripe.
+	sorted = sorted[:len(warmed)]
+	promotions = make([]kvstore.Promotion, 0, len(sorted))
+	for index, key := range sorted {
+		var consumed bool
+		promotions, consumed, resultErr = r.promoteOne(key, warmed[index], versions[mutationStripe(key)], prefetched[index], maxBytes, promotions, &stats)
+		if resultErr != nil {
+			return nil, stats, resultErr
+		}
+		if !consumed {
+			break
+		}
+	}
+	return promotions, stats, nil
+}
+
+const promotionRetryLimit = 2
+
+func (r *RotatingStore) promoteOne(
+	key []byte, writable promotionPrefetch, version uint64, archive promotionPrefetch, maxBytes int,
+	promotions []kvstore.Promotion, stats *kvstore.PromotionStats,
+) ([]kvstore.Promotion, bool, error) {
+	stripe := mutationStripe(key)
+	r.mutations[stripe].Lock()
+	defer r.mutations[stripe].Unlock()
+	if r.mutationVersions[stripe] != version {
+		stats.Fallbacks++
+		iter, err := r.writable.newPointIterator()
+		if err != nil {
+			return nil, false, err
+		}
+		value, found, tooLarge, readErr := iter.get(key, maxBytes-stats.BufferedBytes, len(promotions) == 0)
+		if err := errors.Join(readErr, iter.Close()); err != nil {
+			return nil, false, err
+		}
+		if tooLarge {
+			return promotions, false, nil
+		}
+		writable = promotionPrefetch{value: value, found: found}
+	}
+	before := len(promotions)
+	promotions, err := r.commitPromotions([][]byte{key}, []promotionPrefetch{writable}, []promotionPrefetch{archive}, maxBytes, promotions, stats)
+	return promotions, len(promotions) > before, err
+}
+
+func (r *RotatingStore) commitPromotions(
+	sorted [][]byte, warmed, prefetched []promotionPrefetch, maxBytes int,
+	promotions []kvstore.Promotion, stats *kvstore.PromotionStats,
+) (result []kvstore.Promotion, resultErr error) {
+	var batch kvstore.Batch
+	defer func() {
+		if batch != nil {
+			resultErr = errors.Join(resultErr, batch.Close())
+		}
+	}()
+
+	var changed [rotatingStoreMutationStripes]bool
+	promotedBefore := stats.Promoted
+	for index, key := range sorted {
+		remaining := maxBytes - stats.BufferedBytes
+		candidateWritable := warmed[index]
+		value, found, err := candidateWritable.value, candidateWritable.found, candidateWritable.err
+		tooLarge := found && len(value) > remaining && len(promotions) > 0
+		if err != nil {
+			return nil, err
 		}
 		if tooLarge {
 			break
@@ -620,7 +693,7 @@ func (r *RotatingStore) PromoteBatch(
 		value, found, err = candidate.value, candidate.found, candidate.err
 		tooLarge = found && len(value) > remaining && len(promotions) > 0
 		if err != nil {
-			return nil, stats, err
+			return nil, err
 		}
 		if tooLarge {
 			break
@@ -633,9 +706,17 @@ func (r *RotatingStore) PromoteBatch(
 		}
 		stats.ArchiveHits++
 		stats.BufferedBytes += len(value)
-		if err := batch.Put(key, value); err != nil {
-			return nil, stats, err
+		if batch == nil {
+			var err error
+			batch, err = r.writable.NewBatch()
+			if err != nil {
+				return nil, err
+			}
 		}
+		if err := batch.Put(key, value); err != nil {
+			return nil, err
+		}
+		changed[mutationStripe(key)] = true
 		stats.Promoted++
 		stats.PromotedBytes += len(value)
 		promotions = append(promotions, kvstore.Promotion{
@@ -643,19 +724,60 @@ func (r *RotatingStore) PromoteBatch(
 		})
 		stats.Consumed++
 	}
-	if stats.Promoted > 0 {
+	if stats.Promoted > promotedBefore {
+		r.advanceMutationVersions(&changed)
 		if err := batch.Write(); err != nil {
-			return nil, stats, fmt.Errorf("kvstore/pebble: promote archive batch: %w", err)
+			return nil, fmt.Errorf("kvstore/pebble: promote archive batch: %w", err)
 		}
-		stats.Batches = 1
+		stats.Batches++
 	}
-	return promotions, stats, nil
+	return promotions, nil
 }
 
 type promotionPrefetch struct {
 	value []byte
 	found bool
 	err   error
+}
+
+func (r *RotatingStore) prefetchWritablePromotion(
+	keys [][]byte, maxBytes int, previous []promotionPrefetch,
+	previousVersions [rotatingStoreMutationStripes]uint64,
+) ([]promotionPrefetch, [rotatingStoreMutationStripes]uint64, error) {
+	var versions [rotatingStoreMutationStripes]uint64
+	selected := r.lockMutations(keys)
+	for index, locked := range selected {
+		if locked {
+			versions[index] = r.mutationVersions[index]
+		}
+	}
+	r.unlockMutations(&selected)
+	iter, err := r.writable.newPointIterator()
+	if err != nil {
+		return nil, versions, err
+	}
+	records := make([]promotionPrefetch, 0, len(keys))
+	buffered := 0
+	for index, key := range keys {
+		var record promotionPrefetch
+		tooLarge := false
+		if index < len(previous) && versions[mutationStripe(key)] == previousVersions[mutationStripe(key)] {
+			record = previous[index]
+			tooLarge = record.found && len(record.value) > maxBytes-buffered && len(records) > 0
+		} else {
+			record.value, record.found, tooLarge, record.err = iter.get(key, maxBytes-buffered, len(records) == 0)
+		}
+		value, found, readErr := record.value, record.found, record.err
+		if tooLarge {
+			break
+		}
+		records = append(records, promotionPrefetch{value: value, found: found, err: readErr})
+		if readErr != nil {
+			return nil, versions, errors.Join(readErr, iter.Close())
+		}
+		buffered += len(value)
+	}
+	return records, versions, iter.Close()
 }
 
 // The prefetched payload and the final results each have their own byte budget.
@@ -744,6 +866,14 @@ func (r *RotatingStore) unlockMutations(selected *[rotatingStoreMutationStripes]
 	}
 }
 
+func (r *RotatingStore) advanceMutationVersions(selected *[rotatingStoreMutationStripes]bool) {
+	for index, changed := range selected {
+		if changed {
+			r.mutationVersions[index]++
+		}
+	}
+}
+
 func mutationStripe(key []byte) int {
 	const (
 		offset = uint32(2166136261)
@@ -770,6 +900,7 @@ func (r *RotatingStore) getLocked(key []byte, promote bool) ([]byte, error) {
 		return nil, err
 	}
 	if promote {
+		r.mutationVersions[mutationStripe(key)]++
 		if err := r.writable.Put(key, data); err != nil {
 			return nil, fmt.Errorf("kvstore/pebble: promote archive record: %w", err)
 		}
@@ -787,6 +918,7 @@ func (r *RotatingStore) Put(key []byte, value []byte) error {
 	mutation := &r.mutations[mutationStripe(key)]
 	mutation.Lock()
 	defer mutation.Unlock()
+	r.mutationVersions[mutationStripe(key)]++
 	return r.writable.Put(key, value)
 }
 
@@ -1420,6 +1552,8 @@ func (b *rotatingBatch) Write() (resultErr error) {
 			return err
 		}
 	}
+	// Invalidate before either generation can change, including partial failures.
+	b.store.advanceMutationVersions(&lockedMutations)
 	if hasDeletes {
 		archiveBatch, err := b.store.archive.NewBatch()
 		if err != nil {
