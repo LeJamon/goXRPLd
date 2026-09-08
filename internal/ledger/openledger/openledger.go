@@ -195,10 +195,10 @@ func (o *OpenLedger) accept(
 	}
 
 	// 1. retriesFirst — replay disputed/held txs first, OUTSIDE modifyMu.
+	// Pass an empty initial range so the seeded retries enter the shared retry
+	// loop directly, matching rippled OpenLedger::apply.
 	if retriesFirst && retryTarget != nil && len(*retryTarget) > 0 {
-		held := append([]PendingTx(nil), (*retryTarget)...)
-		*retryTarget = (*retryTarget)[:0]
-		if err := ApplyTxs(next, held, retryTarget, applyCfg); err != nil {
+		if err := ApplyTxs(next, nil, retryTarget, applyCfg); err != nil {
 			return err
 		}
 	}
@@ -250,7 +250,7 @@ func (o *OpenLedger) accept(
 			parsedLocals = append(parsedLocals, parsedLocal{pending: prepared, parsed: prepared.Parsed})
 		}
 	} else if len(eligibleLocals) > 0 {
-		if err := applyTxs(next, eligibleLocals, retryTarget, applyCfg, false); err != nil {
+		if err := applyTxs(next, eligibleLocals, retryTarget, applyCfg, false, false); err != nil {
 			return err
 		}
 	}

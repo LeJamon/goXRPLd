@@ -94,6 +94,7 @@ func (s *Service) acceptConsensusResult(
 			disputed = append(disputed, ptx)
 		}
 	}
+	anyDisputes := len(disputed) > 0
 	timings.parse = time.Since(parseStarted)
 	var closed *ledger.Ledger
 	replayed := false
@@ -205,7 +206,7 @@ func (s *Service) acceptConsensusResult(
 	if err != nil {
 		return 0, fmt.Errorf("failed to create new open ledger: %w", err)
 	}
-	err = acceptOpen(closed, retriableTxs, len(retriableTxs) > 0, func(publish func()) {
+	err = acceptOpen(closed, retriableTxs, anyDisputes, func(publish func()) {
 		timings.nextOpen = time.Since(nextStarted)
 		lockStarted = time.Now()
 		s.mu.Lock()
