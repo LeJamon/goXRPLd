@@ -847,8 +847,10 @@ func formatPromotionBenchmarkReportLine(
 		strconv.Itoa(overlap.overlappedSamples),
 		strconv.Itoa(overlap.completeSamples),
 		fmt.Sprintf("%.2f", overlap.conflictsPerOp),
+		optionalValues[0],
+		optionalValues[1],
+		optionalValues[2],
 	}
-	values = append(values, optionalValues...)
 	return strings.Join(values, "\t")
 }
 
