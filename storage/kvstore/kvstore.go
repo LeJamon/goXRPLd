@@ -51,7 +51,6 @@ type KeyValueStore interface {
 // must be positive. Implementations must return caller-owned key and value
 // slices and must not mutate keys.
 type BatchReadingStore interface {
-	KeyValueStore
 	GetBatch(ctx context.Context, keys [][]byte, maxNodes, maxBytes int) ([]ReadResult, error)
 }
 
