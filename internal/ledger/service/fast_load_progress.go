@@ -24,8 +24,7 @@ const (
 // onlineDeleteRefreshPromotionMetrics is scoped to one batched refresh.
 // It records the backend's returned counters even when a batch returns an
 // error; promoted counters describe writes committed before the error.
-// No node identities are
-// retained, so memory use stays constant as the refresh grows.
+// No node identities are retained, so memory use stays constant as the refresh grows.
 type onlineDeleteRefreshPromotionMetrics struct {
 	mu sync.Mutex
 

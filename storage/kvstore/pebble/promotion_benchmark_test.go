@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -54,7 +55,11 @@ func TestPromotionBatchOfflineReport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer report.Close()
+	t.Cleanup(func() {
+		if err := report.Close(); err != nil {
+			t.Errorf("close promotion report: %v", err)
+		}
+	})
 
 	profiles := []promotionBenchmarkProfile{
 		{name: "ssd-vfs", delay: 0},
@@ -70,8 +75,25 @@ func TestPromotionBatchOfflineReport(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	fmt.Fprintf(report, "# gomaxprocs=3 os_cache=retained cache=logical_shared_block_cache reads=logical_sst_vfs_reads_not_physical_hdd_reads foreground=Put_NoSync\n")
-	fmt.Fprintln(report, "storage\tos_cache\tsynthetic_delay\thit_rate\titerations\tpromote_p50_ns\tpromote_p95_ns\tpromote_p99_ns\tallocs_per_op\tbytes_alloc_per_op\tarchive_sst_reads_per_batch\tarchive_sst_bytes_per_batch\twritable_sst_reads_per_batch\twritable_sst_bytes_per_batch\tblock_cache_misses_per_batch\tblock_cache_hits_per_batch\toverlap_promote_p50_ns\toverlap_promote_p95_ns\toverlap_promote_p99_ns\tforeground_put_p50_ns\tforeground_put_p95_ns\tforeground_put_p99_ns\toverlap_samples\tarchive_lookups_per_batch\tarchive_lookups_avoided_per_batch\tprefetch_bytes_per_batch\tversion_mismatches_per_batch\tretries_per_batch\tfallbacks_per_batch")
+	revision, err := exec.Command("git", "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("read benchmark revision: %v", err)
+	}
+	status, err := exec.Command("git", "status", "--porcelain").Output()
+	if err != nil {
+		t.Fatalf("read benchmark working tree: %v", err)
+	}
+	if _, err := fmt.Fprintf(report, "# revision=%s working_tree=%q\n", strings.TrimSpace(string(revision)), strings.TrimSpace(string(status))); err != nil {
+		t.Fatal(err)
+	}
+	_, err = fmt.Fprintf(report, "# gomaxprocs=3 os_cache=retained cache=logical_shared_block_cache reads=logical_sst_vfs_reads_not_physical_hdd_reads foreground=Put_NoSync\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = fmt.Fprintln(report, "storage\tos_cache\tsynthetic_delay\thit_rate\titerations\tpromote_p50_ns\tpromote_p95_ns\tpromote_p99_ns\tallocs_per_op\tbytes_alloc_per_op\tarchive_sst_reads_per_batch\tarchive_sst_bytes_per_batch\twritable_sst_reads_per_batch\twritable_sst_bytes_per_batch\tblock_cache_misses_per_batch\tblock_cache_hits_per_batch\toverlap_promote_p50_ns\toverlap_promote_p95_ns\toverlap_promote_p99_ns\tforeground_put_p50_ns\tforeground_put_p95_ns\tforeground_put_p99_ns\toverlap_samples\tarchive_lookups_per_batch\tarchive_lookups_avoided_per_batch\tprefetch_bytes_per_batch\tversion_mismatches_per_batch\tretries_per_batch\tfallbacks_per_batch")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	t.Logf("promotion benchmark report: %s", reportPath)
 	t.Logf("gomaxprocs=3 os_cache=retained reads=logical SST VFS reads, not physical HDD reads")
@@ -98,7 +120,9 @@ func TestPromotionBatchOfflineReport(t *testing.T) {
 				overlapSummary := summarizePromotionBenchmarkOverlaps(overlaps)
 				optional := summarizeOptionalPromotionStats(samples)
 				line := formatPromotionBenchmarkReportLine(profile, hitCase, iterations, promoteSummary, overlapSummary, optional)
-				fmt.Fprintln(report, line)
+				if _, err := fmt.Fprintln(report, line); err != nil {
+					t.Fatal(err)
+				}
 				t.Logf("%s", line)
 			})
 		}
@@ -485,12 +509,12 @@ func addPromotionBenchmarkStats(dst *kvstore.PromotionStats, src kvstore.Promoti
 	dst.Batches += src.Batches
 }
 
-func runPromotionBenchmarkSample(group, writableKeys int, delay time.Duration) (promotionBenchmarkSample, error) {
+func runPromotionBenchmarkSample(group, writableKeys int, delay time.Duration) (sample promotionBenchmarkSample, resultErr error) {
 	fixture, err := openPromotionBenchmarkFixture(group, writableKeys, delay)
 	if err != nil {
 		return promotionBenchmarkSample{}, err
 	}
-	defer fixture.close()
+	defer func() { resultErr = errors.Join(resultErr, fixture.close()) }()
 
 	runtime.GC()
 	fixture.writableFS.metrics.reset()
@@ -535,13 +559,14 @@ type promotionBenchmarkResult struct {
 	err      error
 }
 
-func runPromotionBenchmarkOverlapSample(group, writableKeys int, delay time.Duration) (promotionBenchmarkOverlapSample, error) {
+func runPromotionBenchmarkOverlapSample(group, writableKeys int, delay time.Duration) (sample promotionBenchmarkOverlapSample, resultErr error) {
 	fixture, err := openPromotionBenchmarkFixture(group, writableKeys, delay)
 	if err != nil {
 		return promotionBenchmarkOverlapSample{}, err
 	}
-	defer fixture.close()
+	defer func() { resultErr = errors.Join(resultErr, fixture.close()) }()
 
+	runtime.GC()
 	fixture.writableFS.metrics.reset()
 	fixture.archiveFS.metrics.reset()
 	barrier := newPromotionBenchmarkReadBarrier()
@@ -581,15 +606,12 @@ func runPromotionBenchmarkOverlapSample(group, writableKeys int, delay time.Dura
 		[]byte("foreground-value"),
 	)
 	foregroundDuration := time.Since(started)
-	if foregroundErr != nil {
-		return promotionBenchmarkOverlapSample{}, foregroundErr
-	}
 	if result == nil {
 		completed := <-resultChannel
 		result = &completed
 	}
-	if result.err != nil {
-		return promotionBenchmarkOverlapSample{}, result.err
+	if err := errors.Join(foregroundErr, result.err); err != nil {
+		return promotionBenchmarkOverlapSample{}, err
 	}
 	return promotionBenchmarkOverlapSample{
 		promote:       result.duration,
