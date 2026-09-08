@@ -317,12 +317,13 @@ func (i *pointIterator) get(key []byte, remaining int, allowOversized bool) ([]b
 	if !bytes.Equal(i.iter.Key(), key) {
 		return nil, false, false, nil
 	}
+	lazy := i.iter.LazyValue()
+	if lazy.Len() > remaining && !allowOversized {
+		return nil, true, true, nil
+	}
 	value, err := i.iter.ValueAndErr()
 	if err != nil {
 		return nil, false, false, err
-	}
-	if len(value) > remaining && !allowOversized {
-		return nil, true, true, nil
 	}
 	return append([]byte(nil), value...), true, false, nil
 }

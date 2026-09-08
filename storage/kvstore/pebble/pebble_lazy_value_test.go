@@ -12,6 +12,7 @@ import (
 	cockroachpebble "github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/cockroachdb/pebble/vfs/errorfs"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPromoteBatchPropagatesLazyValueReadError(t *testing.T) {
@@ -226,4 +227,53 @@ func (f *lazyValueReadFault) MaybeError(op errorfs.Op, path string) error {
 		return errorfs.ErrInjected
 	}
 	return nil
+}
+
+func TestPromotionPrefetchStopsWritablePayloadAtArchivePrefix(t *testing.T) {
+	fs := vfs.NewMem()
+	cache := cockroachpebble.NewCache(8 << 20)
+	t.Cleanup(cache.Unref)
+	comparer := testValueBlockComparer()
+	writable, err := cockroachpebble.Open("writable", testValueBlockOptions(fs, cache, comparer))
+	require.NoError(t, err)
+	require.NoError(t, writable.Set([]byte("b/1"), bytes.Repeat([]byte{1}, 512), nil))
+	require.NoError(t, writable.Set([]byte("b/2"), bytes.Repeat([]byte{2}, 512), nil))
+	require.NoError(t, writable.Flush())
+	require.Positive(t, valueBlockBytes(t, writable))
+	require.NoError(t, writable.Close())
+
+	fault := newLazyValueReadFault()
+	loaded := make(chan struct{})
+	options := testValueBlockOptions(errorfs.Wrap(fs, fault), cache, comparer)
+	options.EventListener = &cockroachpebble.EventListener{
+		TableStatsLoaded: func(cockroachpebble.TableStatsInfo) { close(loaded) },
+	}
+	writable, err = cockroachpebble.Open("writable", options)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, writable.Close()) })
+	waitPromotionTableStats(t, loaded)
+	prime, err := writable.NewIter(nil)
+	require.NoError(t, err)
+	require.True(t, prime.SeekGE([]byte("a/1")))
+	require.True(t, prime.SeekGE([]byte("b/2")))
+	require.NotNil(t, prime.LazyValue().Fetcher)
+	require.NoError(t, prime.Close())
+
+	archive, err := cockroachpebble.Open("archive", testValueBlockOptions(fs, cache, comparer))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, archive.Close()) })
+	archiveValue := bytes.Repeat([]byte{3}, 1024)
+	require.NoError(t, archive.Set([]byte("a/1"), archiveValue, nil))
+	store := &RotatingStore{writable: &Store{db: writable}, archive: &Store{db: archive}}
+	fault.Arm()
+	t.Cleanup(fault.Disarm)
+
+	promotions, stats, err := store.PromoteBatch([][]byte{[]byte("a/1"), []byte("b/2")}, len(archiveValue))
+	require.NoError(t, err)
+	require.Len(t, promotions, 1)
+	require.Equal(t, []byte("a/1"), promotions[0].Key)
+	require.Equal(t, archiveValue, promotions[0].Value)
+	require.Equal(t, 1, stats.Promoted)
+	_, _, err = store.PromoteBatch([][]byte{[]byte("b/2")}, len(archiveValue))
+	require.ErrorIs(t, err, errorfs.ErrInjected)
 }

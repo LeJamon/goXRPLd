@@ -579,16 +579,11 @@ func (r *RotatingStore) PromoteBatch(
 	defer r.archiveMu.RUnlock()
 	// Deletion is excluded by archiveMu through commit, so a prefetched
 	// writable hit cannot disappear while its archive lookup is skipped.
-	warmed, versions, err := r.prefetchWritablePromotion(sorted, maxBytes)
+	warmed, prefetched, versions, err := r.prefetchPromotion(sorted, maxBytes, &stats)
 	if err != nil {
 		return nil, stats, err
 	}
 	sorted = sorted[:len(warmed)]
-	prefetched, err := r.prefetchPromotion(sorted, warmed, maxBytes, &stats)
-	if err != nil {
-		return nil, stats, err
-	}
-	sorted = sorted[:len(prefetched)]
 	lockedMutations := r.lockMutations(sorted)
 	defer r.unlockMutations(&lockedMutations)
 
@@ -671,83 +666,83 @@ type promotionPrefetch struct {
 	err   error
 }
 
-func (r *RotatingStore) prefetchWritablePromotion(keys [][]byte, maxBytes int) ([]promotionPrefetch, [rotatingStoreMutationStripes]uint64, error) {
-	var versions [rotatingStoreMutationStripes]uint64
+// Prefetch and returned payloads have separate byte budgets. Both prefetch
+// iterators advance over the same prefix so partial batches do not read ahead
+// in one generation after the other has exhausted the payload budget.
+func (r *RotatingStore) prefetchPromotion(
+	keys [][]byte,
+	maxBytes int,
+	stats *kvstore.PromotionStats,
+) (warmed, prefetched []promotionPrefetch, versions [rotatingStoreMutationStripes]uint64, resultErr error) {
 	selected := r.lockMutations(keys)
 	for index, locked := range selected {
 		if locked {
 			versions[index] = r.mutationVersions[index]
 		}
 	}
-	// This is an observation, not a mutation; do not advance the versions.
 	for index := len(selected) - 1; index >= 0; index-- {
 		if selected[index] {
 			r.mutations[index].Unlock()
 		}
 	}
-	iter, err := r.writable.newPointIterator()
+	writable, err := r.writable.newPointIterator()
 	if err != nil {
-		return nil, versions, err
+		return nil, nil, versions, err
 	}
-	records := make([]promotionPrefetch, 0, len(keys))
+	defer func() { resultErr = errors.Join(resultErr, writable.Close()) }()
+	var archive *pointIterator
+	defer func() {
+		if archive == nil {
+			return
+		}
+		closeErr := archive.Close()
+		if len(prefetched) > 0 && prefetched[len(prefetched)-1].err != nil {
+			// Keep a lazy archive read error with its key: a concurrent
+			// writable replacement can still supersede it at commit.
+			last := &prefetched[len(prefetched)-1]
+			last.err = errors.Join(last.err, closeErr)
+		} else {
+			resultErr = errors.Join(resultErr, closeErr)
+		}
+	}()
+	warmed = make([]promotionPrefetch, 0, len(keys))
+	prefetched = make([]promotionPrefetch, 0, len(keys))
 	buffered := 0
 	for _, key := range keys {
-		value, found, tooLarge, readErr := iter.get(key, maxBytes-buffered, len(records) == 0)
+		remaining := maxBytes - buffered
+		value, found, tooLarge, readErr := writable.get(key, remaining, len(warmed) == 0)
+		if readErr != nil {
+			return warmed, prefetched, versions, readErr
+		}
 		if tooLarge {
 			break
 		}
-		records = append(records, promotionPrefetch{value: value, found: found, err: readErr})
-		if readErr != nil {
-			return nil, versions, errors.Join(readErr, iter.Close())
-		}
-		buffered += len(value)
-	}
-	return records, versions, iter.Close()
-}
-
-// The prefetched payload and the final results each have their own byte budget.
-// A shorter prefix is valid even when writable precedence would leave room for
-// more results; the caller retries the remaining hashes.
-func (r *RotatingStore) prefetchPromotion(keys [][]byte, writable []promotionPrefetch, maxBytes int, stats *kvstore.PromotionStats) ([]promotionPrefetch, error) {
-	var archive *pointIterator
-	records := make([]promotionPrefetch, 0, len(keys))
-	buffered := 0
-	for index, key := range keys {
-		if writable[index].found {
-			records = append(records, promotionPrefetch{})
+		writableRecord := promotionPrefetch{value: value, found: found}
+		var archiveRecord promotionPrefetch
+		if found {
 			stats.ArchiveLookupsAvoided++
-			continue
-		}
-		if archive == nil {
-			var err error
-			archive, err = r.archive.newPointIterator()
-			if err != nil {
-				return nil, err
+		} else {
+			if archive == nil {
+				archive, err = r.archive.newPointIterator()
+				if err != nil {
+					return warmed, prefetched, versions, err
+				}
 			}
+			stats.ArchiveLookups++
+			value, found, tooLarge, readErr = archive.get(key, remaining, len(warmed) == 0)
+			if tooLarge {
+				break
+			}
+			archiveRecord = promotionPrefetch{value: value, found: found, err: readErr}
 		}
-		stats.ArchiveLookups++
-		value, found, tooLarge, readErr := archive.get(key, maxBytes-buffered, len(records) == 0)
-		if tooLarge {
-			break
-		}
-		records = append(records, promotionPrefetch{value: value, found: found, err: readErr})
+		warmed = append(warmed, writableRecord)
+		prefetched = append(prefetched, archiveRecord)
 		if readErr != nil {
 			break
 		}
 		buffered += len(value)
 	}
-	if archive == nil {
-		return records, nil
-	}
-	closeErr := archive.Close()
-	if len(records) > 0 && records[len(records)-1].err != nil {
-		// Lazy read errors also reach Close. Keep the error with its key so a
-		// newer writable value can take precedence over the failed archive read.
-		last := &records[len(records)-1]
-		last.err = errors.Join(last.err, closeErr)
-		return records, nil
-	}
-	return records, closeErr
+	return warmed, prefetched, versions, nil
 }
 
 // CacheMetrics returns a point-in-time snapshot of the shared block cache.
