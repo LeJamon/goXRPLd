@@ -22,6 +22,13 @@ type blockingPromotionRead struct {
 	release chan struct{}
 }
 
+func (b *blockingPromotionRead) MaybeError(op errorfs.Op, path string) error {
+	if b.armed.Load() && filepath.Ext(path) == ".sst" && (op == errorfs.OpFileRead || op == errorfs.OpFileReadAt) {
+		b.once.Do(func() { close(b.entered); <-b.release })
+	}
+	return nil
+}
+
 type promotionReadGate struct {
 	armed       atomic.Bool
 	entered     chan struct{}
@@ -51,16 +58,8 @@ func (s *stagedPromotionRead) MaybeError(op errorfs.Op, path string) error {
 		if gate.armed.CompareAndSwap(true, false) {
 			close(gate.entered)
 			<-gate.release
-			// Leave the block uncached so retries still exercise I/O.
 			return errorfs.ErrInjected
 		}
-	}
-	return nil
-}
-
-func (b *blockingPromotionRead) MaybeError(op errorfs.Op, path string) error {
-	if b.armed.Load() && filepath.Ext(path) == ".sst" && (op == errorfs.OpFileRead || op == errorfs.OpFileReadAt) {
-		b.once.Do(func() { close(b.entered); <-b.release })
 	}
 	return nil
 }
@@ -140,12 +139,15 @@ func openPromotionPrefetchStore(t *testing.T, injector errorfs.Injector) *Rotati
 	cache := p.NewCache(0)
 	t.Cleanup(cache.Unref)
 	statsLoaded := make(chan struct{})
+	var statsOnce sync.Once
 	writable, err := p.Open("writable", &p.Options{
 		FS: errorfs.Wrap(fs, injector), Cache: cache, DisableAutomaticCompactions: true,
-		EventListener: &p.EventListener{TableStatsLoaded: func(p.TableStatsInfo) { close(statsLoaded) }},
+		EventListener: &p.EventListener{TableStatsLoaded: func(p.TableStatsInfo) {
+			statsOnce.Do(func() { close(statsLoaded) })
+		}},
 	})
 	require.NoError(t, err)
-	archive, err := p.Open("archive", &p.Options{FS: fs, Cache: cache})
+	archive, err := p.Open("archive", &p.Options{FS: fs, Cache: cache, DisableAutomaticCompactions: true})
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		require.NoError(t, writable.Close())
@@ -156,11 +158,7 @@ func openPromotionPrefetchStore(t *testing.T, injector errorfs.Injector) *Rotati
 	case <-time.After(5 * time.Second):
 		t.Fatal("initial table statistics did not finish loading")
 	}
-	return &RotatingStore{
-		writable:   &Store{db: writable},
-		archive:    &Store{db: archive},
-		blockCache: cache,
-	}
+	return &RotatingStore{writable: &Store{db: writable}, archive: &Store{db: archive}, blockCache: cache}
 }
 
 func TestPromotionSecondPrefetchReadStillAllowsPut(t *testing.T) {
@@ -168,11 +166,6 @@ func TestPromotionSecondPrefetchReadStillAllowsPut(t *testing.T) {
 	second := newPromotionReadGate()
 	injector := &stagedPromotionRead{gates: []*promotionReadGate{first, second}}
 	store := openPromotionPrefetchStore(t, injector)
-	t.Cleanup(func() {
-		for _, gate := range injector.gates {
-			gate.unblock()
-		}
-	})
 	first.arm()
 	type result struct {
 		records []kvstore.Promotion
@@ -183,63 +176,44 @@ func TestPromotionSecondPrefetchReadStillAllowsPut(t *testing.T) {
 		records, _, err := store.PromoteBatch([][]byte{[]byte("key")}, 1024)
 		done <- result{records: records, err: err}
 	}()
-	select {
-	case <-first.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("did not reach first cold writable read")
-	}
+	waitPromotionSignal(t, first.entered, "first writable prefetch")
 	require.NoError(t, store.Put([]byte("key"), []byte("new")))
 	require.NoError(t, store.writable.db.Flush())
 	second.arm()
 	first.unblock()
-	select {
-	case <-second.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("did not reach second cold writable read")
-	}
-	put := make(chan error, 1)
-	go func() { put <- store.Put([]byte("key"), []byte("newer")) }()
-	select {
-	case err := <-put:
-		require.NoError(t, err)
-	case <-time.After(time.Second):
-		t.Fatal("Put blocked during retry read")
-	}
+	waitPromotionSignal(t, second.entered, "second writable prefetch")
+	require.NoError(t, store.Put([]byte("key"), []byte("newer")))
+	require.NoError(t, store.writable.db.Flush())
 	second.unblock()
-	got := <-done
+	got := waitPromotionResultValue(t, done, "promotion")
 	require.NoError(t, got.err)
 	require.Len(t, got.records, 1)
 	require.Equal(t, []byte("newer"), got.records[0].Value)
 }
 
-func TestPromotionConflictReturnsAfterBoundedRetries(t *testing.T) {
-	var store *RotatingStore
-	var armed atomic.Bool
-	var reads atomic.Int32
-	key := []byte("key")
-	var collision []byte
-	for i := 0; ; i++ {
-		collision = []byte(fmt.Sprintf("other-%d", i))
-		if mutationStripe(collision) == mutationStripe(key) {
-			break
-		}
-	}
-	putErrors := make(chan error, 1)
-	injector := errorfs.InjectorFunc(func(op errorfs.Op, path string) error {
-		if !armed.Load() || filepath.Ext(path) != ".sst" || (op != errorfs.OpFileRead && op != errorfs.OpFileReadAt) {
-			return nil
-		}
-		reads.Add(1)
-		if err := store.Put(collision, []byte("concurrent")); err != nil {
-			select {
-			case putErrors <- err:
-			default:
-			}
-		}
-		return errorfs.ErrInjected
+func TestPromotionChangedVersionRereadDoesNotBlockSelectedStripePut(t *testing.T) {
+	first := newPromotionReadGate()
+	second := newPromotionReadGate()
+	injector := &stagedPromotionRead{gates: []*promotionReadGate{first, second}}
+	store := openPromotionPrefetchStore(t, injector)
+	first.arm()
+	t.Cleanup(func() {
+		first.unblock()
+		second.unblock()
 	})
-	store = openPromotionPrefetchStore(t, injector)
-	armed.Store(true)
+	stripe := mutationStripe([]byte("key"))
+	require.Greater(t, stripe, 2)
+	gate := promotionKeyOnStripe(0, "gate")
+	selected := promotionKeyOnStripe(1, "selected")
+	control := promotionKeyOnStripe(2, "control")
+	collision1 := promotionKeyOnStripe(stripe, "first")
+	collision2 := promotionKeyOnStripe(stripe, "second")
+	gateHeld := false
+	t.Cleanup(func() {
+		if gateHeld {
+			store.mutations[0].Unlock()
+		}
+	})
 	type result struct {
 		records []kvstore.Promotion
 		stats   kvstore.PromotionStats
@@ -247,31 +221,174 @@ func TestPromotionConflictReturnsAfterBoundedRetries(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		records, stats, err := store.PromoteBatch([][]byte{key}, 1024)
+		records, stats, err := store.PromoteBatch([][]byte{[]byte("key"), gate, selected}, 1024)
 		done <- result{records, stats, err}
 	}()
-	select {
-	case got := <-done:
-		require.ErrorIs(t, got.err, ErrPromotionConflict)
-		require.Nil(t, got.records)
-		require.Zero(t, got.stats.Consumed)
-		require.Zero(t, got.stats.Promoted)
-		require.Zero(t, got.stats.PromotedBytes)
-		require.Zero(t, got.stats.Batches)
-	case <-time.After(5 * time.Second):
-		t.Fatal("promotion did not stop after bounded retries")
+	waitPromotionSignal(t, first.entered, "initial writable prefetch")
+	store.mutations[0].Lock()
+	gateHeld = true
+	first.unblock()
+	iteratorClosed := make(chan struct{})
+	go func() {
+		store.writable.mu.Lock()
+		store.writable.mu.Unlock()
+		close(iteratorClosed)
+	}()
+	waitPromotionSignal(t, iteratorClosed, "completed writable prefetch")
+	put1 := make(chan error, 1)
+	go func() { put1 <- store.Put(collision1, []byte("first")) }()
+	require.NoError(t, waitPromotionResult(t, put1, "first colliding Put"))
+	second.arm()
+	store.mutations[0].Unlock()
+	gateHeld = false
+	waitPromotionSignal(t, second.entered, "changed-version writable reread")
+	for _, test := range []struct {
+		key  []byte
+		name string
+	}{
+		{control, "unselected-stripe Put"},
+		{collision2, "colliding-stripe Put"},
+		{selected, "other selected-stripe Put"},
+	} {
+		put := make(chan error, 1)
+		go func() { put <- store.Put(test.key, []byte("second")) }()
+		require.NoError(t, waitPromotionResult(t, put, test.name))
 	}
-	armed.Store(false)
+	second.unblock()
+	got := waitPromotionResultValue(t, done, "promotion")
+	require.NoError(t, got.err)
+	require.Len(t, got.records, 3)
+	require.Equal(t, []byte("key"), got.records[0].Key)
+	require.Equal(t, []byte("old"), got.records[0].Value)
+	require.GreaterOrEqual(t, got.stats.VersionMismatches, 1)
+	require.GreaterOrEqual(t, got.stats.Retries, 1)
+}
+
+func promotionKeyOnStripe(stripe int, label string) []byte {
+	for index := 0; ; index++ {
+		candidate := []byte(fmt.Sprintf("promotion/%s/%d", label, index))
+		if mutationStripe(candidate) == stripe {
+			return candidate
+		}
+	}
+}
+
+func closePromotionGate(channel chan struct{}) {
 	select {
-	case err := <-putErrors:
-		t.Fatal(err)
+	case <-channel:
 	default:
+		close(channel)
 	}
-	require.GreaterOrEqual(t, reads.Load(), int32(promotionPrefetchPasses))
-	value, err := store.Get(key)
-	require.NoError(t, err)
-	require.Equal(t, []byte("old"), value)
-	value, err = store.Get(collision)
-	require.NoError(t, err)
-	require.Equal(t, []byte("concurrent"), value)
+}
+
+func waitPromotionSignal(t *testing.T, signal <-chan struct{}, operation string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("did not reach %s", operation)
+	}
+}
+
+func waitPromotionResult(t *testing.T, result <-chan error, operation string) error {
+	t.Helper()
+	select {
+	case err := <-result:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s did not complete", operation)
+		return nil
+	}
+}
+
+func waitPromotionResultValue[T any](t *testing.T, result <-chan T, operation string) T {
+	t.Helper()
+	select {
+	case value := <-result:
+		return value
+	case <-time.After(5 * time.Second):
+		var zero T
+		t.Fatalf("%s did not complete", operation)
+		return zero
+	}
+}
+
+type sequencedPromotionRead struct {
+	active atomic.Pointer[blockingPromotionRead]
+}
+
+func (s *sequencedPromotionRead) MaybeError(op errorfs.Op, path string) error {
+	if gate := s.active.Load(); gate != nil {
+		return gate.MaybeError(op, path)
+	}
+	return nil
+}
+
+func TestPromotionRetryExhaustionHoldsOnlyCurrentStripe(t *testing.T) {
+	injector := &sequencedPromotionRead{}
+	store := openPromotionPrefetchStore(t, injector)
+	stages := make([]*blockingPromotionRead, promotionRetryLimit+2)
+	for index := range stages {
+		stages[index] = &blockingPromotionRead{entered: make(chan struct{}), release: make(chan struct{})}
+		stages[index].armed.Store(true)
+	}
+	gateKey := promotionKeyOnStripe(0, "gate")
+	stripe := mutationStripe([]byte("key"))
+	require.NotZero(t, stripe)
+	collision := promotionKeyOnStripe(stripe, "collision")
+	gateHeld := false
+	t.Cleanup(func() {
+		if gateHeld {
+			store.mutations[0].Unlock()
+		}
+		for _, stage := range stages {
+			closePromotionGate(stage.release)
+		}
+	})
+	injector.active.Store(stages[0])
+	type result struct {
+		records []kvstore.Promotion
+		stats   kvstore.PromotionStats
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		records, stats, err := store.PromoteBatch([][]byte{[]byte("key"), gateKey}, 1024)
+		done <- result{records, stats, err}
+	}()
+	for attempt := 0; attempt <= promotionRetryLimit; attempt++ {
+		waitPromotionSignal(t, stages[attempt].entered, "off-lock writable read")
+		store.mutations[0].Lock()
+		gateHeld = true
+		closePromotionGate(stages[attempt].release)
+		iteratorClosed := make(chan struct{})
+		go func() {
+			store.writable.mu.Lock()
+			store.writable.mu.Unlock()
+			close(iteratorClosed)
+		}()
+		waitPromotionSignal(t, iteratorClosed, "completed writable prefetch")
+		put := make(chan error, 1)
+		go func() { put <- store.Put(collision, []byte("changed")) }()
+		require.NoError(t, waitPromotionResult(t, put, "colliding mutation"))
+		injector.active.Store(stages[attempt+1])
+		store.mutations[0].Unlock()
+		gateHeld = false
+	}
+	waitPromotionSignal(t, stages[len(stages)-1].entered, "single-stripe fallback")
+	if store.mutations[stripe].TryLock() {
+		store.mutations[stripe].Unlock()
+		t.Fatal("fallback did not hold the current key's stripe")
+	}
+	put := make(chan error, 1)
+	go func() { put <- store.Put(gateKey, []byte("foreground")) }()
+	require.NoError(t, waitPromotionResult(t, put, "other selected-stripe Put"))
+	closePromotionGate(stages[len(stages)-1].release)
+	got := waitPromotionResultValue(t, done, "bounded promotion")
+	require.NoError(t, got.err)
+	require.Len(t, got.records, 2)
+	require.Equal(t, []byte("old"), got.records[0].Value)
+	require.Equal(t, []byte("foreground"), got.records[1].Value)
+	require.Equal(t, promotionRetryLimit, got.stats.Retries)
+	require.Positive(t, got.stats.Fallbacks)
 }

@@ -52,6 +52,9 @@ type storedSHAMapVerificationProgress struct {
 	promotionArchiveMisses         atomic.Uint64
 	promotionArchiveLookups        atomic.Uint64
 	promotionArchiveLookupsAvoided atomic.Uint64
+	promotionVersionMismatches     atomic.Uint64
+	promotionRetries               atomic.Uint64
+	promotionFallbacks             atomic.Uint64
 	promotionPrefetchBytes         atomic.Uint64
 	promotionPromoted              atomic.Uint64
 	promotionPromotedBytes         atomic.Uint64
@@ -125,6 +128,9 @@ func (p *storedSHAMapVerificationProgress) recordPromotionBatch(
 	addPromotionMetric(&p.promotionArchiveMisses, stats.ArchiveMisses)
 	addPromotionMetric(&p.promotionArchiveLookups, stats.ArchiveLookups)
 	addPromotionMetric(&p.promotionArchiveLookupsAvoided, stats.ArchiveLookupsAvoided)
+	addPromotionMetric(&p.promotionVersionMismatches, stats.VersionMismatches)
+	addPromotionMetric(&p.promotionRetries, stats.Retries)
+	addPromotionMetric(&p.promotionFallbacks, stats.Fallbacks)
 	addPromotionMetric(&p.promotionPrefetchBytes, stats.PrefetchBytes)
 	addPromotionMetric(&p.promotionPromoted, stats.Promoted)
 	addPromotionMetric(&p.promotionPromotedBytes, stats.PromotedBytes)
@@ -244,6 +250,9 @@ func (p *storedSHAMapVerificationProgress) fields(at time.Time) []any {
 		"promotion_archive_misses", p.promotionArchiveMisses.Load(),
 		"promotion_archive_lookups", p.promotionArchiveLookups.Load(),
 		"promotion_archive_lookups_avoided", p.promotionArchiveLookupsAvoided.Load(),
+		"promotion_version_mismatches", p.promotionVersionMismatches.Load(),
+		"promotion_retries", p.promotionRetries.Load(),
+		"promotion_fallbacks", p.promotionFallbacks.Load(),
 		"promotion_prefetch_bytes", p.promotionPrefetchBytes.Load(),
 		"promotion_promoted", p.promotionPromoted.Load(),
 		"promotion_promoted_bytes", p.promotionPromotedBytes.Load(),

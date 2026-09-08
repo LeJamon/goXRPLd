@@ -88,47 +88,50 @@ type synchronizedLogBuffer struct {
 }
 
 type verificationLogRecord struct {
-	Level                    string `json:"level"`
-	Message                  string `json:"msg"`
-	Topic                    string `json:"t"`
-	MapType                  string `json:"map_type"`
-	Root                     string `json:"root"`
-	Elapsed                  string `json:"elapsed"`
-	NodesChecked             uint64 `json:"nodes_checked"`
-	NodesPerSecond           uint64 `json:"nodes_per_second"`
-	IntervalNodesRate        uint64 `json:"interval_nodes_per_second"`
-	ActiveBranches           uint32 `json:"active_branches"`
-	BranchesComplete         uint32 `json:"branches_complete"`
-	BranchesTotal            uint32 `json:"branches_total"`
-	Workers                  uint32 `json:"workers"`
-	WorkerPoolSize           uint32 `json:"worker_pool_size"`
-	ActiveWorkers            int32  `json:"active_workers"`
-	IdleWorkers              int64  `json:"idle_workers"`
-	FrontierSize             int64  `json:"frontier_size"`
-	NodeStoreReadsBefore     uint64 `json:"node_store_reads_before"`
-	NodeStoreReadsAfter      uint64 `json:"node_store_reads_after"`
-	NodeStoreReadBytesBefore uint64 `json:"node_store_read_bytes_before"`
-	NodeStoreReadBytesAfter  uint64 `json:"node_store_read_bytes_after"`
-	NodeCacheHitsBefore      uint64 `json:"node_cache_hits_before"`
-	NodeCacheHitsAfter       uint64 `json:"node_cache_hits_after"`
-	NodeCacheMissesBefore    uint64 `json:"node_cache_misses_before"`
-	NodeCacheMissesAfter     uint64 `json:"node_cache_misses_after"`
-	PromotionRequested       uint64 `json:"promotion_requested"`
-	PromotionConsumed        uint64 `json:"promotion_consumed"`
-	PromotionReturned        uint64 `json:"promotion_returned"`
-	PromotionWritableHits    uint64 `json:"promotion_writable_hits"`
-	PromotionWritableMisses  uint64 `json:"promotion_writable_misses"`
-	PromotionArchiveHits     uint64 `json:"promotion_archive_hits"`
-	PromotionArchiveMisses   uint64 `json:"promotion_archive_misses"`
-	PromotionArchiveLookups  uint64 `json:"promotion_archive_lookups"`
-	PromotionArchiveAvoided  uint64 `json:"promotion_archive_lookups_avoided"`
-	PromotionPrefetchBytes   uint64 `json:"promotion_prefetch_bytes"`
-	PromotionPromoted        uint64 `json:"promotion_promoted"`
-	PromotionPromotedBytes   uint64 `json:"promotion_promoted_bytes"`
-	PromotionBufferedBytes   uint64 `json:"promotion_buffered_bytes"`
-	PromotionBatches         uint64 `json:"promotion_batches"`
-	PromotionPartialRetries  uint64 `json:"promotion_partial_prefix_retries"`
-	VerificationError        string `json:"err"`
+	Level                      string `json:"level"`
+	Message                    string `json:"msg"`
+	Topic                      string `json:"t"`
+	MapType                    string `json:"map_type"`
+	Root                       string `json:"root"`
+	Elapsed                    string `json:"elapsed"`
+	NodesChecked               uint64 `json:"nodes_checked"`
+	NodesPerSecond             uint64 `json:"nodes_per_second"`
+	IntervalNodesRate          uint64 `json:"interval_nodes_per_second"`
+	ActiveBranches             uint32 `json:"active_branches"`
+	BranchesComplete           uint32 `json:"branches_complete"`
+	BranchesTotal              uint32 `json:"branches_total"`
+	Workers                    uint32 `json:"workers"`
+	WorkerPoolSize             uint32 `json:"worker_pool_size"`
+	ActiveWorkers              int32  `json:"active_workers"`
+	IdleWorkers                int64  `json:"idle_workers"`
+	FrontierSize               int64  `json:"frontier_size"`
+	NodeStoreReadsBefore       uint64 `json:"node_store_reads_before"`
+	NodeStoreReadsAfter        uint64 `json:"node_store_reads_after"`
+	NodeStoreReadBytesBefore   uint64 `json:"node_store_read_bytes_before"`
+	NodeStoreReadBytesAfter    uint64 `json:"node_store_read_bytes_after"`
+	NodeCacheHitsBefore        uint64 `json:"node_cache_hits_before"`
+	NodeCacheHitsAfter         uint64 `json:"node_cache_hits_after"`
+	NodeCacheMissesBefore      uint64 `json:"node_cache_misses_before"`
+	NodeCacheMissesAfter       uint64 `json:"node_cache_misses_after"`
+	PromotionRequested         uint64 `json:"promotion_requested"`
+	PromotionConsumed          uint64 `json:"promotion_consumed"`
+	PromotionReturned          uint64 `json:"promotion_returned"`
+	PromotionWritableHits      uint64 `json:"promotion_writable_hits"`
+	PromotionWritableMisses    uint64 `json:"promotion_writable_misses"`
+	PromotionArchiveHits       uint64 `json:"promotion_archive_hits"`
+	PromotionArchiveMisses     uint64 `json:"promotion_archive_misses"`
+	PromotionArchiveLookups    uint64 `json:"promotion_archive_lookups"`
+	PromotionArchiveAvoided    uint64 `json:"promotion_archive_lookups_avoided"`
+	PromotionVersionMismatches uint64 `json:"promotion_version_mismatches"`
+	PromotionRetries           uint64 `json:"promotion_retries"`
+	PromotionFallbacks         uint64 `json:"promotion_fallbacks"`
+	PromotionPrefetchBytes     uint64 `json:"promotion_prefetch_bytes"`
+	PromotionPromoted          uint64 `json:"promotion_promoted"`
+	PromotionPromotedBytes     uint64 `json:"promotion_promoted_bytes"`
+	PromotionBufferedBytes     uint64 `json:"promotion_buffered_bytes"`
+	PromotionBatches           uint64 `json:"promotion_batches"`
+	PromotionPartialRetries    uint64 `json:"promotion_partial_prefix_retries"`
+	VerificationError          string `json:"err"`
 }
 
 type verificationTestClock struct {
@@ -1350,6 +1353,9 @@ func TestService_VerifyStoredSHAMapReportsBatchPromotionStats(t *testing.T) {
 			ArchiveLookups:        5,
 			ArchiveLookupsAvoided: 7,
 			PrefetchBytes:         11,
+			VersionMismatches:     3,
+			Retries:               2,
+			Fallbacks:             1,
 			Promoted:              count,
 			PromotedBytes:         13,
 			BufferedBytes:         17,
@@ -1388,6 +1394,9 @@ func TestService_VerifyStoredSHAMapReportsBatchPromotionStats(t *testing.T) {
 	require.Equal(t, uint64(5*calls.Load()), complete.PromotionArchiveLookups)
 	require.Equal(t, uint64(7*calls.Load()), complete.PromotionArchiveAvoided)
 	require.Equal(t, uint64(11*calls.Load()), complete.PromotionPrefetchBytes)
+	require.Equal(t, uint64(3*calls.Load()), complete.PromotionVersionMismatches)
+	require.Equal(t, uint64(2*calls.Load()), complete.PromotionRetries)
+	require.Equal(t, uint64(calls.Load()), complete.PromotionFallbacks)
 	require.Equal(t, complete.PromotionConsumed, complete.PromotionPromoted)
 	require.Equal(t, uint64(13*calls.Load()), complete.PromotionPromotedBytes)
 	require.Equal(t, uint64(17*calls.Load()), complete.PromotionBufferedBytes)

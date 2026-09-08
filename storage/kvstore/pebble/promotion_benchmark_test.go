@@ -22,15 +22,14 @@ import (
 )
 
 const (
-	promotionBenchmarkKeyCount           = 256
-	promotionBenchmarkValueBytes         = (4 << 20) / promotionBenchmarkKeyCount
-	promotionBenchmarkPayload            = 4 << 20
-	promotionBenchmarkIterations         = 32
-	promotionBenchmarkCacheBytes         = 16 << 20
-	promotionBenchmarkOpenFiles          = 128
-	promotionBenchmarkReadDelay          = 250 * time.Microsecond
-	promotionBenchmarkOverlapWait        = time.Second
-	promotionBenchmarkMaxConflictRetries = 16
+	promotionBenchmarkKeyCount    = 256
+	promotionBenchmarkValueBytes  = (4 << 20) / promotionBenchmarkKeyCount
+	promotionBenchmarkPayload     = 4 << 20
+	promotionBenchmarkIterations  = 32
+	promotionBenchmarkCacheBytes  = 16 << 20
+	promotionBenchmarkOpenFiles   = 128
+	promotionBenchmarkReadDelay   = 250 * time.Microsecond
+	promotionBenchmarkOverlapWait = time.Second
 )
 
 // TestPromotionBatchOfflineReport is intentionally opt-in. It creates a fresh,
@@ -72,7 +71,7 @@ func TestPromotionBatchOfflineReport(t *testing.T) {
 	}
 
 	fmt.Fprintf(report, "# gomaxprocs=3 os_cache=retained cache=logical_shared_block_cache reads=logical_sst_vfs_reads_not_physical_hdd_reads foreground=Put_NoSync\n")
-	fmt.Fprintln(report, "storage\tos_cache\tsynthetic_delay\thit_rate\titerations\tpromote_p50_ns\tpromote_p95_ns\tpromote_p99_ns\tallocs_per_op\tbytes_alloc_per_op\tarchive_sst_reads_per_batch\tarchive_sst_bytes_per_batch\twritable_sst_reads_per_batch\twritable_sst_bytes_per_batch\tblock_cache_misses_per_batch\tblock_cache_hits_per_batch\toverlap_promote_p50_ns\toverlap_promote_p95_ns\toverlap_promote_p99_ns\tforeground_put_p50_ns\tforeground_put_p95_ns\tforeground_put_p99_ns\toverlap_samples\toverlap_complete_samples\tpromotion_conflicts_per_op\tarchive_lookups_per_batch\tarchive_lookups_avoided_per_batch\tprefetch_bytes_per_batch")
+	fmt.Fprintln(report, "storage\tos_cache\tsynthetic_delay\thit_rate\titerations\tpromote_p50_ns\tpromote_p95_ns\tpromote_p99_ns\tallocs_per_op\tbytes_alloc_per_op\tarchive_sst_reads_per_batch\tarchive_sst_bytes_per_batch\twritable_sst_reads_per_batch\twritable_sst_bytes_per_batch\tblock_cache_misses_per_batch\tblock_cache_hits_per_batch\toverlap_promote_p50_ns\toverlap_promote_p95_ns\toverlap_promote_p99_ns\tforeground_put_p50_ns\tforeground_put_p95_ns\tforeground_put_p99_ns\toverlap_samples\tarchive_lookups_per_batch\tarchive_lookups_avoided_per_batch\tprefetch_bytes_per_batch\tversion_mismatches_per_batch\tretries_per_batch\tfallbacks_per_batch")
 
 	t.Logf("promotion benchmark report: %s", reportPath)
 	t.Logf("gomaxprocs=3 os_cache=retained reads=logical SST VFS reads, not physical HDD reads")
@@ -437,14 +436,11 @@ type promotionBenchmarkPromotionRun struct {
 	promotions []kvstore.Promotion
 	stats      kvstore.PromotionStats
 	optional   promotionBenchmarkOptionalStats
-	conflicts  int
-	complete   bool
 }
 
-// runPromotionBenchmarkGroup consumes prefixes until the complete 256-key
-// group has been processed. A conflict returns no committed work on the
-// patched implementation, so retry the same prefix and never count a partial
-// result as a completed promotion.
+// runPromotionBenchmarkGroup consumes successful prefixes until the complete
+// 256-key group has been processed. A shorter successful prefix is resumed
+// with the remaining keys; any PromoteBatch error aborts the measured group.
 func runPromotionBenchmarkGroup(store *RotatingStore, keys [][]byte) (promotionBenchmarkPromotionRun, error) {
 	remaining := keys
 	run := promotionBenchmarkPromotionRun{
@@ -453,14 +449,7 @@ func runPromotionBenchmarkGroup(store *RotatingStore, keys [][]byte) (promotionB
 	for len(remaining) > 0 {
 		promotions, stats, err := store.PromoteBatch(remaining, promotionBenchmarkPayload)
 		if err != nil {
-			if !isPromotionBenchmarkConflict(err) {
-				return promotionBenchmarkPromotionRun{}, err
-			}
-			run.conflicts++
-			if run.conflicts >= promotionBenchmarkMaxConflictRetries {
-				return run, nil
-			}
-			continue
+			return promotionBenchmarkPromotionRun{}, err
 		}
 		if stats.Consumed <= 0 || stats.Consumed > len(remaining) {
 			return promotionBenchmarkPromotionRun{}, fmt.Errorf(
@@ -481,7 +470,6 @@ func runPromotionBenchmarkGroup(store *RotatingStore, keys [][]byte) (promotionB
 		run.promotions = append(run.promotions, promotions...)
 		remaining = remaining[stats.Consumed:]
 	}
-	run.complete = true
 	return run, nil
 }
 
@@ -517,12 +505,6 @@ func runPromotionBenchmarkSample(group, writableKeys int, delay time.Duration) (
 	if err != nil {
 		return promotionBenchmarkSample{}, err
 	}
-	if !promotionRun.complete {
-		return promotionBenchmarkSample{}, fmt.Errorf(
-			"promotion did not complete after %d conflicts",
-			promotionRun.conflicts,
-		)
-	}
 	if err := validatePromotionBenchmarkDistribution(promotionRun.promotions, promotionRun.stats, writableKeys); err != nil {
 		return promotionBenchmarkSample{}, err
 	}
@@ -543,8 +525,6 @@ type promotionBenchmarkOverlapSample struct {
 	promote       time.Duration
 	foregroundPut time.Duration
 	overlapped    bool
-	conflicts     int
-	complete      bool
 }
 
 type promotionBenchmarkResult struct {
@@ -573,7 +553,7 @@ func runPromotionBenchmarkOverlapSample(group, writableKeys int, delay time.Dura
 		started := time.Now()
 		close(promotionStarted)
 		promotionRun, err := runPromotionBenchmarkGroup(fixture.store, fixture.keys)
-		if err == nil && promotionRun.complete {
+		if err == nil {
 			err = validatePromotionBenchmarkDistribution(promotionRun.promotions, promotionRun.stats, writableKeys)
 		}
 		finished := time.Now()
@@ -608,23 +588,14 @@ func runPromotionBenchmarkOverlapSample(group, writableKeys int, delay time.Dura
 		completed := <-resultChannel
 		result = &completed
 	}
-	if result.err != nil && !isPromotionBenchmarkConflict(result.err) {
+	if result.err != nil {
 		return promotionBenchmarkOverlapSample{}, result.err
 	}
 	return promotionBenchmarkOverlapSample{
 		promote:       result.duration,
 		foregroundPut: foregroundDuration,
 		overlapped:    !started.Before(result.started) && started.Before(result.finished),
-		conflicts:     result.run.conflicts,
-		complete:      result.run.complete,
 	}, nil
-}
-
-func isPromotionBenchmarkConflict(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(strings.ToLower(err.Error()), "promotion conflict")
 }
 
 func validatePromotionBenchmarkDistribution(promotions []kvstore.Promotion, stats kvstore.PromotionStats, writableKeys int) error {
@@ -697,8 +668,6 @@ type promotionBenchmarkOverlapSummary struct {
 	promoteP50, promoteP95, promoteP99          time.Duration
 	foregroundP50, foregroundP95, foregroundP99 time.Duration
 	overlappedSamples                           int
-	completeSamples                             int
-	conflictsPerOp                              float64
 }
 
 func summarizePromotionBenchmarkOverlaps(samples []promotionBenchmarkOverlapSample) promotionBenchmarkOverlapSummary {
@@ -706,17 +675,11 @@ func summarizePromotionBenchmarkOverlaps(samples []promotionBenchmarkOverlapSamp
 	foreground := make([]time.Duration, 0, len(samples))
 	var summary promotionBenchmarkOverlapSummary
 	for _, sample := range samples {
-		if sample.complete {
-			summary.completeSamples++
-		}
 		if sample.overlapped {
+			promotions = append(promotions, sample.promote)
 			foreground = append(foreground, sample.foregroundPut)
-			if sample.complete {
-				promotions = append(promotions, sample.promote)
-			}
 			summary.overlappedSamples++
 		}
-		summary.conflictsPerOp += float64(sample.conflicts)
 	}
 	summary.promoteP50 = promotionBenchmarkPercentile(promotions, 0.50)
 	summary.promoteP95 = promotionBenchmarkPercentile(promotions, 0.95)
@@ -724,9 +687,6 @@ func summarizePromotionBenchmarkOverlaps(samples []promotionBenchmarkOverlapSamp
 	summary.foregroundP50 = promotionBenchmarkPercentile(foreground, 0.50)
 	summary.foregroundP95 = promotionBenchmarkPercentile(foreground, 0.95)
 	summary.foregroundP99 = promotionBenchmarkPercentile(foreground, 0.99)
-	if len(samples) > 0 {
-		summary.conflictsPerOp /= float64(len(samples))
-	}
 	return summary
 }
 
@@ -747,22 +707,29 @@ func promotionBenchmarkPercentile(values []time.Duration, percentile float64) ti
 }
 
 type promotionBenchmarkOptionalStats struct {
-	archiveLookups        uint64
-	archiveLookupsAvoided uint64
-	prefetchBytes         uint64
-	present               bool
+	archiveLookups               uint64
+	archiveLookupsAvoided        uint64
+	prefetchBytes                uint64
+	versionMismatches            uint64
+	retries                      uint64
+	fallbacks                    uint64
+	archiveLookupsPresent        bool
+	archiveLookupsAvoidedPresent bool
+	prefetchBytesPresent         bool
+	versionMismatchesPresent     bool
+	retriesPresent               bool
+	fallbacksPresent             bool
 }
 
 func readOptionalPromotionStats(stats kvstore.PromotionStats) promotionBenchmarkOptionalStats {
 	value := reflect.ValueOf(stats)
 	result := promotionBenchmarkOptionalStats{}
-	var present bool
-	result.archiveLookups, present = readOptionalPromotionStat(value, "ArchiveLookups")
-	result.present = result.present || present
-	result.archiveLookupsAvoided, present = readOptionalPromotionStat(value, "ArchiveLookupsAvoided")
-	result.present = result.present || present
-	result.prefetchBytes, present = readOptionalPromotionStat(value, "PrefetchBytes")
-	result.present = result.present || present
+	result.archiveLookups, result.archiveLookupsPresent = readOptionalPromotionStat(value, "ArchiveLookups")
+	result.archiveLookupsAvoided, result.archiveLookupsAvoidedPresent = readOptionalPromotionStat(value, "ArchiveLookupsAvoided")
+	result.prefetchBytes, result.prefetchBytesPresent = readOptionalPromotionStat(value, "PrefetchBytes")
+	result.versionMismatches, result.versionMismatchesPresent = readOptionalPromotionStat(value, "VersionMismatches")
+	result.retries, result.retriesPresent = readOptionalPromotionStat(value, "Retries")
+	result.fallbacks, result.fallbacksPresent = readOptionalPromotionStat(value, "Fallbacks")
 	return result
 }
 
@@ -771,36 +738,107 @@ func readOptionalPromotionStat(value reflect.Value, name string) (uint64, bool) 
 	if !field.IsValid() {
 		return 0, false
 	}
-	switch field.Kind() {
-	case reflect.Int, reflect.Int64:
-		if field.Int() >= 0 {
-			return uint64(field.Int()), true
-		}
+	if field.Kind() != reflect.Int || field.Int() < 0 {
+		return 0, false
 	}
-	return 0, false
+	return uint64(field.Int()), true
 }
 
 func (s *promotionBenchmarkOptionalStats) add(other promotionBenchmarkOptionalStats) {
-	s.archiveLookups += other.archiveLookups
-	s.archiveLookupsAvoided += other.archiveLookupsAvoided
-	s.prefetchBytes += other.prefetchBytes
-	s.present = s.present || other.present
+	if other.archiveLookupsPresent {
+		s.archiveLookups += other.archiveLookups
+		s.archiveLookupsPresent = true
+	}
+	if other.archiveLookupsAvoidedPresent {
+		s.archiveLookupsAvoided += other.archiveLookupsAvoided
+		s.archiveLookupsAvoidedPresent = true
+	}
+	if other.prefetchBytesPresent {
+		s.prefetchBytes += other.prefetchBytes
+		s.prefetchBytesPresent = true
+	}
+	if other.versionMismatchesPresent {
+		s.versionMismatches += other.versionMismatches
+		s.versionMismatchesPresent = true
+	}
+	if other.retriesPresent {
+		s.retries += other.retries
+		s.retriesPresent = true
+	}
+	if other.fallbacksPresent {
+		s.fallbacks += other.fallbacks
+		s.fallbacksPresent = true
+	}
 }
 
-func summarizeOptionalPromotionStats(samples []promotionBenchmarkSample) promotionBenchmarkOptionalStats {
-	var summary promotionBenchmarkOptionalStats
+type promotionBenchmarkOptionalSummary struct {
+	archiveLookups               float64
+	archiveLookupsAvoided        float64
+	prefetchBytes                float64
+	versionMismatches            float64
+	retries                      float64
+	fallbacks                    float64
+	archiveLookupsPresent        bool
+	archiveLookupsAvoidedPresent bool
+	prefetchBytesPresent         bool
+	versionMismatchesPresent     bool
+	retriesPresent               bool
+	fallbacksPresent             bool
+}
+
+func summarizeOptionalPromotionStats(samples []promotionBenchmarkSample) promotionBenchmarkOptionalSummary {
+	var summary promotionBenchmarkOptionalSummary
+	var archiveLookupsCount, archiveLookupsAvoidedCount, prefetchBytesCount uint64
+	var versionMismatchesCount, retriesCount, fallbacksCount uint64
 	for _, sample := range samples {
-		if sample.optional.present {
-			summary.present = true
+		if sample.optional.archiveLookupsPresent {
+			summary.archiveLookups += float64(sample.optional.archiveLookups)
+			archiveLookupsCount++
+			summary.archiveLookupsPresent = true
 		}
-		summary.archiveLookups += sample.optional.archiveLookups
-		summary.archiveLookupsAvoided += sample.optional.archiveLookupsAvoided
-		summary.prefetchBytes += sample.optional.prefetchBytes
+		if sample.optional.archiveLookupsAvoidedPresent {
+			summary.archiveLookupsAvoided += float64(sample.optional.archiveLookupsAvoided)
+			archiveLookupsAvoidedCount++
+			summary.archiveLookupsAvoidedPresent = true
+		}
+		if sample.optional.prefetchBytesPresent {
+			summary.prefetchBytes += float64(sample.optional.prefetchBytes)
+			prefetchBytesCount++
+			summary.prefetchBytesPresent = true
+		}
+		if sample.optional.versionMismatchesPresent {
+			summary.versionMismatches += float64(sample.optional.versionMismatches)
+			versionMismatchesCount++
+			summary.versionMismatchesPresent = true
+		}
+		if sample.optional.retriesPresent {
+			summary.retries += float64(sample.optional.retries)
+			retriesCount++
+			summary.retriesPresent = true
+		}
+		if sample.optional.fallbacksPresent {
+			summary.fallbacks += float64(sample.optional.fallbacks)
+			fallbacksCount++
+			summary.fallbacksPresent = true
+		}
 	}
-	if len(samples) > 0 {
-		summary.archiveLookups /= uint64(len(samples))
-		summary.archiveLookupsAvoided /= uint64(len(samples))
-		summary.prefetchBytes /= uint64(len(samples))
+	if archiveLookupsCount > 0 {
+		summary.archiveLookups /= float64(archiveLookupsCount)
+	}
+	if archiveLookupsAvoidedCount > 0 {
+		summary.archiveLookupsAvoided /= float64(archiveLookupsAvoidedCount)
+	}
+	if prefetchBytesCount > 0 {
+		summary.prefetchBytes /= float64(prefetchBytesCount)
+	}
+	if versionMismatchesCount > 0 {
+		summary.versionMismatches /= float64(versionMismatchesCount)
+	}
+	if retriesCount > 0 {
+		summary.retries /= float64(retriesCount)
+	}
+	if fallbacksCount > 0 {
+		summary.fallbacks /= float64(fallbacksCount)
 	}
 	return summary
 }
@@ -811,16 +849,8 @@ func formatPromotionBenchmarkReportLine(
 	iterations int,
 	promote promotionBenchmarkSummary,
 	overlap promotionBenchmarkOverlapSummary,
-	optional promotionBenchmarkOptionalStats,
+	optional promotionBenchmarkOptionalSummary,
 ) string {
-	optionalValues := []string{"-", "-", "-"}
-	if optional.present {
-		optionalValues = []string{
-			strconv.FormatUint(optional.archiveLookups, 10),
-			strconv.FormatUint(optional.archiveLookupsAvoided, 10),
-			strconv.FormatUint(optional.prefetchBytes, 10),
-		}
-	}
 	values := []string{
 		profile.name,
 		"retained",
@@ -845,13 +875,21 @@ func formatPromotionBenchmarkReportLine(
 		strconv.FormatInt(overlap.foregroundP95.Nanoseconds(), 10),
 		strconv.FormatInt(overlap.foregroundP99.Nanoseconds(), 10),
 		strconv.Itoa(overlap.overlappedSamples),
-		strconv.Itoa(overlap.completeSamples),
-		fmt.Sprintf("%.2f", overlap.conflictsPerOp),
-		optionalValues[0],
-		optionalValues[1],
-		optionalValues[2],
+		formatOptionalPromotionStat(optional.archiveLookups, optional.archiveLookupsPresent),
+		formatOptionalPromotionStat(optional.archiveLookupsAvoided, optional.archiveLookupsAvoidedPresent),
+		formatOptionalPromotionStat(optional.prefetchBytes, optional.prefetchBytesPresent),
+		formatOptionalPromotionStat(optional.versionMismatches, optional.versionMismatchesPresent),
+		formatOptionalPromotionStat(optional.retries, optional.retriesPresent),
+		formatOptionalPromotionStat(optional.fallbacks, optional.fallbacksPresent),
 	}
 	return strings.Join(values, "\t")
+}
+
+func formatOptionalPromotionStat(value float64, present bool) string {
+	if !present {
+		return "-"
+	}
+	return fmt.Sprintf("%.2f", value)
 }
 
 func newPromotionBenchmarkReport() (*os.File, string, error) {
