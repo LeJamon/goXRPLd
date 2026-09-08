@@ -57,7 +57,7 @@ func TestPromotionFallbackPreservesPrecedenceAndByteLimitedPrefix(t *testing.T) 
 			defer store.mu.RUnlock()
 			store.archiveMu.RLock()
 			defer store.archiveMu.RUnlock()
-			archive, err := store.prefetchPromotion(keys, 1024)
+			_, archive, _, err := store.prefetchPromotion(keys, 1024, &kvstore.PromotionStats{})
 			require.NoError(t, err)
 			var records []kvstore.Promotion
 			var stats kvstore.PromotionStats

@@ -110,6 +110,10 @@ type PromotionStats struct {
 	Retries           int
 	// Fallbacks counts single-stripe rereads after the retry budget is exhausted.
 	Fallbacks int
+
+	// Prefetch lookups can cover keys beyond the returned prefix.
+	ArchiveLookups        int
+	ArchiveLookupsAvoided int
 }
 
 // CacheMetrics is a point-in-time snapshot of shared block-cache activity.
