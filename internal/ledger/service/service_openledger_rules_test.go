@@ -55,7 +55,7 @@ func TestOpenLedgerAcceptanceUsesLastValidatedRules(t *testing.T) {
 		Amendments: [][32]byte{amendment.FeatureBatchV1_1},
 	})
 	require.NoError(t, err)
-	require.NoError(t, localClosed.Update(keylet.Amendments(), amendments))
+	require.NoError(t, localClosed.Insert(keylet.Amendments(), amendments))
 	require.NoError(t, localClosed.Close(parent.CloseTime().Add(time.Second), 0))
 	require.True(t, localClosed.Rules().Enabled(amendment.FeatureBatchV1_1))
 
