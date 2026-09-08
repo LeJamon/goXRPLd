@@ -86,6 +86,10 @@ type PromotionStats struct {
 	PromotedBytes  int
 	BufferedBytes  int
 	Batches        int
+
+	// Prefetch lookups can cover keys beyond the returned prefix.
+	ArchiveLookups        int
+	ArchiveLookupsAvoided int
 }
 
 // CacheMetrics is a point-in-time snapshot of shared block-cache activity.

@@ -140,8 +140,8 @@ func TestPromoteBatchPropagatesLazyValueReadError(t *testing.T) {
 	if len(promotions) != 1 || !promotions[0].Found || !bytes.Equal(promotions[0].Value, writableValue) {
 		t.Fatalf("writable precedence promotions = %+v, want writable value", promotions)
 	}
-	if stats.WritableHits != 1 || stats.Promoted != 0 {
-		t.Fatalf("writable precedence stats = %+v, want one writable hit and no promotion", stats)
+	if stats.WritableHits != 1 || stats.Promoted != 0 || stats.ArchiveLookups != 0 || stats.ArchiveLookupsAvoided != 1 {
+		t.Fatalf("writable precedence stats = %+v, want one writable hit and no archive lookup or promotion", stats)
 	}
 	if err := store.writable.db.Delete([]byte(archiveKey), nil); err != nil {
 		t.Fatalf("remove writable override: %v", err)

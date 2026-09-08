@@ -166,6 +166,8 @@ func TestRotatingStoreBatchPromotionPreservesOrderPrecedenceAndBounds(t *testing
 	require.Equal(t, 4, stats.Consumed)
 	require.Equal(t, 2, stats.WritableHits)
 	require.Equal(t, 2, stats.WritableMisses)
+	require.Equal(t, 2, stats.ArchiveLookups)
+	require.Equal(t, 2, stats.ArchiveLookupsAvoided)
 	require.Equal(t, 1, stats.ArchiveHits)
 	require.Equal(t, 1, stats.ArchiveMisses)
 	require.Equal(t, 1, stats.Promoted)
@@ -693,4 +695,31 @@ func writeLegacyRotationState(t *testing.T, path, writable, archive string) {
 	})
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path+".generations.json", stateData, 0o600))
+}
+
+func TestRotatingStoreBatchPromotionSkipsSupersededArchivePayloads(t *testing.T) {
+	store, err := kvpebble.NewRotating(filepath.Join(t.TempDir(), "nodes"), rotatingTestOptions())
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	for _, key := range []string{"a", "b", "c"} {
+		require.NoError(t, store.Put([]byte(key), []byte("oversized archive value")))
+	}
+	committed, err := store.Rotate(11, 1)
+	require.True(t, committed)
+	require.NoError(t, err)
+	require.NoError(t, store.Put([]byte("a"), []byte("a")))
+	require.NoError(t, store.Put([]byte("b"), nil))
+	require.NoError(t, store.Put([]byte("c"), []byte("c")))
+
+	promotions, stats, err := store.PromoteBatch([][]byte{[]byte("c"), []byte("b"), []byte("a")}, 2)
+	require.NoError(t, err)
+	require.Len(t, promotions, 3)
+	require.Equal(t, []byte("a"), promotions[0].Value)
+	require.True(t, promotions[1].Found)
+	require.Empty(t, promotions[1].Value)
+	require.Equal(t, []byte("c"), promotions[2].Value)
+	require.Equal(t, 2, stats.BufferedBytes)
+	require.Equal(t, 3, stats.ArchiveLookupsAvoided)
+	require.Zero(t, stats.ArchiveLookups)
+	require.Zero(t, stats.Promoted)
 }

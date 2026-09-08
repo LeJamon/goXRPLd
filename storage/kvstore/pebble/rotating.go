@@ -577,18 +577,18 @@ func (r *RotatingStore) PromoteBatch(
 	// can proceed while archive blocks are read and decompressed.
 	r.archiveMu.RLock()
 	defer r.archiveMu.RUnlock()
-	prefetched, err := r.prefetchPromotion(sorted, maxBytes)
-	if err != nil {
-		return nil, stats, err
-	}
-	sorted = sorted[:len(prefetched)]
-	// Read cold writable blocks without excluding foreground writes. Version
-	// checks below retain writable precedence if a stripe changed meanwhile.
+	// Deletion is excluded by archiveMu through commit, so a prefetched
+	// writable hit cannot disappear while its archive lookup is skipped.
 	warmed, versions, err := r.prefetchWritablePromotion(sorted, maxBytes)
 	if err != nil {
 		return nil, stats, err
 	}
 	sorted = sorted[:len(warmed)]
+	prefetched, err := r.prefetchPromotion(sorted, warmed, maxBytes, &stats)
+	if err != nil {
+		return nil, stats, err
+	}
+	sorted = sorted[:len(prefetched)]
 	lockedMutations := r.lockMutations(sorted)
 	defer r.unlockMutations(&lockedMutations)
 
@@ -708,14 +708,24 @@ func (r *RotatingStore) prefetchWritablePromotion(keys [][]byte, maxBytes int) (
 // The prefetched payload and the final results each have their own byte budget.
 // A shorter prefix is valid even when writable precedence would leave room for
 // more results; the caller retries the remaining hashes.
-func (r *RotatingStore) prefetchPromotion(keys [][]byte, maxBytes int) ([]promotionPrefetch, error) {
-	archive, err := r.archive.newPointIterator()
-	if err != nil {
-		return nil, err
-	}
+func (r *RotatingStore) prefetchPromotion(keys [][]byte, writable []promotionPrefetch, maxBytes int, stats *kvstore.PromotionStats) ([]promotionPrefetch, error) {
+	var archive *pointIterator
 	records := make([]promotionPrefetch, 0, len(keys))
 	buffered := 0
-	for _, key := range keys {
+	for index, key := range keys {
+		if writable[index].found {
+			records = append(records, promotionPrefetch{})
+			stats.ArchiveLookupsAvoided++
+			continue
+		}
+		if archive == nil {
+			var err error
+			archive, err = r.archive.newPointIterator()
+			if err != nil {
+				return nil, err
+			}
+		}
+		stats.ArchiveLookups++
 		value, found, tooLarge, readErr := archive.get(key, maxBytes-buffered, len(records) == 0)
 		if tooLarge {
 			break
@@ -725,6 +735,9 @@ func (r *RotatingStore) prefetchPromotion(keys [][]byte, maxBytes int) ([]promot
 			break
 		}
 		buffered += len(value)
+	}
+	if archive == nil {
+		return records, nil
 	}
 	closeErr := archive.Close()
 	if len(records) > 0 && records[len(records)-1].err != nil {
