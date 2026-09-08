@@ -6,10 +6,27 @@ import (
 
 	"github.com/LeJamon/go-xrpl/amendment"
 	"github.com/LeJamon/go-xrpl/internal/ledger"
+	"github.com/LeJamon/go-xrpl/internal/tx"
 	"github.com/LeJamon/go-xrpl/internal/tx/pseudo"
 	"github.com/LeJamon/go-xrpl/keylet"
 	"github.com/stretchr/testify/require"
 )
+
+type observingAutofillRulesTx struct {
+	rules *amendment.Rules
+}
+
+func (t *observingAutofillRulesTx) TxType() tx.Type                  { return tx.TypeAccountSet }
+func (t *observingAutofillRulesTx) GetCommon() *tx.Common            { return &tx.Common{} }
+func (t *observingAutofillRulesTx) Validate() error                  { return nil }
+func (t *observingAutofillRulesTx) Flatten() (map[string]any, error) { return nil, nil }
+func (t *observingAutofillRulesTx) GetRawBytes() []byte              { return nil }
+func (t *observingAutofillRulesTx) SetRawBytes([]byte)               {}
+func (t *observingAutofillRulesTx) RequiredAmendments() [][32]byte   { return nil }
+func (t *observingAutofillRulesTx) CalculateBaseFee(_ tx.LedgerView, cfg tx.EngineConfig) uint64 {
+	t.rules = cfg.Rules
+	return cfg.BaseFee
+}
 
 func TestOpenLedgerAcceptanceUsesLastValidatedRules(t *testing.T) {
 	svc, err := New(DefaultConfig())
@@ -62,4 +79,27 @@ func TestOpenLedgerAcceptanceUsesLastValidatedRules(t *testing.T) {
 		"ingress must reuse the published open view rule snapshot")
 	require.Same(t, current.Rules(), svc.TransactionRules(),
 		"TransactionRules must expose the published open view rule snapshot")
+
+	// Validation can advance independently of open-view publication. Keep the
+	// published rules snapshot authoritative until another accept publishes a
+	// replacement view, including for autofill fee calculation.
+	require.NoError(t, localClosed.SetValidated())
+	legacyOpen, err := ledger.NewOpen(localClosed, time.Now())
+	require.NoError(t, err)
+	svc.mu.Lock()
+	previousClosed, previousOpen, previousValidated := svc.closedLedger, svc.openLedger, svc.validatedLedger
+	svc.closedLedger, svc.openLedger, svc.validatedLedger = localClosed, legacyOpen, localClosed
+	svc.mu.Unlock()
+	defer func() {
+		svc.mu.Lock()
+		svc.closedLedger, svc.openLedger, svc.validatedLedger = previousClosed, previousOpen, previousValidated
+		svc.mu.Unlock()
+	}()
+	require.False(t, svc.TransactionRules().Enabled(amendment.FeatureBatchV1_1),
+		"validation advancement must not alter an already-published open view")
+	observed := &observingAutofillRulesTx{}
+	_, err = svc.GetAutofillFee(observed, false, 10, 1)
+	require.NoError(t, err)
+	require.Same(t, current.Rules(), observed.rules,
+		"autofill must use the published open view rules")
 }
