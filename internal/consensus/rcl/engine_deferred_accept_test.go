@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/LeJamon/go-xrpl/internal/consensus"
 )
@@ -17,6 +18,19 @@ type deferredAcceptAdaptor struct {
 	calls   int
 
 	broadcastHook func()
+}
+
+type lifecycleDeferredAcceptAdaptor struct {
+	*deferredAcceptAdaptor
+	stopEntered chan struct{}
+	stopRelease chan struct{}
+	stopOnce    sync.Once
+}
+
+func (a *lifecycleDeferredAcceptAdaptor) StopLedgerAccept() error {
+	a.stopOnce.Do(func() { close(a.stopEntered) })
+	<-a.stopRelease
+	return nil
 }
 
 func (a *deferredAcceptAdaptor) DeferLedgerAccept(complete func()) bool {
@@ -283,5 +297,40 @@ func TestDeferredLedgerAcceptBuildFailureRestoresEstablish(t *testing.T) {
 	}
 	if got := base.lastLCL.Seq(); got != 100 {
 		t.Fatalf("failed build changed last closed ledger to seq %d", got)
+	}
+}
+
+func TestEngineStopJoinsAcceptanceDeferrerBeforeEventBusClose(t *testing.T) {
+	base := newMockAdaptor()
+	deferred := &deferredAcceptAdaptor{mockAdaptor: base}
+	adaptor := &lifecycleDeferredAcceptAdaptor{
+		deferredAcceptAdaptor: deferred,
+		stopEntered:           make(chan struct{}),
+		stopRelease:           make(chan struct{}),
+	}
+	engine := NewEngine(adaptor, DefaultConfig())
+	if err := engine.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- engine.Stop() }()
+	select {
+	case <-adaptor.stopEntered:
+	case <-time.After(time.Second):
+		t.Fatal("Engine.Stop did not join the acceptance deferrer")
+	}
+
+	if !engine.eventBus.Publish(&consensus.TimerFiredEvent{}) {
+		t.Fatal("Engine.Stop closed the event bus before acceptance drain completed")
+	}
+	close(adaptor.stopRelease)
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Engine.Stop did not return after acceptance drain")
 	}
 }
