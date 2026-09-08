@@ -115,11 +115,7 @@ func testSubmitDoesNotBlockClosedLedgerReadsOrReplacement(t *testing.T, rpc bool
 	}()
 	<-switchWaiting
 	require.Eventually(t, func() bool {
-		if svc.lifecycleMu.TryLock() {
-			svc.lifecycleMu.Unlock()
-			return false
-		}
-		return true
+		return svc.openLedgerMu.Snapshot().QueuedPriority != 0
 	}, time.Second, time.Millisecond)
 	assertClosedRead()
 	select {
@@ -198,11 +194,7 @@ func TestValidatedLedgerWaitsForOpenLedgerSubmission(t *testing.T) {
 		close(validationDone)
 	}()
 	require.Eventually(t, func() bool {
-		if svc.lifecycleMu.TryLock() {
-			svc.lifecycleMu.Unlock()
-			return false
-		}
-		return true
+		return svc.openLedgerMu.Snapshot().QueuedPriority != 0
 	}, time.Second, time.Millisecond)
 
 	readDone := make(chan *ledger.Ledger, 1)
@@ -297,6 +289,79 @@ func TestStopWaitsForOpenLedgerSubmission(t *testing.T) {
 	require.ErrorContains(t, err, "ledger service is not running")
 	svc.SetValidatedLedger(candidate.Sequence(), candidate.Hash())
 	require.False(t, candidate.IsValidated(), "validation advanced after the service stopped")
+}
+
+func TestQueuedIngressDoesNotHoldLifecycleLock(t *testing.T) {
+	svc, err := New(DefaultConfig())
+	require.NoError(t, err)
+	require.NoError(t, svc.Start())
+	t.Cleanup(svc.Stop)
+
+	svc.openLedgerMu.Lock()
+	released := false
+	defer func() {
+		if !released {
+			svc.openLedgerMu.Unlock()
+		}
+	}()
+	admissionDone := make(chan error, 1)
+	go func() {
+		err := svc.lockOpenLedgerIfRunning(openLedgerIngress)
+		if err == nil {
+			svc.openLedgerMu.Unlock()
+		}
+		admissionDone <- err
+	}()
+	require.Eventually(t, func() bool {
+		return svc.openLedgerMu.Snapshot().QueuedIngress == 1
+	}, time.Second, time.Millisecond)
+
+	require.True(t, svc.lifecycleMu.TryLock(), "queued ingress must not hold lifecycleMu")
+	svc.lifecycleMu.Unlock()
+	svc.openLedgerMu.Unlock()
+	released = true
+	require.NoError(t, <-admissionDone)
+}
+
+func TestQueuedIngressRejectedWhenStopWinsOpenLedgerGate(t *testing.T) {
+	svc, err := New(DefaultConfig())
+	require.NoError(t, err)
+	require.NoError(t, svc.Start())
+	t.Cleanup(svc.Stop)
+
+	svc.openLedgerMu.Lock()
+	released := false
+	defer func() {
+		if !released {
+			svc.openLedgerMu.Unlock()
+		}
+	}()
+	blob, _ := startupPaymentBlob(t, "queued-stop-destination", 1)
+	submitDone := make(chan error, 1)
+	go func() {
+		_, submitErr := svc.SubmitOpenLedgerTxDetailed(blob, true)
+		submitDone <- submitErr
+	}()
+	require.Eventually(t, func() bool {
+		return svc.openLedgerMu.Snapshot().QueuedIngress == 1
+	}, time.Second, time.Millisecond)
+
+	stopDone := make(chan struct{})
+	go func() {
+		svc.Stop()
+		close(stopDone)
+	}()
+	require.Eventually(t, func() bool {
+		svc.lifecycleMu.Lock()
+		state := svc.lifecycleState
+		svc.lifecycleMu.Unlock()
+		return state == serviceStopping && svc.openLedgerMu.Snapshot().QueuedPriority != 0
+	}, time.Second, time.Millisecond)
+
+	svc.openLedgerMu.Unlock()
+	released = true
+	require.ErrorContains(t, <-submitDone, "ledger service is not running")
+	<-stopDone
 }
 
 func TestStopWaitsForValidatedLedgerWork(t *testing.T) {
