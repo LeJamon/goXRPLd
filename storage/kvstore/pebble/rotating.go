@@ -524,39 +524,31 @@ func (r *RotatingStore) GetBatch(
 	maxNodes, maxBytes int,
 ) ([]kvstore.ReadResult, error) {
 	r.mu.RLock()
+	defer r.mu.RUnlock()
 	if r.closed {
-		r.mu.RUnlock()
 		return nil, kvstore.ErrClosed
 	}
 	if len(keys) == 0 {
-		r.mu.RUnlock()
 		return readBatch(ctx, keys, maxNodes, maxBytes, nil)
 	}
 	if err := validateBatchReadLimits(keys, maxNodes, maxBytes); err != nil {
-		r.mu.RUnlock()
 		return nil, err
 	}
 	if ctx == nil {
-		r.mu.RUnlock()
 		return nil, errors.New("kvstore/pebble: nil batch read context")
 	}
 	if err := ctx.Err(); err != nil {
-		r.mu.RUnlock()
 		return nil, err
 	}
 	r.archiveMu.RLock()
+	defer r.archiveMu.RUnlock()
 	writable, err := r.writable.newPointIterator()
 	if err != nil {
-		r.archiveMu.RUnlock()
-		r.mu.RUnlock()
 		return nil, err
 	}
 	archive, err := r.archive.newPointIterator()
 	if err != nil {
-		closeErr := writable.Close()
-		r.archiveMu.RUnlock()
-		r.mu.RUnlock()
-		return nil, errors.Join(err, closeErr)
+		return nil, errors.Join(err, writable.Close())
 	}
 
 	read := func(key []byte, remaining int, allowOversized bool) ([]byte, bool, bool, error) {
@@ -569,8 +561,6 @@ func (r *RotatingStore) GetBatch(
 	results, readErr := readBatch(ctx, keys, maxNodes, maxBytes, read)
 	archiveCloseErr := archive.Close()
 	writableCloseErr := writable.Close()
-	r.archiveMu.RUnlock()
-	r.mu.RUnlock()
 	if readErr != nil || archiveCloseErr != nil || writableCloseErr != nil {
 		return nil, errors.Join(readErr, archiveCloseErr, writableCloseErr)
 	}
