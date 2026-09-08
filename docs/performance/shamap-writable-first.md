@@ -117,3 +117,63 @@ just test-pkg './internal/ledger/service -run ^$ -bench BenchmarkService_Refresh
 The full-refresh current-main baseline restores both Pebble files above plus `storage/kvstore/kvstore.go`, `internal/ledger/persistence.go`, `internal/ledger/service/persistence.go`, and `internal/ledger/service/fast_load_progress.go` from `64b730a7` and excludes the new `promotion_progress_test.go`. The benchmark fixture and profile labels stay unchanged. Run each pair sequentially without concurrent builds or tests.
 
 For profiles, add `-cpuprofile cpu.pprof -memprofile alloc.pprof` to a single selected benchmark case. Inspect CPU with `go tool pprof -top -tagfocus=phase=promotion cpu.pprof` (or `phase=refresh` for the service fixture), and allocations with `go tool pprof -top -alloc_space alloc.pprof`.
+
+## Final comparison after merging bounded retries
+
+Main advanced to `469f13c2` (#1869) while the original PR checks ran. The final production integration is `d81ef1fb`. The complete 36-case matrix was rerun against that updated base using the same fixture, three iterations per case and one sample per revision. [All results are in the merged-base CSV](shamap-writable-first-merged-results.csv). Unlike the earlier matrix, these are single samples rather than medians of three samples.
+
+The benchmark now accepts the base branch's bounded single-record fallback writes after retry exhaustion, while retaining exact key/value/source/promotion checks and requiring a single write before exhaustion. Both implementations passed all 36 cases.
+
+| Writable hits | Workers | SST delay | Archive bytes before → after | Total SST bytes before → after | Refresh ms before → after |
+| --- | ---: | --- | ---: | ---: | ---: |
+| 0% | 1 | none | 1,094,051 → 1,094,051 | 1,094,051 → 1,094,051 | 17.620 → 21.110 |
+| 0% | 4 | none | 2,152,529 → 2,622,202 | 2,152,529 → 2,622,202 | 23.970 → 16.670 |
+| 0% | 1 | 50 µs | 1,094,051 → 1,094,051 | 1,094,051 → 1,094,051 | 28.340 → 20.710 |
+| 0% | 4 | 50 µs | 2,761,581 → 3,837,992 | 2,761,581 → 3,837,992 | 23.470 → 18.650 |
+| 50% | 1 | none | 1,094,051 → 1,094,051 | 1,641,191 → 1,641,191 | 11.880 → 9.629 |
+| 50% | 4 | none | 2,753,759 → 1,446,440 | 4,230,283 → 2,442,744 | 10.170 → 8.283 |
+| 50% | 1 | 50 µs | 1,094,051 → 1,094,051 | 1,641,191 → 1,641,191 | 14.280 → 14.340 |
+| 50% | 4 | 50 µs | 3,555,882 → 1,639,217 | 5,549,452 → 2,796,022 | 10.700 → 10.230 |
+| 100% | 1 | none | 1,094,051 → 0 | 2,188,102 → 1,094,051 | 2.611 → 1.884 |
+| 100% | 4 | none | 2,913,368 → 0 | 5,887,211 → 2,793,923 | 1.920 → 1.194 |
+| 100% | 1 | 50 µs | 1,094,051 → 0 | 2,188,102 → 1,094,051 | 7.552 → 3.752 |
+| 100% | 4 | 50 µs | 4,051,562 → 0 | 8,166,077 → 4,201,065 | 5.936 → 3.317 |
+
+The same counted-I/O result holds after integration: all-writable cases perform zero archive SST reads, and one worker halves total SST bytes. The normal-I/O one-worker all-writable case allocates 2,474,202 → 1,486,472 B/op (40% less). Archive-only one-worker SST bytes are unchanged, but its normal-I/O elapsed sample is 20% slower; the delayed counterpart is faster. Concurrent archive-only reads increase in this sample, and foreground Put quantiles vary substantially (all-writable normal-I/O four-worker p95 is 1.084 → 14.833 µs). These results do not establish a general latency improvement or a safe worker-count increase.
+
+For this merged-base comparison, apply the overlay procedure to `469f13c2` and also restore `storage/kvstore/pebble/promotion_retry_test.go` from that commit because its direct prefetch helper call uses the baseline signature. Keep the final benchmark and counter schema. The service baseline additionally restores the four service/ledger/counter files listed above from `469f13c2` and excludes the new progress test. Paired 30-iteration CPU/allocation profiles were also recaptured for the merged-base cold all-writable one-worker promotion case; the same sampling limitations apply.
+
+The slower archive-only one-worker sample was checked with five further three-iteration samples per revision. Median refresh time was 20.48 → 16.96 ms (before samples 19.42–22.90 ms; after 16.16–19.98 ms), with identical counted SST bytes. This reversal supports treating the original single-sample timing difference cautiously rather than attributing it directly to the lookup change.
+
+### Full refresh and persistence after integration
+
+The identical end-to-end workloads were also rerun against main `469f13c2`, with three iterations per case and one sample per revision. [The final service CSV](shamap-writable-first-merged-service-results.csv) retains all metrics.
+
+| Cache | Workers | Refresh ms before → after | Nodes/s before → after | B/op before → after |
+| --- | ---: | ---: | ---: | ---: |
+| cold | 1 | 156.01 → 132.47 | 112,435 → 132,417 | 17,732,261 → 17,654,978 |
+| cold | 2 | 103.18 → 101.56 | 170,003 → 172,713 | 20,129,749 → 20,732,376 |
+| cold | 4 | 75.95 → 85.00 | 230,958 → 206,354 | 20,895,984 → 21,415,050 |
+| warm | 1 | 87.50 → 86.10 | 200,464 → 203,722 | 17,685,370 → 17,904,720 |
+| warm | 2 | 70.48 → 65.85 | 248,873 → 266,395 | 20,359,789 → 21,039,978 |
+| warm | 4 | 68.52 → 78.15 | 256,006 → 224,454 | 22,921,866 → 23,087,968 |
+
+All 32 ledger persists overlapped refresh in each measured case.
+
+| Workers | Refresh ms before → after | Overlapping persist p95 ms before → after |
+| ---: | ---: | ---: |
+| 1 | 530.24 → 561.65 | 21.14 → 23.86 |
+| 2 | 444.44 → 497.63 | 16.88 → 19.09 |
+| 4 | 467.62 → 458.64 | 17.10 → 19.75 |
+
+The updated-base samples show slower four-worker refresh and 13–16% higher overlapping persistence p95, despite reduced archive work in the all-writable fixture. Consequently these runs do not demonstrate the parent issue's end-to-end latency acceptance criterion. This PR supplies the narrow archive-read reduction and the diagnostics needed to measure the deployed hit distribution; the worker default remains unchanged, and #1853 stays open.
+
+The persistence concern was then checked with three independent three-iteration samples for each worker count and revision. [Raw latency recheck samples](shamap-writable-first-latency-rechecks.csv) include these runs and the five-sample archive-only check. Median overlapping persist p95 was:
+
+| Workers | Before ms | After ms | Change |
+| ---: | ---: | ---: | ---: |
+| 1 | 13.35 | 13.97 | +4.7% |
+| 2 | 12.92 | 13.98 | +8.2% |
+| 4 | 14.79 | 14.02 | -5.2% |
+
+The repeated samples have overlapping ranges and a different pattern from the first samples. They still do not establish a universal foreground-latency improvement or a deployment latency bound. The counted archive-read reduction is the stable result; the final report retains both sets of timing observations.
