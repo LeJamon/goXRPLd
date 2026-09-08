@@ -8,6 +8,7 @@ import (
 	"github.com/LeJamon/go-xrpl/internal/ledger"
 	"github.com/LeJamon/go-xrpl/internal/tx"
 	"github.com/LeJamon/go-xrpl/internal/tx/pseudo"
+	"github.com/LeJamon/go-xrpl/internal/tx/ter"
 	"github.com/LeJamon/go-xrpl/keylet"
 	"github.com/stretchr/testify/require"
 )
@@ -26,6 +27,14 @@ func (t *observingAutofillRulesTx) RequiredAmendments() [][32]byte   { return ni
 func (t *observingAutofillRulesTx) CalculateBaseFee(_ tx.LedgerView, cfg tx.EngineConfig) uint64 {
 	t.rules = cfg.Rules
 	return cfg.BaseFee
+}
+
+type amendmentRequiredSimulationTx struct {
+	*tx.BaseTx
+}
+
+func (t *amendmentRequiredSimulationTx) RequiredAmendments() [][32]byte {
+	return [][32]byte{amendment.FeatureBatchV1_1}
 }
 
 func TestOpenLedgerAcceptanceUsesLastValidatedRules(t *testing.T) {
@@ -102,4 +111,14 @@ func TestOpenLedgerAcceptanceUsesLastValidatedRules(t *testing.T) {
 	require.NoError(t, err)
 	require.Same(t, current.Rules(), observed.rules,
 		"autofill must use the published open view rules")
+
+	simulationTx := &amendmentRequiredSimulationTx{
+		BaseTx: tx.NewBaseTx(tx.TypeAccountSet, "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"),
+	}
+	simulationTx.Fee = "10"
+	simulationTx.SetSequence(1)
+	simulated, err := svc.SimulateTransaction(simulationTx)
+	require.NoError(t, err)
+	require.Equal(t, ter.TemDISABLED, simulated.Result,
+		"simulation must gate the transaction with the published rules, even when the closed ledger has advanced")
 }
