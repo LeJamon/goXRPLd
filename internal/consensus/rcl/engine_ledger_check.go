@@ -27,8 +27,7 @@ func (e *Engine) run() {
 	e.heartbeat = time.NewTicker(interval)
 	defer e.heartbeat.Stop()
 
-	var lastScheduled time.Time
-	var lastReceived time.Time
+	lastReceived := time.Now()
 	var lastTickEnd time.Time
 	var priorTickWork time.Duration
 	for {
@@ -40,7 +39,7 @@ func (e *Engine) run() {
 			timing := classifyHeartbeatDispatch(
 				scheduledAt,
 				receivedAt,
-				lastScheduled,
+				lastReceived,
 				lastTickEnd,
 				priorTickWork,
 				interval,
@@ -65,14 +64,13 @@ func (e *Engine) run() {
 					"delay_cause", timing.cause,
 					"gap_ms", gap.Milliseconds(),
 					"dispatch_delay_ms", timing.dispatchDelay.Milliseconds(),
-					"scheduler_wake_delay_ms", timing.schedulerWakeDelay.Milliseconds(),
+					"dispatch_wait_ms", timing.dispatchWait.Milliseconds(),
 					"prior_tick_work_ms", timing.priorTickWork.Milliseconds(),
 					"missed", timing.missed,
 					"interval_ms", interval.Milliseconds(),
 					"total_missed", e.missedHeartbeats.Load(),
 				)
 			}
-			lastScheduled = scheduledAt
 			lastReceived = receivedAt
 			tickStart := receivedAt
 			if ping := e.stallPing.Load(); ping != nil {
@@ -230,19 +228,19 @@ type heartbeatStageTimer struct {
 	context heartbeatContext
 }
 
-// heartbeatDispatchTiming separates time spent waiting for the scheduler from
-// time spent in the previous heartbeat. Ticker delivery can otherwise make a
-// long timerEntry look like a scheduler wake-up delay.
+// heartbeatDispatchTiming separates dispatch wait from time spent in the
+// previous heartbeat. Ticker delivery can otherwise make a long timerEntry
+// look like a fresh missed heartbeat on the next dispatch.
 type heartbeatDispatchTiming struct {
-	dispatchDelay      time.Duration
-	schedulerWakeDelay time.Duration
-	priorTickWork      time.Duration
-	missed             int64
-	cause              string
+	dispatchDelay time.Duration
+	dispatchWait  time.Duration
+	priorTickWork time.Duration
+	missed        int64
+	cause         string
 }
 
 func classifyHeartbeatDispatch(
-	scheduledAt, receivedAt, previousScheduledAt, previousTickEnd time.Time,
+	scheduledAt, receivedAt, previousReceivedAt, previousTickEnd time.Time,
 	priorTickWork, interval time.Duration,
 ) heartbeatDispatchTiming {
 	dispatchDelay := nonNegativeDuration(receivedAt.Sub(scheduledAt))
@@ -252,35 +250,32 @@ func classifyHeartbeatDispatch(
 	if blockedByPriorWork {
 		readyAt = previousTickEnd
 	}
-	schedulerWakeDelay := nonNegativeDuration(receivedAt.Sub(readyAt))
+	dispatchWait := nonNegativeDuration(receivedAt.Sub(readyAt))
 
 	var missed int64
-	if interval > 0 && !previousScheduledAt.IsZero() {
-		scheduledGap := scheduledAt.Sub(previousScheduledAt)
-		if scheduledGap > interval {
-			// Ticker timestamps can differ from an exact interval by a few
-			// nanoseconds. Round to the nearest interval so a 2× gap just
-			// below the boundary still represents one dropped tick.
-			ticks := int64((scheduledGap + interval/2) / interval)
-			if ticks > 1 {
-				missed = ticks - 1
-			}
+	if interval > 0 && !previousReceivedAt.IsZero() {
+		receivedGap := receivedAt.Sub(previousReceivedAt)
+		// Keep missed-heartbeat liveness accounting on the historical
+		// receive-to-receive gap. Dispatch attribution below separates the
+		// delay from work in the preceding heartbeat.
+		if receivedGap > 2*interval {
+			missed = int64(receivedGap/interval) - 1
 		}
 	}
 
 	cause := "dispatch-wait"
 	if blockedByPriorWork {
 		cause = "prior-tick-work"
-		if schedulerWakeDelay > slowHeartbeatThreshold {
+		if dispatchWait > slowHeartbeatThreshold {
 			cause = "prior-tick-work-and-dispatch-wait"
 		}
 	}
 	return heartbeatDispatchTiming{
-		dispatchDelay:      dispatchDelay,
-		schedulerWakeDelay: schedulerWakeDelay,
-		priorTickWork:      priorTickWork,
-		missed:             missed,
-		cause:              cause,
+		dispatchDelay: dispatchDelay,
+		dispatchWait:  dispatchWait,
+		priorTickWork: priorTickWork,
+		missed:        missed,
+		cause:         cause,
 	}
 }
 

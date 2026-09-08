@@ -279,66 +279,66 @@ func TestClassifyHeartbeatDispatch(t *testing.T) {
 	interval := time.Second
 
 	tests := []struct {
-		name         string
-		scheduledAt  time.Time
-		receivedAt   time.Time
-		previousTick time.Time
-		previousEnd  time.Time
-		previousWork time.Duration
-		wantDispatch time.Duration
-		wantWake     time.Duration
-		wantWork     time.Duration
-		wantMissed   int64
-		wantCause    string
+		name             string
+		scheduledAt      time.Time
+		receivedAt       time.Time
+		previousReceived time.Time
+		previousEnd      time.Time
+		previousWork     time.Duration
+		wantDispatch     time.Duration
+		wantWait         time.Duration
+		wantWork         time.Duration
+		wantMissed       int64
+		wantCause        string
 	}{
 		{
-			name:         "scheduler wake delay",
-			scheduledAt:  base.Add(time.Second),
-			receivedAt:   base.Add(time.Second + 7*time.Millisecond),
-			previousTick: base,
-			previousEnd:  base.Add(900 * time.Millisecond),
-			previousWork: 100 * time.Millisecond,
-			wantDispatch: 7 * time.Millisecond,
-			wantWake:     7 * time.Millisecond,
-			wantWork:     100 * time.Millisecond,
-			wantCause:    "dispatch-wait",
+			name:             "dispatch wait",
+			scheduledAt:      base.Add(time.Second),
+			receivedAt:       base.Add(time.Second + 7*time.Millisecond),
+			previousReceived: base,
+			previousEnd:      base.Add(900 * time.Millisecond),
+			previousWork:     100 * time.Millisecond,
+			wantDispatch:     7 * time.Millisecond,
+			wantWait:         7 * time.Millisecond,
+			wantWork:         100 * time.Millisecond,
+			wantCause:        "dispatch-wait",
 		},
 		{
-			name:         "prior tick work",
-			scheduledAt:  base.Add(time.Second),
-			receivedAt:   base.Add(2*time.Second + 4*time.Millisecond),
-			previousTick: base,
-			previousEnd:  base.Add(2 * time.Second),
-			previousWork: 2 * time.Second,
-			wantDispatch: time.Second + 4*time.Millisecond,
-			wantWake:     4 * time.Millisecond,
-			wantWork:     2 * time.Second,
-			wantCause:    "prior-tick-work",
+			name:             "prior tick work",
+			scheduledAt:      base.Add(time.Second),
+			receivedAt:       base.Add(2*time.Second + 4*time.Millisecond),
+			previousReceived: base.Add(time.Second),
+			previousEnd:      base.Add(2 * time.Second),
+			previousWork:     2 * time.Second,
+			wantDispatch:     time.Second + 4*time.Millisecond,
+			wantWait:         4 * time.Millisecond,
+			wantWork:         2 * time.Second,
+			wantCause:        "prior-tick-work",
 		},
 		{
-			name:         "exactly one coalesced tick",
-			scheduledAt:  base.Add(2 * time.Second),
-			receivedAt:   base.Add(3*time.Second + 2*time.Millisecond),
-			previousTick: base,
-			previousEnd:  base.Add(3 * time.Second),
-			previousWork: 3 * time.Second,
-			wantDispatch: time.Second + 2*time.Millisecond,
-			wantWake:     2 * time.Millisecond,
-			wantWork:     3 * time.Second,
-			wantMissed:   1,
-			wantCause:    "prior-tick-work",
+			name:             "exactly one coalesced tick",
+			scheduledAt:      base.Add(2 * time.Second),
+			receivedAt:       base.Add(3*time.Second + 2*time.Millisecond),
+			previousReceived: base.Add(time.Second),
+			previousEnd:      base.Add(3 * time.Second),
+			previousWork:     3 * time.Second,
+			wantDispatch:     time.Second + 2*time.Millisecond,
+			wantWait:         2 * time.Millisecond,
+			wantWork:         3 * time.Second,
+			wantMissed:       1,
+			wantCause:        "prior-tick-work",
 		},
 		{
-			name:         "material dispatch wait after prior work",
-			scheduledAt:  base.Add(time.Second),
-			receivedAt:   base.Add(2*time.Second + slowHeartbeatThreshold + time.Millisecond),
-			previousTick: base,
-			previousEnd:  base.Add(2 * time.Second),
-			previousWork: 2 * time.Second,
-			wantDispatch: time.Second + slowHeartbeatThreshold + time.Millisecond,
-			wantWake:     slowHeartbeatThreshold + time.Millisecond,
-			wantWork:     2 * time.Second,
-			wantCause:    "prior-tick-work-and-dispatch-wait",
+			name:             "material dispatch wait after prior work",
+			scheduledAt:      base.Add(time.Second),
+			receivedAt:       base.Add(2*time.Second + slowHeartbeatThreshold + time.Millisecond),
+			previousReceived: base.Add(time.Second),
+			previousEnd:      base.Add(2 * time.Second),
+			previousWork:     2 * time.Second,
+			wantDispatch:     time.Second + slowHeartbeatThreshold + time.Millisecond,
+			wantWait:         slowHeartbeatThreshold + time.Millisecond,
+			wantWork:         2 * time.Second,
+			wantCause:        "prior-tick-work-and-dispatch-wait",
 		},
 	}
 
@@ -347,16 +347,56 @@ func TestClassifyHeartbeatDispatch(t *testing.T) {
 			got := classifyHeartbeatDispatch(
 				tt.scheduledAt,
 				tt.receivedAt,
-				tt.previousTick,
+				tt.previousReceived,
 				tt.previousEnd,
 				tt.previousWork,
 				interval,
 			)
-			if got.dispatchDelay != tt.wantDispatch || got.schedulerWakeDelay != tt.wantWake || got.priorTickWork != tt.wantWork ||
+			if got.dispatchDelay != tt.wantDispatch || got.dispatchWait != tt.wantWait || got.priorTickWork != tt.wantWork ||
 				got.missed != tt.wantMissed || got.cause != tt.wantCause {
-				t.Fatalf("timing = %+v, want dispatch=%v wake=%v missed=%d cause=%q", got, tt.wantDispatch, tt.wantWake, tt.wantMissed, tt.wantCause)
+				t.Fatalf("timing = %+v, want dispatch=%v wait=%v missed=%d cause=%q", got, tt.wantDispatch, tt.wantWait, tt.wantMissed, tt.wantCause)
 			}
 		})
+	}
+}
+
+func TestClassifyHeartbeatDispatchAttributesMissedGapToDelayedTick(t *testing.T) {
+	base := time.Unix(100, 0)
+	interval := time.Second
+
+	first := classifyHeartbeatDispatch(
+		base.Add(time.Second),
+		base.Add(time.Second),
+		time.Time{},
+		time.Time{},
+		0,
+		interval,
+	)
+	second := classifyHeartbeatDispatch(
+		base.Add(2*time.Second),
+		base.Add(6*time.Second),
+		base.Add(time.Second),
+		base.Add(6*time.Second),
+		5*time.Second,
+		interval,
+	)
+	third := classifyHeartbeatDispatch(
+		base.Add(7*time.Second),
+		base.Add(7*time.Second),
+		base.Add(6*time.Second),
+		base.Add(6*time.Second),
+		0,
+		interval,
+	)
+
+	if first.missed != 0 {
+		t.Fatalf("first dispatch missed = %d, want 0", first.missed)
+	}
+	if second.missed != 4 || second.cause != "prior-tick-work" {
+		t.Fatalf("delayed dispatch = %+v, want four misses attributed to prior work", second)
+	}
+	if third.missed != 0 || third.dispatchDelay != 0 || third.dispatchWait != 0 {
+		t.Fatalf("healthy follow-up dispatch = %+v, want no delay or misses", third)
 	}
 }
 
@@ -369,7 +409,7 @@ func TestClassifyHeartbeatDispatchRoundsTickerJitter(t *testing.T) {
 		want int64
 	}{
 		{name: "one interval plus jitter", gap: interval + time.Nanosecond, want: 0},
-		{name: "two intervals minus jitter", gap: 2*interval - time.Nanosecond, want: 1},
+		{name: "two intervals minus jitter", gap: 2*interval - time.Nanosecond, want: 0},
 		{name: "two intervals plus jitter", gap: 2*interval + time.Nanosecond, want: 1},
 	}
 
