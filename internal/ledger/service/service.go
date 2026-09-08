@@ -801,47 +801,43 @@ func (s *Service) tickLoadFeeLocked() {
 	}
 }
 
-// acceptOpenLedgerViewLocked invokes OpenLedger.Accept on the LCL transition to
-// closed. No-op pre-Start. retriableTxs are the disputed we-voted-NO txs
-// plus the build pass's retry-state txs, replayed first; anyDisputes is the
-// retriesFirst flag. Caller must hold
-// openLedgerMu and s.mu.
-func (s *Service) acceptOpenLedgerViewLocked(closed *ledger.Ledger, retriableTxs []openledger.PendingTx, anyDisputes bool) error {
-	return s.openLedgerAcceptanceLocked(nil, nil)(closed, retriableTxs, anyDisputes, nil)
+// Caller must hold openLedgerMu and s.mu.
+func (s *Service) acceptPreferredOpenLedgerLocked(closed *ledger.Ledger) error {
+	return s.openLedgerAcceptanceForValidatedLocked(nil, nil, nil, true)(closed, nil, false, nil)
 }
 
-// acceptOpenLedgerViewUsingValidatedLocked is the standalone variant of
-// acceptOpenLedgerViewLocked. Standalone validates the just-closed ledger before
-// building its successor, but publishes s.validatedLedger only after this view
-// is prepared; the explicit rule source preserves that ordering without
-// mutating service state on a failed preparation.
-func (s *Service) acceptOpenLedgerViewUsingValidatedLocked(
-	closed *ledger.Ledger,
-	retriableTxs []openledger.PendingTx,
-	anyDisputes bool,
-	validated *ledger.Ledger,
-) error {
-	return s.openLedgerAcceptanceForValidatedLocked(nil, nil, validated)(closed, retriableTxs, anyDisputes, nil)
+// Standalone validates the closed ledger before preparing its successor, but
+// publishes the validated frontier only after preparation succeeds.
+func (s *Service) acceptStandaloneOpenLedgerLocked(closed *ledger.Ledger, retriableTxs []openledger.PendingTx) error {
+	salt, err := openledger.ComputeSalt(s.pendingTxs)
+	if err != nil {
+		return err
+	}
+	return s.openLedgerAcceptanceForValidatedLocked(nil, &salt, closed, false)(closed, retriableTxs, false, nil)
 }
 
 // openLedgerAcceptanceLocked captures service configuration under mu. The returned
 // operation requires openLedgerMu, but runs storage reads and replay without mu.
 func (s *Service) openLedgerAcceptanceLocked(relayDuration *time.Duration, retrySalt *[32]byte) func(*ledger.Ledger, []openledger.PendingTx, bool, func(func())) error {
-	return s.openLedgerAcceptanceForValidatedLocked(relayDuration, retrySalt, nil)
+	return s.openLedgerAcceptanceForValidatedLocked(relayDuration, retrySalt, nil, false)
 }
 
 func (s *Service) openLedgerAcceptanceForValidatedLocked(
 	relayDuration *time.Duration,
 	retrySalt *[32]byte,
 	validatedOverride *ledger.Ledger,
+	preferredSwitch bool,
 ) func(*ledger.Ledger, []openledger.PendingTx, bool, func(func())) error {
+	if preferredSwitch {
+		retrySalt = &[32]byte{}
+	}
 	view, queue, localsPool := s.openLedgerView, s.txQueue, s.localTxs
 	networkID, logger, feeTrack := s.config.NetworkID, s.config.Logger, s.feeTrack
 	validatedLedger := s.validatedLedger
 	if validatedOverride != nil {
 		validatedLedger = validatedOverride
 	}
-	relay, slowRound := s.txRelay, s.lastConsensusRoundTime > slowConsensusThreshold
+	relay, slowRound := s.txRelay, preferredSwitch || s.lastConsensusRoundTime > slowConsensusThreshold
 	return func(closed *ledger.Ledger, retriableTxs []openledger.PendingTx, anyDisputes bool, publication func(func())) error {
 		if closed == nil {
 			return nil
@@ -877,6 +873,10 @@ func (s *Service) openLedgerAcceptanceForValidatedLocked(
 		}
 		// Seed retries with the disputed/build-pass set; Accept drains then re-fills it.
 		retries := append([]openledger.PendingTx(nil), retriableTxs...)
+		if preferredSwitch {
+			retries = append(retries, locals...)
+			locals = nil
+		}
 		relayCB := func(hash [32]byte, blob []byte) {
 			s.rememberRelayTransaction(hash, blob, false)
 			if relay != nil {

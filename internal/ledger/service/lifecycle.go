@@ -208,13 +208,7 @@ func (s *Service) prepareNewOpenLedgerLocked(closed *ledger.Ledger, retriableTxs
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new open ledger: %w", err)
 	}
-	// LCL transition: replay the prior view's txs via Accept, retries-first for
-	// retriableTxs (disputed we-voted-NO txs plus the build pass's leftovers).
-	// rippled gates retries-first on disputes alone, but its retry loop drains
-	// the shared retriable set during the current-view replay either way;
-	// ApplyTxs never re-applies pre-existing retries, so the first pass must
-	// run whenever the set is non-empty or the leftovers would be dropped.
-	if err := s.acceptOpenLedgerViewUsingValidatedLocked(closed, retriableTxs, len(retriableTxs) > 0, closed); err != nil {
+	if err := s.acceptStandaloneOpenLedgerLocked(closed, retriableTxs); err != nil {
 		return nil, err
 	}
 	return newOpen, nil
@@ -446,7 +440,7 @@ func (s *Service) switchToPreferredLedger(parent *ledger.Ledger, beforeLock func
 	if err != nil {
 		return fmt.Errorf("collect transaction results: %w", err)
 	}
-	if err := s.acceptOpenLedgerViewLocked(parent, nil, false); err != nil {
+	if err := s.acceptPreferredOpenLedgerLocked(parent); err != nil {
 		return err
 	}
 

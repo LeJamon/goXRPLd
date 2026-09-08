@@ -84,7 +84,7 @@ func reverseAccountOrderSalt(first, second [20]byte) [32]byte {
 		diff := first[i] ^ second[i]
 		for mask := byte(0x80); mask != 0; mask >>= 1 {
 			if diff&mask != 0 {
-				salt[i] = mask
+				salt[i] = ^first[i] & mask
 				return salt
 			}
 		}
