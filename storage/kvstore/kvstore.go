@@ -86,6 +86,14 @@ type PromotionStats struct {
 	PromotedBytes  int
 	BufferedBytes  int
 	Batches        int
+	// ArchiveLookups counts archive-generation lookups, including prefetch retries.
+	ArchiveLookups int
+	// ArchiveLookupsAvoided is the number of archive lookups skipped because
+	// the writable generation resolved the key first, including prefetch retries.
+	ArchiveLookupsAvoided int
+	// PrefetchBytes is the payload size fetched while prefetching promotion
+	// records, including payloads discarded on a concurrent-mutation retry.
+	PrefetchBytes int
 }
 
 // CacheMetrics is a point-in-time snapshot of shared block-cache activity.

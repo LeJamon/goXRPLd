@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/LeJamon/go-xrpl/protocol"
 	"github.com/LeJamon/go-xrpl/shamap"
 	"github.com/LeJamon/go-xrpl/shamap/backend"
+	"github.com/LeJamon/go-xrpl/storage/kvstore"
 	"github.com/LeJamon/go-xrpl/storage/nodestore"
 	"github.com/stretchr/testify/require"
 )
@@ -111,6 +113,21 @@ type verificationLogRecord struct {
 	NodeCacheHitsAfter       uint64 `json:"node_cache_hits_after"`
 	NodeCacheMissesBefore    uint64 `json:"node_cache_misses_before"`
 	NodeCacheMissesAfter     uint64 `json:"node_cache_misses_after"`
+	PromotionRequested       uint64 `json:"promotion_requested"`
+	PromotionConsumed        uint64 `json:"promotion_consumed"`
+	PromotionReturned        uint64 `json:"promotion_returned"`
+	PromotionWritableHits    uint64 `json:"promotion_writable_hits"`
+	PromotionWritableMisses  uint64 `json:"promotion_writable_misses"`
+	PromotionArchiveHits     uint64 `json:"promotion_archive_hits"`
+	PromotionArchiveMisses   uint64 `json:"promotion_archive_misses"`
+	PromotionArchiveLookups  uint64 `json:"promotion_archive_lookups"`
+	PromotionArchiveAvoided  uint64 `json:"promotion_archive_lookups_avoided"`
+	PromotionPrefetchBytes   uint64 `json:"promotion_prefetch_bytes"`
+	PromotionPromoted        uint64 `json:"promotion_promoted"`
+	PromotionPromotedBytes   uint64 `json:"promotion_promoted_bytes"`
+	PromotionBufferedBytes   uint64 `json:"promotion_buffered_bytes"`
+	PromotionBatches         uint64 `json:"promotion_batches"`
+	PromotionPartialRetries  uint64 `json:"promotion_partial_prefix_retries"`
 	VerificationError        string `json:"err"`
 }
 
@@ -1286,6 +1303,155 @@ func TestService_VerifyStoredSHAMapReportsConcurrentSuccess(t *testing.T) {
 	require.Greater(t, records[1].NodeStoreReadBytesAfter, records[1].NodeStoreReadBytesBefore)
 	require.Equal(t, records[1].NodeCacheHitsBefore, records[1].NodeCacheHitsAfter)
 	require.Equal(t, records[1].NodeCacheMissesBefore, records[1].NodeCacheMissesAfter)
+}
+
+func TestService_VerifyStoredSHAMapReportsBatchPromotionStats(t *testing.T) {
+	svc, db, root, _ := newParallelStoredVerificationFixture(t)
+	capture, logger := newVerificationLogCapture()
+	svc.logger = logger.Named(xrpllog.PartitionLedger)
+	progress := newStoredSHAMapVerificationProgress(
+		svc.logger,
+		db,
+		root,
+		shamap.TypeState,
+		time.Date(2026, time.July, 27, 20, 0, 0, 0, time.UTC),
+	)
+	startedAt := progress.startedAt
+	var calls, requested, consumed, returned atomic.Int64
+	var partialOnce atomic.Bool
+	batchFetch := func(
+		ctx context.Context,
+		hashes []nodestore.Hash256,
+		_ int,
+	) ([]*nodestore.Node, kvstore.PromotionStats, error) {
+		calls.Add(1)
+		requested.Add(int64(len(hashes)))
+		count := len(hashes)
+		if count > 1 && partialOnce.CompareAndSwap(false, true) {
+			count = 1
+		}
+		nodes := make([]*nodestore.Node, count)
+		for i := range count {
+			node, err := db.Fetch(ctx, hashes[i])
+			if err != nil {
+				return nil, kvstore.PromotionStats{}, err
+			}
+			nodes[i] = node
+		}
+		consumed.Add(int64(count))
+		returned.Add(int64(len(nodes)))
+		return nodes, kvstore.PromotionStats{
+			Requested:             len(hashes),
+			Consumed:              count,
+			WritableHits:          count,
+			WritableMisses:        1,
+			ArchiveHits:           2,
+			ArchiveMisses:         3,
+			ArchiveLookups:        5,
+			ArchiveLookupsAvoided: 7,
+			PrefetchBytes:         11,
+			Promoted:              count,
+			PromotedBytes:         13,
+			BufferedBytes:         17,
+			Batches:               19,
+		}, nil
+	}
+
+	err := svc.walkStoredSHAMapConcurrentWithFetch(
+		t.Context(),
+		root,
+		shamap.TypeState,
+		db.Fetch,
+		1,
+		storedSHAMapWalkControl{
+			progress:   progress,
+			batchFetch: batchFetch,
+			batchNodes: 256,
+			batchBytes: 4 << 20,
+			now:        func() time.Time { return startedAt },
+		},
+		nil,
+	)
+	require.NoError(t, err)
+	progress.finish(startedAt.Add(2*time.Second), nil)
+
+	records := decodeVerificationLogs(t, capture)
+	require.Len(t, records, 2)
+	complete := records[1]
+	require.Equal(t, uint64(requested.Load()), complete.PromotionRequested)
+	require.Equal(t, uint64(consumed.Load()), complete.PromotionConsumed)
+	require.Equal(t, uint64(returned.Load()), complete.PromotionReturned)
+	require.Equal(t, complete.PromotionConsumed, complete.PromotionWritableHits)
+	require.Equal(t, uint64(calls.Load()), complete.PromotionWritableMisses)
+	require.Equal(t, uint64(2*calls.Load()), complete.PromotionArchiveHits)
+	require.Equal(t, uint64(3*calls.Load()), complete.PromotionArchiveMisses)
+	require.Equal(t, uint64(5*calls.Load()), complete.PromotionArchiveLookups)
+	require.Equal(t, uint64(7*calls.Load()), complete.PromotionArchiveAvoided)
+	require.Equal(t, uint64(11*calls.Load()), complete.PromotionPrefetchBytes)
+	require.Equal(t, complete.PromotionConsumed, complete.PromotionPromoted)
+	require.Equal(t, uint64(13*calls.Load()), complete.PromotionPromotedBytes)
+	require.Equal(t, uint64(17*calls.Load()), complete.PromotionBufferedBytes)
+	require.Equal(t, uint64(19*calls.Load()), complete.PromotionBatches)
+	require.Equal(t, uint64(1), complete.PromotionPartialRetries)
+}
+
+func TestService_VerifyStoredSHAMapAggregatesBatchStatsOnError(t *testing.T) {
+	svc, db, root, _ := newParallelStoredVerificationFixture(t)
+	capture, logger := newVerificationLogCapture()
+	svc.logger = logger.Named(xrpllog.PartitionLedger)
+	startedAt := time.Date(2026, time.July, 27, 20, 0, 0, 0, time.UTC)
+	progress := newStoredSHAMapVerificationProgress(
+		svc.logger, db, root, shamap.TypeState, startedAt,
+	)
+	wantErr := errors.New("batch promotion failed")
+	err := svc.walkStoredSHAMapConcurrentWithFetch(
+		t.Context(),
+		root,
+		shamap.TypeState,
+		db.Fetch,
+		1,
+		storedSHAMapWalkControl{
+			progress: progress,
+			batchFetch: func(
+				context.Context,
+				[]nodestore.Hash256,
+				int,
+			) ([]*nodestore.Node, kvstore.PromotionStats, error) {
+				return nil, kvstore.PromotionStats{
+					Requested:             3,
+					Consumed:              2,
+					WritableHits:          1,
+					WritableMisses:        1,
+					ArchiveLookups:        2,
+					ArchiveLookupsAvoided: 1,
+					PrefetchBytes:         32,
+					Promoted:              1,
+					PromotedBytes:         16,
+				}, wantErr
+			},
+			batchNodes: 1,
+			batchBytes: 4 << 20,
+			now:        func() time.Time { return startedAt },
+		},
+		nil,
+	)
+	require.ErrorIs(t, err, wantErr)
+	progress.finish(startedAt.Add(time.Second), err)
+
+	records := decodeVerificationLogs(t, capture)
+	require.Len(t, records, 2)
+	failed := records[1]
+	require.Equal(t, uint64(3), failed.PromotionRequested)
+	require.Equal(t, uint64(2), failed.PromotionConsumed)
+	require.Zero(t, failed.PromotionReturned)
+	require.Equal(t, uint64(1), failed.PromotionWritableHits)
+	require.Equal(t, uint64(1), failed.PromotionWritableMisses)
+	require.Equal(t, uint64(2), failed.PromotionArchiveLookups)
+	require.Equal(t, uint64(1), failed.PromotionArchiveAvoided)
+	require.Equal(t, uint64(32), failed.PromotionPrefetchBytes)
+	require.Equal(t, uint64(1), failed.PromotionPromoted)
+	require.Equal(t, uint64(16), failed.PromotionPromotedBytes)
+	require.Zero(t, failed.PromotionPartialRetries)
 }
 
 func TestService_VerifyStoredSHAMapReportsProgressAtCompletionBoundary(t *testing.T) {

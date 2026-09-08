@@ -9,6 +9,7 @@ import (
 
 	xrpllog "github.com/LeJamon/go-xrpl/log"
 	"github.com/LeJamon/go-xrpl/shamap"
+	"github.com/LeJamon/go-xrpl/storage/kvstore"
 	"github.com/LeJamon/go-xrpl/storage/nodestore"
 )
 
@@ -41,6 +42,22 @@ type storedSHAMapVerificationProgress struct {
 	workersStarted   uint32
 	activeWorkers    atomic.Int32
 	frontierSize     atomic.Int64
+
+	promotionRequested             atomic.Uint64
+	promotionConsumed              atomic.Uint64
+	promotionReturned              atomic.Uint64
+	promotionWritableHits          atomic.Uint64
+	promotionWritableMisses        atomic.Uint64
+	promotionArchiveHits           atomic.Uint64
+	promotionArchiveMisses         atomic.Uint64
+	promotionArchiveLookups        atomic.Uint64
+	promotionArchiveLookupsAvoided atomic.Uint64
+	promotionPrefetchBytes         atomic.Uint64
+	promotionPromoted              atomic.Uint64
+	promotionPromotedBytes         atomic.Uint64
+	promotionBufferedBytes         atomic.Uint64
+	promotionBatches               atomic.Uint64
+	promotionPartialPrefixRetries  atomic.Uint64
 
 	nodeStore    nodestore.Database
 	initialStats nodestore.Statistics
@@ -92,6 +109,36 @@ func (p *storedSHAMapVerificationProgress) configureWorkers(
 	p.workersResolved = uint32(resolved)
 	p.workersStarted = uint32(started)
 	p.frontierSize.Store(int64(frontier))
+}
+
+func (p *storedSHAMapVerificationProgress) recordPromotionBatch(
+	stats kvstore.PromotionStats,
+	returned int,
+	partialPrefixRetry bool,
+) {
+	addPromotionMetric(&p.promotionRequested, stats.Requested)
+	addPromotionMetric(&p.promotionConsumed, stats.Consumed)
+	addPromotionMetric(&p.promotionReturned, returned)
+	addPromotionMetric(&p.promotionWritableHits, stats.WritableHits)
+	addPromotionMetric(&p.promotionWritableMisses, stats.WritableMisses)
+	addPromotionMetric(&p.promotionArchiveHits, stats.ArchiveHits)
+	addPromotionMetric(&p.promotionArchiveMisses, stats.ArchiveMisses)
+	addPromotionMetric(&p.promotionArchiveLookups, stats.ArchiveLookups)
+	addPromotionMetric(&p.promotionArchiveLookupsAvoided, stats.ArchiveLookupsAvoided)
+	addPromotionMetric(&p.promotionPrefetchBytes, stats.PrefetchBytes)
+	addPromotionMetric(&p.promotionPromoted, stats.Promoted)
+	addPromotionMetric(&p.promotionPromotedBytes, stats.PromotedBytes)
+	addPromotionMetric(&p.promotionBufferedBytes, stats.BufferedBytes)
+	addPromotionMetric(&p.promotionBatches, stats.Batches)
+	if partialPrefixRetry {
+		p.promotionPartialPrefixRetries.Add(1)
+	}
+}
+
+func addPromotionMetric(counter *atomic.Uint64, value int) {
+	if value > 0 {
+		counter.Add(uint64(value))
+	}
 }
 
 func (p *storedSHAMapVerificationProgress) start() {
@@ -188,5 +235,20 @@ func (p *storedSHAMapVerificationProgress) fields(at time.Time) []any {
 		"node_cache_hits_after", stats.CacheHits,
 		"node_cache_misses_before", p.initialStats.CacheMisses,
 		"node_cache_misses_after", stats.CacheMisses,
+		"promotion_requested", p.promotionRequested.Load(),
+		"promotion_consumed", p.promotionConsumed.Load(),
+		"promotion_returned", p.promotionReturned.Load(),
+		"promotion_writable_hits", p.promotionWritableHits.Load(),
+		"promotion_writable_misses", p.promotionWritableMisses.Load(),
+		"promotion_archive_hits", p.promotionArchiveHits.Load(),
+		"promotion_archive_misses", p.promotionArchiveMisses.Load(),
+		"promotion_archive_lookups", p.promotionArchiveLookups.Load(),
+		"promotion_archive_lookups_avoided", p.promotionArchiveLookupsAvoided.Load(),
+		"promotion_prefetch_bytes", p.promotionPrefetchBytes.Load(),
+		"promotion_promoted", p.promotionPromoted.Load(),
+		"promotion_promoted_bytes", p.promotionPromotedBytes.Load(),
+		"promotion_buffered_bytes", p.promotionBufferedBytes.Load(),
+		"promotion_batches", p.promotionBatches.Load(),
+		"promotion_partial_prefix_retries", p.promotionPartialPrefixRetries.Load(),
 	)
 }

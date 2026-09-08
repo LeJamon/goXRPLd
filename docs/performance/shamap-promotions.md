@@ -12,7 +12,7 @@ The concurrent benchmark starts real `persistToNodeStore` operations after refre
 
 Block-cache misses indicate block fetches, not physical disk reads. The pinned Pebble API exposes compaction read bytes but no foreground physical-read-byte counter. The materialized SSTable footprint is sampled after the untimed rotation and flush, when the old source archive has been retired. WAL amplification is WAL bytes divided by logical write bytes (Pebble WAL.BytesIn); it is not total long-term LSM write amplification. Flush and compaction counters cover the timed refresh interval, excluding later fixture preparation. CPU, allocation, block, and mutex profiles are captured separately from the unprofiled measurements. Go profiles include untimed fixture setup and teardown; use them as whole-run diagnostic evidence, not per-refresh attribution.
 
-The prefetch phase pins the generation pair and holds an archive read lock to exclude deletion. It reads a bounded sorted prefix without acquiring writable mutation stripes. The commit phase acquires only that prefix's stripes in ascending order, creates a fresh writable iterator, applies writable precedence, and writes the archive hits in one batch. Delete batches acquire the archive write lock before stripes. Prefetched values and returned values have separate bounded payload budgets; the Pebble write batch also owns its encoded copy. Each budget permits one oversized first value. The 4 MiB limit is not a claim that the whole operation allocates only 4 MiB.
+The current prefetch phase pins the generation pair and holds an archive read lock to exclude deletion. It captures mutation versions, then reads a bounded sorted prefix outside mutation stripes, checking writable before opening the archive for unresolved keys. Its payload budget uses the preferred values, so superseded archive values do not consume it. Commit validates versions under the stripes before writing archive hits. If a stripe changed, promotion releases the locks and retries a smaller prefix; persistent contention returns `ErrPromotionConflict` without committing that batch. Refresh propagates the error before final sync or archive retirement; the next validated-ledger notification retries the rotation. Delete batches acquire the archive write lock before stripes. Returned values reuse the prefetched payload; the encoded Pebble write batch owns another copy, and retries discard earlier payloads. The 4 MiB limit is not a claim that the whole operation allocates only 4 MiB. One oversized first value is permitted so traversal can progress.
 
 Correctness CI compares complete reachable and promoted hash sets after retiring the old archive, exercises byte-limited partial batches, cancellation and failures after actual promotion, lazy-value read faults, and a paused-prefetch same-key write followed by deletion. The missing-key test also covers an oversized first value.
 
@@ -62,3 +62,65 @@ go test ./internal/ledger/service -run '^$' \
 ```
 
 Run it in CI for the finalization workflow. A green performance job means the benchmark and its correctness checks completed; timing acceptance requires inspecting the artifact.
+
+## Writable-first promotion (#1866)
+
+Baseline: deployed `6ae1f5f4`, including the cold-writable prefetch fix from `70b6aad9`. The updated implementation is the writable-first change in this PR. Measurements ran locally on September 8, 2026 using Go 1.26.1, darwin/arm64, an Apple SSD AP0512Z, and `GOMAXPROCS=3`.
+
+Each case uses 32 fresh, flushed and reopened two-generation fixtures, 256 deterministic 16 KiB values (4 MiB per group), and a fresh 16 MiB shared Pebble block cache. The delayed case adds 250 µs to each SST file read; the other case adds no delay. The OS cache remains populated. Foreground samples issue one unrelated `Put` after the first observed SST read, verify its start falls within the promotion interval, and exclude non-overlapping samples from overlap quantiles; promotion follows any returned prefixes until the entire group completes. All 192 overlapping samples completed on each revision, with no exhausted contention retries.
+
+These are synthetic local storage measurements, not a testnet/HDD/ZFS baseline. VFS reads count file API calls, including metadata and any concurrent Pebble background work; they are not physical device reads. Cache misses do not count decompressions. Allocation counters cover the process during promotion and can include Pebble background work. At 32 samples, p99 is the maximum observed sample. Full tables retain all quantiles, per-generation read bytes, cache activity, allocations, completed samples, and logical promotion counters: [baseline](promotion-before.tsv), [updated](promotion-after.tsv).
+
+| Fixture | Writable hits | Archive SST reads, before → after | Total SST reads, before → after | Allocated MiB/group, before → after |
+| --- | ---: | ---: | ---: | ---: |
+| SSD | 0% | 268.00 → 268.00 | 268.00 → 268.00 | 24.47 → 24.29 |
+| SSD | 50% | 268.00 → 134.00 | 399.00 → 265.00 | 16.70 → 14.40 |
+| SSD | 100% | 268.00 → 0.00 | 530.00 → 262.00 | 8.10 → 4.08 |
+| Delayed I/O | 0% | 268.00 → 268.00 | 268.00 → 268.00 | 24.44 → 24.33 |
+| Delayed I/O | 50% | 268.00 → 134.00 | 399.00 → 265.03 | 16.38 → 14.34 |
+| Delayed I/O | 100% | 268.00 → 0.00 | 531.12 → 262.97 | 8.10 → 4.08 |
+
+| Fixture | Writable hits | Promotion p50/p95/p99 before (ms) | Promotion p50/p95/p99 after (ms) |
+| --- | ---: | ---: | ---: |
+| SSD | 0% | 50.81 / 58.68 / 59.09 | 53.42 / 61.91 / 62.05 |
+| SSD | 50% | 42.78 / 71.14 / 91.15 | 40.37 / 49.20 / 51.03 |
+| SSD | 100% | 9.30 / 12.16 / 12.23 | 5.95 / 8.13 / 8.33 |
+| Delayed I/O | 0% | 143.06 / 160.52 / 165.86 | 141.94 / 157.01 / 160.17 |
+| Delayed I/O | 50% | 170.22 / 179.85 / 181.73 | 129.94 / 143.60 / 146.41 |
+| Delayed I/O | 100% | 172.13 / 180.95 / 185.10 | 90.81 / 95.44 / 99.79 |
+
+Stable writable hits now make zero archive lookups. The updated logical lookup counts are 256/128/0 at 0%/50%/100% writable hits, with 0/128/256 lookups avoided and 4 MiB of prefetched payload in each case. Archive-only SST work is unchanged. Elapsed time and foreground latency vary across runs. An earlier unchanged-baseline delayed archive-only median ranged from 136.73 ms to 185.20 ms on repetition, despite identical SST-read counts; the final paired archive-only results above retain that workload rather than attributing timing variation to fewer reads. These results establish reduced archive work, not a universal foreground-latency improvement or a measured effect on validator participation.
+
+Progress and completion logs expose `promotion_requested`, `promotion_consumed`, `promotion_returned`, writable/archive hits and misses, `promotion_archive_lookups`, `promotion_archive_lookups_avoided`, `promotion_prefetch_bytes`, committed promotion counts/bytes, and `promotion_partial_prefix_retries`. Lookup and prefetch counters include internal retries. These counters belong to the refresh's batch calls; the existing NodeStore/cache totals remain shared across callers.
+
+Run the same benchmark file on both revisions; copy it into a baseline worktree when that revision predates the fixture. Fixture creation, flush, reopen, GC, and cleanup are excluded from promotion timing. The default report is written to the OS temporary directory; set `GOXRPL_PROMOTION_BENCH_REPORT` to choose its path.
+
+```sh
+GOMAXPROCS=3 GOXRPL_PROMOTION_BENCH=1 \
+  go test -count=1 -run '^TestPromotionBatchOfflineReport$' -v ./storage/kvstore/pebble
+
+# One profile/hit distribution, with the same 32-sample default:
+GOMAXPROCS=3 GOXRPL_PROMOTION_BENCH=1 \
+  go test -count=1 -run '^TestPromotionBatchOfflineReport$/delayed-vfs/hits=0$' -v ./storage/kvstore/pebble
+
+# Exercise the fixture's synchronization under the race detector:
+GOXRPL_PROMOTION_BENCH=1 GOXRPL_PROMOTION_BENCH_ITERATIONS=1 \
+  go test -race -count=1 -run '^TestPromotionBatchOfflineReport$' ./storage/kvstore/pebble
+```
+
+### Ledger persistence during refresh
+
+The existing Service benchmark also completed with one and four configured refresh workers, `GOMAXPROCS=3`, and 256-node batches. It runs three refresh iterations and 32 actual `persistToNodeStore` calls per iteration, including Sync, with 16,384 state leaves and a 256 KiB shared Pebble cache. This is a storage-persistence measurement, not full consensus acceptance latency.
+
+| Revision | Workers | Mean refresh (ms) | Overlapping persistence p50/p95/p99 (ms) | Overlapping persists/refresh |
+| --- | ---: | ---: | ---: | ---: |
+| before | 1 | 669.69 | 13.70 / 25.28 / 44.35 | 32 |
+| before | 4 | 566.50 | 13.78 / 25.20 / 36.89 | 32 |
+| after | 1 | 409.44 | 7.88 / 12.87 / 18.25 | 32 |
+| after | 4 | 349.04 | 7.96 / 14.94 / 17.31 | 32 |
+
+```sh
+GOMAXPROCS=3 go test ./internal/ledger/service -run '^$' \
+  -bench '^BenchmarkService_RefreshWithPersistence$/workers=(1|4)$/batch=256$' \
+  -benchmem -benchtime=3x -count=1
+```

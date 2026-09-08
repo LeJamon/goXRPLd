@@ -114,7 +114,7 @@ func TestPromoteBatchPropagatesLazyValueReadError(t *testing.T) {
 	}
 
 	fault.Arm()
-	promotions, stats, err := store.PromoteBatch([][]byte{[]byte(archiveKey)}, 1<<20)
+	promotions, stats, err := store.PromoteBatch([][]byte{[]byte("k/1"), []byte(archiveKey)}, 1<<20)
 	if !errors.Is(err, errorfs.ErrInjected) {
 		t.Fatalf("PromoteBatch error = %v, want injected lazy read error", err)
 	}
@@ -126,6 +126,9 @@ func TestPromoteBatchPropagatesLazyValueReadError(t *testing.T) {
 	}
 	if _, err := store.writable.Get([]byte(archiveKey)); !errors.Is(err, kvstore.ErrNotFound) {
 		t.Fatalf("writable value after failed promotion: %v, want ErrNotFound", err)
+	}
+	if _, err := store.writable.Get([]byte("k/1")); !errors.Is(err, kvstore.ErrNotFound) {
+		t.Fatalf("staged value committed before later lazy read failure: %v", err)
 	}
 
 	writableValue := []byte("writable-value")
@@ -143,8 +146,29 @@ func TestPromoteBatchPropagatesLazyValueReadError(t *testing.T) {
 	if stats.WritableHits != 1 || stats.Promoted != 0 {
 		t.Fatalf("writable precedence stats = %+v, want one writable hit and no promotion", stats)
 	}
+	if stats.ArchiveLookups != 0 || stats.ArchiveLookupsAvoided != 1 {
+		t.Fatalf("writable hit accessed archive: %+v", stats)
+	}
 	if err := store.writable.db.Delete([]byte(archiveKey), nil); err != nil {
 		t.Fatalf("remove writable override: %v", err)
+	}
+
+	writeErr := make(chan error, 1)
+	onFault := func() { writeErr <- store.Put([]byte(archiveKey), writableValue) }
+	fault.onFault.Store(&onFault)
+	fault.Arm()
+	promotions, stats, err = store.PromoteBatch([][]byte{[]byte(archiveKey)}, 1<<20)
+	if err != nil {
+		t.Fatalf("concurrent writable replacement did not supersede lazy archive error: %v", err)
+	}
+	if err := <-writeErr; err != nil {
+		t.Fatalf("concurrent Put: %v", err)
+	}
+	if len(promotions) != 1 || !bytes.Equal(promotions[0].Value, writableValue) || stats.ArchiveLookups != 1 || stats.Promoted != 0 {
+		t.Fatalf("concurrent writable precedence: promotions=%+v stats=%+v", promotions, stats)
+	}
+	if err := store.writable.db.Delete([]byte(archiveKey), nil); err != nil {
+		t.Fatalf("remove concurrent writable override: %v", err)
 	}
 
 	fault.Disarm()
@@ -203,7 +227,8 @@ func valueBlockBytes(t *testing.T, db *cockroachpebble.DB) uint64 {
 }
 
 type lazyValueReadFault struct {
-	armed atomic.Bool
+	armed   atomic.Bool
+	onFault atomic.Pointer[func()]
 }
 
 func newLazyValueReadFault() *lazyValueReadFault {
@@ -223,6 +248,9 @@ func (f *lazyValueReadFault) MaybeError(op errorfs.Op, path string) error {
 		return nil
 	}
 	if op == errorfs.OpFileRead || op == errorfs.OpFileReadAt {
+		if callback := f.onFault.Swap(nil); callback != nil {
+			(*callback)()
+		}
 		return errorfs.ErrInjected
 	}
 	return nil
