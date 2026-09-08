@@ -881,6 +881,15 @@ func (s *Service) openLedgerAcceptanceForValidatedLocked(
 		// Seed retries with the disputed/build-pass set; Accept drains then re-fills it.
 		retries := append([]openledger.PendingTx(nil), retriableTxs...)
 		if preferredSwitch {
+			for _, local := range locals {
+				prepared, err := openledger.ParsePendingTx(local.Blob)
+				if err != nil {
+					return fmt.Errorf("parse preferred-ledger local transaction %x: %w", local.Hash, err)
+				}
+				if prepared.Hash != local.Hash || prepared.Account != local.Account {
+					return fmt.Errorf("preferred-ledger local transaction identity does not match blob %x", local.Hash)
+				}
+			}
 			retries = append(retries, locals...)
 			locals = nil
 		}
