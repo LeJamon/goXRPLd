@@ -147,7 +147,6 @@ func (s *Service) acceptConsensusResult(
 		}
 	}
 
-	// pending is now in canonical order for the round-summary log.
 	canonicalTxHashes := make([]string, 0, len(pending))
 	for _, ptx := range pending {
 		canonicalTxHashes = append(canonicalTxHashes, fmt.Sprintf("%x", ptx.Hash[:8]))

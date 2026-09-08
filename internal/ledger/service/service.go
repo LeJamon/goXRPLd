@@ -862,7 +862,6 @@ func (s *Service) openLedgerAcceptanceForValidatedLocked(
 			FeeTrack:         feeTrack,
 			RetrySalt:        retrySalt,
 		}
-		// Modifier promotes queued candidates into the new open view after replay.
 		modifier := func(view *ledger.Ledger) {
 			if queue == nil || view == nil {
 				return
@@ -872,13 +871,11 @@ func (s *Service) openLedgerAcceptanceForValidatedLocked(
 			adapter := openledger.NewTxqAdapter(view, viewCfg)
 			_ = queue.Accept(adapter)
 		}
-		// Pass the held local pool so entries replay onto the new open view.
 		// Sweeping happens on the validated path, not every close (which may fork).
 		var locals []openledger.PendingTx
 		if localsPool != nil {
 			locals = localsPool.GetTxSet()
 		}
-		// Seed retries with the disputed/build-pass set; Accept drains then re-fills it.
 		retries := append([]openledger.PendingTx(nil), retriableTxs...)
 		if preferredSwitch {
 			for _, local := range locals {

@@ -726,11 +726,6 @@ func TestOpenLedger_Accept_RetriesFirst_ReplaysHeldTx(t *testing.T) {
 	}
 }
 
-// TestOpenLedger_Accept_SeededRetrySettlesAfterCurrentReplay verifies that a
-// build leftover is kept in rippled's shared retry queue while prior-current
-// transactions run through their initial pass. The current payment creates
-// the sender account needed by the seeded payment, so the seeded candidate
-// must settle during the retry pass after current replay.
 func TestOpenLedger_Accept_SeededRetrySettlesAfterCurrentReplay(t *testing.T) {
 	env := jtx.NewTestEnv(t)
 	env.SetVerifySignatures(true)
@@ -793,10 +788,6 @@ func TestOpenLedger_Accept_SeededRetrySettlesAfterCurrentReplay(t *testing.T) {
 	}
 }
 
-// TestOpenLedger_Accept_SeededRetryVerifiesSignature verifies that a seeded
-// retry receives a real signature check on its first shared retry pass. A
-// seeded candidate has no initial tx pass of its own, so unconditionally
-// skipping signatures in retry passes would commit this tampered payment.
 func TestOpenLedger_Accept_SeededRetryVerifiesSignature(t *testing.T) {
 	env := jtx.NewTestEnv(t)
 	env.SetVerifySignatures(true)
@@ -864,11 +855,6 @@ func TestOpenLedger_Accept_SeededRetryVerifiesSignature(t *testing.T) {
 	}
 }
 
-// TestOpenLedger_Accept_RetriesFirstOrdersCompetingTransactions verifies that
-// retriesFirst controls the shared queue's position relative to the prior
-// current replay. Competing payments use the same account sequence: the
-// candidate applied first wins, and the other one is rejected as a stale
-// sequence rather than being silently applied later.
 func TestOpenLedger_Accept_RetriesFirstOrdersCompetingTransactions(t *testing.T) {
 	for _, retriesFirst := range []bool{true, false} {
 		t.Run(fmt.Sprintf("retriesFirst=%t", retriesFirst), func(t *testing.T) {
