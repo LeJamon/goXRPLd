@@ -1,12 +1,18 @@
 package pebble
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/pprof"
 	"sort"
 	"strings"
 	"sync"
@@ -14,18 +20,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LeJamon/go-xrpl/storage/kvstore"
 	cockroachpebble "github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/vfs"
 )
 
 const (
-	promotionBenchmarkKeys     = 256
-	promotionBenchmarkBatch    = 32
+	promotionBenchmarkKeys     = 1024
+	promotionBenchmarkBatch    = 256
 	promotionBenchmarkValueLen = 1024
-	promotionBenchmarkCache    = 128 << 10
+	promotionBenchmarkCache    = 8 << 20
 	promotionBenchmarkPutCount = 64
-	promotionBenchmarkMaxBytes = 4 << 20
+	promotionBenchmarkMaxBytes = 128 << 10
 	promotionBenchmarkDelay    = 50 * time.Microsecond
+	promotionBenchmarkOverlap  = 5 * time.Second
 )
 
 type promotionReadCounters struct {
@@ -55,12 +63,15 @@ func (c *promotionReadCounters) reset() {
 // any warm-up traversal, keeping setup work outside the timed operation.
 type promotionReadFS struct {
 	vfs.FS
-	writablePath string
-	archivePath  string
-	writable     promotionReadCounters
-	archive      promotionReadCounters
-	delay        time.Duration
-	armed        atomic.Bool
+	writablePath    string
+	archivePath     string
+	writable        promotionReadCounters
+	archive         promotionReadCounters
+	delay           time.Duration
+	armed           atomic.Bool
+	readStarted     chan struct{}
+	readOnce        sync.Once
+	foregroundReady chan struct{}
 }
 
 func (f *promotionReadFS) Open(name string, opts ...vfs.OpenOption) (vfs.File, error) {
@@ -90,6 +101,7 @@ func (f *promotionReadFS) wrapFile(name string, file vfs.File) vfs.File {
 	}
 	return &promotionReadFile{
 		File:     file,
+		owner:    f,
 		counters: counters,
 		sstable:  filepath.Ext(path) == ".sst",
 		armed:    &f.armed,
@@ -99,6 +111,7 @@ func (f *promotionReadFS) wrapFile(name string, file vfs.File) vfs.File {
 
 type promotionReadFile struct {
 	vfs.File
+	owner    *promotionReadFS
 	counters *promotionReadCounters
 	armed    *atomic.Bool
 	sstable  bool
@@ -120,8 +133,16 @@ func (f *promotionReadFile) ReadAt(p []byte, offset int64) (int, error) {
 }
 
 func (f *promotionReadFile) beforeRead() {
-	if f.sstable && f.counters != nil && f.armed.Load() && f.delay > 0 {
-		time.Sleep(f.delay)
+	if f.sstable && f.counters != nil && f.armed.Load() {
+		f.owner.readOnce.Do(func() {
+			close(f.owner.readStarted)
+			if f.owner.foregroundReady != nil {
+				<-f.owner.foregroundReady
+			}
+		})
+		if f.delay > 0 {
+			time.Sleep(f.delay)
+		}
 	}
 }
 
@@ -142,9 +163,11 @@ func (f *promotionReadFS) snapshot() (promotionReadSnapshot, promotionReadSnapsh
 }
 
 type promotionReadFixture struct {
-	path    string
-	keys    [][]byte
-	options Options
+	root     string
+	path     string
+	keys     [][]byte
+	hitCount int
+	options  Options
 }
 
 func BenchmarkPromotionReadAmplification(b *testing.B) {
@@ -175,19 +198,26 @@ func benchmarkPromotionReadAmplification(
 	workers int,
 ) {
 	b.Helper()
-	fixture := newPromotionReadFixture(b, writableHits)
+	template := newPromotionReadFixture(b, writableHits)
 	var (
-		refreshWall  time.Duration
-		workerBusy   time.Duration
-		writableRead promotionReadSnapshot
-		archiveRead  promotionReadSnapshot
-		putLatencies []time.Duration
-		putSamples   int
+		refreshWall      time.Duration
+		workerBusy       time.Duration
+		writableRead     promotionReadSnapshot
+		archiveRead      promotionReadSnapshot
+		putLatencies     []time.Duration
+		putSamples       int
+		cacheHits        int64
+		cacheMisses      int64
+		consumed         int
+		promoted         int
+		writableHitCount int
+		archiveHitCount  int
 	)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
 		b.StopTimer()
+		fixture := clonePromotionReadFixture(b, template)
 		store, reads, err := openMeasuredPromotionStore(fixture.path, fixture.options, delayed)
 		if err != nil {
 			b.Fatal(err)
@@ -199,19 +229,64 @@ func benchmarkPromotionReadAmplification(
 				b.Fatal(err)
 			}
 		}
+		runtime.GC()
+		cacheBefore := store.CacheMetrics()
 		reads.reset()
 		reads.armed.Store(true)
 		b.StartTimer()
-		run := runPromotionWorkers(store, fixture.keys, workers)
+		var run promotionRunResult
+		pprof.Do(context.Background(), pprof.Labels("phase", "promotion"), func(context.Context) {
+			run = runPromotionWorkers(
+				store,
+				fixture.keys,
+				fixture.hitCount,
+				workers,
+				reads,
+				!warm,
+			)
+		})
 		b.StopTimer()
 		reads.armed.Store(false)
 		writable, archive := reads.snapshot()
+		cacheAfter := store.CacheMetrics()
 		closeErr := store.Close()
 		if run.err != nil {
 			b.Fatal(run.err)
 		}
 		if closeErr != nil {
 			b.Fatal(closeErr)
+		}
+		expectedArchiveHits := len(fixture.keys) - fixture.hitCount
+		if run.consumed != len(fixture.keys) ||
+			run.writableHits != fixture.hitCount ||
+			run.archiveHits != expectedArchiveHits ||
+			run.promoted != expectedArchiveHits {
+			b.Fatalf(
+				"promotion distribution = consumed %d, writable hits %d, archive hits %d, promoted %d; want %d, %d, %d, %d",
+				run.consumed,
+				run.writableHits,
+				run.archiveHits,
+				run.promoted,
+				len(fixture.keys),
+				fixture.hitCount,
+				expectedArchiveHits,
+				expectedArchiveHits,
+			)
+		}
+		if !warm && !run.readStarted {
+			b.Fatalf("cold promotion completed without an SST read start")
+		}
+		readCalls := writable.calls + archive.calls
+		if !warm && readCalls == 0 {
+			b.Fatalf("cold promotion completed without SST reads")
+		}
+		cacheHitDelta := cacheAfter.Hits - cacheBefore.Hits
+		cacheMissDelta := cacheAfter.Misses - cacheBefore.Misses
+		if warm && cacheHitDelta == 0 {
+			b.Fatalf("warm promotion completed without block-cache hits")
+		}
+		if !warm && cacheMissDelta == 0 {
+			b.Fatalf("cold promotion completed without block-cache misses")
 		}
 		refreshWall += run.wall
 		workerBusy += run.busy
@@ -221,6 +296,12 @@ func benchmarkPromotionReadAmplification(
 		archiveRead.bytes += archive.bytes
 		putLatencies = append(putLatencies, run.putLatencies...)
 		putSamples += len(run.putLatencies)
+		cacheHits += cacheHitDelta
+		cacheMisses += cacheMissDelta
+		consumed += run.consumed
+		promoted += run.promoted
+		writableHitCount += run.writableHits
+		archiveHitCount += run.archiveHits
 	}
 
 	perOp := float64(b.N)
@@ -231,6 +312,12 @@ func benchmarkPromotionReadAmplification(
 	b.ReportMetric(float64(writableRead.bytes)/perOp, "writable-sst-bytes/op")
 	b.ReportMetric(float64(archiveRead.bytes)/perOp, "archive-sst-bytes/op")
 	b.ReportMetric(float64(writableRead.bytes+archiveRead.bytes)/perOp, "sst-bytes/op")
+	b.ReportMetric(float64(cacheHits)/perOp, "block-cache-hits/op")
+	b.ReportMetric(float64(cacheMisses)/perOp, "block-cache-misses/op")
+	b.ReportMetric(float64(consumed)/perOp, "consumed/op")
+	b.ReportMetric(float64(promoted)/perOp, "promoted/op")
+	b.ReportMetric(float64(writableHitCount)/perOp, "writable-hits/op")
+	b.ReportMetric(float64(archiveHitCount)/perOp, "archive-hits/op")
 	workerUtilization := 0.0
 	if refreshWall > 0 {
 		workerUtilization = float64(workerBusy) / float64(refreshWall) / float64(workers)
@@ -248,20 +335,38 @@ func newPromotionReadFixture(b *testing.B, writableHits int) promotionReadFixtur
 		BlockCacheBytes: promotionBenchmarkCache,
 		MaxOpenFiles:    200,
 	}
+	root := b.TempDir()
 	fixture := promotionReadFixture{
-		path:    filepath.Join(b.TempDir(), "nodes"),
+		root:    root,
+		path:    filepath.Join(root, "nodes"),
 		options: options,
 		keys:    makePromotionBenchmarkKeys(promotionBenchmarkKeys),
 	}
+	fixture.hitCount = len(fixture.keys) * writableHits / 100
 	store, err := NewRotating(fixture.path, options)
 	if err != nil {
 		b.Fatal(err)
 	}
+	batch, err := store.NewBatch()
+	if err != nil {
+		_ = store.Close()
+		b.Fatal(err)
+	}
 	for index, key := range fixture.keys {
-		if err := store.Put(key, promotionBenchmarkValue(index, 0)); err != nil {
+		if err := batch.Put(key, promotionBenchmarkValue(index, 0)); err != nil {
+			_ = batch.Close()
 			_ = store.Close()
 			b.Fatal(err)
 		}
+	}
+	if err := batch.Write(); err != nil {
+		_ = batch.Close()
+		_ = store.Close()
+		b.Fatal(err)
+	}
+	if err := batch.Close(); err != nil {
+		_ = store.Close()
+		b.Fatal(err)
 	}
 	if err := store.Sync(); err != nil {
 		_ = store.Close()
@@ -275,14 +380,36 @@ func newPromotionReadFixture(b *testing.B, writableHits int) promotionReadFixtur
 		}
 		b.Fatal(err)
 	}
-	hitCount := len(fixture.keys) * writableHits / 100
-	for index := 0; index < hitCount; index++ {
-		if err := store.Put(fixture.keys[index], promotionBenchmarkValue(index, 1)); err != nil {
+	batch, err = store.NewBatch()
+	if err != nil {
+		_ = store.Close()
+		b.Fatal(err)
+	}
+	for index := 0; index < fixture.hitCount; index++ {
+		if err := batch.Put(fixture.keys[index], promotionBenchmarkValue(index, 1)); err != nil {
+			_ = batch.Close()
 			_ = store.Close()
 			b.Fatal(err)
 		}
 	}
+	if err := batch.Write(); err != nil {
+		_ = batch.Close()
+		_ = store.Close()
+		b.Fatal(err)
+	}
+	if err := batch.Close(); err != nil {
+		_ = store.Close()
+		b.Fatal(err)
+	}
 	if err := store.Sync(); err != nil {
+		_ = store.Close()
+		b.Fatal(err)
+	}
+	if err := store.writable.db.Flush(); err != nil {
+		_ = store.Close()
+		b.Fatal(err)
+	}
+	if err := store.archive.db.Flush(); err != nil {
 		_ = store.Close()
 		b.Fatal(err)
 	}
@@ -290,6 +417,58 @@ func newPromotionReadFixture(b *testing.B, writableHits int) promotionReadFixtur
 		b.Fatal(err)
 	}
 	return fixture
+}
+
+func clonePromotionReadFixture(b *testing.B, source promotionReadFixture) promotionReadFixture {
+	b.Helper()
+	root := b.TempDir()
+	if err := copyPromotionReadTree(source.root, root); err != nil {
+		b.Fatal(err)
+	}
+	clone := source
+	clone.root = root
+	clone.path = filepath.Join(root, filepath.Base(source.path))
+	return clone
+}
+
+func copyPromotionReadTree(source, destination string) error {
+	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(source, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(destination, relative)
+		if entry.IsDir() {
+			return os.MkdirAll(target, 0755)
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(link, target)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		input, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		output, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+		if err != nil {
+			_ = input.Close()
+			return err
+		}
+		_, copyErr := io.Copy(output, input)
+		closeOutputErr := output.Close()
+		closeInputErr := input.Close()
+		return errors.Join(copyErr, closeOutputErr, closeInputErr)
+	})
 }
 
 func makePromotionBenchmarkKeys(count int) [][]byte {
@@ -337,6 +516,7 @@ func openMeasuredPromotionStore(
 		FS:           vfs.Default,
 		writablePath: store.writablePath,
 		archivePath:  store.archivePath,
+		readStarted:  make(chan struct{}),
 	}
 	if delayed {
 		reads.delay = promotionBenchmarkDelay
@@ -395,9 +575,32 @@ type promotionRunResult struct {
 	wall         time.Duration
 	busy         time.Duration
 	putLatencies []time.Duration
+	readStarted  bool
+	consumed     int
+	promoted     int
+	writableHits int
+	archiveHits  int
 }
 
-func runPromotionWorkers(store *RotatingStore, keys [][]byte, workers int) promotionRunResult {
+type expectedPromotion struct {
+	value       []byte
+	writableHit bool
+}
+
+type promotionBatchResult struct {
+	consumed     int
+	promoted     int
+	writableHits int
+	archiveHits  int
+}
+
+func runPromotionWorkers(
+	store *RotatingStore,
+	keys [][]byte,
+	hitCount, workers int,
+	reads *promotionReadFS,
+	waitForRead bool,
+) promotionRunResult {
 	batches := make([][][]byte, 0, (len(keys)+promotionBenchmarkBatch-1)/promotionBenchmarkBatch)
 	for start := 0; start < len(keys); start += promotionBenchmarkBatch {
 		end := min(start+promotionBenchmarkBatch, len(keys))
@@ -405,9 +608,21 @@ func runPromotionWorkers(store *RotatingStore, keys [][]byte, workers int) promo
 	}
 	start := make(chan struct{})
 	refreshDone := make(chan struct{})
-	errors := make(chan error, workers+1)
+	errCh := make(chan error, workers+1)
 	var group sync.WaitGroup
 	var busy atomic.Int64
+	var consumed atomic.Int64
+	var promoted atomic.Int64
+	var writableHits atomic.Int64
+	var archiveHits atomic.Int64
+	var readOverlap atomic.Bool
+	foregroundReady := make(chan struct{})
+	if waitForRead {
+		reads.foregroundReady = foregroundReady
+	} else {
+		reads.foregroundReady = nil
+	}
+	expected := makePromotionExpectations(keys, hitCount)
 	group.Add(workers)
 	for worker := range workers {
 		go func(worker int) {
@@ -415,10 +630,20 @@ func runPromotionWorkers(store *RotatingStore, keys [][]byte, workers int) promo
 			<-start
 			started := time.Now()
 			for batchIndex := worker; batchIndex < len(batches); batchIndex += workers {
-				if _, _, err := store.PromoteBatch(batches[batchIndex], promotionBenchmarkMaxBytes); err != nil {
-					errors <- err
+				batchResult, err := promotePromotionKeys(
+					store,
+					batches[batchIndex],
+					expected,
+					promotionBenchmarkMaxBytes,
+				)
+				if err != nil {
+					errCh <- err
 					return
 				}
+				consumed.Add(int64(batchResult.consumed))
+				promoted.Add(int64(batchResult.promoted))
+				writableHits.Add(int64(batchResult.writableHits))
+				archiveHits.Add(int64(batchResult.archiveHits))
 			}
 			busy.Add(int64(time.Since(started)))
 		}(worker)
@@ -426,6 +651,18 @@ func runPromotionWorkers(store *RotatingStore, keys [][]byte, workers int) promo
 	putLatencies := make(chan []time.Duration, 1)
 	go func() {
 		<-start
+		if waitForRead {
+			select {
+			case <-reads.readStarted:
+				readOverlap.Store(true)
+				close(foregroundReady)
+			case <-time.After(promotionBenchmarkOverlap):
+				errCh <- fmt.Errorf("timed out waiting for an SST read to overlap foreground puts")
+				close(foregroundReady)
+				putLatencies <- nil
+				return
+			}
+		}
 		latencies := make([]time.Duration, 0, promotionBenchmarkPutCount)
 		for index := range promotionBenchmarkPutCount {
 			select {
@@ -436,7 +673,7 @@ func runPromotionWorkers(store *RotatingStore, keys [][]byte, workers int) promo
 			}
 			started := time.Now()
 			if err := store.Put(promotionBenchmarkPutKey(index), promotionBenchmarkPutValue(index)); err != nil {
-				errors <- err
+				errCh <- err
 				putLatencies <- latencies
 				return
 			}
@@ -454,12 +691,93 @@ func runPromotionWorkers(store *RotatingStore, keys [][]byte, workers int) promo
 		wall:         time.Since(started),
 		busy:         time.Duration(busy.Load()),
 		putLatencies: latencies,
+		readStarted:  readOverlap.Load(),
+		consumed:     int(consumed.Load()),
+		promoted:     int(promoted.Load()),
+		writableHits: int(writableHits.Load()),
+		archiveHits:  int(archiveHits.Load()),
 	}
 	select {
-	case result.err = <-errors:
+	case result.err = <-errCh:
 	default:
 	}
 	return result
+}
+
+func makePromotionExpectations(keys [][]byte, hitCount int) map[string]expectedPromotion {
+	expected := make(map[string]expectedPromotion, len(keys))
+	for index, key := range keys {
+		generation := 0
+		if index < hitCount {
+			generation = 1
+		}
+		expected[string(key)] = expectedPromotion{
+			value:       promotionBenchmarkValue(index, generation),
+			writableHit: index < hitCount,
+		}
+	}
+	return expected
+}
+
+func promotePromotionKeys(
+	store *RotatingStore,
+	keys [][]byte,
+	expected map[string]expectedPromotion,
+	maxBytes int,
+) (promotionBatchResult, error) {
+	sorted := append([][]byte(nil), keys...)
+	sort.Slice(sorted, func(i, j int) bool { return bytes.Compare(sorted[i], sorted[j]) < 0 })
+	var result promotionBatchResult
+	for offset := 0; offset < len(sorted); {
+		remaining := sorted[offset:]
+		promotions, stats, err := store.PromoteBatch(remaining, maxBytes)
+		if err != nil {
+			return result, err
+		}
+		if len(promotions) == 0 || stats.Consumed != len(promotions) || len(promotions) > len(remaining) {
+			return result, fmt.Errorf(
+				"promotion consumed %d records for %d returned records from %d keys",
+				stats.Consumed,
+				len(promotions),
+				len(remaining),
+			)
+		}
+		var expectedStats kvstore.PromotionStats
+		expectedStats.Requested = len(remaining)
+		expectedStats.Consumed = len(promotions)
+		for index, promotion := range promotions {
+			key := remaining[index]
+			if !bytes.Equal(promotion.Key, key) {
+				return result, fmt.Errorf("promotion key at index %d is out of order", index)
+			}
+			expectedPromotion, ok := expected[string(key)]
+			if !ok || !promotion.Found || !bytes.Equal(promotion.Value, expectedPromotion.value) {
+				return result, fmt.Errorf("promotion value mismatch for key %x", key)
+			}
+			valueSize := len(expectedPromotion.value)
+			expectedStats.BufferedBytes += valueSize
+			if expectedPromotion.writableHit {
+				expectedStats.WritableHits++
+			} else {
+				expectedStats.WritableMisses++
+				expectedStats.ArchiveHits++
+				expectedStats.Promoted++
+				expectedStats.PromotedBytes += valueSize
+			}
+		}
+		if expectedStats.Promoted > 0 {
+			expectedStats.Batches = 1
+		}
+		if stats != expectedStats {
+			return result, fmt.Errorf("promotion stats = %+v, want %+v", stats, expectedStats)
+		}
+		result.consumed += stats.Consumed
+		result.promoted += stats.Promoted
+		result.writableHits += stats.WritableHits
+		result.archiveHits += stats.ArchiveHits
+		offset += len(promotions)
+	}
+	return result, nil
 }
 
 func promotionBenchmarkPutKey(index int) []byte {
