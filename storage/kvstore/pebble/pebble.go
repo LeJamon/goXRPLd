@@ -3,6 +3,7 @@ package pebble
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -105,6 +106,44 @@ func (s *Store) Get(key []byte) ([]byte, error) {
 	result := make([]byte, len(val))
 	copy(result, val)
 	return result, nil
+}
+
+// GetBatch reads an explicit set of keys in sorted order without mutating the
+// input or writing archive results back into the store.
+func (s *Store) GetBatch(
+	ctx context.Context,
+	keys [][]byte,
+	maxNodes, maxBytes int,
+) ([]kvstore.ReadResult, error) {
+	s.mu.RLock()
+	if s.closed {
+		s.mu.RUnlock()
+		return nil, kvstore.ErrClosed
+	}
+	s.mu.RUnlock()
+	if err := validateBatchReadLimits(keys, maxNodes, maxBytes); err != nil {
+		return nil, err
+	}
+	if ctx == nil {
+		return nil, errors.New("kvstore/pebble: nil batch read context")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+
+	iterator, err := s.newPointIterator()
+	if err != nil {
+		return nil, err
+	}
+	results, readErr := readBatch(ctx, keys, maxNodes, maxBytes, iterator.get)
+	closeErr := iterator.Close()
+	if readErr != nil || closeErr != nil {
+		return nil, errors.Join(readErr, closeErr)
+	}
+	return results, nil
 }
 
 // Put stores the value for the given key.
@@ -397,3 +436,4 @@ func (i *iterator) Close() error {
 
 // Ensure Store implements kvstore.KeyValueStore at compile time.
 var _ kvstore.KeyValueStore = (*Store)(nil)
+var _ kvstore.BatchReadingStore = (*Store)(nil)

@@ -2,6 +2,7 @@ package pebble
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -512,6 +513,68 @@ func (r *RotatingStore) Get(key []byte) ([]byte, error) {
 		return nil, kvstore.ErrClosed
 	}
 	return r.getLocked(key, false)
+}
+
+// GetBatch reads an explicit set of keys in sorted order, preferring the
+// writable generation for keys present in both generations. It never promotes
+// archive records.
+func (r *RotatingStore) GetBatch(
+	ctx context.Context,
+	keys [][]byte,
+	maxNodes, maxBytes int,
+) ([]kvstore.ReadResult, error) {
+	r.mu.RLock()
+	if r.closed {
+		r.mu.RUnlock()
+		return nil, kvstore.ErrClosed
+	}
+	if len(keys) == 0 {
+		r.mu.RUnlock()
+		return readBatch(ctx, keys, maxNodes, maxBytes, nil)
+	}
+	if err := validateBatchReadLimits(keys, maxNodes, maxBytes); err != nil {
+		r.mu.RUnlock()
+		return nil, err
+	}
+	if ctx == nil {
+		r.mu.RUnlock()
+		return nil, errors.New("kvstore/pebble: nil batch read context")
+	}
+	if err := ctx.Err(); err != nil {
+		r.mu.RUnlock()
+		return nil, err
+	}
+	r.archiveMu.RLock()
+	writable, err := r.writable.newPointIterator()
+	if err != nil {
+		r.archiveMu.RUnlock()
+		r.mu.RUnlock()
+		return nil, err
+	}
+	archive, err := r.archive.newPointIterator()
+	if err != nil {
+		closeErr := writable.Close()
+		r.archiveMu.RUnlock()
+		r.mu.RUnlock()
+		return nil, errors.Join(err, closeErr)
+	}
+
+	read := func(key []byte, remaining int, allowOversized bool) ([]byte, bool, bool, error) {
+		value, found, tooLarge, err := writable.get(key, remaining, allowOversized)
+		if err != nil || found || tooLarge {
+			return value, found, tooLarge, err
+		}
+		return archive.get(key, remaining, allowOversized)
+	}
+	results, readErr := readBatch(ctx, keys, maxNodes, maxBytes, read)
+	archiveCloseErr := archive.Close()
+	writableCloseErr := writable.Close()
+	r.archiveMu.RUnlock()
+	r.mu.RUnlock()
+	if readErr != nil || archiveCloseErr != nil || writableCloseErr != nil {
+		return nil, errors.Join(readErr, archiveCloseErr, writableCloseErr)
+	}
+	return results, nil
 }
 
 // CanRotateWithoutRefresh reports whether the archive is empty.
@@ -1547,3 +1610,4 @@ func (i *rotatingIterator) Close() error {
 }
 
 var _ kvstore.RotatingStore = (*RotatingStore)(nil)
+var _ kvstore.BatchReadingStore = (*RotatingStore)(nil)
