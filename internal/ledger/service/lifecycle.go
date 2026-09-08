@@ -214,7 +214,7 @@ func (s *Service) prepareNewOpenLedgerLocked(closed *ledger.Ledger, retriableTxs
 	// the shared retriable set during the current-view replay either way;
 	// ApplyTxs never re-applies pre-existing retries, so the first pass must
 	// run whenever the set is non-empty or the leftovers would be dropped.
-	if err := s.acceptOpenLedgerViewLocked(closed, retriableTxs, len(retriableTxs) > 0); err != nil {
+	if err := s.acceptOpenLedgerViewUsingValidatedLocked(closed, retriableTxs, len(retriableTxs) > 0, closed); err != nil {
 		return nil, err
 	}
 	return newOpen, nil

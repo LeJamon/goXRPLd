@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/LeJamon/go-xrpl/amendment"
 	"github.com/LeJamon/go-xrpl/internal/ledger"
 	"github.com/LeJamon/go-xrpl/internal/tx"
 	"github.com/LeJamon/go-xrpl/internal/tx/ter"
@@ -18,6 +19,9 @@ import (
 type Config struct {
 	NetworkID uint32
 	Logger    xrpllog.Logger
+	// Rules selects the amendment snapshot for the initial open view. A nil
+	// value preserves the inherited-rules behaviour used by standalone callers.
+	Rules *amendment.Rules
 }
 
 // OpenLedger is goxrpl's open-ledger view.
@@ -38,12 +42,13 @@ type OpenLedger struct {
 }
 
 // New creates a fresh OpenLedger anchored on closed; the initial Current() view is
-// an open ledger built on top of closed via ledger.NewOpen.
+// an open ledger built on top of closed via ledger.NewOpenWithRules. Config.Rules
+// fixes the rule snapshot for that view when supplied.
 func New(closed *ledger.Ledger, cfg Config) (*OpenLedger, error) {
 	if closed == nil {
 		return nil, errors.New("openledger.New: closed parent is nil")
 	}
-	initial, err := ledger.NewOpen(closed, time.Now())
+	initial, err := ledger.NewOpenWithRules(closed, time.Now(), cfg.Rules)
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +179,7 @@ func (o *OpenLedger) accept(
 		return errors.New("openledger.Accept: newLCL is nil")
 	}
 
-	next, err := ledger.NewOpen(newLCL, time.Now())
+	next, err := ledger.NewOpenWithRules(newLCL, time.Now(), cfg.Rules)
 	if err != nil {
 		return err
 	}
