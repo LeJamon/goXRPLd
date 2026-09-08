@@ -797,12 +797,12 @@ func (s *Service) tickLoadFeeLocked() {
 // retriesFirst flag. Caller must hold
 // openLedgerMu and s.mu.
 func (s *Service) acceptOpenLedgerViewLocked(closed *ledger.Ledger, retriableTxs []openledger.PendingTx, anyDisputes bool) error {
-	return s.openLedgerAcceptanceLocked(nil)(closed, retriableTxs, anyDisputes, nil)
+	return s.openLedgerAcceptanceLocked(nil, nil)(closed, retriableTxs, anyDisputes, nil)
 }
 
 // openLedgerAcceptanceLocked captures service configuration under mu. The returned
 // operation requires openLedgerMu, but runs storage reads and replay without mu.
-func (s *Service) openLedgerAcceptanceLocked(relayDuration *time.Duration) func(*ledger.Ledger, []openledger.PendingTx, bool, func(func())) error {
+func (s *Service) openLedgerAcceptanceLocked(relayDuration *time.Duration, retrySalt *[32]byte) func(*ledger.Ledger, []openledger.PendingTx, bool, func(func())) error {
 	view, queue, localsPool := s.openLedgerView, s.txQueue, s.localTxs
 	networkID, logger, feeTrack := s.config.NetworkID, s.config.Logger, s.feeTrack
 	relay, slowRound := s.txRelay, s.lastConsensusRoundTime > slowConsensusThreshold
@@ -821,6 +821,7 @@ func (s *Service) openLedgerAcceptanceLocked(relayDuration *time.Duration) func(
 			Logger:           logger,
 			Rules:            rulesFromLedger(closed, s.logger),
 			FeeTrack:         feeTrack,
+			RetrySalt:        retrySalt,
 		}
 		// Modifier promotes queued candidates into the new open view after replay.
 		modifier := func(view *ledger.Ledger) {

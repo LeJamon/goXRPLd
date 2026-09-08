@@ -199,7 +199,7 @@ func (s *Service) acceptConsensusResult(
 		s.mu.Unlock()
 		return 0, fmt.Errorf("%w: ledger ownership changed during build", ErrConsensusParentMismatch)
 	}
-	acceptOpen := s.openLedgerAcceptanceLocked(&timings.relay)
+	acceptOpen := s.openLedgerAcceptanceLocked(&timings.relay, &salt)
 	s.mu.Unlock()
 	nextStarted := time.Now()
 	newOpen, err := ledger.NewOpen(closed, time.Now())
