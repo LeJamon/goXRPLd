@@ -117,8 +117,6 @@ func TestProductionAdaptorAcceptanceKeepsTimerResponsiveDuringBlockedBuild(t *te
 		ParentHash: consensus.LedgerID(closed.Hash()),
 	}, true))
 
-	// The first tick closes the open ledger. The next one enters establish;
-	// the following tick must return while the worker runs the blocked build.
 	runTick := func() {
 		done := make(chan struct{})
 		go func() {
