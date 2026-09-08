@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	xrpllog "github.com/LeJamon/go-xrpl/log"
 	"github.com/LeJamon/go-xrpl/shamap"
+	"github.com/LeJamon/go-xrpl/storage/kvstore"
 	"github.com/LeJamon/go-xrpl/storage/nodestore"
 )
 
@@ -18,6 +20,122 @@ const (
 	// verification fetch. Refresh walks need exact counts for checkpoint gating.
 	storedSHAMapNodeCountBatch = 256
 )
+
+// onlineDeleteRefreshPromotionMetrics is scoped to one native batch refresh.
+// It records the backend's returned counters even when a batch returns an
+// error; promoted counters then describe work attempted by the backend, while
+// Batches describes writes completed before the error. No node identities are
+// retained, so memory use stays constant as the refresh grows.
+type onlineDeleteRefreshPromotionMetrics struct {
+	mu sync.Mutex
+
+	stats           kvstore.PromotionStats
+	batchCalls      uint64
+	batchErrors     uint64
+	partialPrefixes uint64
+	fetchElapsed    time.Duration
+	waitElapsed     time.Duration
+}
+
+type onlineDeleteRefreshPromotionSnapshot struct {
+	stats           kvstore.PromotionStats
+	batchCalls      uint64
+	batchErrors     uint64
+	partialPrefixes uint64
+	fetchElapsed    time.Duration
+	waitElapsed     time.Duration
+}
+
+func newOnlineDeleteRefreshPromotionMetrics() *onlineDeleteRefreshPromotionMetrics {
+	return &onlineDeleteRefreshPromotionMetrics{}
+}
+
+func (m *onlineDeleteRefreshPromotionMetrics) record(
+	waitElapsed time.Duration,
+	fetchElapsed time.Duration,
+	stats kvstore.PromotionStats,
+	err error,
+) {
+	if waitElapsed < 0 {
+		waitElapsed = 0
+	}
+	if fetchElapsed < 0 {
+		fetchElapsed = 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	addPromotionStats(&m.stats, stats)
+	m.batchCalls++
+	if err != nil {
+		m.batchErrors++
+	}
+	if stats.Consumed < stats.Requested {
+		m.partialPrefixes++
+	}
+	m.fetchElapsed += fetchElapsed
+	m.waitElapsed += waitElapsed
+}
+
+func (m *onlineDeleteRefreshPromotionMetrics) recordWait(waitElapsed time.Duration) {
+	if waitElapsed < 0 {
+		waitElapsed = 0
+	}
+	m.mu.Lock()
+	m.waitElapsed += waitElapsed
+	m.mu.Unlock()
+}
+
+func (m *onlineDeleteRefreshPromotionMetrics) snapshot() onlineDeleteRefreshPromotionSnapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return onlineDeleteRefreshPromotionSnapshot{
+		stats:           m.stats,
+		batchCalls:      m.batchCalls,
+		batchErrors:     m.batchErrors,
+		partialPrefixes: m.partialPrefixes,
+		fetchElapsed:    m.fetchElapsed,
+		waitElapsed:     m.waitElapsed,
+	}
+}
+
+func addPromotionStats(total *kvstore.PromotionStats, delta kvstore.PromotionStats) {
+	total.Requested += delta.Requested
+	total.Consumed += delta.Consumed
+	total.WritableHits += delta.WritableHits
+	total.WritableMisses += delta.WritableMisses
+	total.ArchiveHits += delta.ArchiveHits
+	total.ArchiveMisses += delta.ArchiveMisses
+	total.ArchiveLookups += delta.ArchiveLookups
+	total.ArchiveLookupsAvoided += delta.ArchiveLookupsAvoided
+	total.Promoted += delta.Promoted
+	total.PromotedBytes += delta.PromotedBytes
+	total.BufferedBytes += delta.BufferedBytes
+	total.Batches += delta.Batches
+}
+
+func (m *onlineDeleteRefreshPromotionMetrics) fields() []any {
+	snapshot := m.snapshot()
+	stats := snapshot.stats
+	return []any{
+		"promotion_requested", stats.Requested,
+		"promotion_consumed", stats.Consumed,
+		"promotion_writable_hits", stats.WritableHits,
+		"promotion_writable_misses", stats.WritableMisses,
+		"promotion_archive_hits", stats.ArchiveHits,
+		"promotion_archive_misses", stats.ArchiveMisses,
+		"promotion_archive_lookups", stats.ArchiveLookups,
+		"promotion_archive_lookups_avoided", stats.ArchiveLookupsAvoided,
+		"promotion_promoted", stats.Promoted,
+		"promotion_promoted_bytes", stats.PromotedBytes,
+		"promotion_buffered_bytes", stats.BufferedBytes,
+		"promotion_batch_writes", stats.Batches,
+		"promotion_batch_calls", snapshot.batchCalls,
+		"promotion_batch_errors", snapshot.batchErrors,
+		"promotion_partial_prefixes", snapshot.partialPrefixes,
+		"promotion_fetch_elapsed", snapshot.fetchElapsed.String(),
+		"promotion_wait_elapsed", snapshot.waitElapsed.String(),
+	}
+}
 
 type storedSHAMapVerificationProgress struct {
 	logger             xrpllog.Logger
@@ -44,6 +162,8 @@ type storedSHAMapVerificationProgress struct {
 
 	nodeStore    nodestore.Database
 	initialStats nodestore.Statistics
+
+	promotionMetrics *onlineDeleteRefreshPromotionMetrics
 }
 
 func newStoredSHAMapVerificationProgress(
@@ -166,7 +286,7 @@ func (p *storedSHAMapVerificationProgress) fields(at time.Time) []any {
 		stats = p.nodeStore.Stats()
 	}
 	fields := append([]any(nil), p.extraFields...)
-	return append(fields,
+	fields = append(fields,
 		"map_type", p.mapType,
 		"root", p.root,
 		"elapsed", elapsed.String(),
@@ -189,4 +309,8 @@ func (p *storedSHAMapVerificationProgress) fields(at time.Time) []any {
 		"node_cache_misses_before", p.initialStats.CacheMisses,
 		"node_cache_misses_after", stats.CacheMisses,
 	)
+	if p.promotionMetrics != nil {
+		fields = append(fields, p.promotionMetrics.fields()...)
+	}
+	return fields
 }
