@@ -219,10 +219,8 @@ func (o *OpenLedger) accept(
 	if err != nil {
 		return err
 	}
-	if len(curTxs) > 0 {
-		if err := ApplyTxs(next, curTxs, retryTarget, applyCfg); err != nil {
-			return err
-		}
+	if err := ApplyTxs(next, curTxs, retryTarget, applyCfg); err != nil {
+		return err
 	}
 	eligibleLocals := locals
 	if len(locals) > 0 {
