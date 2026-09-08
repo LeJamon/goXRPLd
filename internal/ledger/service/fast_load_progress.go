@@ -44,6 +44,9 @@ type onlineDeleteRefreshPromotionTotals struct {
 	promoted              uint64
 	promotedBytes         uint64
 	bufferedBytes         uint64
+	versionMismatches     uint64
+	retries               uint64
+	fallbacks             uint64
 	batchWrites           uint64
 	batchCalls            uint64
 	batchErrors           uint64
@@ -77,6 +80,9 @@ func (m *onlineDeleteRefreshPromotionMetrics) record(
 	m.totals.promoted += uint64(stats.Promoted)
 	m.totals.promotedBytes += uint64(stats.PromotedBytes)
 	m.totals.bufferedBytes += uint64(stats.BufferedBytes)
+	m.totals.versionMismatches += uint64(stats.VersionMismatches)
+	m.totals.retries += uint64(stats.Retries)
+	m.totals.fallbacks += uint64(stats.Fallbacks)
 	m.totals.batchWrites += uint64(stats.Batches)
 	m.totals.batchCalls++
 	if err != nil {
@@ -118,6 +124,9 @@ func (m *onlineDeleteRefreshPromotionMetrics) fields() []any {
 		"promotion_promoted", snapshot.promoted,
 		"promotion_promoted_bytes", snapshot.promotedBytes,
 		"promotion_buffered_bytes", snapshot.bufferedBytes,
+		"promotion_version_mismatches", snapshot.versionMismatches,
+		"promotion_retries", snapshot.retries,
+		"promotion_fallbacks", snapshot.fallbacks,
 		"promotion_batch_writes", snapshot.batchWrites,
 		"promotion_batch_calls", snapshot.batchCalls,
 		"promotion_batch_errors", snapshot.batchErrors,

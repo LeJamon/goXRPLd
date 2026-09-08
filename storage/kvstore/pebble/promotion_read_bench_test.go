@@ -735,7 +735,11 @@ func promotePromotionKeys(
 			}
 		}
 		if expectedStats.Promoted > 0 {
-			expectedStats.Batches = 1
+			if stats.Batches < 1 || stats.Batches > expectedStats.Promoted ||
+				(stats.Retries < promotionRetryLimit && stats.Batches != 1) {
+				return result, fmt.Errorf("promotion writes = %d for %d promoted records after %d retries", stats.Batches, expectedStats.Promoted, stats.Retries)
+			}
+			expectedStats.Batches = stats.Batches
 		}
 		observed := kvstore.PromotionStats{
 			Requested: stats.Requested, Consumed: stats.Consumed,

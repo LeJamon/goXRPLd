@@ -4,11 +4,11 @@ This extends the bounded batching measurements in [SHAMap promotions](shamap-pro
 
 ## Ownership and correctness
 
-The batch pins the generation pair and holds archive deletion exclusion through commit. For each sorted key, it prefetches writable first and consults archive only on a miss, outside the mutation stripes. Both sources share one bounded payload prefix. A writable hit cannot disappear while deletion is excluded, so its archive lookup is unnecessary. A concurrent replacement still changes the mutation version and requires the existing fresh writable lookup before returning a value. Misses still consult the archive, and a later writable replacement can supersede an archive lazy-value error.
+The batch pins the generation pair and holds archive deletion exclusion through commit. For each sorted key, it prefetches writable first and consults archive only on a miss, outside the mutation stripes. Both sources initially share one bounded payload prefix. Retries retain the pinned archive prefix and reuse writable observations whose mutation versions still match; each retry buffers at most one writable payload budget. A writable hit cannot disappear while deletion is excluded, so its archive lookup is unnecessary. A concurrent replacement still changes the mutation version and requires the existing fresh writable lookup before returning a value. Misses still consult the archive, and a later writable replacement can supersede an archive lazy-value error.
 
 Node-count and payload limits, sorted prefix semantics, content-hash and type verification, checkpoint pacing, final Sync, and rotation ownership are unchanged. Superseded oversized archive values no longer shorten the prefix. Lazy value lengths are checked before fetching a payload that exceeds the remaining budget; its read and any associated error are deferred until that record is requested in the next batch. There is no persistent cache, frontier checkpoint, membership set, or restart state to invalidate. The worker default remains unchanged.
 
-The prerequisite `70b6aad9` moves cold writable prefetch outside mutation stripes and uses the ledger read lock during SHAMap persistence so immutable header reads can proceed. The PR includes that prerequisite; it does not import the remaining consensus/recovery changes from `fix/consensus-storage-stalls`. Changed-version fallback reads can still occur under mutation stripes, as tracked separately in #1867.
+The prerequisite `70b6aad9` moves cold writable prefetch outside mutation stripes and uses the ledger read lock during SHAMap persistence so immutable header reads can proceed. The PR includes that prerequisite; it does not import the remaining consensus/recovery changes from `fix/consensus-storage-stalls`. During final CI, main merged #1869 for #1867. The integration retains its bounded retries outside mutation locks and its single-stripe fallback after retry exhaustion; read-only promotions do not invalidate other snapshots.
 
 Rippled 3.3.0 (`00a178fb92ca49521b937ae1a99d863765ea8a90`) checks writable before archive in `DatabaseRotatingImp::fetchNodeObject` and visits the validated state before rotation in `SHAMapStoreImp`. Sorted batched promotion and these metrics are specific to go-xrpl; they preserve full reachable-state verification and promotion.
 
@@ -25,6 +25,7 @@ Each batched refresh now accumulates its own `uint64` counters and emits them in
 - `promotion_requested`, `promotion_consumed`, and `promotion_partial_prefixes` distinguish requested suffixes from returned records. Requested keys can exceed consumed keys because bounded partial batches retry their unreturned suffix.
 - `promotion_writable_hits`, `promotion_writable_misses`, `promotion_archive_hits`, `promotion_archive_misses`, `promotion_archive_lookups`, and `promotion_archive_lookups_avoided` expose generation work. Prefetch lookups can include keys beyond the returned prefix.
 - `promotion_promoted`, `promotion_promoted_bytes`, `promotion_buffered_bytes`, `promotion_batch_writes`, `promotion_batch_calls`, and `promotion_batch_errors` describe returned backend work. On failure, promoted counters can include staged writes that did not commit. Successful batch writes still precede the refresh's final durability Sync. Buffered bytes are cumulative returned payload, not peak memory.
+- `promotion_version_mismatches`, `promotion_retries`, and `promotion_fallbacks` expose repeated writable-snapshot invalidation and bounded single-stripe fallback work.
 - `promotion_fetch_elapsed` sums backend fetch durations; `promotion_wait_elapsed` sums persistence-admission durations. Concurrent workers' sums can exceed refresh wall time. Wait duration includes admission-check overhead.
 
 These counters exclude scalar root/frontier bootstrap fetches and other NodeStore activity. Existing `nodes_checked` covers full traversal, while the existing NodeStore before/after counters remain shared activity. Source/write counters require a backend that supplies them; the scalar-only backend fallback supplies request, consumption, and payload counters only. No full-tree identity set is retained, so these counters do not claim exact unique-node or cross-refresh duplicate counts.
@@ -40,9 +41,9 @@ A VFS wrapper counts successful SST read calls and returned bytes per generation
 Cold cases start a foreground Put while the first refresh read is held at a barrier. Foreground key/value preparation and expected-result construction are outside timing. Put quantiles include operations started before refresh completes; warm runs report the actual overlap sample count. The separate existing `BenchmarkService_RefreshWithPersistence` measures real ledger persistence, including headers and Sync. Neither benchmark simulates a consensus network.
 
 CPU profiles label timed refresh/promotion goroutines with `phase=refresh` or `phase=promotion`; filtering by that label excludes fixture construction but does not attribute pre-existing Pebble background workers. Allocation profiles cover whole runs, while benchmark B/op and allocs/op use timed regions only. All before/after pairs use the same fixture code and workload.
-## Results
+## Results before the base-branch retry integration
 
-Measured on an Apple M3 Pro, Darwin arm64, Go 1.26.1, with 11 Go scheduler processors. The promotion baseline is `180a35d2` (main `64b730a7` plus the cold-writable prerequisite); the final implementation is `3ff8641a`. A Go source overlay selects the baseline implementation while keeping the corrected benchmark fixture identical. Each of the 36 cases ran three iterations in each of three independent samples. The following values are medians of the three reported samples; [the complete CSV](shamap-writable-first-results.csv) includes warm cases, cache counts, allocations, worker utilization, and overlapping Put p50/p95/p99.
+Measured on an Apple M3 Pro, Darwin arm64, Go 1.26.1, with 11 Go scheduler processors. The promotion baseline is `180a35d2` (main `64b730a7` plus the cold-writable prerequisite); the writable-first implementation measured in this section is `3ff8641a`. These measurements precede the integration of #1869; the final-base comparison is recorded separately below. A Go source overlay selects the baseline implementation while keeping the corrected benchmark fixture identical. Each of the 36 cases ran three iterations in each of three independent samples. The following values are medians of the three reported samples; [the complete CSV](shamap-writable-first-results.csv) includes warm cases, cache counts, allocations, worker utilization, and overlapping Put p50/p95/p99.
 
 | Writable hits | Workers | SST delay | Archive bytes before → after | Total SST bytes before → after | Refresh ms before → after |
 | --- | ---: | --- | ---: | ---: | ---: |
@@ -90,7 +91,7 @@ Whole-run sampled allocation attributed directly to `pointIterator.get` is 67.57
 
 ## Reproduction
 
-From the final checkout, run the same fixture against both implementations. The overlay below selects the prerequisite storage baseline without replacing the final benchmark or counter schema:
+From the historical `3ff8641a` checkout, run the same fixture against both implementations. The overlay below selects the prerequisite storage baseline without replacing the final benchmark or counter schema:
 
 ```sh
 python3 - <<'PYTHON'

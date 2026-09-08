@@ -97,6 +97,9 @@ func TestOnlineDeleteRefreshPromotionMetricsAggregatesParallelBatches(t *testing
 					Promoted:              7,
 					PromotedBytes:         8,
 					BufferedBytes:         9,
+					VersionMismatches:     3,
+					Retries:               2,
+					Fallbacks:             1,
 					Batches:               1,
 				},
 				batchErr,
@@ -123,6 +126,9 @@ func TestOnlineDeleteRefreshPromotionMetricsAggregatesParallelBatches(t *testing
 	require.Equal(t, uint64(batches*7), snapshot.promoted)
 	require.Equal(t, uint64(batches*8), snapshot.promotedBytes)
 	require.Equal(t, uint64(batches*9), snapshot.bufferedBytes)
+	require.Equal(t, uint64(batches*3), snapshot.versionMismatches)
+	require.Equal(t, uint64(batches*2), snapshot.retries)
+	require.Equal(t, uint64(batches), snapshot.fallbacks)
 	require.Equal(t, uint64(batches), snapshot.batchWrites)
 }
 
