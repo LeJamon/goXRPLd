@@ -809,7 +809,14 @@ func (s *Service) acceptPreferredOpenLedgerLocked(closed *ledger.Ledger) error {
 // Standalone validates the closed ledger before preparing its successor, but
 // publishes the validated frontier only after preparation succeeds.
 func (s *Service) acceptStandaloneOpenLedgerLocked(closed *ledger.Ledger, retriableTxs []openledger.PendingTx) error {
-	salt, err := openledger.ComputeSalt(s.pendingTxs)
+	pending := s.pendingTxs
+	if s.startupReplay != nil {
+		pending = append([]openledger.PendingTx(nil), pending...)
+		for _, replayTx := range s.startupReplay.OrderedTxs() {
+			pending = append(pending, openledger.PendingTx{Hash: replayTx.Hash, Blob: replayTx.TxBytes})
+		}
+	}
+	salt, err := openledger.ComputeSalt(pending)
 	if err != nil {
 		return err
 	}
