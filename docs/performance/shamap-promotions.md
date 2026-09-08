@@ -62,3 +62,5 @@ go test ./internal/ledger/service -run '^$' \
 ```
 
 Run it in CI for the finalization workflow. A green performance job means the benchmark and its correctness checks completed; timing acceptance requires inspecting the artifact.
+
+Follow-on writable-first measurements and per-refresh diagnostics are documented in [Writable-first SHAMap promotion](shamap-writable-first.md).
