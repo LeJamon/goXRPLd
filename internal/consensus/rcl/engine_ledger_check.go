@@ -10,8 +10,8 @@ import (
 )
 
 // run is the main consensus loop on a single global heartbeat. It also
-// detects ticks time.Ticker silently coalesced (gap > 2× interval) and
-// logs them — observational only; the next tick still runs.
+// reports delayed dispatches with separate scheduler and prior-tick-work
+// durations — observational only; the next tick still runs.
 func (e *Engine) run() {
 	defer e.wg.Done()
 
@@ -27,32 +27,51 @@ func (e *Engine) run() {
 	e.heartbeat = time.NewTicker(interval)
 	defer e.heartbeat.Stop()
 
-	last := time.Now()
+	var lastScheduled time.Time
+	var lastTickEnd time.Time
+	var priorTickWork time.Duration
 	for {
 		select {
 		case <-e.ctx.Done():
 			return
-		case <-e.heartbeat.C:
+		case scheduledAt := <-e.heartbeat.C:
+			receivedAt := time.Now()
+			timing := classifyHeartbeatDispatch(
+				scheduledAt,
+				receivedAt,
+				lastScheduled,
+				lastTickEnd,
+				priorTickWork,
+				interval,
+			)
+			if timing.missed > 0 {
+				e.missedHeartbeats.Add(uint64(timing.missed))
+			}
+			if timing.missed > 0 || timing.dispatchDelay > slowHeartbeatThreshold {
+				event := "heartbeat-delayed"
+				if timing.missed > 0 {
+					event = "tick-missed"
+				}
+				slog.Warn("heartbeat dispatch delayed",
+					"t", "consensus",
+					"event", event,
+					"delay_cause", timing.cause,
+					"dispatch_delay_ms", timing.dispatchDelay.Milliseconds(),
+					"scheduler_wake_delay_ms", timing.schedulerWakeDelay.Milliseconds(),
+					"prior_tick_work_ms", timing.priorTickWork.Milliseconds(),
+					"missed", timing.missed,
+					"interval_ms", interval.Milliseconds(),
+					"total_missed", e.missedHeartbeats.Load(),
+				)
+			}
+			lastScheduled = scheduledAt
+			tickStart := receivedAt
 			if ping := e.stallPing.Load(); ping != nil {
 				(*ping)()
 			}
-			now := time.Now()
-			if gap := now.Sub(last); gap > 2*interval {
-				missed := int64(gap/interval) - 1
-				if missed > 0 {
-					e.missedHeartbeats.Add(uint64(missed))
-					slog.Warn("heartbeat ticks missed",
-						"t", "consensus",
-						"event", "tick-missed",
-						"missed", missed,
-						"gap_ms", gap.Milliseconds(),
-						"interval_ms", interval.Milliseconds(),
-						"total_missed", e.missedHeartbeats.Load(),
-					)
-				}
-			}
-			last = now
 			e.timerEntry()
+			lastTickEnd = time.Now()
+			priorTickWork = lastTickEnd.Sub(tickStart)
 		}
 	}
 }
@@ -167,7 +186,7 @@ func (e *Engine) timerEntry() {
 		slowStages = e.finishHeartbeatStage(slowStages, stage)
 	case consensus.PhaseEstablish:
 		stage = e.startHeartbeatStageLocked("phase-establish")
-		e.phaseEstablish()
+		e.phaseEstablish(&slowStages)
 		slowStages = e.finishHeartbeatStage(slowStages, stage)
 	case consensus.PhaseAccepted:
 		stage = e.startHeartbeatStageLocked("round-start")
@@ -200,6 +219,75 @@ type heartbeatStageTimer struct {
 	name    string
 	started time.Time
 	context heartbeatContext
+}
+
+// heartbeatDispatchTiming separates time spent waiting for the scheduler from
+// time spent in the previous heartbeat. Ticker delivery can otherwise make a
+// long timerEntry look like a scheduler wake-up delay.
+type heartbeatDispatchTiming struct {
+	dispatchDelay      time.Duration
+	schedulerWakeDelay time.Duration
+	priorTickWork      time.Duration
+	missed             int64
+	cause              string
+}
+
+func classifyHeartbeatDispatch(
+	scheduledAt, receivedAt, previousScheduledAt, previousTickEnd time.Time,
+	priorTickWork, interval time.Duration,
+) heartbeatDispatchTiming {
+	dispatchDelay := nonNegativeDuration(receivedAt.Sub(scheduledAt))
+	priorTickWork = nonNegativeDuration(priorTickWork)
+	readyAt := scheduledAt
+	blockedByPriorWork := !previousTickEnd.IsZero() && previousTickEnd.After(readyAt)
+	if blockedByPriorWork {
+		readyAt = previousTickEnd
+	}
+	schedulerWakeDelay := nonNegativeDuration(receivedAt.Sub(readyAt))
+
+	var missed int64
+	if interval > 0 && !previousScheduledAt.IsZero() {
+		scheduledGap := scheduledAt.Sub(previousScheduledAt)
+		if scheduledGap > 2*interval {
+			missed = int64(scheduledGap/interval) - 1
+		}
+	}
+
+	cause := "scheduler-wake"
+	if blockedByPriorWork {
+		cause = "prior-tick-work"
+		if schedulerWakeDelay > 0 {
+			cause = "prior-tick-work-and-scheduler-wake"
+		}
+	}
+	return heartbeatDispatchTiming{
+		dispatchDelay:      dispatchDelay,
+		schedulerWakeDelay: schedulerWakeDelay,
+		priorTickWork:      priorTickWork,
+		missed:             missed,
+		cause:              cause,
+	}
+}
+
+func nonNegativeDuration(duration time.Duration) time.Duration {
+	if duration < 0 {
+		return 0
+	}
+	return duration
+}
+
+func (e *Engine) recordHeartbeatStageLocked(
+	stages *[]slowHeartbeatStage,
+	name string,
+	work func(),
+) {
+	if stages == nil {
+		work()
+		return
+	}
+	stage := e.startHeartbeatStageLocked(name)
+	work()
+	*stages = e.finishHeartbeatStage(*stages, stage)
 }
 
 func (e *Engine) heartbeatContextLocked() heartbeatContext {
