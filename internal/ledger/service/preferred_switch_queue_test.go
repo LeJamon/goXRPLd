@@ -66,13 +66,13 @@ func TestPreferredLedgerSwitchReplaysHeldLocalBeforeQueuedCompetitor(t *testing.
 	competitorBlob, competitorHash := preferredSwitchPaymentBlob(
 		t, env, master, fundedDestination, 2_000_000, 10, 3,
 	)
-	parsedCompetitor, err := tx.ParseFromBinary(competitorBlob)
-	require.NoError(t, err)
-	queued, err := svc.SubmitTransaction(parsedCompetitor, competitorBlob, false)
+	queued, err := svc.SubmitOpenLedgerTxDetailed(competitorBlob, false)
 	require.NoError(t, err)
 	require.Equal(t, ter.TerQUEUED, queued.Result)
 	require.False(t, queued.Applied)
 	require.True(t, svc.txQueue.Size() > 0)
+	_, held := svc.localTxs.Get(competitorHash)
+	require.False(t, held)
 
 	preferred, err := ledger.NewOpen(svc.closedLedger, time.Now())
 	require.NoError(t, err)
