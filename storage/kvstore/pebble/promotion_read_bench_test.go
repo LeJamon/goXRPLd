@@ -654,10 +654,11 @@ func runPromotionWorkers(
 	started := time.Now()
 	close(start)
 	group.Wait()
+	wall := time.Since(started)
 	close(refreshDone)
 	latencies := <-putLatencies
 	result := promotionRunResult{
-		wall:         time.Since(started),
+		wall:         wall,
 		busy:         time.Duration(busy.Load()),
 		putLatencies: latencies,
 		readStarted:  readOverlap.Load(),
