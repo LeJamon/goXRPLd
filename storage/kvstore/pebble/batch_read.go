@@ -89,7 +89,7 @@ func readBatch(
 			Found: found,
 		}
 		if found {
-			result.Value = cloneBatchBytes(value)
+			result.Value = value
 			bytesRead += len(value)
 		}
 		results = append(results, result)

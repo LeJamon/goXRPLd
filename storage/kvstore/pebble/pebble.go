@@ -108,8 +108,7 @@ func (s *Store) Get(key []byte) ([]byte, error) {
 	return result, nil
 }
 
-// GetBatch reads an explicit set of keys in sorted order without mutating the
-// input or writing archive results back into the store.
+// GetBatch performs a bounded, read-only batch lookup in sorted key order.
 func (s *Store) GetBatch(
 	ctx context.Context,
 	keys [][]byte,
