@@ -258,7 +258,8 @@ func (s *Service) Stop() {
 	// wait for an in-flight submission or ledger transition. The stopping state
 	// rejects later work.
 	s.validationWG.Wait()
-	s.openLedgerMu.Lock()
+	s.consensusWG.Wait()
+	s.openLedgerMu.LockRole(openLedgerShutdown)
 	s.openLedgerMu.Unlock()
 	s.stopNodeStoreSweeper()
 	s.persistenceWorker.stop()

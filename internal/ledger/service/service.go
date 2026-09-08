@@ -115,11 +115,13 @@ type Service struct {
 	stopDone       chan struct{}
 	// Add is serialized with Stop's state transition by lifecycleMu.
 	validationWG sync.WaitGroup
+	// consensusWG drains detached builds; Add is serialized with Stop by lifecycleMu.
+	consensusWG sync.WaitGroup
 
 	// openLedgerMu serializes open-ledger submission with lifecycle transitions.
 	// It is acquired before mu so a transition waiting on transaction application
-	// never blocks closed-ledger readers.
-	openLedgerMu sync.Mutex
+	// never blocks closed-ledger readers. Priority roles pass queued ingress.
+	openLedgerMu priorityGate
 
 	// mu guards the lifecycle frontier and cross-component state. Lock ordering
 	// is openLedgerMu, mu, historyComponent.mu, then component-specific locks
@@ -296,14 +298,32 @@ const (
 
 var errServiceNotRunning = errors.New("ledger service is not running")
 
-func (s *Service) lockOpenLedgerIfRunning() error {
+func (s *Service) lockOpenLedgerIfRunning(role openLedgerRole) error {
+	_, err := s.lockOpenLedgerIfRunningTimed(role)
+	return err
+}
+
+func (s *Service) lockOpenLedgerIfRunningTimed(role openLedgerRole) (openLedgerGateWait, error) {
+	lifecycleStarted := time.Now()
 	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
 	if s.lifecycleState != serviceRunning {
-		return errServiceNotRunning
+		s.lifecycleMu.Unlock()
+		return openLedgerGateWait{}, errServiceNotRunning
 	}
-	s.openLedgerMu.Lock()
-	return nil
+	lifecycleWait := time.Since(lifecycleStarted)
+	s.lifecycleMu.Unlock()
+
+	wait := s.openLedgerMu.LockRole(role)
+	lifecycleStarted = time.Now()
+	s.lifecycleMu.Lock()
+	wait.LifecycleWait = lifecycleWait + time.Since(lifecycleStarted)
+	running := s.lifecycleState == serviceRunning
+	s.lifecycleMu.Unlock()
+	if !running {
+		s.openLedgerMu.Unlock()
+		return wait, errServiceNotRunning
+	}
+	return wait, nil
 }
 
 func (s *Service) beginValidatedLedgerUpdate() bool {
@@ -397,6 +417,15 @@ func New(cfg Config) (*Service, error) {
 		feeTrack:             feetrack.New(),
 		validatedAgeNow:      time.Now,
 	}
+	s.openLedgerMu.setSlowLogger(func(event openLedgerGateSlowEvent) {
+		s.logger.Warn("open-ledger gate slow",
+			"role", event.Role.String(),
+			"wait", event.Wait,
+			"hold", event.Hold,
+			"queued_priority", event.QueuedPriority,
+			"queued_ingress", event.QueuedIngress,
+		)
+	})
 	s.persistenceWorker.service = s
 	s.eventPublisher.service = s
 	s.eventPublisher.publicationLimit = maxPublicationQueue
@@ -733,29 +762,12 @@ func (c *closedLedgerCtx) GetTransactionFeeLevels() []txq.FeeLevel {
 	return levels
 }
 
-// processClosedLedgerLocked updates the TxQ's fee metrics from the just-closed
-// ledger. timeLeap clamps the metrics window when consensus exceeded the
-// slow-consensus threshold instead of advancing it. Caller must hold s.mu.
-func (s *Service) processClosedLedgerLocked(closed *ledger.Ledger) {
-	if s.txQueue == nil || closed == nil {
-		return
-	}
-	baseFee, reserveBase, reserveIncrement := readFeesFromLedger(closed)
-	ctx := &closedLedgerCtx{
-		ledger:           closed,
-		baseFee:          baseFee,
-		reserveBase:      reserveBase,
-		reserveIncrement: reserveIncrement,
-	}
-	s.txQueue.ProcessClosedLedger(ctx, s.lastConsensusRoundTime > slowConsensusThreshold)
-}
-
 // slowConsensusThreshold: past this round time the TxQ treats consensus as slow
 // and freezes the fee-escalation window instead of opening it.
 const slowConsensusThreshold = 5 * time.Second
 
 // SetLastConsensusRoundTime records how long the last consensus round took
-// (read by processClosedLedgerLocked for timeLeap). Never called in standalone.
+// (read during open-ledger acceptance for timeLeap). Never called in standalone.
 func (s *Service) SetLastConsensusRoundTime(d time.Duration) {
 	s.mu.Lock()
 	s.lastConsensusRoundTime = d
@@ -782,73 +794,96 @@ func (s *Service) tickLoadFeeLocked() {
 // acceptOpenLedgerViewLocked invokes OpenLedger.Accept on the LCL transition to
 // closed. No-op pre-Start. retriableTxs are the disputed we-voted-NO txs
 // plus the build pass's retry-state txs, replayed first; anyDisputes is the
-// retriesFirst flag. closedSeq is for log context only. Caller must hold
+// retriesFirst flag. Caller must hold
 // openLedgerMu and s.mu.
 func (s *Service) acceptOpenLedgerViewLocked(closed *ledger.Ledger, retriableTxs []openledger.PendingTx, anyDisputes bool) error {
-	if s.openLedgerView == nil {
-		s.processClosedLedgerLocked(closed)
+	return s.openLedgerAcceptanceLocked(nil)(closed, retriableTxs, anyDisputes, nil)
+}
+
+// openLedgerAcceptanceLocked captures service configuration under mu. The returned
+// operation requires openLedgerMu, but runs storage reads and replay without mu.
+func (s *Service) openLedgerAcceptanceLocked(relayDuration *time.Duration) func(*ledger.Ledger, []openledger.PendingTx, bool, func(func())) error {
+	view, queue, localsPool := s.openLedgerView, s.txQueue, s.localTxs
+	networkID, logger, feeTrack := s.config.NetworkID, s.config.Logger, s.feeTrack
+	relay, slowRound := s.txRelay, s.lastConsensusRoundTime > slowConsensusThreshold
+	return func(closed *ledger.Ledger, retriableTxs []openledger.PendingTx, anyDisputes bool, publication func(func())) error {
+		if closed == nil {
+			return nil
+		}
+		closedSeq := closed.Sequence()
+		baseFee, reserveBase, reserveIncrement := readFeesFromLedger(closed)
+		cfg := openledger.ApplyConfig{
+			BaseFee:          baseFee,
+			ReserveBase:      reserveBase,
+			ReserveIncrement: reserveIncrement,
+			NetworkID:        networkID,
+			ParentCloseTime:  parentCloseTimeRippleEpoch(closed),
+			Logger:           logger,
+			Rules:            rulesFromLedger(closed, s.logger),
+			FeeTrack:         feeTrack,
+		}
+		// Modifier promotes queued candidates into the new open view after replay.
+		modifier := func(view *ledger.Ledger) {
+			if queue == nil || view == nil {
+				return
+			}
+			viewCfg := cfg
+			viewCfg.LedgerSequence = view.Sequence()
+			adapter := openledger.NewTxqAdapter(view, viewCfg)
+			_ = queue.Accept(adapter)
+		}
+		// Pass the held local pool so entries replay onto the new open view.
+		// Sweeping happens on the validated path, not every close (which may fork).
+		var locals []openledger.PendingTx
+		if localsPool != nil {
+			locals = localsPool.GetTxSet()
+		}
+		// Seed retries with the disputed/build-pass set; Accept drains then re-fills it.
+		retries := append([]openledger.PendingTx(nil), retriableTxs...)
+		relayCB := func(hash [32]byte, blob []byte) {
+			s.rememberRelayTransaction(hash, blob, false)
+			if relay != nil {
+				relayStarted := time.Now()
+				relay(blob)
+				if relayDuration != nil {
+					*relayDuration += time.Since(relayStarted)
+				}
+			}
+		}
+		processClosed := func() {
+			if queue != nil {
+				queue.ProcessClosedLedger(&closedLedgerCtx{ledger: closed, baseFee: baseFee, reserveBase: reserveBase, reserveIncrement: reserveIncrement}, slowRound)
+			}
+		}
+		if view == nil {
+			processClosed()
+			if publication != nil {
+				publication(func() {})
+			}
+			return nil
+		}
+		if err := view.AcceptWithPrecommit(
+			closed,
+			locals,
+			anyDisputes,
+			&retries,
+			cfg,
+			queue,
+			processClosed,
+			modifier,
+			relayCB,
+			publication,
+		); err != nil {
+			return fmt.Errorf("accept open ledger view at sequence %d: %w", closedSeq, err)
+		}
+		if len(retries) > 0 {
+			s.logger.Info("openLedger.Accept produced retries",
+				"count", len(retries),
+				"seq", closedSeq,
+			)
+		}
 		return nil
 	}
-	if closed == nil {
-		return nil
-	}
-	closedSeq := closed.Sequence()
-	baseFee, reserveBase, reserveIncrement := readFeesFromLedger(closed)
-	cfg := openledger.ApplyConfig{
-		BaseFee:          baseFee,
-		ReserveBase:      reserveBase,
-		ReserveIncrement: reserveIncrement,
-		NetworkID:        s.config.NetworkID,
-		ParentCloseTime:  parentCloseTimeRippleEpoch(closed),
-		Logger:           s.config.Logger,
-		Rules:            rulesFromLedger(closed, s.logger),
-		FeeTrack:         s.feeTrack,
-	}
-	// Modifier promotes queued candidates into the new open view after replay.
-	modifier := func(view *ledger.Ledger) {
-		if s.txQueue == nil || view == nil {
-			return
-		}
-		viewCfg := cfg
-		viewCfg.LedgerSequence = view.Sequence()
-		adapter := openledger.NewTxqAdapter(view, viewCfg)
-		_ = s.txQueue.Accept(adapter)
-	}
-	// Pass the held local pool so entries replay onto the new open view.
-	// Sweeping happens on the validated path, not every close (which may fork).
-	var locals []openledger.PendingTx
-	if s.localTxs != nil {
-		locals = s.localTxs.GetTxSet()
-	}
-	// Seed retries with the disputed/build-pass set; Accept drains then re-fills it.
-	retries := append([]openledger.PendingTx(nil), retriableTxs...)
-	relay := s.txRelay
-	relayCB := func(hash [32]byte, blob []byte) {
-		s.rememberRelayTransaction(hash, blob, false)
-		if relay != nil {
-			relay(blob)
-		}
-	}
-	if err := s.openLedgerView.AcceptWithPrecommit(
-		closed,
-		locals,
-		anyDisputes,
-		&retries,
-		cfg,
-		s.txQueue,
-		func() { s.processClosedLedgerLocked(closed) },
-		modifier,
-		relayCB,
-	); err != nil {
-		return fmt.Errorf("accept open ledger view at sequence %d: %w", closedSeq, err)
-	}
-	if len(retries) > 0 {
-		s.logger.Info("openLedger.Accept produced retries",
-			"count", len(retries),
-			"seq", closedSeq,
-		)
-	}
-	return nil
 }
 
 // applyConfigLocked returns the ApplyConfig for the current closed ledger,
@@ -962,7 +997,7 @@ func (s *Service) SubmitOpenLedgerTxDetailed(blob []byte, local bool) (openledge
 		return failure, fmt.Errorf("%w: %s", ErrInvalidLocalTransaction, reason)
 	}
 
-	if err := s.lockOpenLedgerIfRunning(); err != nil {
+	if err := s.lockOpenLedgerIfRunning(openLedgerIngress); err != nil {
 		return failure, err
 	}
 	defer s.openLedgerMu.Unlock()

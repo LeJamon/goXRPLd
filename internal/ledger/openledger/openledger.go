@@ -136,11 +136,13 @@ func (o *OpenLedger) Accept(
 	modifier func(*ledger.Ledger),
 	relay func(hash [32]byte, blob []byte),
 ) error {
-	return o.accept(newLCL, locals, retriesFirst, retries, cfg, queue, nil, modifier, relay)
+	return o.accept(newLCL, locals, retriesFirst, retries, cfg, queue, nil, modifier, relay, nil)
 }
 
 // AcceptWithPrecommit runs precommit after every fallible rebuild step has
 // succeeded and immediately before TxQ mutation and open-view publication.
+// publication, when non-nil, must synchronously invoke its argument exactly once
+// to publish the open view together with the caller's ledger frontier.
 func (o *OpenLedger) AcceptWithPrecommit(
 	newLCL *ledger.Ledger,
 	locals []PendingTx,
@@ -151,8 +153,9 @@ func (o *OpenLedger) AcceptWithPrecommit(
 	precommit func(),
 	modifier func(*ledger.Ledger),
 	relay func(hash [32]byte, blob []byte),
+	publication func(publish func()),
 ) error {
-	return o.accept(newLCL, locals, retriesFirst, retries, cfg, queue, precommit, modifier, relay)
+	return o.accept(newLCL, locals, retriesFirst, retries, cfg, queue, precommit, modifier, relay, publication)
 }
 
 func (o *OpenLedger) accept(
@@ -165,6 +168,7 @@ func (o *OpenLedger) accept(
 	precommit func(),
 	modifier func(*ledger.Ledger),
 	relay func(hash [32]byte, blob []byte),
+	publication func(publish func()),
 ) error {
 	if newLCL == nil {
 		return errors.New("openledger.Accept: newLCL is nil")
@@ -294,14 +298,21 @@ func (o *OpenLedger) accept(
 		})
 	}
 
-	// 6. Atomic publish.
-	o.currentMu.Lock()
-	o.current = next
-	o.cachedTxs = nil
-	o.currentMu.Unlock()
-	if retries != nil {
-		*retries = stagedRetries
+	publish := func() {
+		o.currentMu.Lock()
+		o.current = next
+		o.cachedTxs = nil
+		o.currentMu.Unlock()
+		if retries != nil {
+			*retries = stagedRetries
+		}
 	}
+	if publication != nil {
+		publication(publish)
+	} else {
+		publish()
+	}
+
 	return nil
 }
 

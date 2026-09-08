@@ -145,7 +145,7 @@ func (s *Service) SubmitTransaction(transaction tx.Transaction, rawBlob []byte, 
 		preprocessValid = txengine.PrewarmSignature(ptx.Parsed) == nil
 	}
 
-	if err := s.lockOpenLedgerIfRunning(); err != nil {
+	if err := s.lockOpenLedgerIfRunning(openLedgerIngress); err != nil {
 		return nil, err
 	}
 	defer s.openLedgerMu.Unlock()
