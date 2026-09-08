@@ -404,12 +404,12 @@ func promotionBenchmarkEntries(group int) ([][]byte, [][]byte) {
 	values := make([][]byte, promotionBenchmarkKeyCount)
 	for index := range keys {
 		keys[index] = []byte(fmt.Sprintf("issue-1866/%08d/%03d", group, index))
-		values[index] = promotionBenchmarkValue(group, index)
+		values[index] = offlinePromotionValue(group, index)
 	}
 	return keys, values
 }
 
-func promotionBenchmarkValue(group, index int) []byte {
+func offlinePromotionValue(group, index int) []byte {
 	value := make([]byte, promotionBenchmarkValueBytes)
 	seed := uint64(group+1)*0x9e3779b97f4a7c15 ^ uint64(index+1)*0xd1b54a32d192ed03
 	for offset := range value {

@@ -766,7 +766,25 @@ func (r *RotatingStore) commitPromotions(
 		remaining := maxBytes - stats.BufferedBytes
 		candidate := candidates[index]
 		if candidate.err != nil {
-			return nil, candidate.err
+			// A concurrent copy-forward can supersede an archive failure without
+			// changing the logical value or advancing its mutation version.
+			iter, err := r.writable.newPointIterator()
+			if err != nil {
+				return nil, errors.Join(candidate.err, err)
+			}
+			value, found, tooLarge, readErr := iter.get(key, remaining, len(promotions) == 0)
+			if err := errors.Join(readErr, iter.Close()); err != nil {
+				return nil, errors.Join(candidate.err, err)
+			}
+			if tooLarge {
+				break
+			}
+			if !found {
+				return nil, candidate.err
+			}
+			stats.PrefetchBytes += len(value)
+			stats.ArchiveLookupsAvoided++
+			candidate = promotionPrefetch{value: value, found: true, writable: true}
 		}
 		value, found := candidate.value, candidate.found
 		if found && len(value) > remaining && len(promotions) > 0 {

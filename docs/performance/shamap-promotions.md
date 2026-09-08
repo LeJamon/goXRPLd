@@ -135,3 +135,5 @@ The existing `BenchmarkPromotionContention` completed 100 groups of 256 keys in 
 GOMAXPROCS=3 go test ./storage/kvstore/pebble -run '^$' \
   -bench '^BenchmarkPromotionContention$' -benchtime=100x -count=1
 ```
+
+The separate #1853 fixture and its measurements are retained in [Writable-first SHAMap promotion](shamap-writable-first.md).

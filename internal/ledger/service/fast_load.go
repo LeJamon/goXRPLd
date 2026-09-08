@@ -490,24 +490,6 @@ func (s *Service) walkStoredSHAMapConcurrentWithFetch(
 	var lastCheckpointNodes uint64
 	controlledFetch := fetch
 	controlledBatchFetch := control.batchFetch
-	if controlledBatchFetch != nil {
-		batchFetch := controlledBatchFetch
-		controlledBatchFetch = func(
-			ctx context.Context,
-			hashes []nodestore.Hash256,
-			maxBytes int,
-		) ([]*nodestore.Node, kvstore.PromotionStats, error) {
-			nodes, stats, err := batchFetch(ctx, hashes, maxBytes)
-			if control.progress != nil && stats.Requested > 0 {
-				control.progress.recordPromotionBatch(
-					stats,
-					len(nodes),
-					err == nil && len(nodes) > 0 && len(nodes) < len(hashes),
-				)
-			}
-			return nodes, stats, err
-		}
-	}
 	if control.checkpoint != nil {
 		controlledFetch = func(ctx context.Context, hash nodestore.Hash256) (*nodestore.Node, error) {
 			checkpointGate.RLock()
