@@ -43,11 +43,11 @@ func benchmarkConsensusAcceptanceContention(b *testing.B, tc consensusAcceptance
 	b.StopTimer()
 	fixture := newBenchmarkRefreshFixture(b, 16_384, 256<<10)
 	var (
-		gateWait         []time.Duration
-		gateHold         []time.Duration
-		build            []time.Duration
-		transactionApply []time.Duration
-		closeStateHash   []time.Duration
+		gateWait         = make([]time.Duration, 0, b.N)
+		gateHold         = make([]time.Duration, 0, b.N)
+		build            = make([]time.Duration, 0, b.N)
+		transactionApply = make([]time.Duration, 0, b.N)
+		closeStateHash   = make([]time.Duration, 0, b.N)
 		coldFetches      int64
 	)
 
