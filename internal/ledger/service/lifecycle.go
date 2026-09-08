@@ -154,15 +154,14 @@ func (s *Service) applyFlagLedgerNegativeUNL(l *ledger.Ledger) error {
 }
 
 func (s *Service) buildClosedLedgerLocked(pending []openledger.PendingTx, closeTime time.Time, skipSigVerify bool) (*ledger.Ledger, []openledger.PendingTx, error) {
-	return s.buildClosedLedger(s.closedLedger, pending, closeTime, skipSigVerify, nil)
-}
-
-func (s *Service) buildClosedLedger(parent *ledger.Ledger, pending []openledger.PendingTx, closeTime time.Time, skipSigVerify bool, applyDuration *time.Duration) (*ledger.Ledger, []openledger.PendingTx, error) {
-	// Salt = SHAMap root of the tx set (rippled consensus-build convention).
 	salt, err := openledger.ComputeSalt(pending)
 	if err != nil {
 		return nil, nil, err
 	}
+	return s.buildClosedLedger(s.closedLedger, pending, salt, closeTime, skipSigVerify, nil)
+}
+
+func (s *Service) buildClosedLedger(parent *ledger.Ledger, pending []openledger.PendingTx, salt [32]byte, closeTime time.Time, skipSigVerify bool, applyDuration *time.Duration) (*ledger.Ledger, []openledger.PendingTx, error) {
 	openledger.CanonicalSort(pending, salt)
 
 	freshLedger, err := ledger.NewOpenForBuild(parent, closeTime)

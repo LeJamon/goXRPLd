@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/LeJamon/go-xrpl/crypto/sha512half"
 	"github.com/LeJamon/go-xrpl/internal/ledger"
 	"github.com/LeJamon/go-xrpl/internal/ledger/header"
 	"github.com/LeJamon/go-xrpl/internal/ledger/openledger"
 	"github.com/LeJamon/go-xrpl/internal/ledger/service/svcerr"
+	"github.com/LeJamon/go-xrpl/protocol"
+	"github.com/LeJamon/go-xrpl/shamap"
 )
 
 func (s *Service) acceptConsensusResult(
@@ -68,12 +71,22 @@ func (s *Service) acceptConsensusResult(
 
 	// Build only the agreed set; speculative ingress must not affect the closed hash.
 	pending := make([]openledger.PendingTx, 0, len(txBlobs))
+	agreedSet := shamap.New(shamap.TypeTransaction)
 	for _, blob := range txBlobs {
+		// Malformed entries still contribute to the agreed set's ordering salt.
+		hash := sha512half.Sum(protocol.HashPrefixTransactionID().Bytes(), blob)
+		if err := agreedSet.PutWithNodeType(hash, blob, shamap.NodeTypeTransactionNoMeta); err != nil {
+			return 0, fmt.Errorf("insert agreed transaction %x: %w", hash, err)
+		}
 		ptx, err := openledger.ParsePendingTx(blob)
 		if err != nil {
 			continue
 		}
 		pending = append(pending, ptx)
+	}
+	salt, err := agreedSet.Hash()
+	if err != nil {
+		return 0, fmt.Errorf("hash agreed transaction set: %w", err)
 	}
 	disputed := make([]openledger.PendingTx, 0, len(disputedBlobs))
 	for _, blob := range disputedBlobs {
@@ -83,7 +96,6 @@ func (s *Service) acceptConsensusResult(
 	}
 	timings.parse = time.Since(parseStarted)
 	var closed *ledger.Ledger
-	var err error
 	replayed := false
 	buildStarted := time.Now()
 	if replay != nil {
@@ -99,15 +111,11 @@ func (s *Service) acceptConsensusResult(
 
 	var retriableTxs []openledger.PendingTx
 	if !replayed {
-		closed, retriableTxs, err = s.buildClosedLedger(expectedClosed, pending, closeTime, false, &timings.apply)
+		closed, retriableTxs, err = s.buildClosedLedger(expectedClosed, pending, salt, closeTime, false, &timings.apply)
 		if err != nil {
 			return 0, err
 		}
 	} else {
-		salt, saltErr := openledger.ComputeSalt(pending)
-		if saltErr != nil {
-			return 0, saltErr
-		}
 		openledger.CanonicalSort(pending, salt)
 		retriableTxs = append(retriableTxs, pending...)
 		closeTime = closed.CloseTime()
@@ -134,10 +142,6 @@ func (s *Service) acceptConsensusResult(
 			added = true
 		}
 		if added {
-			salt, saltErr := openledger.ComputeSalt(pending)
-			if saltErr != nil {
-				return 0, saltErr
-			}
 			openledger.CanonicalSort(retriableTxs, salt)
 		}
 	}
