@@ -1,6 +1,9 @@
 package service
 
 import (
+	"context"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,13 +117,7 @@ func testSubmitDoesNotBlockClosedLedgerReadsOrReplacement(t *testing.T, rpc bool
 		switchDone <- svc.switchToPreferredLedger(preferred, func() { close(switchWaiting) })
 	}()
 	<-switchWaiting
-	require.Eventually(t, func() bool {
-		if svc.lifecycleMu.TryLock() {
-			svc.lifecycleMu.Unlock()
-			return false
-		}
-		return true
-	}, time.Second, time.Millisecond)
+	waitForOpenLedgerLockWaiter(t)
 	assertClosedRead()
 	select {
 	case err := <-switchDone:
@@ -197,13 +194,7 @@ func TestValidatedLedgerWaitsForOpenLedgerSubmission(t *testing.T) {
 		svc.SetValidatedLedger(candidate.Sequence(), candidate.Hash())
 		close(validationDone)
 	}()
-	require.Eventually(t, func() bool {
-		if svc.lifecycleMu.TryLock() {
-			svc.lifecycleMu.Unlock()
-			return false
-		}
-		return true
-	}, time.Second, time.Millisecond)
+	waitForOpenLedgerLockWaiter(t)
 
 	readDone := make(chan *ledger.Ledger, 1)
 	go func() { readDone <- svc.GetClosedLedger() }()
@@ -229,6 +220,129 @@ func TestValidatedLedgerWaitsForOpenLedgerSubmission(t *testing.T) {
 			t.Fatalf("timed out waiting for %s publication", want)
 		}
 	}
+}
+
+// Observe an actual parked waiter rather than relying on sleeps or requiring
+// it to hold lifecycleMu (the lock coupling this regression suite prevents).
+// These tests are deliberately not parallel: no other service waiter should
+// satisfy this check.
+func waitForOpenLedgerLockWaiter(t *testing.T) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		stacks := make([]byte, 1<<20)
+		n := runtime.Stack(stacks, true)
+		for _, stack := range strings.Split(string(stacks[:n]), "\n\n") {
+			if strings.Contains(stack, "[sync.Mutex.Lock") &&
+				strings.Contains(stack, "(*Service).lockOpenLedgerIfRunning(") {
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, time.Millisecond, "open-ledger caller did not park on its lock")
+}
+
+func TestOpenLedgerWaitDoesNotBlockValidationAdmission(t *testing.T) {
+	svc, err := New(DefaultConfig())
+	require.NoError(t, err)
+	require.NoError(t, svc.Start())
+	t.Cleanup(svc.Stop)
+	require.NoError(t, svc.lockOpenLedgerIfRunning())
+	released := false
+	defer func() {
+		if !released {
+			svc.openLedgerMu.Unlock()
+		}
+	}()
+
+	waiterDone := make(chan error, 1)
+	go func() {
+		err := svc.lockOpenLedgerIfRunning()
+		if err == nil {
+			svc.openLedgerMu.Unlock()
+		}
+		waiterDone <- err
+	}()
+	waitForOpenLedgerLockWaiter(t)
+
+	admitted := make(chan bool, 1)
+	go func() {
+		ok := svc.beginValidatedLedgerUpdate()
+		if ok {
+			svc.validationWG.Done()
+		}
+		admitted <- ok
+	}()
+	select {
+	case ok := <-admitted:
+		require.True(t, ok)
+	case <-time.After(time.Second):
+		t.Fatal("validation admission blocked behind an open-ledger waiter")
+	}
+	select {
+	case <-waiterDone:
+		t.Fatal("open-ledger serialization was bypassed")
+	default:
+	}
+	svc.openLedgerMu.Unlock()
+	released = true
+	require.NoError(t, <-waiterDone)
+}
+
+func TestStopRejectsQueuedConsensusAcceptance(t *testing.T) {
+	svc, err := New(DefaultConfig())
+	require.NoError(t, err)
+	require.NoError(t, svc.Start())
+	t.Cleanup(svc.Stop)
+	closed := svc.GetClosedLedger()
+	require.NoError(t, svc.lockOpenLedgerIfRunning())
+	released := false
+	defer func() {
+		if !released {
+			svc.openLedgerMu.Unlock()
+		}
+	}()
+
+	acceptDone := make(chan error, 1)
+	go func() {
+		_, err := svc.AcceptConsensusResult(context.Background(), closed, nil, nil, time.Now(), true)
+		acceptDone <- err
+	}()
+	waitForOpenLedgerLockWaiter(t)
+	stopDone := make(chan struct{})
+	go func() {
+		svc.Stop()
+		close(stopDone)
+	}()
+	require.Eventually(t, func() bool {
+		if !svc.lifecycleMu.TryLock() {
+			return false
+		}
+		defer svc.lifecycleMu.Unlock()
+		return svc.lifecycleState == serviceStopping
+	}, time.Second, time.Millisecond, "queued consensus blocked Stop from closing admission")
+	select {
+	case <-stopDone:
+		t.Fatal("Stop did not drain the active open-ledger operation")
+	default:
+	}
+	// Fresh callers must also be rejected without waiting on the busy mutex.
+	require.ErrorIs(t, svc.lockOpenLedgerIfRunning(), errServiceNotRunning)
+	require.False(t, svc.beginValidatedLedgerUpdate())
+	svc.openLedgerMu.Unlock()
+	released = true
+	select {
+	case err := <-acceptDone:
+		require.ErrorIs(t, err, errServiceNotRunning)
+	case <-time.After(time.Second):
+		t.Fatal("queued consensus acceptance did not return after shutdown")
+	}
+	select {
+	case <-stopDone:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not complete")
+	}
+	require.Same(t, closed, svc.GetClosedLedger(), "queued acceptance mutated the checkpoint frontier")
+	require.ErrorIs(t, svc.lockOpenLedgerIfRunning(), errServiceNotRunning)
 }
 
 func TestStopWaitsForOpenLedgerSubmission(t *testing.T) {

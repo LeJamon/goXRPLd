@@ -298,11 +298,26 @@ var errServiceNotRunning = errors.New("ledger service is not running")
 
 func (s *Service) lockOpenLedgerIfRunning() error {
 	s.lifecycleMu.Lock()
-	defer s.lifecycleMu.Unlock()
-	if s.lifecycleState != serviceRunning {
+	running := s.lifecycleState == serviceRunning
+	s.lifecycleMu.Unlock()
+	if !running {
 		return errServiceNotRunning
 	}
+
+	// Transaction application may hold openLedgerMu across cold SHAMap reads.
+	// Do not hold lifecycleMu while waiting: doing so also stalls validation
+	// admission and prevents Stop from closing admission to new work.
 	s.openLedgerMu.Lock()
+	s.lifecycleMu.Lock()
+	running = s.lifecycleState == serviceRunning
+	s.lifecycleMu.Unlock()
+	if !running {
+		s.openLedgerMu.Unlock()
+		return errServiceNotRunning
+	}
+	// If Stop starts after this check, its openLedgerMu barrier drains this
+	// operation. If it started while we waited, the recheck rejects us without
+	// touching ledger state or stores, even if Stop's barrier ran before us.
 	return nil
 }
 
