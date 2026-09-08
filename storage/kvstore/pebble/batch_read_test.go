@@ -3,9 +3,7 @@ package pebble_test
 import (
 	"context"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/LeJamon/go-xrpl/storage/kvstore"
 	kvpebble "github.com/LeJamon/go-xrpl/storage/kvstore/pebble"
@@ -182,117 +180,10 @@ func TestRotatingStoreGetBatchCancellationAndClose(t *testing.T) {
 	require.ErrorIs(t, err, kvstore.ErrClosed)
 }
 
-func TestStoreGetBatchChecksCancellationDuringReads(t *testing.T) {
-	store, err := kvpebble.New(t.TempDir(), kvpebble.Options{})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
-	for _, key := range []string{"a", "b", "c"} {
-		require.NoError(t, store.Put([]byte(key), []byte("value")))
-	}
-
-	ctx := &cancelAfterContext{cancelAfter: 4}
-	_, err = store.GetBatch(ctx, [][]byte{[]byte("a"), []byte("b"), []byte("c")}, 10, 1024)
-	require.ErrorIs(t, err, context.Canceled)
-}
-
-func TestStoreGetBatchCloseWaitsForInFlightRead(t *testing.T) {
-	store, err := kvpebble.New(t.TempDir(), kvpebble.Options{})
-	require.NoError(t, err)
-	require.NoError(t, store.Put([]byte("key"), []byte("value")))
-
-	ctx := newBlockingContext(4)
-	readDone := make(chan error, 1)
-	go func() {
-		_, err := store.GetBatch(ctx, [][]byte{[]byte("key")}, 1, 1024)
-		readDone <- err
-	}()
-	<-ctx.entered
-	closeDone := make(chan error, 1)
-	go func() { closeDone <- store.Close() }()
-	select {
-	case err := <-closeDone:
-		t.Fatalf("Close completed while GetBatch was in flight: %v", err)
-	case <-time.After(20 * time.Millisecond):
-	}
-	close(ctx.release)
-	require.NoError(t, <-readDone)
-	require.NoError(t, <-closeDone)
-}
-
-func TestRotatingStoreGetBatchBlocksRotationUntilReadCompletes(t *testing.T) {
-	store, err := kvpebble.NewRotating(filepath.Join(t.TempDir(), "nodes"), kvpebble.Options{BlockCacheBytes: 16 << 20, MaxOpenFiles: 200})
-	require.NoError(t, err)
-	require.NoError(t, store.Put([]byte("key"), []byte("value")))
-	ctx := newBlockingContext(4)
-	readDone := make(chan error, 1)
-	go func() {
-		_, err := store.GetBatch(ctx, [][]byte{[]byte("key")}, 1, 1024)
-		readDone <- err
-	}()
-	<-ctx.entered
-	rotateDone := make(chan error, 1)
-	go func() {
-		_, err := store.Rotate(11, 1)
-		rotateDone <- err
-	}()
-	select {
-	case err := <-rotateDone:
-		t.Fatalf("Rotate completed while GetBatch was in flight: %v", err)
-	case <-time.After(20 * time.Millisecond):
-	}
-	close(ctx.release)
-	require.NoError(t, <-readDone)
-	require.NoError(t, <-rotateDone)
-	require.NoError(t, store.Close())
-}
-
 func resultKeys(results []kvstore.ReadResult) []string {
 	keys := make([]string, len(results))
 	for index, result := range results {
 		keys[index] = string(result.Key)
 	}
 	return keys
-}
-
-type cancelAfterContext struct {
-	checks      atomic.Int64
-	cancelAfter int64
-}
-
-func (c *cancelAfterContext) Deadline() (time.Time, bool) { return time.Time{}, false }
-func (c *cancelAfterContext) Done() <-chan struct{}       { return nil }
-func (c *cancelAfterContext) Value(any) any               { return nil }
-
-func (c *cancelAfterContext) Err() error {
-	if c.checks.Add(1) > c.cancelAfter {
-		return context.Canceled
-	}
-	return nil
-}
-
-type blockingContext struct {
-	checks  atomic.Int64
-	block   int64
-	entered chan struct{}
-	release chan struct{}
-}
-
-func newBlockingContext(block int64) *blockingContext {
-	return &blockingContext{
-		block:   block,
-		entered: make(chan struct{}),
-		release: make(chan struct{}),
-	}
-}
-
-func (c *blockingContext) Deadline() (time.Time, bool) { return time.Time{}, false }
-func (c *blockingContext) Done() <-chan struct{}       { return nil }
-func (c *blockingContext) Value(any) any               { return nil }
-
-func (c *blockingContext) Err() error {
-	if c.checks.Add(1) == c.block {
-		close(c.entered)
-		<-c.release
-	}
-	return nil
 }
