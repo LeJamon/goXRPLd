@@ -38,7 +38,6 @@ host activity was uncontrolled.
 
 | Cache | Nodes/batch | ms/traversal | Nodes/s | Allocated MiB/traversal | Allocs/traversal | Block-cache misses/traversal |
 |---|---:|---:|---:|---:|---:|---:|
-
 | Small, reopened | scalar | 117.09 | 149,807 | 13.40 | 223,673 | 52,623 |
 | Small, reopened | 32 | 57.63 | 304,381 | 13.75 | 182,105 | 14,970 |
 | Small, reopened | 128 | 31.58 | 555,524 | 14.05 | 174,481 | 8,410 |
