@@ -356,6 +356,12 @@ func TestDeferredLedgerAcceptIgnoresLateTxSetDuringBuild(t *testing.T) {
 				if err := engine.OnTxSet(lateID, [][]byte{lateTx}); err != nil {
 					t.Fatalf("late OnTxSet: %v", err)
 				}
+				base.mu.RLock()
+				cached := base.txSets[lateID]
+				base.mu.RUnlock()
+				if cached == nil || cached.Size() != 1 {
+					t.Fatal("late set was not cached for peers")
+				}
 				engine.mu.RLock()
 				_, acquired := engine.acquiredTxSets[lateID]
 				_, compared := engine.comparesTxSets[lateID]
