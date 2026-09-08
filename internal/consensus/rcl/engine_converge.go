@@ -9,13 +9,8 @@ import (
 )
 
 // phaseEstablish re-evaluates convergence each heartbeat. Caller must hold e.mu.
-// An optional stage sink records nested heartbeat work for timer diagnostics;
-// direct callers keep the existing behaviour when it is omitted.
-func (e *Engine) phaseEstablish(stageSinks ...*[]slowHeartbeatStage) {
-	var stages *[]slowHeartbeatStage
-	if len(stageSinks) > 0 {
-		stages = stageSinks[0]
-	}
+// A nil stage sink disables nested timer diagnostics.
+func (e *Engine) phaseEstablish(stages *[]slowHeartbeatStage) {
 	roundTime := e.now().Sub(e.roundStartTime)
 
 	// Snapshot round time and converge percent each tick (before pause/accept)
@@ -438,11 +433,7 @@ const (
 // close-time gate, exactly as in rippled where haveConsensus returns true
 // for all three and phaseEstablish then returns on !haveCloseTimeConsensus_
 // (Consensus.h:1406-1411). No→retry next heartbeat.
-func (e *Engine) checkConvergence(stageSinks ...*[]slowHeartbeatStage) {
-	var stages *[]slowHeartbeatStage
-	if len(stageSinks) > 0 {
-		stages = stageSinks[0]
-	}
+func (e *Engine) checkConvergence(stages *[]slowHeartbeatStage) {
 	if e.phase != consensus.PhaseEstablish {
 		return
 	}

@@ -10,7 +10,7 @@ import (
 )
 
 // run is the main consensus loop on a single global heartbeat. It also
-// reports delayed dispatches with separate scheduler and prior-tick-work
+// reports delayed dispatches with separate dispatch-wait and prior-tick-work
 // durations — observational only; the next tick still runs.
 func (e *Engine) run() {
 	defer e.wg.Done()
@@ -28,6 +28,7 @@ func (e *Engine) run() {
 	defer e.heartbeat.Stop()
 
 	var lastScheduled time.Time
+	var lastReceived time.Time
 	var lastTickEnd time.Time
 	var priorTickWork time.Duration
 	for {
@@ -49,13 +50,20 @@ func (e *Engine) run() {
 			}
 			if timing.missed > 0 || timing.dispatchDelay > slowHeartbeatThreshold {
 				event := "heartbeat-delayed"
+				message := "heartbeat dispatch delayed"
 				if timing.missed > 0 {
 					event = "tick-missed"
+					message = "heartbeat ticks missed"
 				}
-				slog.Warn("heartbeat dispatch delayed",
+				gap := time.Duration(0)
+				if !lastReceived.IsZero() {
+					gap = nonNegativeDuration(receivedAt.Sub(lastReceived))
+				}
+				slog.Warn(message,
 					"t", "consensus",
 					"event", event,
 					"delay_cause", timing.cause,
+					"gap_ms", gap.Milliseconds(),
 					"dispatch_delay_ms", timing.dispatchDelay.Milliseconds(),
 					"scheduler_wake_delay_ms", timing.schedulerWakeDelay.Milliseconds(),
 					"prior_tick_work_ms", timing.priorTickWork.Milliseconds(),
@@ -65,6 +73,7 @@ func (e *Engine) run() {
 				)
 			}
 			lastScheduled = scheduledAt
+			lastReceived = receivedAt
 			tickStart := receivedAt
 			if ping := e.stallPing.Load(); ping != nil {
 				(*ping)()
@@ -248,16 +257,16 @@ func classifyHeartbeatDispatch(
 	var missed int64
 	if interval > 0 && !previousScheduledAt.IsZero() {
 		scheduledGap := scheduledAt.Sub(previousScheduledAt)
-		if scheduledGap > 2*interval {
+		if scheduledGap > interval {
 			missed = int64(scheduledGap/interval) - 1
 		}
 	}
 
-	cause := "scheduler-wake"
+	cause := "dispatch-wait"
 	if blockedByPriorWork {
 		cause = "prior-tick-work"
-		if schedulerWakeDelay > 0 {
-			cause = "prior-tick-work-and-scheduler-wake"
+		if schedulerWakeDelay > slowHeartbeatThreshold {
+			cause = "prior-tick-work-and-dispatch-wait"
 		}
 	}
 	return heartbeatDispatchTiming{
