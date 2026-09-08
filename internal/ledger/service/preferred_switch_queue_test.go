@@ -16,10 +16,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func preferredSwitchPaymentBlob(t testing.TB, env *jtx.TestEnv, sender, receiver *jtx.Account, fee uint64, sequence uint32) ([]byte, [32]byte) {
+func preferredSwitchPaymentBlob(t testing.TB, env *jtx.TestEnv, sender, receiver *jtx.Account, amount, fee uint64, sequence uint32) ([]byte, [32]byte) {
 	t.Helper()
 	env.SetVerifySignatures(true)
-	transaction := payment.Pay(sender, receiver, 1_000_000).Fee(fee).Sequence(sequence).Build()
+	transaction := payment.Pay(sender, receiver, amount).Fee(fee).Sequence(sequence).Build()
 	env.SignWith(transaction, sender)
 	txJSON, err := transaction.Flatten()
 	require.NoError(t, err)
@@ -45,8 +45,9 @@ func TestPreferredLedgerSwitchReplaysHeldLocalBeforeQueuedCompetitor(t *testing.
 
 	env := jtx.NewTestEnv(t)
 	master := jtx.MasterAccount()
-	priorOne, _ := startupPaymentBlob(t, "preferred-prior-one", 1)
-	priorTwo, _ := startupPaymentBlob(t, "preferred-prior-two", 2)
+	fundedDestination := jtx.NewAccount("preferred-funded-destination")
+	priorOne, _ := preferredSwitchPaymentBlob(t, env, master, fundedDestination, 20_000_000, 10, 1)
+	priorTwo, _ := preferredSwitchPaymentBlob(t, env, master, fundedDestination, 1_000_000, 10, 2)
 	for _, blob := range [][]byte{priorOne, priorTwo} {
 		result, submitErr := svc.SubmitOpenLedgerTx(blob, false)
 		require.NoError(t, submitErr)
@@ -55,7 +56,7 @@ func TestPreferredLedgerSwitchReplaysHeldLocalBeforeQueuedCompetitor(t *testing.
 	require.Equal(t, uint32(2), svc.openLedgerView.Current().TxCount())
 
 	localBlob, localHash := preferredSwitchPaymentBlob(
-		t, env, master, jtx.NewAccount("preferred-held-local"), 10, 3,
+		t, env, master, fundedDestination, 1_000_000, 10, 3,
 	)
 	local, err := openledger.ParsePendingTx(localBlob)
 	require.NoError(t, err)
@@ -63,7 +64,7 @@ func TestPreferredLedgerSwitchReplaysHeldLocalBeforeQueuedCompetitor(t *testing.
 	svc.localTxs.PushBack(current.Sequence(), local)
 
 	competitorBlob, competitorHash := preferredSwitchPaymentBlob(
-		t, env, master, jtx.NewAccount("preferred-queued-competitor"), 10, 3,
+		t, env, master, fundedDestination, 2_000_000, 10, 3,
 	)
 	parsedCompetitor, err := tx.ParseFromBinary(competitorBlob)
 	require.NoError(t, err)
@@ -79,12 +80,10 @@ func TestPreferredLedgerSwitchReplaysHeldLocalBeforeQueuedCompetitor(t *testing.
 	require.NoError(t, svc.SwitchToPreferredLedger(preferred))
 
 	current = svc.openLedgerView.Current()
-	for _, hash := range [][32]byte{localHash} {
-		exists, existsErr := current.TxExists(hash)
-		require.NoError(t, existsErr)
-		require.True(t, exists, "held local transaction must replay before queue promotion")
-	}
-	exists, err := current.TxExists(competitorHash)
+	exists, err := current.TxExists(localHash)
+	require.NoError(t, err)
+	require.True(t, exists, "held local transaction must replay before queue promotion")
+	exists, err = current.TxExists(competitorHash)
 	require.NoError(t, err)
 	require.False(t, exists, "same-sequence queued competitor must not win over held local")
 	queuedBlob, queuedOK := svc.txQueue.GetTxBlob(competitorHash)
