@@ -348,17 +348,27 @@ func (s *Service) verifyStoredSHAMapWithTicksReport(
 	// state instead of reading it all again. A concurrent generation reset makes
 	// Insert reject these old-generation proofs.
 	proofs := newStoredSHAMapProofs(s.shamapFamily)
+	control := storedSHAMapWalkControl{progress: progress, progressTicks: ticks, now: now}
+	if batchFetch := s.storedSHAMapVerificationBatchFetch(); batchFetch != nil {
+		control.batchFetch = batchFetch
+		control.batchNodes = storedSHAMapVerificationBatchNodes
+		control.batchBytes = storedSHAMapVerificationBatchBytes
+	}
 	err = s.walkStoredSHAMapConcurrentWithFetch(
 		ctx,
 		root,
 		mapType,
 		s.storedSHAMapVerificationFetch(),
 		resolveStoredSHAMapWorkers(s.config.FastLoadWorkers),
-		storedSHAMapWalkControl{progress: progress, progressTicks: ticks, now: now},
+		control,
 		proofs.record,
 	)
 	if err == nil {
-		proofs.publish()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = ctxErr
+		} else {
+			proofs.publish()
+		}
 	}
 	return err
 }
@@ -428,6 +438,8 @@ const (
 	storedSHAMapFrontierTasksPerWorker = 4
 	storedSHAMapPromotionBatchNodes    = 256
 	storedSHAMapPromotionBatchBytes    = 4 << 20
+	storedSHAMapVerificationBatchNodes = 256
+	storedSHAMapVerificationBatchBytes = 4 << 20
 )
 
 type storedSHAMapWalkControl struct {
@@ -486,7 +498,7 @@ func (s *Service) walkStoredSHAMapConcurrentWithFetch(
 			maxBytes int,
 		) ([]*nodestore.Node, kvstore.PromotionStats, error) {
 			nodes, stats, err := batchFetch(ctx, hashes, maxBytes)
-			if control.progress != nil {
+			if control.progress != nil && stats.Requested > 0 {
 				control.progress.recordPromotionBatch(
 					stats,
 					len(nodes),
@@ -804,6 +816,23 @@ func (s *Service) storedSHAMapVerificationFetch() storedSHAMapFetch {
 	}
 }
 
+func (s *Service) storedSHAMapVerificationBatchFetch() storedSHAMapBatchFetch {
+	uncached, ok := s.nodeStore.(interface {
+		FetchBatchUncached(context.Context, []nodestore.Hash256, int, int) ([]*nodestore.Node, error)
+	})
+	if !ok {
+		return nil
+	}
+	return func(
+		ctx context.Context,
+		hashes []nodestore.Hash256,
+		maxBytes int,
+	) ([]*nodestore.Node, kvstore.PromotionStats, error) {
+		nodes, err := uncached.FetchBatchUncached(ctx, hashes, len(hashes), maxBytes)
+		return nodes, kvstore.PromotionStats{}, err
+	}
+}
+
 func (s *Service) buildStoredSHAMapFrontier(
 	ctx context.Context,
 	branches [][32]byte,
@@ -956,6 +985,9 @@ func (s *Service) walkStoredSHAMapNodesWithBatchFetch(
 		}
 		nodes, _, err := fetch(ctx, hashes, maxBytes)
 		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if len(nodes) <= 0 || len(nodes) > len(pending) {
