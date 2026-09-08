@@ -5,9 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
-	"errors"
 	"fmt"
-	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -199,12 +197,17 @@ func benchmarkPromotionReadAmplification(
 ) {
 	b.Helper()
 	template := newPromotionReadFixture(b, writableHits)
+	expected := makePromotionExpectations(template.keys, template.hitCount)
+	puts := make([]kvstore.Promotion, promotionBenchmarkPutCount)
+	for index := range puts {
+		puts[index] = kvstore.Promotion{Key: promotionBenchmarkPutKey(index), Value: promotionBenchmarkPutValue(index)}
+	}
 	var (
 		refreshWall      time.Duration
 		workerBusy       time.Duration
 		writableRead     promotionReadSnapshot
 		archiveRead      promotionReadSnapshot
-		putLatencies     []time.Duration
+		putLatencies     = make([]time.Duration, 0, b.N*promotionBenchmarkPutCount)
 		putSamples       int
 		cacheHits        int64
 		cacheMisses      int64
@@ -239,7 +242,8 @@ func benchmarkPromotionReadAmplification(
 			run = runPromotionWorkers(
 				store,
 				fixture.keys,
-				fixture.hitCount,
+				expected,
+				puts,
 				workers,
 				reads,
 				!warm,
@@ -282,8 +286,8 @@ func benchmarkPromotionReadAmplification(
 		}
 		cacheHitDelta := cacheAfter.Hits - cacheBefore.Hits
 		cacheMissDelta := cacheAfter.Misses - cacheBefore.Misses
-		if warm && cacheHitDelta == 0 {
-			b.Fatalf("warm promotion completed without block-cache hits")
+		if warm && (cacheHitDelta == 0 || cacheMissDelta != 0 || readCalls != 0) {
+			b.Fatalf("warm promotion must hit cache without SST reads: hits=%d misses=%d reads=%d", cacheHitDelta, cacheMissDelta, readCalls)
 		}
 		if !warm && cacheMissDelta == 0 {
 			b.Fatalf("cold promotion completed without block-cache misses")
@@ -422,53 +426,13 @@ func newPromotionReadFixture(b *testing.B, writableHits int) promotionReadFixtur
 func clonePromotionReadFixture(b *testing.B, source promotionReadFixture) promotionReadFixture {
 	b.Helper()
 	root := b.TempDir()
-	if err := copyPromotionReadTree(source.root, root); err != nil {
+	if err := os.CopyFS(root, os.DirFS(source.root)); err != nil {
 		b.Fatal(err)
 	}
 	clone := source
 	clone.root = root
 	clone.path = filepath.Join(root, filepath.Base(source.path))
 	return clone
-}
-
-func copyPromotionReadTree(source, destination string) error {
-	return filepath.WalkDir(source, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		relative, err := filepath.Rel(source, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(destination, relative)
-		if entry.IsDir() {
-			return os.MkdirAll(target, 0755)
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			link, err := os.Readlink(path)
-			if err != nil {
-				return err
-			}
-			return os.Symlink(link, target)
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		input, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		output, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
-		if err != nil {
-			_ = input.Close()
-			return err
-		}
-		_, copyErr := io.Copy(output, input)
-		closeOutputErr := output.Close()
-		closeInputErr := input.Close()
-		return errors.Join(copyErr, closeOutputErr, closeInputErr)
-	})
 }
 
 func makePromotionBenchmarkKeys(count int) [][]byte {
@@ -597,7 +561,9 @@ type promotionBatchResult struct {
 func runPromotionWorkers(
 	store *RotatingStore,
 	keys [][]byte,
-	hitCount, workers int,
+	expected map[string]expectedPromotion,
+	puts []kvstore.Promotion,
+	workers int,
 	reads *promotionReadFS,
 	waitForRead bool,
 ) promotionRunResult {
@@ -622,7 +588,6 @@ func runPromotionWorkers(
 	} else {
 		reads.foregroundReady = nil
 	}
-	expected := makePromotionExpectations(keys, hitCount)
 	group.Add(workers)
 	for worker := range workers {
 		go func(worker int) {
@@ -655,7 +620,6 @@ func runPromotionWorkers(
 			select {
 			case <-reads.readStarted:
 				readOverlap.Store(true)
-				close(foregroundReady)
 			case <-time.After(promotionBenchmarkOverlap):
 				errCh <- fmt.Errorf("timed out waiting for an SST read to overlap foreground puts")
 				close(foregroundReady)
@@ -664,15 +628,20 @@ func runPromotionWorkers(
 			}
 		}
 		latencies := make([]time.Duration, 0, promotionBenchmarkPutCount)
-		for index := range promotionBenchmarkPutCount {
-			select {
-			case <-refreshDone:
-				putLatencies <- latencies
-				return
-			default:
+		for index, put := range puts {
+			if index > 0 || !waitForRead {
+				select {
+				case <-refreshDone:
+					putLatencies <- latencies
+					return
+				default:
+				}
 			}
 			started := time.Now()
-			if err := store.Put(promotionBenchmarkPutKey(index), promotionBenchmarkPutValue(index)); err != nil {
+			if index == 0 && waitForRead {
+				close(foregroundReady)
+			}
+			if err := store.Put(put.Key, put.Value); err != nil {
 				errCh <- err
 				putLatencies <- latencies
 				return
@@ -768,8 +737,15 @@ func promotePromotionKeys(
 		if expectedStats.Promoted > 0 {
 			expectedStats.Batches = 1
 		}
-		if stats != expectedStats {
-			return result, fmt.Errorf("promotion stats = %+v, want %+v", stats, expectedStats)
+		observed := kvstore.PromotionStats{
+			Requested: stats.Requested, Consumed: stats.Consumed,
+			WritableHits: stats.WritableHits, WritableMisses: stats.WritableMisses,
+			ArchiveHits: stats.ArchiveHits, ArchiveMisses: stats.ArchiveMisses,
+			Promoted: stats.Promoted, PromotedBytes: stats.PromotedBytes,
+			BufferedBytes: stats.BufferedBytes, Batches: stats.Batches,
+		}
+		if observed != expectedStats {
+			return result, fmt.Errorf("promotion stats = %+v, want %+v", observed, expectedStats)
 		}
 		result.consumed += stats.Consumed
 		result.promoted += stats.Promoted

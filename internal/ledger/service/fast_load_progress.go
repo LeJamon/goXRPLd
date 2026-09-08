@@ -21,7 +21,7 @@ const (
 	storedSHAMapNodeCountBatch = 256
 )
 
-// onlineDeleteRefreshPromotionMetrics is scoped to one native batch refresh.
+// onlineDeleteRefreshPromotionMetrics is scoped to one batched refresh.
 // It records the backend's returned counters even when a batch returns an
 // error; promoted counters then describe work attempted by the backend, while
 // Batches describes writes completed before the error. No node identities are
