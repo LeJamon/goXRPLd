@@ -44,7 +44,7 @@ func benchmarkStoredSHAMapBatch(b *testing.B, warm bool, batchNodes int) {
 		fixture.root,
 		benchmarkVerificationWorkers,
 		benchmarkVerificationMode(batchNodes),
-		storedSHAMapPromotionBatchBytes,
+		storedSHAMapVerificationBatchBytes,
 		cacheBytes,
 	)
 
@@ -168,7 +168,7 @@ func benchmarkWalkStoredSHAMap(
 			progress:   progress,
 			batchFetch: batchFetch,
 			batchNodes: batchNodes,
-			batchBytes: storedSHAMapPromotionBatchBytes,
+			batchBytes: storedSHAMapVerificationBatchBytes,
 		},
 		nil,
 	)
