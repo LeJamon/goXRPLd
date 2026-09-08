@@ -79,7 +79,7 @@ func TestFetchBatchUncached(t *testing.T) {
 
 func TestFetchBatchUncachedInvalidRecords(t *testing.T) {
 	for _, batch := range []bool{false, true} {
-		for _, data := range [][]byte{{1}, {255, 0, 0, 0, 1, 42}, {byte(NodeAccount), 0, 0, 0, 1}} {
+		for _, data := range [][]byte{nil, {1}, {255, 0, 0, 0, 1, 42}, {byte(NodeAccount), 0, 0, 0, 1}} {
 			var store kvstore.KeyValueStore = memorydb.New()
 			if batch {
 				var err error
