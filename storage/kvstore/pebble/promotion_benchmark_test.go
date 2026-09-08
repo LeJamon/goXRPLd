@@ -462,9 +462,6 @@ type promotionBenchmarkPromotionRun struct {
 	optional   promotionBenchmarkOptionalStats
 }
 
-// runPromotionBenchmarkGroup consumes successful prefixes until the complete
-// 256-key group has been processed. A shorter successful prefix is resumed
-// with the remaining keys; any PromoteBatch error aborts the measured group.
 func runPromotionBenchmarkGroup(store *RotatingStore, keys [][]byte) (promotionBenchmarkPromotionRun, error) {
 	remaining := keys
 	run := promotionBenchmarkPromotionRun{
